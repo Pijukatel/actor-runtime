@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Actor Runtime Console</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; color: #1a1a1a; background: #f6f7f9; }
+    header { background: #0d1117; color: #fff; padding: 12px 20px; font-weight: 600; }
+    main { display: flex; gap: 16px; padding: 16px; align-items: flex-start; }
+    .panel { background: #fff; border: 1px solid #e2e5e9; border-radius: 8px; padding: 14px; }
+    #actors { width: 260px; flex: none; }
+    #detail { flex: 1; min-width: 0; }
+    h2 { font-size: 15px; margin: 0 0 10px; }
+    ul { list-style: none; margin: 0; padding: 0; }
+    li { padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+    li:hover { background: #eef1f4; }
+    button { background: #1f6feb; color: #fff; border: 0; border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+    button.secondary { background: #6e7681; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+    .SUCCEEDED { background: #d5f5e3; color: #1e7e46; }
+    .FAILED, .ABORTED, .TIMED-OUT { background: #fddede; color: #b42318; }
+    .RUNNING, .READY { background: #fdf1d6; color: #9a6700; }
+    pre { background: #0d1117; color: #d6deeb; padding: 10px; border-radius: 6px; overflow: auto; max-height: 280px; font-size: 12px; }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td { text-align: left; border-bottom: 1px solid #eee; padding: 4px 6px; vertical-align: top; }
+    .muted { color: #6e7681; font-size: 12px; }
+    .clickable { color: #1f6feb; cursor: pointer; }
+    .tabs { display: flex; gap: 8px; margin: 10px 0; }
+    .tabs span { cursor: pointer; padding: 4px 10px; border-radius: 6px; background: #eef1f4; font-size: 13px; }
+    .tabs span.active { background: #1f6feb; color: #fff; }
+  </style>
+</head>
+<body>
+  <header>Actor Runtime Console <span class="muted" style="color:#8b949e">(single local user)</span></header>
+  <main>
+    <div id="actors" class="panel">
+      <h2>Actors</h2>
+      <ul id="actor-list"></ul>
+    </div>
+    <div id="detail" class="panel">
+      <p class="muted">Select an Actor to inspect its builds, runs and storages.</p>
+    </div>
+  </main>
+  <script src="/console/app.js"></script>
+</body>
+</html>
