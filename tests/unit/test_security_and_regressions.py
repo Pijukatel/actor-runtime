@@ -424,3 +424,28 @@ async def test_console_has_no_inline_event_handlers(wired):
             assert handler not in src.lower(), f"{label} contains inline {handler}"
     # Positive check: behaviour is wired with addEventListener.
     assert "addEventListener" in app_js
+
+
+@pytest.mark.asyncio
+async def test_prepare_run_storage_is_world_writable(wired):
+    """Per-run storage dirs must be writable by a non-root Actor container user.
+
+    Regression: the runtime runs as root and created these dirs 0755, so a real
+    Apify Actor image (which runs as a non-root user, e.g. uid 1000) could not
+    write to the bind-mounted /apify_storage and crashed on first write with
+    PermissionError. The dirs must be world-writable so any container user can
+    write; INPUT.json must stay world-readable so the Actor can read its input.
+    """
+    _client, service = wired
+    storage_dir, _trusted_root = service._prepare_run_storage("perm-test-run", {"greeting": "hi"})
+
+    for sub in ("key_value_stores/default", "datasets/default", "request_queues/default"):
+        d = storage_dir / sub
+        mode = d.stat().st_mode & 0o777
+        assert mode & 0o002, f"{sub} is not world-writable (mode {oct(mode)})"
+    # The whole tree (including nested created dirs) must be writable by others.
+    for path in storage_dir.rglob("*"):
+        if path.is_dir():
+            assert path.stat().st_mode & 0o002, f"{path} not world-writable"
+    # Input stays readable by the (non-root) Actor.
+    assert (storage_dir / "key_value_stores/default/INPUT.json").stat().st_mode & 0o004

@@ -51,6 +51,27 @@ persists across `docker stop` / `docker start`.
 > Platform note: the host Docker-socket mount is validated on Linux. macOS and
 > Windows are best-effort for this first draft (see `requirements/system.md`).
 
+### Storage, volumes and non-root Actors
+
+Each run gets its own directory under `$DATA/runs/<runId>/storage`, which the
+runtime bind-mounts into the Actor container at `/apify_storage`. Two things make
+this work, and neither needs any action from you:
+
+- **Same-path volume + `HOST_DATA_DIR`.** `$DATA` is mounted at the *same* path
+  inside the runtime container (`-v "$DATA:$DATA"`) and `HOST_DATA_DIR` tells the
+  runtime that path on the host. The runtime launches Actor containers as
+  *siblings* through the shared Docker socket, so their volume source must be a
+  real host path - if `HOST_DATA_DIR` is wrong, the Actor's `/apify_storage` would
+  mount from the wrong place.
+- **Non-root Actors.** Official Apify Actor base images run as a non-root user
+  (e.g. `uid 1000`), while the runtime itself runs as root. The runtime creates
+  each run's storage directory world-writable so the Actor's user can write its
+  key-value store, dataset and request queue; the runtime (root) then reads those
+  results back to import them. You do **not** need to `chown`/`chmod` `$DATA` or
+  run your Actor as root. (Earlier drafts created this directory root-owned `0755`,
+  which caused a `PermissionError: [Errno 13] ... /apify_storage/...` on the
+  Actor's first write - that is fixed.)
+
 ## Use it with apify-cli
 
 ```bash

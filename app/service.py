@@ -276,6 +276,17 @@ class Service:
         (storage_dir / "request_queues" / "default").mkdir(parents=True, exist_ok=True)
         kv_dir.mkdir(parents=True, exist_ok=True)
         (kv_dir / "INPUT.json").write_text(json.dumps(run_input if run_input is not None else {}))
+        # The runtime process is root, so these dirs are created root-owned 0755.
+        # Real Apify Actor images run as a NON-root user (e.g. uid 1000), and the
+        # bind mount preserves host ownership - so without this the Actor cannot
+        # create files under /apify_storage and crashes on first write. Make the
+        # whole per-run tree world-writable so any container user can write; the
+        # runtime (root) can still read the results back for import afterwards.
+        for path in (storage_dir, *storage_dir.rglob("*")):
+            try:
+                path.chmod(0o777 if path.is_dir() else 0o666)
+            except OSError:
+                pass
         # Capture the real storage root ONCE, now, before the untrusted Actor
         # container runs and could swap a subdirectory for a symlink. This is the
         # trusted anchor every imported file is later validated against.
