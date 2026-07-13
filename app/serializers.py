@@ -1,0 +1,66 @@
+"""Serialize domain objects into public-Apify-API-shaped JSON envelopes."""
+from __future__ import annotations
+
+from typing import Any
+
+from .config import USER_ID
+from .db import Actor, Build, Run, Version
+
+
+def version_dict(v: Version) -> dict[str, Any]:
+    return {
+        "versionNumber": v.version_number,
+        "buildTag": v.build_tag,
+        "sourceType": v.source_type,
+        "sourceFiles": v.source_files,
+    }
+
+
+def actor_dict(a: Actor, versions: list[Version], tagged_builds: dict[str, dict]) -> dict[str, Any]:
+    return {
+        "id": a.id,
+        "userId": USER_ID,
+        "name": a.name,
+        "username": a.username,
+        "createdAt": a.created_at,
+        "modifiedAt": a.modified_at,
+        "defaultRunOptions": a.default_run_options
+        or {"build": "latest", "timeoutSecs": 300, "memoryMbytes": 1024},
+        "versions": [version_dict(v) for v in versions],
+        "taggedBuilds": tagged_builds,
+    }
+
+
+def build_dict(b: Build) -> dict[str, Any]:
+    return {
+        "id": b.id,
+        "actId": b.actor_id,
+        "status": b.status,
+        "buildNumber": b.build_number,
+        "buildTag": b.build_tag,
+        "startedAt": b.started_at,
+        "finishedAt": b.finished_at,
+    }
+
+
+def run_dict(r: Run) -> dict[str, Any]:
+    options = dict(r.options or {})
+    options.setdefault("build", "latest")
+    options.setdefault("timeoutSecs", 300)
+    options.setdefault("memoryMbytes", 1024)
+    return {
+        "id": r.id,
+        "actId": r.actor_id,
+        "actorId": r.actor_id,
+        "status": r.status,
+        "buildId": r.build_id,
+        "buildNumber": r.build_number,
+        "exitCode": r.exit_code,
+        "startedAt": r.started_at,
+        "finishedAt": r.finished_at,
+        "options": options,
+        "containerUrl": f"http://localhost/{r.id}",
+        "defaultKeyValueStoreId": r.kv_store_id,
+        "defaultDatasetId": r.dataset_id,
+        "defaultRequestQueueId": r.request_queue_id,
+    }

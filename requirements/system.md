@@ -2,11 +2,16 @@
 - Supported operating systems:
   - Linux
   - MacOS
-  - Windows. 
+  - Windows.
 
-- The system can run on all supported operating systems.
-- The system external interface and behavior is exactly the same on all supported operating systems.
 - The system is encapsulated in dedicated docker image.
+- Linux is the officially supported and verified platform for this first draft.
+- MacOS and Windows are best-effort: the system mounts the host's Docker socket,
+  and Docker socket behavior differs across platforms, so external interface and
+  behavior parity there is not guaranteed or verified.
+- Cross-platform parity (identical external interface and behavior on Linux,
+  MacOS and Windows) remains a long-term goal, not a requirement met by this
+  draft.
 
 # Components
 - The system exposes API that is compliant with the requirements in `api.md`

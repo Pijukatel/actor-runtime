@@ -1,3 +1,11 @@
+# actor-runtime specific
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+/data/
+ca-bundle.crt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
