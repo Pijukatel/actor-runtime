@@ -48,12 +48,24 @@
   still shows the complete log immediately (the stream's finished-job fallback). Log
   text is added via text nodes only (never `innerHTML`), so log content can never be
   interpreted as markup.
-- The **Storages tab** lists the acting user's own standalone storages grouped by
-  type (key-value stores, datasets, request queues), each type with a
-  create-by-name form and a per-row delete control (delete asks for confirmation
-  first, since it permanently drops the underlying data). It is distinct from the
-  per-run default-storage sub-tabs. All controls reuse the DOM-safe builders
-  (`mk`/`tableEl`/`api`) — no `innerHTML`, no inline handlers.
+- The **Storages tab** lists **all** of the acting user's owned storages grouped by
+  type (key-value stores, datasets, request queues) — both the ones they created
+  by name (**named**) and the ones created automatically by their Actor runs
+  (**run-derived/unnamed**) — each row labelled so it's clear which is which. A
+  single checkbox above the per-type sections, **checked by default** (showing
+  unnamed rows), lets you hide the run-derived rows on demand; toggling it only
+  changes what's displayed, never what is fetched, created or deleted. Each type
+  keeps its create-by-name form; a **delete control is offered only for named
+  rows** — run-derived storages are managed with their run and are not deletable
+  from this view, so no delete button is rendered for them (delete asks for
+  confirmation first for named rows, since it permanently drops the underlying
+  data). It is distinct from the per-run default-storage sub-tabs. All controls
+  reuse the DOM-safe builders (`mk`/`tableEl`/`api`) — no `innerHTML`, no inline
+  handlers.
+- The **left column** shows the category nav (Actors/Builds/Runs/Storages/Users)
+  in its own bordered box, and directly below it, in a second, separate bordered
+  box, the list of items for whichever category is selected. The detail panel to
+  the right is unchanged.
 
 # Out of scope for now
 - Real authentication / passwords (the token is a placeholder credential that
@@ -61,5 +73,8 @@
 - A share-management UI for storage access rights (sharing is API/CLI only this
   pass; grant/list/revoke are done against the API).
 - It allows to get actors from store
-- It allows to inspect named (non-default) storages - only a run's default
-  storages are browsable in this first draft
+- It does not allow inspecting the **contents** (records/items/requests) of
+  storages from the top-level Storages tab, whether named or run-derived - only a
+  run's default storages have their contents browsable, via the run's detail view,
+  in this first draft. The top-level Storages tab itself lists, creates and
+  deletes storages, and now includes both named and run-derived rows (see above).

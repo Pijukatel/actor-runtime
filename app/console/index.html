@@ -9,7 +9,9 @@
     header { background: #0d1117; color: #fff; padding: 12px 20px; font-weight: 600; }
     main { display: flex; gap: 16px; padding: 16px; align-items: flex-start; }
     .panel { background: #fff; border: 1px solid #e2e5e9; border-radius: 8px; padding: 14px; }
-    #actors { width: 260px; flex: none; }
+    #left-column { display: flex; flex-direction: column; gap: 16px; width: 260px; flex: none; }
+    #nav-panel { width: auto; }
+    #actors { width: auto; }
     #detail { flex: 1; min-width: 0; }
     h2 { font-size: 15px; margin: 0 0 10px; }
     ul { list-style: none; margin: 0; padding: 0; }
@@ -48,15 +50,19 @@
     </label>
   </header>
   <main>
-    <div id="actors" class="panel">
-      <div id="top-tabs" class="tabs">
-        <span id="tab-actors" class="active">Actors</span>
-        <span id="tab-builds">Builds</span>
-        <span id="tab-runs">Runs</span>
-        <span id="tab-storages">Storages</span>
-        <span id="tab-users">Users</span>
+    <div id="left-column">
+      <div id="nav-panel" class="panel">
+        <div id="top-tabs" class="tabs">
+          <span id="tab-actors" class="active">Actors</span>
+          <span id="tab-builds">Builds</span>
+          <span id="tab-runs">Runs</span>
+          <span id="tab-storages">Storages</span>
+          <span id="tab-users">Users</span>
+        </div>
       </div>
-      <ul id="actor-list"></ul>
+      <div id="actors" class="panel">
+        <ul id="actor-list"></ul>
+      </div>
     </div>
     <div id="detail" class="panel">
       <p class="muted">Select an item to inspect its details and storages.</p>

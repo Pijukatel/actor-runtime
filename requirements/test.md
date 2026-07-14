@@ -121,11 +121,12 @@ fixtures) MUST exist and keep passing for the following three behaviours:
    via the stub driver.)
  - **Top-level storage list / create / delete with isolation** — coverage MUST
    assert: a user can create a standalone storage by name and see it in the
-   per-type `/v2/users/me/{key-value-stores,datasets,request-queues}` listings;
-   listings are strictly scoped to the acting user (another user's storages never
-   appear); delete is owner-only and removes the listing entry, the underlying data
-   (a subsequent read is `404`), and any access-rights grants that referenced it (no
-   dangling grant survives); deleting another user's or an unknown id is `404`
-   (no existence leak, no effect); and run-derived storages are excluded from the
-   top-level listing and refused deletion via this view (`400 invalid-request`),
-   with the run's storage left intact.
+   per-type `/v2/users/me/{key-value-stores,datasets,request-queues}` listings,
+   marked `named: true`; listings are strictly scoped to the acting user (another
+   user's storages never appear); delete is owner-only and removes the listing
+   entry, the underlying data (a subsequent read is `404`), and any access-rights
+   grants that referenced it (no dangling grant survives); deleting another user's
+   or an unknown id is `404` (no existence leak, no effect); and run-derived
+   storages are **included** in the top-level listing (owner-scoped), marked
+   `named: false`, still undeletable via this view (`400 invalid-request`), with
+   the run's storage left intact.

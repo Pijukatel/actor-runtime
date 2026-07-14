@@ -294,19 +294,51 @@ const STORAGE_TYPES = [
   ["request-queues", "Request queues"],
 ];
 
+let showUnnamedStorages = true;
+// Cache of the last-fetched items per storage type, keyed by path, so toggling
+// the show/hide-unnamed checkbox can re-render from already-fetched data
+// instead of issuing a new fetch().
+let storageItemsCache = {};
+
 async function loadStorages() {
-  const detail = $("#detail");
-  if (!detail) return;
   const list = $("#actor-list");
   if (list) list.innerHTML = "";
+
+  for (const [path] of STORAGE_TYPES) {
+    storageItemsCache[path] = (unwrap(await api(`/v2/users/me/${path}`)).items) || [];
+  }
+
+  renderStorages();
+}
+
+function renderStorages() {
+  const detail = $("#detail");
+  if (!detail) return;
   detail.innerHTML = "";
   detail.appendChild(mk("h2", { text: "Storages" }));
+
+  const toggleRow = mk("div", { class: "row" });
+  const toggleLabel = document.createElement("label");
+  toggleLabel.className = "muted";
+  const toggle = document.createElement("input");
+  toggle.type = "checkbox";
+  toggle.id = "show-unnamed-storages";
+  toggle.checked = showUnnamedStorages;
+  toggle.addEventListener("change", () => {
+    showUnnamedStorages = toggle.checked;
+    renderStorages();
+  });
+  toggleLabel.appendChild(toggle);
+  toggleLabel.appendChild(document.createTextNode(" Show run-derived (unnamed) storages"));
+  toggleRow.appendChild(toggleLabel);
+  detail.appendChild(toggleRow);
+
   for (const [path, label] of STORAGE_TYPES) {
-    detail.appendChild(await storageSection(path, label));
+    detail.appendChild(storageSection(path, label));
   }
 }
 
-async function storageSection(path, label) {
+function storageSection(path, label) {
   const wrap = mk("div");
   wrap.appendChild(mk("h2", { text: label, style: { marginTop: "14px" } }));
 
@@ -317,16 +349,20 @@ async function storageSection(path, label) {
   form.append(input, createBtn);
   wrap.appendChild(form);
 
-  const items = (unwrap(await api(`/v2/users/me/${path}`)).items) || [];
-  const rows = items.map((st) => {
-    const del = mk("button", {
-      class: "secondary",
-      text: "Delete",
-      onClick: () => deleteStorage(path, st.id),
-    });
-    return [mk("td", { text: st.name }), mk("td", { text: st.id }), del];
+  const items = storageItemsCache[path] || [];
+  const visible = showUnnamedStorages ? items : items.filter((st) => st.named === true);
+  const rows = visible.map((st) => {
+    const marker = mk("td", { class: "muted", text: st.named ? "named" : "run-derived" });
+    const del = st.named
+      ? mk("button", {
+          class: "secondary",
+          text: "Delete",
+          onClick: () => deleteStorage(path, st.id),
+        })
+      : mk("td", { class: "muted", text: "" });
+    return [mk("td", { text: st.name }), mk("td", { text: st.id }), marker, del];
   });
-  wrap.appendChild(tableEl(["Name", "Id", ""], rows));
+  wrap.appendChild(tableEl(["Name", "Id", "Named", ""], rows));
   return wrap;
 }
 

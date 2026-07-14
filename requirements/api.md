@@ -190,12 +190,15 @@
   storages are namespaced `username~name`; **run-derived** storages are minted at run
   start as `kv_/ds_/rq_<runId>` and stay managed with their run.
 - `GET /v2/users/me/key-value-stores`, `GET /v2/users/me/datasets`,
-  `GET /v2/users/me/request-queues` each return the acting user's **standalone**
+  `GET /v2/users/me/request-queues` each return **all** of the acting user's owned
   storages of that type in the standard envelope (each item has `id`, `name`
-  [derived from the id], `type`, `createdAt`). Run-derived storages are **excluded**
-  from these listings (they remain browsable via their run's detail view). Each
-  listing is strictly scoped to the acting user — another user's storages never
-  appear.
+  [derived from the id], `type`, `createdAt`, and `named`). Run-derived storages are
+  **included** alongside standalone ones (they also remain browsable via their
+  run's detail view). Each item's `named` field is a boolean: `true` for a
+  standalone (`username~name`) storage, `false` for a run-derived
+  (`kv_/ds_/rq_<runId>`) one, so a client can tell the two apart from the listing
+  response alone. Each listing is strictly scoped to the acting user — another
+  user's storages never appear.
 - `POST /v2/{type}` creates a standalone storage by name (namespaced `username~name`,
   idempotent for the owner; a `409` if the id resolves to another owner), for all
   three types.

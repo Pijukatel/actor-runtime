@@ -407,17 +407,19 @@ async def test_delete_other_users_storage_is_404_and_no_effect(wired):
     assert store_id in [s["id"] for s in listed["items"]]
 
 
-async def test_run_derived_storages_excluded_and_undeletable(wired):
+async def test_run_derived_storages_included_and_undeletable(wired):
     client, service = wired
     run = await _provision_run(client, service, "runner")
     kv_id = run["defaultKeyValueStoreId"]
     assert kv_id.startswith("kv_")
 
-    # The top-level list surfaces only standalone storages, never run-derived ones.
+    # The top-level list now surfaces run-derived storages too, marked unnamed.
     listed = (
         await client.get("/v2/users/me/key-value-stores", headers=auth("runner"))
     ).json()["data"]["items"]
-    assert kv_id not in [s["id"] for s in listed]
+    assert kv_id in [s["id"] for s in listed]
+    entry = next(s for s in listed if s["id"] == kv_id)
+    assert entry["named"] is False
 
     # Deleting a run-derived storage via this view is refused (400), not silent.
     resp = await client.delete(f"/v2/key-value-stores/{kv_id}", headers=auth("runner"))
@@ -429,6 +431,80 @@ async def test_run_derived_storages_excluded_and_undeletable(wired):
     ).status_code == 200
 
 
+async def test_named_storage_marked_named_and_coexists_with_run_derived(wired):
+    client, service = wired
+    run = await _provision_run(client, service, "coexist")
+    kv_id = run["defaultKeyValueStoreId"]
+    ds_id = run["defaultDatasetId"]
+    rq_id = run["defaultRequestQueueId"]
+
+    created = await client.post(
+        "/v2/key-value-stores", json={"name": "mystore"}, headers=auth("coexist")
+    )
+    named_id = created.json()["data"]["id"]
+
+    kv_listed = (
+        await client.get("/v2/users/me/key-value-stores", headers=auth("coexist"))
+    ).json()["data"]["items"]
+    ds_listed = (
+        await client.get("/v2/users/me/datasets", headers=auth("coexist"))
+    ).json()["data"]["items"]
+    rq_listed = (
+        await client.get("/v2/users/me/request-queues", headers=auth("coexist"))
+    ).json()["data"]["items"]
+
+    # The run's own default storage ids appear in their corresponding per-type lists.
+    assert kv_id in [s["id"] for s in kv_listed]
+    assert ds_id in [s["id"] for s in ds_listed]
+    assert rq_id in [s["id"] for s in rq_listed]
+
+    # The standalone storage coexists alongside the run-derived one, marked named.
+    named_entry = next(s for s in kv_listed if s["id"] == named_id)
+    run_entry = next(s for s in kv_listed if s["id"] == kv_id)
+    assert named_entry["named"] is True
+    assert run_entry["named"] is False
+
+    # The named storage remains deletable as before.
+    delete = await client.delete(f"/v2/key-value-stores/{named_id}", headers=auth("coexist"))
+    assert delete.status_code == 200
+    remaining = (
+        await client.get("/v2/users/me/key-value-stores", headers=auth("coexist"))
+    ).json()["data"]["items"]
+    assert named_id not in [s["id"] for s in remaining]
+    assert kv_id in [s["id"] for s in remaining]
+
+
+async def test_run_derived_and_named_storages_scoped_per_user(wired):
+    client, service = wired
+    run_a = await _provision_run(client, service, "usera", name="acta")
+    run_b = await _provision_run(client, service, "userb", name="actb")
+    await client.post("/v2/key-value-stores", json={"name": "mine"}, headers=auth("usera"))
+    await client.post("/v2/key-value-stores", json={"name": "mine"}, headers=auth("userb"))
+
+    a_ids = [
+        s["id"]
+        for s in (
+            await client.get("/v2/users/me/key-value-stores", headers=auth("usera"))
+        ).json()["data"]["items"]
+    ]
+    b_ids = [
+        s["id"]
+        for s in (
+            await client.get("/v2/users/me/key-value-stores", headers=auth("userb"))
+        ).json()["data"]["items"]
+    ]
+
+    assert run_a["defaultKeyValueStoreId"] in a_ids
+    assert "usera~mine" in a_ids
+    assert run_b["defaultKeyValueStoreId"] not in a_ids
+    assert "userb~mine" not in a_ids
+
+    assert run_b["defaultKeyValueStoreId"] in b_ids
+    assert "userb~mine" in b_ids
+    assert run_a["defaultKeyValueStoreId"] not in b_ids
+    assert "usera~mine" not in b_ids
+
+
 async def test_console_has_storages_tab(wired):
     client, _service = wired
     html = (await client.get("/")).text
@@ -438,3 +514,65 @@ async def test_console_has_storages_tab(wired):
     assert "createStorage" in js
     assert "deleteStorage" in js
     assert "/v2/users/me/" in js
+
+
+async def test_console_storages_show_unnamed_checkbox_and_gated_delete(wired):
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+
+    # A checkbox exists for the Storages tab, defaulting to checked (show unnamed),
+    # and is wired via addEventListener (no inline handler).
+    assert 'type = "checkbox"' in js or "type=\"checkbox\"" in js
+    assert "showUnnamedStorages" in js
+    assert "let showUnnamedStorages = true;" in js
+    assert "toggle.addEventListener(\"change\"" in js
+
+    # Rows are not filtered out of the render path based on run-derived id shape --
+    # every fetched item is mapped, filtering only happens against the checkbox state.
+    assert "items.filter((st) => st.named === true)" in js
+    assert "showUnnamedStorages ? items :" in js
+
+    # The delete control is only constructed for named rows: locate the actual
+    # gating conditional (not the unrelated marker-cell ternary) and confirm the
+    # button construction follows it, so this assertion would fail if the delete
+    # gating regressed to unconditional.
+    del_idx = js.index("const del = st.named")
+    assert 'mk("button"' in js[del_idx : del_idx + 200]
+
+    # Toggling the checkbox is presentation-only: its change handler re-renders
+    # from cached data (renderStorages) rather than refetching (loadStorages).
+    toggle_wire_idx = js.index("toggle.addEventListener(\"change\"")
+    change_handler = js[toggle_wire_idx : js.index("});", toggle_wire_idx)]
+    assert "renderStorages()" in change_handler
+    assert "loadStorages()" not in change_handler
+
+    for handler in ("onclick=", "onload=", "onerror=", "onmouseover="):
+        assert handler not in js
+
+
+async def test_console_left_column_has_separate_nav_and_list_boxes(wired):
+    client, _service = wired
+    html = (await client.get("/")).text
+
+    # Every id app.js/tests depend on is preserved.
+    for tab_id in ("tab-actors", "tab-builds", "tab-runs", "tab-storages", "tab-users"):
+        assert f'id="{tab_id}"' in html
+    assert 'id="actor-list"' in html
+    assert 'id="detail"' in html
+    assert 'id="top-tabs"' in html
+
+    # The nav (#top-tabs) and the list (#actor-list) sit in two distinct panel
+    # boxes, not one shared wrapper holding both.
+    nav_box_start = html.index('id="nav-panel"')
+    nav_box_class = html[nav_box_start : nav_box_start + 200]
+    assert "panel" in nav_box_class
+
+    list_box_start = html.index('id="actors"')
+    list_box_class = html[list_box_start : list_box_start + 200]
+    assert "panel" in list_box_class
+
+    # #top-tabs is inside the nav box, #actor-list is inside the (different) list box.
+    top_tabs_pos = html.index('id="top-tabs"')
+    actor_list_pos = html.index('id="actor-list"')
+    assert nav_box_start < top_tabs_pos < list_box_start
+    assert list_box_start < actor_list_pos

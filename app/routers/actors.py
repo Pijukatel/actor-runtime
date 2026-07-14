@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request
 from ..auth import resolve_user
 from ..responses import data, get_service, not_found, read_json
 from ..serializers import actor_dict, build_dict, run_dict, storage_dict, version_dict
-from ..service import _RUN_STORAGE_PREFIXES, STORAGE_DS, STORAGE_KV, STORAGE_RQ
+from ..service import STORAGE_DS, STORAGE_KV, STORAGE_RQ
 
 # Registered under both /v2/acts and /v2/actors (the CLI uses /v2/actors).
 router = APIRouter()
@@ -18,9 +18,7 @@ async def _my_storages(request: Request, storage_type: str) -> object:
     svc = get_service(request)
     user = await resolve_user(request)
     storages = await svc.list_storages_for_user(user, type=storage_type)
-    items = [
-        storage_dict(st) for st in storages if not st.id.startswith(_RUN_STORAGE_PREFIXES)
-    ]
+    items = [storage_dict(st) for st in storages]
     return data({"total": len(items), "count": len(items), "items": items})
 
 

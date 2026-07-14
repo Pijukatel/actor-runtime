@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from .db import Actor, Build, Run, Storage, User, Version
+from .service import _RUN_STORAGE_PREFIXES
 
 
 def user_dict(u: User) -> dict[str, Any]:
@@ -22,6 +23,7 @@ def storage_dict(st: Storage) -> dict[str, Any]:
         "name": name,
         "type": st.type,
         "createdAt": st.created_at,
+        "named": not st.id.startswith(_RUN_STORAGE_PREFIXES),
     }
 
 
