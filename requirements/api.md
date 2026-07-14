@@ -13,7 +13,7 @@
   and fetching the request queue, the local API is a **superset** of that tag. In
   addition to the tag above it implements, from the same public Apify spec:
   - Actor / version / build management (needed for `apify push` + build):
-    - `GET /v2/users/me`
+    - `GET /v2/users/me`, `GET /v2/users`, `POST /v2/users`
     - `GET|POST /v2/acts` and `/v2/actors` (list / create Actor; both spellings)
     - `GET|PUT /v2/acts/{actorId}` (get / update Actor)
     - `GET /v2/acts/{actorId}/versions/{versionNumber}`,
@@ -38,15 +38,45 @@
 
 ## Authentication, ownership and sharing
 
-- **Token -> user (placeholder auth).** There is no real authentication and no
-  passwords. The `Authorization: Bearer <token>` header that `apify-client` always
-  sends selects the acting user: the token is sanitized into a username and
-  auto-provisioned on first use. A request with **no** token maps to the default
-  user `local-user`, preserving the original single-user behaviour. Any non-empty
-  token is accepted (an unknown token simply means "a new user"); there is no
-  401/403 rejection path for unknown tokens.
-- `GET /v2/users/me` reflects the acting user (its `username`/`id`), not a fixed
-  constant.
+- **Decoupled identity and credential (placeholder auth).** There is no real
+  authentication and no passwords, but **username (identity) and token
+  (credential) are separate things**. A user is `{ username, token }`: the
+  username is the public identity used everywhere an owner is named (Actor ids
+  `username~name`, serialized `userId`/`username`, image tags, storage-id
+  namespacing, the container's `APIFY_USER_ID`); the token is a private credential
+  used **only** to look up which user is acting. The token is never turned into a
+  username and never appears in any id, response body, image tag, storage id or
+  container variable.
+- **Token -> user resolution.** The `Authorization: Bearer <token>` header that
+  `apify-client` always sends selects the acting user:
+  - **No token** (absent header) -> the default user `local-user` (preserving the
+    original single-user behaviour); an absent header is never rejected.
+  - **A token matching a stored user's token** -> that user.
+  - **A token matching no user** -> if the default user's credential is still
+    unclaimed (no token has ever been presented), the token *bootstraps* the
+    default user (it becomes `local-user`'s stored token) and the request acts as
+    `local-user`; otherwise the token is **rejected with `401`** in the standard
+    envelope `{"error": {"type": "invalid-token", "message": ...}}`. An unknown
+    token is never auto-provisioned into a new user.
+- **User management.**
+  - `GET /v2/users/me` reflects the acting user: its `username`, `id` (= username)
+    and `token`.
+  - `GET /v2/users` lists every user with `username`, `token` and `createdAt`.
+    Tokens are returned in plaintext deliberately — this is the mechanism the
+    console uses to reveal and switch users. This endpoint is unguarded and must
+    not be assumed safe on a shared network.
+  - `POST /v2/users` with body `{"name": ...}` creates a user whose `username` and
+    `token` both equal `name` (the token-equals-name convenience applies only to
+    users created this way, never to the default user's bootstrap token). The name
+    is restricted to the safe charset `[A-Za-z0-9_.-]` and must include at least one
+    letter or digit (it becomes the load-bearing owner segment of `username~name`
+    ids and storage-id namespacing, so `~`, `/`, spaces and other characters are
+    forbidden, and an all-punctuation name like `..` or `---` is not a valid safe
+    name); a non-string, empty, all-punctuation or otherwise invalid name is
+    rejected `400 invalid-request` (the name is not silently mutated, since it is
+    also the token). A name that collides with an existing user's `username` — or
+    with another user's unique `token` — is a `409 resource-conflict`, with a
+    message that reflects the actual cause.
 - **Per-user ownership.** Every API-created object is owned by the acting user:
   Actors (`id` is `username~name`, so two users may hold identically named Actors),
   Builds, Runs, **and each run's default key-value store, dataset and request
@@ -84,8 +114,3 @@
     write gets **403 `insufficient-permissions`** — observably different from the
     404, because they can see the storage but may not change it. A caller with no
     access attempting a write still gets 404 (they cannot see it at all).
-- **Upgrade caveat.** Ownership adds new tables (`users`, `storages`,
-  `access_rights`) and new `username` columns on the builds/runs tables. The
-  runtime has no migrations (`create_all()` only creates missing tables, not new
-  columns on existing ones), so upgrading an existing `$DATA_DIR` in place is not
-  supported — use a fresh `DATA_DIR`.

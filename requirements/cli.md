@@ -19,17 +19,23 @@
 
 ## Authentication / token bootstrap
 
-- The runtime has **placeholder authentication with no passwords**: the value of
-  **`APIFY_TOKEN`** selects the acting user. `apify-client` sends it as
-  `Authorization: Bearer <token>`; the runtime sanitizes it into a username and
-  auto-creates that user on first use. **Changing `APIFY_TOKEN` switches the user**
-  you act as (matching how the real platform's CLI resolves the token to a user) —
-  everything you push, build or run belongs to that user, and one user cannot see
-  another user's Actors, builds, runs or storages.
-- Set `APIFY_TOKEN` to any non-empty value; there is no signup, no password and no
-  real verification (an unknown token just becomes a new user). If `APIFY_TOKEN` is
-  absent, requests fall back to the default user `local-user`, so existing scripts
-  keep working unchanged.
+- The runtime has **placeholder authentication with no passwords**, and identity
+  is **decoupled from the credential**: the value of **`APIFY_TOKEN`** is a private
+  token that *selects* a user, but is never turned into a username. `apify-client`
+  sends it as `Authorization: Bearer <token>`. **Changing `APIFY_TOKEN` switches
+  the user** you act as (matching how the real platform's CLI resolves the token to
+  a user) — everything you push, build or run belongs to that user, and one user
+  cannot see another user's Actors, builds, runs or storages.
+- How a token resolves:
+  - **The first token ever presented** binds ("bootstraps") the default user
+    `local-user` — it becomes that user's stored token, and you act as `local-user`.
+  - **A token matching an existing user** acts as that user (users are created
+    explicitly, e.g. via the console/API; a created user's token equals its name).
+  - **An unknown token** (once the default user's credential is already claimed) is
+    **rejected with `401 invalid-token`** — it is never auto-provisioned into a new
+    user.
+- If `APIFY_TOKEN` is **absent**, requests fall back to the default user
+  `local-user` and are never rejected, so existing scripts keep working unchanged.
 - No `apify login` step and no `~/.apify/auth.json` set-up are required when
   `APIFY_TOKEN` and `APIFY_CLIENT_BASE_URL` are exported in the environment; switching
   users is just a matter of exporting a different `APIFY_TOKEN`.

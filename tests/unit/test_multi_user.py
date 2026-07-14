@@ -1,14 +1,18 @@
-"""Multi-user, placeholder-login and storage-sharing behaviour.
+"""Multi-user, decoupled-identity and storage-sharing behaviour.
 
-Covers success criteria 1-21 (identity/provisioning/default user, per-user
-ownership, strict isolation across Actors/Builds/Runs and run storages, and the
-full grant/list/revoke sharing flow at READ and WRITE levels) plus the console
-regressions (22-23). Everything runs Docker-free via the ``wired`` fixture; the
-acting user is chosen per request with ``Authorization: Bearer <token>``.
+Identity (username) and credential (token) are decoupled: a user is created
+explicitly (username == token for console-created users), the default user
+``local-user`` is bootstrapped by the first token presented (or acts token-less),
+and a token matching no user after bootstrap is rejected (401). Everything runs
+Docker-free via the ``wired`` fixture; the acting user is chosen per request with
+``Authorization: Bearer <token>``.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+
+import pytest_asyncio
 
 from app.service import STORAGE_KV
 
@@ -23,7 +27,31 @@ def auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+async def _create_user(client, name):
+    """Create a user (username == token == name) via the open, token-less endpoint.
+
+    Sent without an Authorization header so it never bootstraps the default user's
+    token; token-based resolution then treats ``name`` as a known user's token.
+    """
+    await client.post("/v2/users", json={"name": name})
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _seed_users(wired):
+    """Pre-create the users whose tokens the tests present as bearer credentials.
+
+    Under the decoupled model an unknown present token is bootstrap-or-reject, so
+    ``alice``/``bob`` must exist as real users before their tokens resolve. Created
+    token-less, leaving the default user unclaimed for the bootstrap tests.
+    """
+    client, _ = wired
+    for name in ("alice", "bob"):
+        await _create_user(client, name)
+    yield
+
+
 async def _push(client, name, token):
+    await _create_user(client, token)
     await client.post(
         "/v2/acts",
         json={"name": name, "versions": [{"versionNumber": "0.0", "buildTag": "latest"}]},
@@ -102,9 +130,10 @@ async def _write(client, storage_type, storage_id, token):
     )
 
 
-# -- Identity, provisioning, default user (criteria 1-4) ------------------
+# -- Decoupled identity, bootstrap, reject (criteria 1-13) ----------------
 async def test_token_selects_user_and_users_me_reflects_it(wired):
     client, _ = wired
+    # alice/bob are real users (seeded); their tokens select them.
     alice = (await client.get("/v2/users/me", headers=auth("alice"))).json()["data"]
     bob = (await client.get("/v2/users/me", headers=auth("bob"))).json()["data"]
     assert alice["username"] == "alice"
@@ -113,15 +142,31 @@ async def test_token_selects_user_and_users_me_reflects_it(wired):
     assert alice["username"] != "local-user"
 
 
-async def test_first_use_auto_provisions_and_identity_persists(wired):
+async def test_username_and_token_are_decoupled(wired):
+    # A console-created user has username == token; the default user, once
+    # bootstrapped, has a token unequal to its username. The two identities are
+    # independent -- neither username is derived from the other's token.
     client, _ = wired
-    # A never-before-seen token works on first request.
-    await _push(client, "sample-actor", "fresh")
-    # A later request with the same token resolves to the same user + sees the object.
-    me = (await client.get("/v2/users/me", headers=auth("fresh"))).json()["data"]
-    assert me["username"] == "fresh"
-    listing = (await client.get("/v2/users/me/actors", headers=auth("fresh"))).json()["data"]
-    assert [a["name"] for a in listing["items"]] == ["sample-actor"]
+    await _create_user(client, "n1")
+    await client.get("/v2/users/me", headers=auth("boot-xyz"))  # bootstrap local-user
+    users = {u["username"]: u["token"] for u in (await client.get("/v2/users")).json()["data"]["items"]}
+    assert users["n1"] == "n1"
+    assert users["local-user"] == "boot-xyz"
+    assert users["local-user"] != "local-user"  # token != username for the default user
+    # Each token resolves to its own username, not a derivation of the other.
+    assert (await client.get("/v2/users/me", headers=auth("n1"))).json()["data"]["username"] == "n1"
+    assert (await client.get("/v2/users/me", headers=auth("boot-xyz"))).json()["data"]["username"] == "local-user"
+
+
+async def test_known_token_resolves_consistently(wired):
+    client, _ = wired
+    await _push(client, "sample-actor", "kt")
+    # Repeated requests with the same known token resolve to the same user + object.
+    for _ in range(2):
+        me = (await client.get("/v2/users/me", headers=auth("kt"))).json()["data"]
+        assert me["username"] == "kt"
+        listing = (await client.get("/v2/users/me/actors", headers=auth("kt"))).json()["data"]
+        assert [a["name"] for a in listing["items"]] == ["sample-actor"]
 
 
 async def test_no_token_is_default_local_user(wired):
@@ -132,11 +177,266 @@ async def test_no_token_is_default_local_user(wired):
     assert actor["id"] == "local-user~noauth"
 
 
-async def test_arbitrary_unknown_token_is_accepted_not_rejected(wired):
+async def test_bootstrap_first_token_binds_default_and_persists(wired):
     client, _ = wired
-    resp = await client.get("/v2/users/me", headers=auth("never-seen-9f2c"))
-    assert resp.status_code == 200  # unknown != rejected; it is simply a new user
-    assert resp.json()["data"]["username"] == "never-seen-9f2c"
+    # The first present token acts as the default user (not a new user, not the token).
+    me = (await client.get("/v2/users/me", headers=auth("first-boot-tok"))).json()["data"]
+    assert me["username"] == "local-user"
+    actor = (await client.post("/v2/acts", json={"name": "boot"}, headers=auth("first-boot-tok"))).json()["data"]
+    assert actor["id"] == "local-user~boot"
+    assert actor["userId"] == "local-user"
+    # A subsequent no-token request still resolves to the same default user + sees it.
+    listing = (await client.get("/v2/users/me/actors")).json()["data"]
+    assert "local-user~boot" in [a["id"] for a in listing["items"]]
+
+
+async def test_unknown_token_rejected_after_claim(wired):
+    client, _ = wired
+    # Claim the default user's credential (bootstrap).
+    claimed = await client.get("/v2/users/me", headers=auth("claim-tok"))
+    assert claimed.status_code == 200 and claimed.json()["data"]["username"] == "local-user"
+    # A different, never-seen token is now rejected with 401 + the Apify envelope.
+    rejected = await client.get("/v2/users/me", headers=auth("intruder-xyz"))
+    assert rejected.status_code == 401
+    assert rejected.json()["error"]["type"] == "invalid-token"
+    # No side effect: a create attempt is also rejected, and nothing was provisioned.
+    created = await client.post("/v2/acts", json={"name": "sneaky"}, headers=auth("intruder-xyz"))
+    assert created.status_code == 401
+    users = (await client.get("/v2/users")).json()["data"]["items"]
+    assert all(u["username"] != "intruder-xyz" for u in users)
+    assert all(u["token"] != "intruder-xyz" for u in users)
+    my_actors = (await client.get("/v2/users/me/actors")).json()["data"]["items"]
+    assert all(a["name"] != "sneaky" for a in my_actors)
+
+
+async def test_absent_header_is_never_rejected(wired):
+    client, _ = wired
+    # Even after a token is claimed and another rejected, a bare request succeeds.
+    await client.get("/v2/users/me", headers=auth("claimer-tok"))
+    assert (await client.get("/v2/users/me", headers=auth("stranger-tok"))).status_code == 401
+    me = await client.get("/v2/users/me")
+    assert me.status_code == 200
+    assert me.json()["data"]["username"] == "local-user"
+
+
+async def test_create_user_token_equals_name(wired):
+    client, _ = wired
+    created = await client.post("/v2/users", json={"name": "charlie"})
+    assert created.status_code == 201
+    body = created.json()["data"]
+    assert body["username"] == "charlie" and body["token"] == "charlie"
+    # The name works as a bearer token (token == name for console-created users).
+    me = (await client.get("/v2/users/me", headers=auth("charlie"))).json()["data"]
+    assert me["username"] == "charlie"
+    # token == name does NOT apply to the default user's bootstrap credential.
+    await client.get("/v2/users/me", headers=auth("some-bootstrap-token"))
+    users = {u["username"]: u["token"] for u in (await client.get("/v2/users")).json()["data"]["items"]}
+    assert users["local-user"] == "some-bootstrap-token" != "local-user"
+
+
+async def test_duplicate_user_name_conflicts(wired):
+    client, _ = wired
+    assert (await client.post("/v2/users", json={"name": "dupe"})).status_code == 201
+    second = await client.post("/v2/users", json={"name": "dupe"})
+    assert second.status_code == 409
+    assert second.json()["error"]["type"] == "resource-conflict"
+    users = (await client.get("/v2/users")).json()["data"]["items"]
+    assert sum(1 for u in users if u["username"] == "dupe") == 1
+
+
+async def test_concurrent_bootstrap_binds_exactly_one_winner(wired):
+    # Two concurrent first-tokens race for the bootstrap slot. Exactly one may win
+    # the compare-and-swap; the loser must NOT be told it bootstrapped and then be
+    # rejected later. Regression for the non-atomic get->check->set bind, which
+    # could report True to both callers while only one token actually persisted.
+    client, service = wired
+    results = await asyncio.gather(
+        service.bind_default_token("race-A"),
+        service.bind_default_token("race-B"),
+    )
+    assert sum(1 for r in results if r) == 1  # exactly one caller won the CAS
+    winner = (await service.get_user("local-user")).token
+    assert winner in ("race-A", "race-B")
+    loser = "race-B" if winner == "race-A" else "race-A"
+    # The winner's token consistently resolves to the default user on a later request.
+    me = await client.get("/v2/users/me", headers=auth(winner))
+    assert me.status_code == 200 and me.json()["data"]["username"] == "local-user"
+    # The loser's token is rejected (401) on a later request — never a "successful"
+    # bootstrap that is later 401'd.
+    rejected = await client.get("/v2/users/me", headers=auth(loser))
+    assert rejected.status_code == 401
+    assert rejected.json()["error"]["type"] == "invalid-token"
+
+
+async def test_higher_concurrency_bootstrap_binds_exactly_one_winner(wired):
+    # Beyond the 2-way race: 8 concurrent first-tokens contend for the single
+    # bootstrap slot on a fresh DB. Exactly one wins the CAS, NONE raises (no
+    # "database is locked" OperationalError propagating as a 500), the winner's
+    # token later resolves to the default user, and every loser is rejected 401.
+    # Deterministic and fast (one fresh DB, tiny UPDATEs serialized by the engine
+    # busy timeout).
+    client, service = wired
+    tokens = [f"race-{i}" for i in range(8)]
+    results = await asyncio.gather(
+        *(service.bind_default_token(t) for t in tokens),
+        return_exceptions=True,
+    )
+    assert not any(isinstance(r, BaseException) for r in results)  # no 500/exception
+    assert sum(1 for r in results if r is True) == 1  # exactly one caller won the CAS
+    winner = (await service.get_user("local-user")).token
+    assert winner in tokens
+    me = await client.get("/v2/users/me", headers=auth(winner))
+    assert me.status_code == 200 and me.json()["data"]["username"] == "local-user"
+    for loser in (t for t in tokens if t != winner):
+        rejected = await client.get("/v2/users/me", headers=auth(loser))
+        assert rejected.status_code == 401
+        assert rejected.json()["error"]["type"] == "invalid-token"
+
+
+async def test_create_user_rejects_non_string_name_no_500(wired):
+    # A non-string ``name`` (int, null, list, dict, bool) must be rejected 400
+    # invalid-request via the isinstance guard -- never an unhandled TypeError /
+    # bare 500 -- and must create no user.
+    client, _ = wired
+    before = {u["username"] for u in (await client.get("/v2/users")).json()["data"]["items"]}
+    for bad in (123, None, ["x"], {"k": "v"}, True):
+        resp = await client.post("/v2/users", json={"name": bad})
+        assert resp.status_code == 400, bad
+        assert resp.json()["error"]["type"] == "invalid-request"
+    after = {u["username"] for u in (await client.get("/v2/users")).json()["data"]["items"]}
+    assert before == after  # no user created by any rejected request
+
+
+async def test_create_user_rejects_all_punctuation_names(wired):
+    # A "safe" name must contain at least one alphanumeric char; all-punctuation
+    # names (``.``, ``..``, ``---``) are rejected 400 while a normal name works.
+    client, _ = wired
+    for bad in (".", "..", "---", "_", "._-"):
+        resp = await client.post("/v2/users", json={"name": bad})
+        assert resp.status_code == 400, bad
+        assert resp.json()["error"]["type"] == "invalid-request"
+    users = {u["username"] for u in (await client.get("/v2/users")).json()["data"]["items"]}
+    assert not ({".", "..", "---", "_", "._-"} & users)
+    ok = await client.post("/v2/users", json={"name": "normal-name.1"})
+    assert ok.status_code == 201 and ok.json()["data"]["username"] == "normal-name.1"
+
+
+async def test_create_user_rejects_unsafe_names_and_keeps_id_scheme(wired):
+    # A ``~`` or ``/`` in a username would break the ``username~name`` id scheme and
+    # storage-id namespacing (self-locking the user out of storage auto-create), so
+    # such names are rejected 400 and no user is created.
+    client, _ = wired
+    for bad in ("carol~evil", "carol/evil", ""):
+        resp = await client.post("/v2/users", json={"name": bad})
+        assert resp.status_code == 400, bad
+        assert resp.json()["error"]["type"] == "invalid-request"
+    users = {u["username"] for u in (await client.get("/v2/users")).json()["data"]["items"]}
+    assert "carol~evil" not in users and "carol/evil" not in users
+    # A valid name works and can drive the full per-user storage flow.
+    ok = await client.post("/v2/users", json={"name": "carol"})
+    assert ok.status_code == 201
+    put = await client.put(
+        f"/v2/{KV}/carol~default/records/foo",
+        content=json.dumps({"hi": 1}),
+        headers={**auth("carol"), "content-type": "application/json"},
+    )
+    assert put.status_code == 200
+    got = await client.get(f"/v2/{KV}/carol~default/records/foo", headers=auth("carol"))
+    assert got.status_code == 200 and got.json() == {"hi": 1}
+
+
+async def test_create_user_name_colliding_with_bound_token_reports_accurately(wired):
+    # A create-user name may collide with an existing user's unique *token* rather
+    # than a username (here the default user's bootstrap token). It is still a 409
+    # resource-conflict, but the message must not claim a *user named X* exists.
+    client, _ = wired
+    boot = await client.get("/v2/users/me", headers=auth("shared"))
+    assert boot.status_code == 200 and boot.json()["data"]["username"] == "local-user"
+    resp = await client.post("/v2/users", json={"name": "shared"})
+    assert resp.status_code == 409
+    assert resp.json()["error"]["type"] == "resource-conflict"
+    message = resp.json()["error"]["message"]
+    assert "already exists" not in message  # no such *username* exists
+    assert "token" in message
+    # No corruption: no username "shared", and the default user keeps token "shared".
+    users = {u["username"]: u["token"] for u in (await client.get("/v2/users")).json()["data"]["items"]}
+    assert "shared" not in users
+    assert users["local-user"] == "shared"
+
+
+async def test_list_users_and_me_expose_tokens(wired):
+    client, _ = wired
+    await _create_user(client, "u1")
+    await _create_user(client, "u2")
+    users = {u["username"]: u for u in (await client.get("/v2/users")).json()["data"]["items"]}
+    assert users["u1"]["token"] == "u1"
+    assert users["u2"]["token"] == "u2"
+    assert "local-user" in users  # the default user is listed too
+    me = (await client.get("/v2/users/me", headers=auth("u1"))).json()["data"]
+    assert me["username"] == "u1" and me["id"] == "u1" and me["token"] == "u1"
+
+
+async def test_container_env_user_id_is_username(wired):
+    client, service = wired
+    _actor_id, _build, _run = await _provision(client, service, "alice")
+    env = service.driver.captured_envs[-1]
+    assert env["APIFY_USER_ID"] == "alice"
+
+
+# -- THE ANTI-LEAK GUARANTEE (criterion 4) --------------------------------
+# A secret-looking token presented as the FIRST-EVER token bootstraps the default
+# user; the token must appear in NONE of the durable/user-visible surfaces (Actor
+# id, serialized userId/username on actor/build/run, image tag, storage ids,
+# container env), while every identity field equals the default username.
+async def test_secret_token_never_leaks_into_ids_responses_or_env(wired):
+    client, service = wired
+    secret = "apify_api_SECRET123"
+    actor = (await client.post("/v2/acts", json={"name": "leaky"}, headers=auth(secret))).json()["data"]
+    await client.post(
+        f"/v2/actors/{actor['id']}/versions",
+        json={
+            "versionNumber": "0.0",
+            "sourceType": "SOURCE_FILES",
+            "sourceFiles": [{"name": "main.py", "format": "TEXT", "content": "print('hi')\n"}],
+        },
+        headers=auth(secret),
+    )
+    build = (
+        await client.post(f"/v2/acts/{actor['id']}/builds?version=0.0", headers=auth(secret))
+    ).json()["data"]
+    await service.wait_idle()
+    run = (
+        await client.post(
+            f"/v2/acts/{actor['id']}/runs",
+            content=json.dumps({"greeting": "hi"}),
+            headers={**auth(secret), "content-type": "application/json"},
+        )
+    ).json()["data"]
+    await service.wait_idle()
+    run = (await client.get(f"/v2/actor-runs/{run['id']}", headers=auth(secret))).json()["data"]
+    fetched_build = (await client.get(f"/v2/actor-builds/{build['id']}", headers=auth(secret))).json()["data"]
+
+    # Identity fields are the default username, never the token.
+    assert actor["id"] == "local-user~leaky"
+    for obj in (actor, fetched_build, run):
+        assert obj["userId"] == "local-user"
+        assert obj["username"] == "local-user"
+
+    build_row = await service.get_build(build["id"])
+    env = service.driver.captured_envs[-1]
+    assert env["APIFY_USER_ID"] == "local-user"
+
+    haystacks = [
+        actor["id"], actor["userId"], actor["username"],
+        fetched_build["id"], fetched_build["userId"], fetched_build["username"],
+        run["id"], run["userId"], run["username"], run["actId"],
+        build_row.image_tag,
+        run["defaultKeyValueStoreId"], run["defaultDatasetId"], run["defaultRequestQueueId"],
+        *env.keys(), *[str(v) for v in env.values()],
+    ]
+    blob = "\n".join(str(h) for h in haystacks)
+    assert secret not in blob, "raw token leaked into an id/response/tag/storage-id/env"
+    assert "SECRET123" not in blob, "token fragment leaked"
 
 
 # -- Per-user ownership (criteria 5-8) ------------------------------------
@@ -613,20 +913,36 @@ async def test_create_storage_conflict_on_foreign_owned_id(wired):
     assert "bob" not in resp.text
 
 
-# -- Console (criteria 22-23) ---------------------------------------------
+# -- Console (Users section + switch dropdown) ----------------------------
 async def test_console_has_login_and_per_user_tabs(wired):
     client, _ = wired
     index = (await client.get("/")).text
     app_js = (await client.get("/console/app.js")).text
     # No longer the fixed single-user text.
     assert "(single local user)" not in index
-    # Login affordance + current-user display.
-    assert 'id="login-btn"' in index
+    # Switch-user control is now a dropdown of existing users; current-user display kept.
+    assert 'id="user-select"' in index
     assert 'id="current-user"' in index
-    # Three per-object-type top-level tabs.
-    for tab in ('id="tab-actors"', 'id="tab-builds"', 'id="tab-runs"'):
+    assert "prompt(" not in app_js or "Enter your API token" not in app_js  # no free-text token prompt
+    # Four top-level tabs, including the new Users tab.
+    for tab in ('id="tab-actors"', 'id="tab-builds"', 'id="tab-runs"', 'id="tab-users"'):
         assert tab in index
     # Backed by the per-user aggregate endpoints and the token is sent.
     for endpoint in ("/v2/users/me/actors", "/v2/users/me/builds", "/v2/users/me/runs"):
         assert endpoint in app_js
     assert "Authorization" in app_js and "Bearer" in app_js
+
+
+async def test_console_users_section_wires_list_reveal_switch_create(wired):
+    client, _ = wired
+    app_js = (await client.get("/console/app.js")).text
+    # Users view + header dropdown are populated from GET /v2/users.
+    assert "/v2/users" in app_js
+    # Create-by-name posts to the users endpoint; switch sets the target's token.
+    assert "createUser" in app_js and "switchTo" in app_js and "setToken" in app_js
+    # Reveal/switch/create are wired with addEventListener, never inline handlers.
+    assert "addEventListener" in app_js
+    for handler in ("onclick=", "onload=", "onerror="):
+        assert handler not in app_js.lower()
+    # Every fetch still routes through the shared authenticated helper.
+    assert "async function api(" in app_js

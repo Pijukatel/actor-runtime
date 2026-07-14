@@ -52,13 +52,95 @@ async function refreshUser() {
   if (el) el.textContent = (me && me.username) || "local-user";
 }
 
-function login() {
-  const current = getToken();
-  const next = prompt("Enter your API token (any value; blank = default local user):", current);
-  if (next === null) return; // cancelled
-  setToken(next.trim());
+// Switching users is client-side: pick an existing user's stored token and send
+// it as the bearer on every subsequent request. A null token (the unclaimed
+// default user) clears the stored token, i.e. acts token-less as local-user.
+function switchTo(token) {
+  setToken(token == null ? "" : token);
   refreshUser();
-  loadList();
+  refreshUserSelect();
+  if (activeTab === "users") loadUsers();
+  else loadList();
+}
+
+// Populate the header's "Switch user" dropdown from the existing users only
+// (never free text). Refetched each time so a just-created user is selectable.
+async function refreshUserSelect() {
+  const sel = $("#user-select");
+  if (!sel) return;
+  const users = (unwrap(await api("/v2/users")).items) || [];
+  const current = getToken();
+  sel.innerHTML = "";
+  const placeholder = mk("option", { text: "Switch user…" });
+  placeholder.value = "";
+  sel.appendChild(placeholder);
+  for (const u of users) {
+    const opt = mk("option", { text: u.username });
+    opt.value = u.token == null ? "" : u.token;
+    if (opt.value === current) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+async function createUser(name) {
+  const trimmed = (name || "").trim();
+  const errEl = $("#user-create-error");
+  if (errEl) errEl.textContent = "";
+  if (!trimmed) return;
+  const res = await api("/v2/users", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: trimmed }),
+  });
+  if (res && res.error) {
+    if (errEl) errEl.textContent = res.error.message || "Could not create user.";
+    return;
+  }
+  refreshUserSelect();
+  loadUsers();
+}
+
+// Users view: current user highlighted, every user listed with a masked token
+// that reveals on click, click-a-username to switch, and a create-by-name form.
+async function loadUsers() {
+  const detail = $("#detail");
+  if (!detail) return;
+  const list = $("#actor-list");
+  if (list) list.innerHTML = "";
+  const me = unwrap(await api("/v2/users/me"));
+  const users = (unwrap(await api("/v2/users")).items) || [];
+  detail.innerHTML = "";
+
+  const form = mk("div", { class: "row" });
+  const input = mk("input");
+  input.id = "new-user-name";
+  input.placeholder = "New user name";
+  const createBtn = mk("button", { text: "Create user", onClick: () => createUser(input.value) });
+  const err = mk("span", { class: "muted" });
+  err.id = "user-create-error";
+  form.append(input, createBtn, err);
+
+  const rows = users.map((u) => {
+    const isCurrent = me && u.username === me.username;
+    const nameCell = mk("td", {
+      class: "clickable",
+      text: u.username,
+      onClick: () => switchTo(u.token),
+      style: isCurrent ? { fontWeight: "700" } : {},
+    });
+    const tokenCell = mk("td", { class: "clickable", text: "••••••••" });
+    tokenCell.addEventListener("click", () => {
+      tokenCell.textContent = u.token == null ? "(unclaimed)" : u.token;
+    });
+    const marker = mk("td", { class: "muted", text: isCurrent ? "current" : "" });
+    return [nameCell, tokenCell, marker];
+  });
+
+  detail.append(
+    mk("h2", { text: "Users" }),
+    form,
+    tableEl(["User", "Token (click to reveal)", ""], rows),
+  );
 }
 
 // Element builder: text is set via textContent (safe), click via addEventListener.
@@ -112,6 +194,7 @@ function wrapTd(node) {
 async function loadList() {
   const list = $("#actor-list");
   if (!list) return;
+  if (activeTab === "users") return; // the Users view renders into #detail
   if (activeTab === "actors") {
     const items = (unwrap(await api("/v2/users/me/actors")).items) || [];
     list.innerHTML = "";
@@ -150,7 +233,8 @@ function selectTab(tab) {
   document.querySelectorAll("#top-tabs span").forEach((s) => s.classList.remove("active"));
   const el = $(`#tab-${tab}`);
   if (el) el.classList.add("active");
-  loadList();
+  if (tab === "users") loadUsers();
+  else loadList();
 }
 
 window.openActor = async function (actorId) {
@@ -311,11 +395,14 @@ function emptyOr(table, count) {
 
 // Wire the header controls and top-level tabs with addEventListener (no inline
 // handlers), then start the per-user view.
-$("#login-btn").addEventListener("click", login);
+const _userSelect = $("#user-select");
+if (_userSelect) _userSelect.addEventListener("change", () => switchTo(_userSelect.value));
 $("#tab-actors").addEventListener("click", () => selectTab("actors"));
 $("#tab-builds").addEventListener("click", () => selectTab("builds"));
 $("#tab-runs").addEventListener("click", () => selectTab("runs"));
+$("#tab-users").addEventListener("click", () => selectTab("users"));
 
 refreshUser();
+refreshUserSelect();
 loadList();
 setInterval(loadList, 4000);

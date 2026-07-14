@@ -15,8 +15,11 @@ user_router = APIRouter()
 
 @user_router.get("/v2/users/me")
 async def get_me(request: Request) -> object:
+    svc = get_service(request)
     user = await resolve_user(request)
-    return data({"id": user, "username": user})
+    row = await svc.get_user(user)
+    token = row.token if row is not None else None
+    return data({"id": user, "username": user, "token": token})
 
 
 @user_router.get("/v2/users/me/actors")

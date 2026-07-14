@@ -22,9 +22,29 @@ for the run. No CLI patch is needed.
 Automated coverage (runnable Docker-free via the in-process `wired` fixture, with
 the acting user set per request through `Authorization: Bearer <token>`) MUST
 exist for:
- - **Identity & provisioning** — a token selects a user; a never-before-seen token
-   is auto-provisioned on first use (no signup, no password); a request with no
-   token maps to the default `local-user` (existing single-user behaviour preserved).
+ - **Decoupled identity & credential** — a user is `{ username, token }`: the
+   username is the public identity and the token is a private credential that only
+   selects the acting user and is never derived into a username. Coverage MUST
+   assert:
+   - a token selects a user, and a user's username and token are independent (not
+     required to be equal);
+   - **no token** maps to the default `local-user` and is **never rejected** (at any
+     point in the instance's lifecycle);
+   - the **first token ever presented bootstraps** the default user (`local-user`)
+     and later persists, while a no-token request still resolves to `local-user`;
+   - an **unknown token** (once any token is claimed) is **rejected with `401
+     invalid-token`** in the Apify envelope, with no user/Actor created as a side
+     effect.
+ - **User management** — creating a user by name yields `username == token == name`;
+   a duplicate name is a `409` conflict; listing users returns every user with its
+   token; the current-user endpoint returns the acting user's username and token.
+ - **THE ANTI-LEAK GUARANTEE (mandatory, standing regression check)** — presenting
+   an arbitrary secret-looking token as the first-ever token and pushing → building
+   → running an Actor MUST leave the raw token substring (and any fragment of it)
+   absent from **every** durable/user-visible surface: the Actor id, the serialized
+   `userId`/`username` on the Actor, its build and its run, the Docker image tag,
+   every run/Actor storage id, and the container environment dict (all keys and
+   values); each identity field MUST equal the (bootstrapped) default username.
  - **Per-user ownership** — Actors, Builds and Runs are owned by the acting user
    and serialized as such; two users may hold identically named Actors without
    collision.

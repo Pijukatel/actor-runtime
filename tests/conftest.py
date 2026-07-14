@@ -23,6 +23,11 @@ class StubDriver:
     exactly as the real containerised Actor would.
     """
 
+    def __init__(self) -> None:
+        # Records the environment dict passed to each ``run`` so tests can assert
+        # what does (and does not) reach the Actor container.
+        self.captured_envs: list[dict] = []
+
     def build(self, build_dir: Path, image_tag: str) -> BuildResult:
         return BuildResult(True, f"stub: built {image_tag}\n")
 
@@ -36,6 +41,7 @@ class StubDriver:
         self, image_tag, host_storage_dir, environment, timeout_secs,
         container_name=None, mem_limit_mb=None,
     ) -> RunResult:
+        self.captured_envs.append(dict(environment))
         storage = Path(host_storage_dir)
         kv = storage / "key_value_stores" / "default"
         input_path = kv / "INPUT.json"

@@ -15,8 +15,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from .config import DEFAULT_USERNAME, Settings
 from .db import AccessRight, Actor, Build, Database, Run, Storage as StorageRow, User, Version, utcnow
@@ -68,16 +68,83 @@ class Service:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
 
     # -- users -------------------------------------------------------------
-    async def ensure_user(self, username: str) -> None:
-        """Auto-provision ``username`` on first sight (idempotent, no password)."""
+    async def ensure_default_user(self) -> None:
+        """Ensure the default user exists (unclaimed, token is null; idempotent)."""
         async with self.db.session() as s:
-            if await s.get(User, username) is not None:
+            if await s.get(User, DEFAULT_USERNAME) is not None:
                 return
-            s.add(User(username=username))
+            s.add(User(username=DEFAULT_USERNAME))
             try:
                 await s.commit()
             except IntegrityError:
                 await s.rollback()
+
+    async def user_for_token(self, token: str) -> str | None:
+        """Return the username whose stored credential equals ``token``, else None."""
+        async with self.db.session() as s:
+            row = (
+                await s.execute(select(User).where(User.token == token))
+            ).scalar_one_or_none()
+            return row.username if row is not None else None
+
+    async def bind_default_token(self, token: str) -> bool:
+        """Bootstrap: atomically claim the default user's credential with ``token``.
+
+        Performed as a single conditional UPDATE
+        (``... WHERE username = default AND token IS NULL``), i.e. a compare-and-swap:
+        the one caller whose statement affects a row wins the bootstrap (returns
+        True); any concurrent first-token caller sees zero rows affected and must
+        NOT treat itself as bootstrapped (returns False), so only the winner ever
+        resolves to the default user and every loser follows the normal path (an
+        unknown token against a now-claimed default user is rejected). Safe under
+        the existing commit/rollback pattern.
+        """
+        await self.ensure_default_user()
+        async with self.db.session() as s:
+            try:
+                result = await s.execute(
+                    update(User)
+                    .where(User.username == DEFAULT_USERNAME, User.token.is_(None))
+                    .values(token=token)
+                )
+                await s.commit()
+            except (IntegrityError, OperationalError):
+                # IntegrityError: the token became another user's credential
+                # between the check and the bind. OperationalError: a residual
+                # SQLite lock survived the busy timeout under heavy concurrency.
+                # Either way this caller did not win the bind -> treat as a loser
+                # (return False) so it 401s and can retry, never a bare 500.
+                await s.rollback()
+                return False
+            return result.rowcount == 1
+
+    async def get_user(self, username: str) -> User | None:
+        async with self.db.session() as s:
+            return await s.get(User, username)
+
+    async def list_users(self) -> list[User]:
+        async with self.db.session() as s:
+            return list((await s.execute(select(User).order_by(User.created_at))).scalars())
+
+    async def create_user(self, name: str) -> User | None:
+        """Create a user whose username and token both equal ``name``.
+
+        Returns the created user, or None if the username already exists (the
+        caller renders a 409). The token-equals-name convenience applies only to
+        users created here, never to the default user's bootstrap credential.
+        """
+        async with self.db.session() as s:
+            if await s.get(User, name) is not None:
+                return None
+            user = User(username=name, token=name)
+            s.add(user)
+            try:
+                await s.commit()
+            except IntegrityError:
+                await s.rollback()
+                return None
+            await s.refresh(user)
+            return user
 
     # -- actors / versions -------------------------------------------------
     async def get_actor(self, actor_id: str, username: str | None = None) -> Actor | None:

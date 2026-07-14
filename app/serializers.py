@@ -3,7 +3,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from .db import Actor, Build, Run, Version
+from .db import Actor, Build, Run, User, Version
+
+
+def user_dict(u: User) -> dict[str, Any]:
+    return {
+        "id": u.username,
+        "username": u.username,
+        "token": u.token,
+        "createdAt": u.created_at,
+    }
 
 
 def version_dict(v: Version) -> dict[str, Any]:

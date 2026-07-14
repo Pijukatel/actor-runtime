@@ -41,7 +41,9 @@
     <span>Actor Runtime Console</span>
     <span class="spacer"></span>
     <span class="user">Acting as <strong id="current-user">…</strong></span>
-    <button id="login-btn" type="button">Switch user</button>
+    <label class="user" for="user-select">Switch user
+      <select id="user-select"></select>
+    </label>
   </header>
   <main>
     <div id="actors" class="panel">
@@ -49,6 +51,7 @@
         <span id="tab-actors" class="active">Actors</span>
         <span id="tab-builds">Builds</span>
         <span id="tab-runs">Runs</span>
+        <span id="tab-users">Users</span>
       </div>
       <ul id="actor-list"></ul>
     </div>

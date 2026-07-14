@@ -20,6 +20,7 @@ class User(Base):
     __tablename__ = "users"
 
     username: Mapped[str] = mapped_column(String, primary_key=True)
+    token: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
@@ -104,7 +105,10 @@ class Database:
     """Owns the async engine and session factory for metadata."""
 
     def __init__(self, url: str) -> None:
-        self._engine = create_async_engine(url, future=True)
+        # Wait (up to ``timeout`` seconds) for a lock instead of failing
+        # immediately, so the bootstrap compare-and-swap serializes cleanly under
+        # concurrent first-token requests rather than raising "database is locked".
+        self._engine = create_async_engine(url, future=True, connect_args={"timeout": 30})
         self._session_factory = async_sessionmaker(self._engine, expire_on_commit=False)
 
     async def create_all(self) -> None:

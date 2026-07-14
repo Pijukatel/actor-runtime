@@ -45,6 +45,12 @@ def data(payload: Any, status_code: int = 200) -> JSONResponse:
     return JSONResponse({"data": payload}, status_code=status_code)
 
 
+def bad_request(message: str = "The request is not valid.") -> JSONResponse:
+    return JSONResponse(
+        {"error": {"type": "invalid-request", "message": message}}, status_code=400
+    )
+
+
 def not_found(message: str = "We did not find the resource you were looking for.") -> JSONResponse:
     return JSONResponse(
         {"error": {"type": "record-not-found", "message": message}}, status_code=404
@@ -60,4 +66,10 @@ def forbidden(message: str = "You do not have permission to perform this action.
 def conflict(message: str = "A resource with this id already exists.") -> JSONResponse:
     return JSONResponse(
         {"error": {"type": "resource-conflict", "message": message}}, status_code=409
+    )
+
+
+def unauthorized(message: str = "The provided API token is not valid.") -> JSONResponse:
+    return JSONResponse(
+        {"error": {"type": "invalid-token", "message": message}}, status_code=401
     )

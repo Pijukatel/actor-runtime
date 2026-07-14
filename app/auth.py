@@ -1,21 +1,20 @@
 """Resolve the acting user from the request's ``Authorization: Bearer`` token.
 
-There is no real authentication. The token string is sanitized into a username
-and auto-provisioned into the ``users`` table the first time it is seen. An
-absent or empty token resolves to the default local user, so every code path
-that predates auth (and the unit suite's token-less requests) keeps working.
+There is no real authentication. Identity (a username) and credential (a token)
+are decoupled: the token is only ever used to look up which stored user is acting
+and is never turned into a username. An absent token resolves to the default local
+user; the first token ever presented binds ("bootstraps") the default user's
+credential; a later token that matches no stored user is rejected.
 """
 from __future__ import annotations
-
-import re
 
 from fastapi import Request
 
 from .config import DEFAULT_USERNAME
 
 
-def _sanitize_username(token: str) -> str:
-    return re.sub(r"[^a-z0-9_.-]+", "-", token.lower()).strip("-") or DEFAULT_USERNAME
+class InvalidTokenError(Exception):
+    """Raised when a present bearer token matches no user after bootstrap."""
 
 
 def token_from_request(request: Request) -> str:
@@ -29,8 +28,20 @@ def token_from_request(request: Request) -> str:
 
 
 async def resolve_user(request: Request) -> str:
-    """Return the acting username, provisioning it on first sight."""
+    """Return the acting username for the request's credential.
+
+    No token -> the default user. A token matching a stored user -> that user. A
+    token matching no user -> bootstrap the (still unclaimed) default user with
+    it, else reject.
+    """
     token = token_from_request(request)
-    username = _sanitize_username(token) if token else DEFAULT_USERNAME
-    await request.app.state.service.ensure_user(username)
-    return username
+    service = request.app.state.service
+    if not token:
+        await service.ensure_default_user()
+        return DEFAULT_USERNAME
+    username = await service.user_for_token(token)
+    if username is not None:
+        return username
+    if await service.bind_default_token(token):
+        return DEFAULT_USERNAME
+    raise InvalidTokenError()
