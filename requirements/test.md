@@ -66,6 +66,32 @@ exist for:
      one storage, not the run/build/Actor or the owner's other storages);
    - revoking returns the storage to 404 for that user, contents unchanged.
 
+## Mandatory Actor-source build tests (standing regression checks)
+
+Automated, Docker-free coverage (via the in-process `wired` fixture, with the
+StubDriver capturing the materialized build directory before cleanup) MUST exist
+and keep passing for the runtime's two source-upload shapes and the no-stale-source
+guarantee:
+ - **Inline (`SOURCE_FILES`) build** — an inline push builds the exact pushed files
+   (both TEXT and BASE64) at their given paths, reaching `SUCCEEDED`.
+ - **Tarball (`TARBALL`) build** — a zip PUT to a key-value store record and
+   referenced by a version's `tarballUrl` builds the **unzipped** contents of that
+   zip (right files, right paths, right bytes), reaching `SUCCEEDED`. The build must
+   read the record using the store id/key embedded in the pushed `tarballUrl`
+   verbatim (not a reconstructed store name).
+ - **No stale source across a shape switch** — re-pushing the same Actor/version in
+   the other mode (inline→tarball and tarball→inline) builds only the newest push's
+   source; the previous shape's files never survive, and the serialized version
+   reflects only the pushed shape (the other shape's fields cleared) independent of
+   whether a build was triggered.
+ - **Zip traversal safety** — a tarball whose zip contains an absolute-path or
+   `..`-escaping entry reaches terminal `FAILED` and writes nothing outside the
+   build directory (mirroring the inline `sourceFiles[].name` traversal guard).
+ - **Clean failure on missing/corrupt tarball** — a `TARBALL` version whose record
+   is missing, or whose bytes are not a valid archive, reaches terminal `FAILED`
+   with a clear log line and a set `finishedAt` (never stuck RUNNING, never a silent
+   empty/partial `SUCCEEDED`).
+
 ## Mandatory console/API behaviour tests (standing regression checks)
 
 Automated, Docker-free coverage (via the in-process `wired` / `wired_streaming`

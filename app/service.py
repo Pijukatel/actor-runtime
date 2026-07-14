@@ -16,13 +16,14 @@ import threading
 import uuid
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import unquote, urlsplit
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from .config import DEFAULT_USERNAME, Settings
 from .db import AccessRight, Actor, Build, Database, Run, Storage as StorageRow, User, Version, utcnow
-from .driver import Driver, write_source_files
+from .driver import Driver, extract_zip, write_source_files
 from .storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,20 @@ def _sanitize(text: str) -> str:
 
 def short_id() -> str:
     return uuid.uuid4().hex[:17]
+
+
+def _parse_tarball_url(url: str) -> tuple[str, str]:
+    """Extract ``(store_id, key)`` from a tarball URL's path.
+
+    The path segment ``/key-value-stores/{store_id}/records/{key}`` is parsed
+    verbatim; scheme, host and query string are ignored. The store id is used as
+    given (the id the CLI was handed at store creation), never recomputed.
+    """
+    path = urlsplit(url).path
+    match = re.search(r"/key-value-stores/([^/]+)/records/(.+)$", path)
+    if match is None:
+        raise ValueError(f"Cannot parse store id and record key from tarballUrl: {url!r}")
+    return unquote(match.group(1)), unquote(match.group(2))
 
 
 class Service:
@@ -224,9 +239,17 @@ class Service:
             version = Version(actor_id=actor_id, version_number=vn)
             s.add(version)
         version.build_tag = payload.get("buildTag", version.build_tag or "latest")
-        version.source_type = payload.get("sourceType", version.source_type or "SOURCE_FILES")
-        if "sourceFiles" in payload:
-            version.source_files = payload["sourceFiles"]
+        source_type = payload.get("sourceType", version.source_type or "SOURCE_FILES")
+        version.source_type = source_type
+        # Replace source wholesale on every create/update so a re-push in the other
+        # mode can never leave the previous shape's source behind: a TARBALL push
+        # clears the inline files, an inline push clears the tarball pointer.
+        if source_type == "TARBALL":
+            version.tarball_url = payload.get("tarballUrl")
+            version.source_files = []
+        else:
+            version.source_files = payload.get("sourceFiles", [])
+            version.tarball_url = None
         return version
 
     async def upsert_version(self, actor_id: str, payload: dict) -> Version:
@@ -324,18 +347,49 @@ class Service:
         self._spawn(self._run_build(build.id))
         return build
 
+    async def _fetch_tarball_source(self, tarball_url: str | None) -> bytes:
+        """Read the pushed source zip's raw bytes from local key-value storage.
+
+        The store id and record key are parsed from the persisted ``tarball_url``
+        and read directly via ``self.storage.kv_record`` (no self-HTTP). A missing
+        record or a value that is not archive bytes raises, so the build worker's
+        exception handler marks the build FAILED with the error in the log.
+        """
+        if not tarball_url:
+            raise ValueError("TARBALL version has no tarballUrl to fetch source from.")
+        store_id, key = _parse_tarball_url(tarball_url)
+        record = await self.storage.kv_record(store_id, key)
+        if record is None:
+            raise ValueError(
+                f"Tarball source record not found (store {store_id!r}, key {key!r})."
+            )
+        value, _content_type = record
+        if not isinstance(value, (bytes, bytearray)):
+            raise ValueError(
+                f"Tarball source is not archive bytes (store {store_id!r}, key {key!r})."
+            )
+        return bytes(value)
+
     async def _run_build(self, build_id: str) -> None:
         build_dir = self.settings.builds_dir / build_id
         try:
             async with self.db.session() as s:
                 build = await s.get(Build, build_id)
                 version = await s.get(Version, (build.actor_id, build.version_number))
+                source_type = version.source_type if version else "SOURCE_FILES"
                 source_files = version.source_files if version else []
+                tarball_url = version.tarball_url if version else None
                 image_tag = build.image_tag
-            # Synchronous prep can raise (bad base64, disk full, illegal name);
-            # run it inside the guarded block so it transitions the build to
-            # FAILED instead of leaving it stuck RUNNING.
-            await asyncio.to_thread(write_source_files, source_files, build_dir)
+            # Materialize whichever source shape was pushed. Synchronous prep can
+            # raise (bad base64, illegal name, missing/corrupt tarball); run it
+            # inside the guarded block so it transitions the build to FAILED
+            # instead of leaving it stuck RUNNING. A TARBALL that resolves to no
+            # usable source raises here rather than building an empty tree.
+            if source_type == "TARBALL":
+                zip_bytes = await self._fetch_tarball_source(tarball_url)
+                await asyncio.to_thread(extract_zip, zip_bytes, build_dir)
+            else:
+                await asyncio.to_thread(write_source_files, source_files, build_dir)
             log_sink = self._make_log_sink(build_id)
             result = await asyncio.to_thread(self.driver.build, build_dir, image_tag, log_sink)
             async with self.db.session() as s:

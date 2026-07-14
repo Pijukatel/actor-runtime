@@ -26,12 +26,15 @@ def storage_dict(st: Storage) -> dict[str, Any]:
 
 
 def version_dict(v: Version) -> dict[str, Any]:
-    return {
+    out = {
         "versionNumber": v.version_number,
         "buildTag": v.build_tag,
         "sourceType": v.source_type,
         "sourceFiles": v.source_files,
     }
+    if v.tarball_url:
+        out["tarballUrl"] = v.tarball_url
+    return out
 
 
 def actor_dict(a: Actor, versions: list[Version], tagged_builds: dict[str, dict]) -> dict[str, Any]:

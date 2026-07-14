@@ -43,6 +43,7 @@ class Version(Base):
     build_tag: Mapped[str] = mapped_column(String, default="latest")
     source_type: Mapped[str] = mapped_column(String, default="SOURCE_FILES")
     source_files: Mapped[list] = mapped_column(JSON, default=list)
+    tarball_url: Mapped[str | None] = mapped_column(String, default=None, nullable=True)
 
 
 class Build(Base):

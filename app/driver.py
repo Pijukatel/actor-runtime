@@ -7,7 +7,11 @@ mounted socket using the Docker SDK.
 from __future__ import annotations
 
 import base64
+import io
+import shutil
+import stat
 import threading
+import zipfile
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -52,6 +56,42 @@ def write_source_files(source_files: list[dict], dest: Path) -> None:
             target.write_bytes(base64.b64decode(content))
         else:
             target.write_text(content)
+
+
+def extract_zip(zip_bytes: bytes, dest: Path) -> None:
+    """Unzip ``zip_bytes`` into ``dest`` with the same traversal safety as
+    ``write_source_files``.
+
+    Zip entry names are fully attacker-controlled (the archive is uploaded by
+    ``apify push``), so each name is validated to stay strictly inside ``dest``
+    BEFORE anything is written: absolute names and any ``..`` traversal resolving
+    outside the build directory are rejected. ``ZipFile.extractall`` is
+    deliberately not used (it is vulnerable to zip-slip). Symlink entries are
+    never materialised as links.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    dest_resolved = dest.resolve()
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        infos = zf.infolist()
+        for info in infos:
+            name = info.filename
+            if not name or name.endswith("/"):
+                continue
+            if Path(name).is_absolute():
+                raise SourceFileNameError(f"Illegal absolute zip entry name: {name!r}")
+            target = (dest / name).resolve()
+            if target != dest_resolved and dest_resolved not in target.parents:
+                raise SourceFileNameError(f"Zip entry name escapes build directory: {name!r}")
+        for info in infos:
+            name = info.filename
+            if not name or name.endswith("/"):
+                continue
+            if stat.S_ISLNK((info.external_attr >> 16) & 0xFFFF):
+                continue
+            target = (dest / name).resolve()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info) as src, open(target, "wb") as out:
+                shutil.copyfileobj(src, out)
 
 
 def resolve_dockerfile(build_dir: Path) -> str | None:

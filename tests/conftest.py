@@ -28,8 +28,18 @@ class StubDriver:
         # Records the environment dict passed to each ``run`` so tests can assert
         # what does (and does not) reach the Actor container.
         self.captured_envs: list[dict] = []
+        # Records the materialized build directory handed to the most recent
+        # ``build`` (before the service rmtree's it) so tests can assert exactly
+        # which source was unzipped/written. Always-on; existing tests ignore it.
+        self.captured_build_files: list[str] = []
+        self.captured_build_dir_contents: dict[str, bytes] = {}
 
     def build(self, build_dir: Path, image_tag: str, log_sink=None) -> BuildResult:
+        files = [p for p in build_dir.rglob("*") if p.is_file()]
+        self.captured_build_files = sorted(str(p.relative_to(build_dir)) for p in files)
+        self.captured_build_dir_contents = {
+            str(p.relative_to(build_dir)): p.read_bytes() for p in files
+        }
         return BuildResult(True, f"stub: built {image_tag}\n")
 
     def stop(self, container_name: str) -> None:  # no Docker in the stub

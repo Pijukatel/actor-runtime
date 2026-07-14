@@ -18,7 +18,8 @@
     - `GET|PUT /v2/acts/{actorId}` (get / update Actor)
     - `GET /v2/acts/{actorId}/versions/{versionNumber}`,
       `POST /v2/acts/{actorId}/versions`,
-      `PUT /v2/acts/{actorId}/versions/{versionNumber}` (upload source files)
+      `PUT /v2/acts/{actorId}/versions/{versionNumber}` (upload source; see
+      "Version source shapes" below)
     - `GET|POST /v2/acts/{actorId}/builds`, `GET /v2/actor-builds/{buildId}`
     - `GET /v2/logs/{buildId|runId}` (build / run log, one-shot full log)
     - `GET /v2/logs/{buildId|runId}/stream` (live-streamed log, see below)
@@ -43,6 +44,36 @@
     `DELETE /v2/{type}/{storageId}/access-rights/{grantee}` (revoke)
 - Only the endpoints exercised by the mandatory e2e flow are implemented in this
   first draft; full coverage of the `Actor Runtime API` tag is deferred.
+
+## Version source shapes
+
+- A version create/update (`POST`/`PUT .../versions[...]`) carries the Actor's
+  source in **one of two shapes**, selected by the `sourceType` field, matching the
+  real Apify API:
+  - **`SOURCE_FILES`** (the default): the source is uploaded **inline** as
+    `sourceFiles`, a list of `{ name, format: "TEXT"|"BASE64", content }` entries.
+    Used by `apify push` for small Actors (see `cli.md`).
+  - **`TARBALL`**: the source is uploaded as a zip to a **key-value store record**
+    (via the standard `POST /v2/key-value-stores` + `PUT .../records/{key}` path),
+    and the version carries a **`tarballUrl`** pointing at that record
+    (`.../key-value-stores/{storeId}/records/{key}`). Used by `apify push` for
+    larger Actors.
+- **Source is replaced wholesale on every push.** Each create/update stores only
+  the incoming shape's source and clears the other shape's fields: a
+  `SOURCE_FILES` push sets `sourceFiles` and clears `tarballUrl`; a `TARBALL` push
+  sets `tarballUrl` and clears `sourceFiles`. The two shapes are never merged, so
+  re-pushing an Actor in either mode fully supersedes the previous source — no
+  stale source from an earlier push can survive. The serialized version echoes
+  `sourceFiles` and, for a `TARBALL` version, `tarballUrl`.
+- **The build materializes whichever shape was pushed.** A build of a
+  `SOURCE_FILES` version writes the inline files into the build directory; a build
+  of a `TARBALL` version reads the zip bytes from the referenced key-value store
+  record (using the store id/key parsed from the stored `tarballUrl` verbatim) and
+  unzips them into the build directory before the image is built. Zip extraction is
+  traversal-safe (absolute and `..`-escaping entry names are rejected; symlink
+  entries are not materialized). If the tarball record is missing or its bytes are
+  not a valid archive, the build fails loudly (terminal `FAILED` with a clear log
+  line) rather than building an empty or stale tree.
 
 ## Authentication, ownership and sharing
 

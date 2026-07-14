@@ -43,7 +43,11 @@
 ## Supported commands (first draft)
 
 - `apify push` - creates the Actor and Actor version from local source and triggers
-  a build. Source is uploaded inline as `sourceFiles` (no tarball for small Actors).
+  a build. Source is uploaded in one of two shapes, chosen by total size: under the
+  ~3 MB threshold it goes **inline** as `sourceFiles` (`sourceType=SOURCE_FILES`);
+  at or above the threshold the CLI zips the source, uploads the zip to a key-value
+  store record, and sets `sourceType=TARBALL` with a `tarballUrl` pointing at that
+  record. The runtime builds whichever shape was pushed (see `api.md`).
 - `apify call` - starts a run against the built Actor, streams its log, waits for it
   to finish, and reports the run's default storages.
 
