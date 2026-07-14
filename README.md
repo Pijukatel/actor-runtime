@@ -39,15 +39,15 @@ DATA=$(mktemp -d)
 docker run -d --name actor-runtime \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$DATA:$DATA" -e DATA_DIR="$DATA" -e HOST_DATA_DIR="$DATA" \
-  -p 8080:8080 -p 8081:8081 \
+  -p 3333:3333 -p 3000:3000 \
   actor-runtime
 ```
 
 On startup the container prints:
 
 ```
-  API URL:     http://localhost:8080
-  Console URL: http://localhost:8081
+  API URL:     http://localhost:3333
+  Console URL: http://localhost:3000
 ```
 
 Data (Actors, versions, builds, runs and their storages) lives under `$DATA` and
@@ -87,7 +87,7 @@ this work, and neither needs any action from you:
 
 ```bash
 npm install -g apify-cli
-export APIFY_CLIENT_BASE_URL=http://localhost:8080   # redirect the CLI here
+export APIFY_CLIENT_BASE_URL=http://localhost:3333   # redirect the CLI here
 export APIFY_TOKEN=alice                               # selects/creates the user "alice"
 
 cd sample_actor           # or any Actor project

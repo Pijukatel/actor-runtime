@@ -36,7 +36,7 @@ class _OkDriver:
 
 
 def _settings(tmp_path) -> Settings:
-    return Settings(data_dir=tmp_path, host_data_dir=tmp_path, port_api=8080, port_console=8081)
+    return Settings(data_dir=tmp_path, host_data_dir=tmp_path, port_api=3333, port_console=3000)
 
 
 async def _make_service(tmp_path, driver) -> tuple[Service, Storage, Database]:

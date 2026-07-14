@@ -24,10 +24,8 @@ RUN if [ -f ca-bundle.crt ]; then \
 
 COPY app ./app
 
-ENV DATA_DIR=/data \
-    PORT_API=8080 \
-    PORT_CONSOLE=8081
+ENV DATA_DIR=/data
 
-EXPOSE 8080 8081
+EXPOSE 3333 3000
 
 CMD ["python", "-m", "app.server"]

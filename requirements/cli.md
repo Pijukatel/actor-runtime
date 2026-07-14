@@ -10,7 +10,7 @@
 
 - The CLI is redirected at the local runtime through the environment variable
   **`APIFY_CLIENT_BASE_URL`**, set to the runtime's API URL (for example
-  `http://localhost:8080`). This is the base URL that `apify-cli` passes to its
+  `http://localhost:3333`). This is the base URL that `apify-cli` passes to its
   underlying `apify-client`; `apify push` and `apify call` both honour it.
   (Confirmed by a spike: the other candidates `APIFY_API_BASE_URL` /
   `APIFY_CLIENT_API_URL` / `APIFY_API_PUBLIC_BASE_URL` are not the variable the
