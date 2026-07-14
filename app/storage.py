@@ -123,6 +123,19 @@ class Storage:
             )
         return out
 
+    # -- drop (hard-delete underlying data) --------------------------------
+    async def kv_drop(self, store_id: str) -> None:
+        kv = await self._client.create_kvs_client(name=store_id)
+        await kv.drop()
+
+    async def dataset_drop(self, dataset_id: str) -> None:
+        ds = await self._client.create_dataset_client(name=dataset_id)
+        await ds.drop()
+
+    async def rq_drop(self, queue_id: str) -> None:
+        rq = await self._client.create_rq_client(name=queue_id)
+        await rq.drop()
+
     # -- import from an Actor run's local storage directory ----------------
     async def import_run_storage(
         self,

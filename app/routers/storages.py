@@ -7,8 +7,9 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from ..auth import resolve_user
-from ..responses import conflict, data, forbidden, get_service, not_found, read_body, read_json
+from ..responses import bad_request, conflict, data, forbidden, get_service, not_found, read_body, read_json
 from ..service import (
+    _RUN_STORAGE_PREFIXES,
     ACCESS_ABSENT,
     ACCESS_ALLOW,
     ACCESS_FORBIDDEN,
@@ -20,11 +21,6 @@ from ..service import (
 )
 
 router = APIRouter()
-
-# Ids minted by ``start_run`` for a run's default storages. These are always
-# created (and owned) synchronously at run start, so they must never be seized by
-# an absent-write auto-create pretending to be one.
-_RUN_STORAGE_PREFIXES = ("kv_", "ds_", "rq_")
 
 
 def _namespace_owner(storage_id: str) -> str | None:
@@ -131,6 +127,30 @@ async def _create_storage(request: Request, storage_type: str) -> object:
     return data({"id": storage_id, "name": name}, status_code=201)
 
 
+async def _delete_storage(request: Request, storage_id: str, storage_type: str) -> object:
+    """Owner-only hard delete of a standalone storage of ``storage_type``.
+
+    Cross-user or unknown ids are hidden as ``404 record-not-found`` (existence is
+    never leaked), exactly like every other cross-user access. A run-derived id
+    (``kv_/ds_/rq_<run_id>``) owned by the caller is refused ``400 invalid-request``:
+    it is managed with its run and deleting it would orphan the run's storage
+    references. Success removes the row, its access-rights grants and the data.
+    """
+    svc = get_service(request)
+    user = await resolve_user(request)
+    storage = await svc.get_storage(storage_id)
+    if storage is None or storage.owner != user or storage.type != storage_type:
+        return not_found("We did not find the resource you were looking for.")
+    if storage_id.startswith(_RUN_STORAGE_PREFIXES):
+        return bad_request(
+            "This storage belongs to an Actor run and is managed with its run; it cannot be deleted here."
+        )
+    result = await svc.delete_storage(storage_id, user)
+    if result != ACCESS_ALLOW:
+        return not_found("We did not find the resource you were looking for.")
+    return data({"id": storage_id})
+
+
 # -- key-value stores -----------------------------------------------------
 @router.post("/v2/key-value-stores")
 async def create_kvs(request: Request) -> object:
@@ -199,6 +219,11 @@ async def put_record(store_id: str, key: str, request: Request) -> object:
     return data({"key": key})
 
 
+@router.delete("/v2/key-value-stores/{store_id}")
+async def delete_kvs(store_id: str, request: Request) -> object:
+    return await _delete_storage(request, store_id, STORAGE_KV)
+
+
 # -- datasets -------------------------------------------------------------
 @router.post("/v2/datasets")
 async def create_dataset(request: Request) -> object:
@@ -237,7 +262,17 @@ async def push_items(dataset_id: str, request: Request) -> object:
     return data({"count": len(items)}, status_code=201)
 
 
+@router.delete("/v2/datasets/{dataset_id}")
+async def delete_dataset(dataset_id: str, request: Request) -> object:
+    return await _delete_storage(request, dataset_id, STORAGE_DS)
+
+
 # -- request queues -------------------------------------------------------
+@router.post("/v2/request-queues")
+async def create_request_queue(request: Request) -> object:
+    return await _create_storage(request, STORAGE_RQ)
+
+
 @router.get("/v2/request-queues/{queue_id}")
 async def get_queue(queue_id: str, request: Request) -> object:
     svc = get_service(request)
@@ -266,6 +301,11 @@ async def add_request(queue_id: str, request: Request) -> object:
     body = await read_json(request)
     await svc.storage.rq_add(queue_id, [body])
     return data({"requestId": body.get("uniqueKey") or body.get("url")}, status_code=201)
+
+
+@router.delete("/v2/request-queues/{queue_id}")
+async def delete_request_queue(queue_id: str, request: Request) -> object:
+    return await _delete_storage(request, queue_id, STORAGE_RQ)
 
 
 # -- access rights (sharing) ----------------------------------------------

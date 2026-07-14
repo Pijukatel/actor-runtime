@@ -28,7 +28,6 @@ _SAFE_NAME = re.compile(r"^(?=.*[A-Za-z0-9])[A-Za-z0-9_.-]+$")
 @router.get("/v2/users")
 async def list_users(request: Request) -> object:
     svc = get_service(request)
-    await resolve_user(request)
     users = await svc.list_users()
     items = [user_dict(u) for u in users]
     return data({"total": len(items), "count": len(items), "items": items})

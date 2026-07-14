@@ -65,3 +65,41 @@ exist for:
      revoke, and cannot escalate; sharing is per-storage (one grant exposes exactly
      one storage, not the run/build/Actor or the owner's other storages);
    - revoking returns the storage to 404 for that user, contents unchanged.
+
+## Mandatory console/API behaviour tests (standing regression checks)
+
+Automated, Docker-free coverage (via the in-process `wired` / `wired_streaming`
+fixtures) MUST exist and keep passing for the following three behaviours:
+ - **Token-free user listing with no bootstrap** — `GET /v2/users` returns `200`
+   and a well-formed user list with **no** `Authorization` header, and has **no
+   bootstrap side effect**: presenting a bearer token to it (unknown, stale or
+   valid) neither resolves nor claims a user. Coverage MUST assert that after
+   calling it token-less (and after calling it *with* an unknown token), a
+   subsequent first-ever token presented to a real authenticated endpoint still
+   bootstraps the default user (proving the list never claimed a token), while the
+   authenticated endpoints (`/v2/users/me`, real work) still bootstrap exactly as
+   before. A structural check on the served console JS MUST confirm the user-list
+   fetches carry no bearer while other calls do.
+ - **Live log streaming (stub-tested)** — a streaming-capable stub driver
+   (delivering its log in several chunks over short delays through the driver's
+   log-sink) MUST let tests assert that `GET /v2/logs/{jobId}/stream`: delivers more
+   than one distinct chunk, in order, over the lifetime of one in-progress request
+   (with the concatenation equal to the eventual full log); stops at the terminal
+   transition with no missing/duplicated content; returns the complete stored log
+   for an already-finished job (fallback); is `404` for an unknown/cross-user id;
+   and works for both runs and builds. The one-shot `GET /v2/logs/{jobId}` MUST keep
+   returning the full stored log for finished jobs. A structural check on the served
+   console JS MUST confirm the Log view consumes the streaming endpoint. (The real
+   docker-py live-streaming path is verified on a Docker-enabled host/CI, not in
+   this environment — no daemon here; all streaming criteria are satisfiable purely
+   via the stub driver.)
+ - **Top-level storage list / create / delete with isolation** — coverage MUST
+   assert: a user can create a standalone storage by name and see it in the
+   per-type `/v2/users/me/{key-value-stores,datasets,request-queues}` listings;
+   listings are strictly scoped to the acting user (another user's storages never
+   appear); delete is owner-only and removes the listing entry, the underlying data
+   (a subsequent read is `404`), and any access-rights grants that referenced it (no
+   dangling grant survives); deleting another user's or an unknown id is `404`
+   (no existence leak, no effect); and run-derived storages are excluded from the
+   top-level listing and refused deletion via this view (`400 invalid-request`),
+   with the run's storage left intact.

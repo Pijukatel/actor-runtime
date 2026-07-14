@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
+import threading
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -23,6 +25,8 @@ from .db import AccessRight, Actor, Build, Database, Run, Storage as StorageRow,
 from .driver import Driver, write_source_files
 from .storage import Storage
 
+logger = logging.getLogger(__name__)
+
 TERMINAL_OK = "SUCCEEDED"
 TERMINAL_FAIL = "FAILED"
 TERMINAL_ABORTED = "ABORTED"
@@ -31,6 +35,11 @@ TERMINAL_TIMED_OUT = "TIMED-OUT"
 STORAGE_KV = "key-value-store"
 STORAGE_DS = "dataset"
 STORAGE_RQ = "request-queue"
+
+# Ids minted by ``start_run`` for a run's default storages. These are internal to
+# their run: never auto-created by an absent-write, and never surfaced in (or
+# deletable through) the standalone top-level Storages view.
+_RUN_STORAGE_PREFIXES = ("kv_", "ds_", "rq_")
 
 LEVEL_READ = "READ"
 LEVEL_WRITE = "WRITE"
@@ -56,6 +65,33 @@ class Service:
         self.storage = storage
         self.driver = driver
         self._tasks: set[asyncio.Task] = set()
+        # Per-job live log buffers, keyed by run/build id. The driver worker thread
+        # appends chunks under the lock; the streaming log endpoint snapshots them.
+        self._log_buffers: dict[str, list[str]] = {}
+        self._log_lock = threading.Lock()
+
+    def _make_log_sink(self, job_id: str) -> Callable[[str], None]:
+        """Create the job's live log buffer and return a thread-safe append sink."""
+        with self._log_lock:
+            self._log_buffers[job_id] = []
+
+        def sink(chunk: str) -> None:
+            with self._log_lock:
+                buf = self._log_buffers.get(job_id)
+                if buf is not None:
+                    buf.append(chunk)
+
+        return sink
+
+    def _discard_log_buffer(self, job_id: str) -> None:
+        with self._log_lock:
+            self._log_buffers.pop(job_id, None)
+
+    def read_log_buffer(self, job_id: str) -> str | None:
+        """Return the job's live log so far, or None if no live buffer exists."""
+        with self._log_lock:
+            buf = self._log_buffers.get(job_id)
+            return None if buf is None else "".join(buf)
 
     def _spawn(self, coro) -> None:
         task = asyncio.create_task(coro)
@@ -300,7 +336,8 @@ class Service:
             # run it inside the guarded block so it transitions the build to
             # FAILED instead of leaving it stuck RUNNING.
             await asyncio.to_thread(write_source_files, source_files, build_dir)
-            result = await asyncio.to_thread(self.driver.build, build_dir, image_tag)
+            log_sink = self._make_log_sink(build_id)
+            result = await asyncio.to_thread(self.driver.build, build_dir, image_tag, log_sink)
             async with self.db.session() as s:
                 build = await s.get(Build, build_id)
                 build.status = TERMINAL_OK if result.ok else TERMINAL_FAIL
@@ -319,6 +356,7 @@ class Service:
                     build.finished_at = utcnow()
                     await s.commit()
         finally:
+            self._discard_log_buffer(build_id)
             # The per-build source tree is only needed during `docker build`;
             # remove it afterwards so builds don't accumulate unbounded copies.
             await asyncio.to_thread(shutil.rmtree, build_dir, True)
@@ -451,6 +489,7 @@ class Service:
                 "APIFY_LOCAL_STORAGE_DIR": "/apify_storage",
                 "ACTOR_STORAGE_DIR": "/apify_storage",
             }
+            log_sink = self._make_log_sink(run_id)
             try:
                 result = await asyncio.to_thread(
                     self.driver.run,
@@ -460,6 +499,7 @@ class Service:
                     timeout_secs,
                     self._container_name(run_id),
                     mem_limit_mb,
+                    log_sink,
                 )
             except Exception as exc:  # noqa: BLE001
                 await self._finish_run(run_id, exit_code=1, log=f"RUN ERROR: {exc}\n")
@@ -487,21 +527,24 @@ class Service:
     async def _finish_run(
         self, run_id: str, exit_code: int, log: str, status: str | None = None
     ) -> None:
-        async with self.db.session() as s:
-            run = await s.get(Run, run_id)
-            # Only transition from RUNNING. A terminal status set out-of-band
-            # (e.g. ABORTED via abort_run) must not be clobbered by the natural
-            # finish path once the container exits.
-            if run is None or run.status != "RUNNING":
-                return
-            run.exit_code = exit_code
-            if status is not None:
-                run.status = status
-            else:
-                run.status = TERMINAL_OK if exit_code == 0 else TERMINAL_FAIL
-            run.log = log
-            run.finished_at = utcnow()
-            await s.commit()
+        try:
+            async with self.db.session() as s:
+                run = await s.get(Run, run_id)
+                # Only transition from RUNNING. A terminal status set out-of-band
+                # (e.g. ABORTED via abort_run) must not be clobbered by the natural
+                # finish path once the container exits.
+                if run is None or run.status != "RUNNING":
+                    return
+                run.exit_code = exit_code
+                if status is not None:
+                    run.status = status
+                else:
+                    run.status = TERMINAL_OK if exit_code == 0 else TERMINAL_FAIL
+                run.log = log
+                run.finished_at = utcnow()
+                await s.commit()
+        finally:
+            self._discard_log_buffer(run_id)
 
     async def get_run(self, run_id: str, username: str | None = None) -> Run | None:
         async with self.db.session() as s:
@@ -658,3 +701,51 @@ class Service:
             await s.delete(existing)
             await s.commit()
             return True
+
+    async def list_storages_for_user(self, username: str, type: str | None = None) -> list[StorageRow]:
+        async with self.db.session() as s:
+            stmt = select(StorageRow).where(StorageRow.owner == username).order_by(StorageRow.created_at)
+            if type is not None:
+                stmt = stmt.where(StorageRow.type == type)
+            return list((await s.execute(stmt)).scalars())
+
+    async def delete_storage(self, storage_id: str, username: str) -> str:
+        """Delete an owned storage: its row, its access-rights grants and its data.
+
+        Returns ``ACCESS_NOT_FOUND`` for an unknown id, ``ACCESS_FORBIDDEN`` for a
+        storage the caller does not own (the router maps cross-user to 404 to keep
+        existence hidden), or ``ACCESS_ALLOW`` on success. ``AccessRight`` rows are
+        not FK-linked to ``storages``, so matching grants are removed explicitly to
+        avoid dangling shares pointing at a deleted storage.
+
+        The metadata (row + grants) is the source of truth for listings and
+        isolation, so it is removed authoritatively. The underlying crawlee data is
+        then dropped best-effort: a physical-cleanup failure is logged but does not
+        turn a successful logical delete into a 500 (the storage is already gone
+        from every listing/access path, and an orphaned data blob is invisible and
+        harmless).
+        """
+        async with self.db.session() as s:
+            storage = await s.get(StorageRow, storage_id)
+            if storage is None:
+                return ACCESS_NOT_FOUND
+            if storage.owner != username:
+                return ACCESS_FORBIDDEN
+            storage_type = storage.type
+            await s.delete(storage)
+            grants = (
+                await s.execute(select(AccessRight).where(AccessRight.resource_id == storage_id))
+            ).scalars()
+            for grant in grants:
+                await s.delete(grant)
+            await s.commit()
+        try:
+            if storage_type == STORAGE_KV:
+                await self.storage.kv_drop(storage_id)
+            elif storage_type == STORAGE_DS:
+                await self.storage.dataset_drop(storage_id)
+            elif storage_type == STORAGE_RQ:
+                await self.storage.rq_drop(storage_id)
+        except Exception:  # noqa: BLE001 - metadata is gone; physical drop is best-effort
+            logger.exception("Best-effort data drop failed for storage %s", storage_id)
+        return ACCESS_ALLOW

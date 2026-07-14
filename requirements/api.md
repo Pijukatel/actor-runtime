@@ -20,14 +20,22 @@
       `POST /v2/acts/{actorId}/versions`,
       `PUT /v2/acts/{actorId}/versions/{versionNumber}` (upload source files)
     - `GET|POST /v2/acts/{actorId}/builds`, `GET /v2/actor-builds/{buildId}`
-    - `GET /v2/logs/{buildId|runId}` (build / run log)
+    - `GET /v2/logs/{buildId|runId}` (build / run log, one-shot full log)
+    - `GET /v2/logs/{buildId|runId}/stream` (live-streamed log, see below)
   - Runs: `POST /v2/acts/{actorId}/runs`, `GET /v2/acts/{actorId}/runs`,
     `GET /v2/actor-runs/{runId}`, `POST /v2/actor-runs/{runId}/abort`
   - Request queues: `GET /v2/request-queues/{queueId}`,
     `GET /v2/request-queues/{queueId}/requests`,
     `POST /v2/request-queues/{queueId}/requests`
   - Aggregate per-user listings (local additions, scoped to the acting user):
-    `GET /v2/users/me/actors`, `GET /v2/users/me/builds`, `GET /v2/users/me/runs`
+    `GET /v2/users/me/actors`, `GET /v2/users/me/builds`, `GET /v2/users/me/runs`,
+    and the standalone-storage listings
+    `GET /v2/users/me/key-value-stores`, `GET /v2/users/me/datasets`,
+    `GET /v2/users/me/request-queues` (see "Top-level storages" below)
+  - Standalone storage create / delete (local additions; `{type}` is one of
+    `key-value-stores`, `datasets`, `request-queues`):
+    `POST /v2/{type}` (create-by-name, namespaced `username~name`),
+    `DELETE /v2/{type}/{storageId}` (owner-only delete, see below)
   - Storage access rights / sharing (local additions; `{type}` is one of
     `key-value-stores`, `datasets`, `request-queues`):
     `POST /v2/{type}/{storageId}/access-rights` (grant/update a share),
@@ -64,7 +72,15 @@
   - `GET /v2/users` lists every user with `username`, `token` and `createdAt`.
     Tokens are returned in plaintext deliberately — this is the mechanism the
     console uses to reveal and switch users. This endpoint is unguarded and must
-    not be assumed safe on a shared network.
+    not be assumed safe on a shared network. **It is token-free and has no
+    bootstrap side effect**: it never calls the token→user resolver, so presenting
+    a bearer token to it (stale, unknown or valid) neither resolves nor claims a
+    user. In particular an unknown token sent here is ignored and does **not**
+    bootstrap the default user — merely listing users (e.g. a console page load or
+    a periodic refresh) can never claim a token. First-token bootstrap happens only
+    through the authenticated endpoints that genuinely need identity
+    (`GET /v2/users/me` and its `/me/*` aggregates, and all Actor/build/run/storage
+    work), whose behaviour is unchanged.
   - `POST /v2/users` with body `{"name": ...}` creates a user whose `username` and
     `token` both equal `name` (the token-equals-name convenience applies only to
     users created this way, never to the default user's bootstrap token). The name
@@ -114,3 +130,51 @@
     write gets **403 `insufficient-permissions`** — observably different from the
     404, because they can see the storage but may not change it. A caller with no
     access attempting a write still gets 404 (they cannot see it at all).
+
+## Live-streamed logs
+
+- `GET /v2/logs/{jobId}/stream` returns the same log as the one-shot
+  `GET /v2/logs/{jobId}`, but as a **chunked `text/plain` `StreamingResponse`** that
+  tails the job (build or run) live. While the job is in a non-terminal state it
+  emits newly-produced output incrementally as the container/build produces it, in
+  order; the stream closes once the job reaches a terminal state and its buffered
+  output is drained (a client tailing right at the finish still receives the final
+  chunk before close).
+- For a job that is already terminal (or whose live buffer no longer exists, e.g.
+  after a restart), the stream falls back to yielding the **complete stored log**
+  once, so opening it for a finished job returns the full log exactly like the
+  one-shot endpoint.
+- The one-shot `GET /v2/logs/{jobId}` is unchanged: a single `PlainTextResponse` of
+  the stored log, still valid for finished jobs and any non-streaming consumer.
+- Ownership/isolation matches every other job endpoint: the stream is scoped to the
+  acting user; an unknown or cross-user job id is **404**, indistinguishable from a
+  missing id.
+- The full log is still persisted at terminal exactly as before; streaming is
+  additive and never drops or alters the stored log.
+
+## Top-level storages (standalone list / create / delete)
+
+- Every storage (a run's default key-value store / dataset / request queue, and any
+  standalone one) is a first-class owned record. Two id shapes exist: **standalone**
+  storages are namespaced `username~name`; **run-derived** storages are minted at run
+  start as `kv_/ds_/rq_<runId>` and stay managed with their run.
+- `GET /v2/users/me/key-value-stores`, `GET /v2/users/me/datasets`,
+  `GET /v2/users/me/request-queues` each return the acting user's **standalone**
+  storages of that type in the standard envelope (each item has `id`, `name`
+  [derived from the id], `type`, `createdAt`). Run-derived storages are **excluded**
+  from these listings (they remain browsable via their run's detail view). Each
+  listing is strictly scoped to the acting user — another user's storages never
+  appear.
+- `POST /v2/{type}` creates a standalone storage by name (namespaced `username~name`,
+  idempotent for the owner; a `409` if the id resolves to another owner), for all
+  three types.
+- `DELETE /v2/{type}/{storageId}` is **owner-only** and performs a hard delete: it
+  removes the `Storage` row, deletes every access-rights grant referencing the id
+  (there is no FK cascade, so dangling shares are removed explicitly), and drops the
+  underlying crawlee data (irreversible). Responses:
+  - a cross-user or unknown id → **404 `record-not-found`** (existence is not
+    leaked, identical to every other cross-user access);
+  - a run-derived id (`kv_/ds_/rq_<runId>`) → **400 `invalid-request`**: it is
+    managed with its run and cannot be deleted here (deleting it would orphan the
+    run's storage references);
+  - success → the standard envelope.

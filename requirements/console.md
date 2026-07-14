@@ -28,10 +28,32 @@
   user sets that user's token as the active bearer, refetching the list so a
   just-created user is immediately selectable.
 - It presents a dedicated top-level tab per user-owned object type — **Actors**,
-  **Builds** and **Runs** — each scoped to the acting user (backed by the
-  `/v2/users/me/actors|builds|runs` endpoints). From a Run, its own default
-  storages remain browsable as before. Because every view is backed by the
-  ownership-scoped API, a user never sees another user's objects or storages.
+  **Builds**, **Runs** and **Storages** — each scoped to the acting user (backed by
+  the `/v2/users/me/actors|builds|runs` and
+  `/v2/users/me/key-value-stores|datasets|request-queues` endpoints). From a Run, its
+  own default storages remain browsable as before. Because every view is backed by
+  the ownership-scoped API, a user never sees another user's objects or storages.
+- The **user list is fetched without a token.** The console attaches the acting
+  user's bearer token to every request except the two public, read-only `GET
+  /v2/users` calls (the "Switch user" dropdown and the Users tab table), which are
+  sent with **no `Authorization` header** via a per-call opt-out in the single
+  `api()` fetch helper. Consequently, loading the console, switching the Users tab,
+  or the periodic user-list refresh can never claim/bootstrap a token as a side
+  effect; only real, user-driven work (viewing "me", listing/pushing/building/
+  running, storage work) presents the token.
+- The **Log view streams live.** For a running build or run, the Log tab consumes
+  the streaming log endpoint (`GET /v2/logs/{id}/stream`) by reading the response
+  body incrementally and appending output into the log `<pre>` as it arrives, rather
+  than a single fetch-and-render. Opening the Log tab for an already-finished job
+  still shows the complete log immediately (the stream's finished-job fallback). Log
+  text is added via text nodes only (never `innerHTML`), so log content can never be
+  interpreted as markup.
+- The **Storages tab** lists the acting user's own standalone storages grouped by
+  type (key-value stores, datasets, request queues), each type with a
+  create-by-name form and a per-row delete control (delete asks for confirmation
+  first, since it permanently drops the underlying data). It is distinct from the
+  per-run default-storage sub-tabs. All controls reuse the DOM-safe builders
+  (`mk`/`tableEl`/`api`) — no `innerHTML`, no inline handlers.
 
 # Out of scope for now
 - Real authentication / passwords (the token is a placeholder credential that

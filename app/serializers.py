@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .db import Actor, Build, Run, User, Version
+from .db import Actor, Build, Run, Storage, User, Version
 
 
 def user_dict(u: User) -> dict[str, Any]:
@@ -12,6 +12,16 @@ def user_dict(u: User) -> dict[str, Any]:
         "username": u.username,
         "token": u.token,
         "createdAt": u.created_at,
+    }
+
+
+def storage_dict(st: Storage) -> dict[str, Any]:
+    name = st.id.split("~", 1)[1] if "~" in st.id else st.id
+    return {
+        "id": st.id,
+        "name": name,
+        "type": st.type,
+        "createdAt": st.created_at,
     }
 
 

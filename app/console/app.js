@@ -34,8 +34,10 @@ async function api(path, opts) {
   const headers = Object.assign({}, options.headers);
   const token = getToken();
   // Send the token as a bearer credential on every request so the runtime
-  // resolves the acting user consistently across the whole console.
-  if (token) headers["Authorization"] = "Bearer " + token;
+  // resolves the acting user consistently across the whole console. `skipAuth`
+  // opts a single call out of this (used for the public, side-effect-free user
+  // list) so merely loading the console can never claim/bootstrap a token.
+  if (token && !options.skipAuth) headers["Authorization"] = "Bearer " + token;
   options.headers = headers;
   const res = await fetch(path, options);
   const ct = res.headers.get("content-type") || "";
@@ -43,6 +45,49 @@ async function api(path, opts) {
   return res.text();
 }
 const unwrap = (r) => (r && r.data !== undefined ? r.data : r);
+
+// Consume the chunked text/plain log stream, appending output into `pre` as it
+// arrives (live for a running job, the full stored log in one shot for a finished
+// one). Text is added via text nodes only - never innerHTML - so log content can
+// never be interpreted as markup.
+async function streamLogInto(id, pre) {
+  const token = getToken();
+  const headers = {};
+  if (token) headers["Authorization"] = "Bearer " + token;
+  let res;
+  try {
+    res = await fetch(`/v2/logs/${id}/stream`, { headers });
+  } catch (e) {
+    pre.textContent = "(no log)";
+    return;
+  }
+  let appended = false;
+  if (res.body && res.body.getReader) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const text = decoder.decode(value, { stream: true });
+      if (text) {
+        pre.appendChild(document.createTextNode(text));
+        appended = true;
+      }
+    }
+    const tail = decoder.decode();
+    if (tail) {
+      pre.appendChild(document.createTextNode(tail));
+      appended = true;
+    }
+  } else {
+    const text = await res.text();
+    if (text) {
+      pre.appendChild(document.createTextNode(text));
+      appended = true;
+    }
+  }
+  if (!appended) pre.textContent = "(no log)";
+}
 
 let activeTab = "actors";
 
@@ -68,7 +113,7 @@ function switchTo(token) {
 async function refreshUserSelect() {
   const sel = $("#user-select");
   if (!sel) return;
-  const users = (unwrap(await api("/v2/users")).items) || [];
+  const users = (unwrap(await api("/v2/users", { skipAuth: true })).items) || [];
   const current = getToken();
   sel.innerHTML = "";
   const placeholder = mk("option", { text: "Switch user…" });
@@ -108,7 +153,7 @@ async function loadUsers() {
   const list = $("#actor-list");
   if (list) list.innerHTML = "";
   const me = unwrap(await api("/v2/users/me"));
-  const users = (unwrap(await api("/v2/users")).items) || [];
+  const users = (unwrap(await api("/v2/users", { skipAuth: true })).items) || [];
   detail.innerHTML = "";
 
   const form = mk("div", { class: "row" });
@@ -194,7 +239,9 @@ function wrapTd(node) {
 async function loadList() {
   const list = $("#actor-list");
   if (!list) return;
-  if (activeTab === "users") return; // the Users view renders into #detail
+  // The Users and Storages views render into #detail, not the #actor-list panel;
+  // skip them here so the periodic refresh never clobbers those views.
+  if (activeTab === "users" || activeTab === "storages") return;
   if (activeTab === "actors") {
     const items = (unwrap(await api("/v2/users/me/actors")).items) || [];
     list.innerHTML = "";
@@ -234,7 +281,70 @@ function selectTab(tab) {
   const el = $(`#tab-${tab}`);
   if (el) el.classList.add("active");
   if (tab === "users") loadUsers();
+  else if (tab === "storages") loadStorages();
   else loadList();
+}
+
+// Top-level Storages view: the acting user's own standalone storages grouped by
+// type, each with a create-by-name form and a per-row delete. All lists are
+// server-scoped to the acting user, so no other user's storages are ever shown.
+const STORAGE_TYPES = [
+  ["key-value-stores", "Key-value stores"],
+  ["datasets", "Datasets"],
+  ["request-queues", "Request queues"],
+];
+
+async function loadStorages() {
+  const detail = $("#detail");
+  if (!detail) return;
+  const list = $("#actor-list");
+  if (list) list.innerHTML = "";
+  detail.innerHTML = "";
+  detail.appendChild(mk("h2", { text: "Storages" }));
+  for (const [path, label] of STORAGE_TYPES) {
+    detail.appendChild(await storageSection(path, label));
+  }
+}
+
+async function storageSection(path, label) {
+  const wrap = mk("div");
+  wrap.appendChild(mk("h2", { text: label, style: { marginTop: "14px" } }));
+
+  const form = mk("div", { class: "row" });
+  const input = mk("input");
+  input.placeholder = "New name";
+  const createBtn = mk("button", { text: "Create", onClick: () => createStorage(path, input.value) });
+  form.append(input, createBtn);
+  wrap.appendChild(form);
+
+  const items = (unwrap(await api(`/v2/users/me/${path}`)).items) || [];
+  const rows = items.map((st) => {
+    const del = mk("button", {
+      class: "secondary",
+      text: "Delete",
+      onClick: () => deleteStorage(path, st.id),
+    });
+    return [mk("td", { text: st.name }), mk("td", { text: st.id }), del];
+  });
+  wrap.appendChild(tableEl(["Name", "Id", ""], rows));
+  return wrap;
+}
+
+async function createStorage(path, name) {
+  const trimmed = (name || "").trim();
+  if (!trimmed) return;
+  await api(`/v2/${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: trimmed }),
+  });
+  loadStorages();
+}
+
+async function deleteStorage(path, id) {
+  if (!confirm(`Delete storage "${id}"? This permanently removes its data and cannot be undone.`)) return;
+  await api(`/v2/${path}/${id}`, { method: "DELETE" });
+  loadStorages();
 }
 
 window.openActor = async function (actorId) {
@@ -291,7 +401,6 @@ window.doRun = async function (actorId) {
 
 window.openBuild = async function (buildId) {
   const b = unwrap(await api(`/v2/actor-builds/${buildId}`));
-  const log = await api(`/v2/logs/${buildId}`);
   const detail = $("#detail");
   detail.innerHTML = "";
 
@@ -299,13 +408,15 @@ window.openBuild = async function (buildId) {
   head.appendChild(mk("h2", { text: `Build ${b.id}`, style: { margin: "0" } }));
   head.appendChild(badgeEl(b.status));
 
+  const logPre = mk("pre");
   detail.append(
     head,
     mk("p", { class: "muted", text: `Actor: ${b.actId} · number ${b.buildNumber}` }),
     mk("h2", { text: "Build log" }),
-    mk("pre", { text: log || "(no log)" }),
+    logPre,
     mk("button", { class: "secondary", text: "Back", onClick: () => openActor(b.actId) }),
   );
+  streamLogInto(buildId, logPre);
 };
 
 window.openRun = async function (runId) {
@@ -378,8 +489,9 @@ window.showStore = async function (tab, kind, id) {
     ]);
     box.appendChild(emptyOr(tableEl(["URL", "Method", "Handled"], rows), reqs.length));
   } else {
-    const log = await api(`/v2/logs/${id}`);
-    box.appendChild(mk("pre", { text: log || "(no log)" }));
+    const logPre = mk("pre");
+    box.appendChild(logPre);
+    await streamLogInto(id, logPre);
   }
 };
 
@@ -400,6 +512,7 @@ if (_userSelect) _userSelect.addEventListener("change", () => switchTo(_userSele
 $("#tab-actors").addEventListener("click", () => selectTab("actors"));
 $("#tab-builds").addEventListener("click", () => selectTab("builds"));
 $("#tab-runs").addEventListener("click", () => selectTab("runs"));
+$("#tab-storages").addEventListener("click", () => selectTab("storages"));
 $("#tab-users").addEventListener("click", () => selectTab("users"));
 
 refreshUser();

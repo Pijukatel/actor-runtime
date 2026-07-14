@@ -5,7 +5,7 @@ import asyncio
 import json
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from ..auth import resolve_user
 from ..responses import data, get_service, not_found, read_body
@@ -137,3 +137,55 @@ async def get_log(job_id: str, request: Request) -> PlainTextResponse:
     if run is not None:
         return PlainTextResponse(run.log or "")
     return PlainTextResponse("", status_code=404)
+
+
+_TERMINAL_STATUSES = {"SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"}
+_STREAM_POLL_SECS = 0.25
+
+
+@flat_router.get("/v2/logs/{job_id}/stream")
+async def stream_log(job_id: str, request: Request):
+    svc = get_service(request)
+    user = await resolve_user(request)
+
+    # Resolve the job's kind once up front (a build and a run never share an id):
+    # this doubles as the unknown / cross-user 404 guard exactly like the one-shot
+    # endpoint, and lets each poll tick below re-fetch only the relevant object.
+    is_build = await svc.get_build(job_id, username=user) is not None
+    if not is_build and await svc.get_run(job_id, username=user) is None:
+        return PlainTextResponse("", status_code=404)
+
+    async def _status_and_log() -> tuple[bool, str]:
+        """Return ``(is_terminal, stored_log)`` for the caller's build/run."""
+        job = (
+            await svc.get_build(job_id, username=user)
+            if is_build
+            else await svc.get_run(job_id, username=user)
+        )
+        if job is None:
+            return True, ""
+        return job.status in _TERMINAL_STATUSES, (job.log or "")
+
+    async def _tail():
+        offset = 0
+        while True:
+            buf = svc.read_log_buffer(job_id)
+            if buf is not None and len(buf) > offset:
+                yield buf[offset:]
+                offset = len(buf)
+            terminal, stored = await _status_and_log()
+            if terminal:
+                # Final drain: emit anything appended to the buffer since the last
+                # read, then any stored-log tail (e.g. a post-run import error that
+                # the live stream never carried), so a client tailing right at the
+                # finish still receives the end of the log before the stream closes.
+                buf = svc.read_log_buffer(job_id)
+                if buf is not None and len(buf) > offset:
+                    yield buf[offset:]
+                    offset = len(buf)
+                if len(stored) > offset:
+                    yield stored[offset:]
+                return
+            await asyncio.sleep(_STREAM_POLL_SECS)
+
+    return StreamingResponse(_tail(), media_type="text/plain")
