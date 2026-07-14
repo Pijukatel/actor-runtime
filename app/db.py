@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, ForeignKey, String, Text
+from sqlalchemy import JSON, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -14,6 +14,13 @@ def utcnow() -> str:
 
 class Base(DeclarativeBase):
     pass
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    username: Mapped[str] = mapped_column(String, primary_key=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
 class Actor(Base):
@@ -42,6 +49,7 @@ class Build(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     actor_id: Mapped[str] = mapped_column(ForeignKey("actors.id"))
+    username: Mapped[str] = mapped_column(String, default="")
     version_number: Mapped[str] = mapped_column(String)
     build_number: Mapped[str] = mapped_column(String)
     build_tag: Mapped[str] = mapped_column(String, default="latest")
@@ -57,6 +65,7 @@ class Run(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     actor_id: Mapped[str] = mapped_column(ForeignKey("actors.id"))
+    username: Mapped[str] = mapped_column(String, default="")
     build_id: Mapped[str] = mapped_column(String)
     build_number: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="RUNNING")
@@ -69,6 +78,26 @@ class Run(Base):
     log: Mapped[str] = mapped_column(Text, default="")
     started_at: Mapped[str] = mapped_column(String, default=utcnow)
     finished_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class Storage(Base):
+    __tablename__ = "storages"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    type: Mapped[str] = mapped_column(String)  # key-value-store / dataset / request-queue
+    owner: Mapped[str] = mapped_column(String)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class AccessRight(Base):
+    __tablename__ = "access_rights"
+    __table_args__ = (UniqueConstraint("grantee", "resource_id", name="uq_grantee_resource"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    resource_type: Mapped[str] = mapped_column(String)
+    resource_id: Mapped[str] = mapped_column(String)
+    grantee: Mapped[str] = mapped_column(String)
+    level: Mapped[str] = mapped_column(String)  # READ / WRITE
 
 
 class Database:

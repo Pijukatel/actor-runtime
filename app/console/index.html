@@ -30,17 +30,30 @@
     .tabs { display: flex; gap: 8px; margin: 10px 0; }
     .tabs span { cursor: pointer; padding: 4px 10px; border-radius: 6px; background: #eef1f4; font-size: 13px; }
     .tabs span.active { background: #1f6feb; color: #fff; }
+    header .spacer { flex: 1; }
+    header { display: flex; align-items: center; gap: 12px; }
+    header .user { font-weight: 400; font-size: 13px; color: #8b949e; }
+    header button { font-size: 12px; padding: 4px 10px; }
   </style>
 </head>
 <body>
-  <header>Actor Runtime Console <span class="muted" style="color:#8b949e">(single local user)</span></header>
+  <header>
+    <span>Actor Runtime Console</span>
+    <span class="spacer"></span>
+    <span class="user">Acting as <strong id="current-user">…</strong></span>
+    <button id="login-btn" type="button">Switch user</button>
+  </header>
   <main>
     <div id="actors" class="panel">
-      <h2>Actors</h2>
+      <div id="top-tabs" class="tabs">
+        <span id="tab-actors" class="active">Actors</span>
+        <span id="tab-builds">Builds</span>
+        <span id="tab-runs">Runs</span>
+      </div>
       <ul id="actor-list"></ul>
     </div>
     <div id="detail" class="panel">
-      <p class="muted">Select an Actor to inspect its builds, runs and storages.</p>
+      <p class="muted">Select an item to inspect its details and storages.</p>
     </div>
   </main>
   <script src="/console/app.js"></script>

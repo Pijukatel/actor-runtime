@@ -98,7 +98,7 @@ def _apify_env(api_url: str) -> dict:
     env.update(
         {
             "APIFY_CLIENT_BASE_URL": api_url,
-            "APIFY_TOKEN": "local-runtime-dummy-token",
+            "APIFY_TOKEN": "local-user",
             "APIFY_CLI_DISABLE_TELEMETRY": "1",
             "APIFY_CLI_SKIP_UPDATE_CHECK": "1",
         }

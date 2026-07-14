@@ -5,9 +5,10 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-# The single implicit user. There is no auth; any/no token is accepted.
-USER_ID = "me"
-USERNAME = "local-user"
+# The default user, used when no Authorization token is presented. There is no
+# real auth: the bearer token selects/creates the acting user, and its absence
+# falls back to this single default user (preserving the original behaviour).
+DEFAULT_USERNAME = "local-user"
 
 
 @dataclass(frozen=True)

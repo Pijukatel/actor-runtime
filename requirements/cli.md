@@ -19,12 +19,20 @@
 
 ## Authentication / token bootstrap
 
-- The runtime has no real authentication (single always-logged-in user). The CLI
-  still requires a token to be present, so set **`APIFY_TOKEN`** to any non-empty
-  dummy value (for example `local-runtime-dummy-token`). The runtime ignores the
-  token value.
-- No `apify login` step and no `~/.apify/auth.json` set-up are needed when
-  `APIFY_TOKEN` and `APIFY_CLIENT_BASE_URL` are exported in the environment.
+- The runtime has **placeholder authentication with no passwords**: the value of
+  **`APIFY_TOKEN`** selects the acting user. `apify-client` sends it as
+  `Authorization: Bearer <token>`; the runtime sanitizes it into a username and
+  auto-creates that user on first use. **Changing `APIFY_TOKEN` switches the user**
+  you act as (matching how the real platform's CLI resolves the token to a user) —
+  everything you push, build or run belongs to that user, and one user cannot see
+  another user's Actors, builds, runs or storages.
+- Set `APIFY_TOKEN` to any non-empty value; there is no signup, no password and no
+  real verification (an unknown token just becomes a new user). If `APIFY_TOKEN` is
+  absent, requests fall back to the default user `local-user`, so existing scripts
+  keep working unchanged.
+- No `apify login` step and no `~/.apify/auth.json` set-up are required when
+  `APIFY_TOKEN` and `APIFY_CLIENT_BASE_URL` are exported in the environment; switching
+  users is just a matter of exporting a different `APIFY_TOKEN`.
 
 ## Supported commands (first draft)
 

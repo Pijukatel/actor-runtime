@@ -49,3 +49,15 @@ def not_found(message: str = "We did not find the resource you were looking for.
     return JSONResponse(
         {"error": {"type": "record-not-found", "message": message}}, status_code=404
     )
+
+
+def forbidden(message: str = "You do not have permission to perform this action.") -> JSONResponse:
+    return JSONResponse(
+        {"error": {"type": "insufficient-permissions", "message": message}}, status_code=403
+    )
+
+
+def conflict(message: str = "A resource with this id already exists.") -> JSONResponse:
+    return JSONResponse(
+        {"error": {"type": "resource-conflict", "message": message}}, status_code=409
+    )

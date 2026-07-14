@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from .config import USER_ID
 from .db import Actor, Build, Run, Version
 
 
@@ -19,7 +18,7 @@ def version_dict(v: Version) -> dict[str, Any]:
 def actor_dict(a: Actor, versions: list[Version], tagged_builds: dict[str, dict]) -> dict[str, Any]:
     return {
         "id": a.id,
-        "userId": USER_ID,
+        "userId": a.username,
         "name": a.name,
         "username": a.username,
         "createdAt": a.created_at,
@@ -35,6 +34,8 @@ def build_dict(b: Build) -> dict[str, Any]:
     return {
         "id": b.id,
         "actId": b.actor_id,
+        "userId": b.username,
+        "username": b.username,
         "status": b.status,
         "buildNumber": b.build_number,
         "buildTag": b.build_tag,
@@ -52,6 +53,8 @@ def run_dict(r: Run) -> dict[str, Any]:
         "id": r.id,
         "actId": r.actor_id,
         "actorId": r.actor_id,
+        "userId": r.username,
+        "username": r.username,
         "status": r.status,
         "buildId": r.build_id,
         "buildNumber": r.build_number,

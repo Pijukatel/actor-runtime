@@ -17,7 +17,12 @@ the run's default storages (key-value store, dataset, request queue).
   run's default storages (Apify container conventions).
 - **Console** - a tiny server-rendered SPA (no build tooling) to list Actors,
   builds and runs, trigger Build/Run, and browse a finished run's storages.
-- **Single implicit user**, no auth, no login.
+- **Multiple users via placeholder login.** The API token selects the acting user
+  (no passwords, no real auth): users are auto-created on first use, everything is
+  owned per-user, and one user cannot see another's Actors, builds, runs or
+  storages. No token falls back to the default `local-user`. A storage's owner can
+  optionally share an individual key-value store, dataset or request queue with
+  another user at READ or WRITE level via the API. See `requirements/api.md`.
 
 The API and the console are served on two ports; the container prints both URLs,
 clearly labelled, on startup.
@@ -48,6 +53,12 @@ On startup the container prints:
 Data (Actors, versions, builds, runs and their storages) lives under `$DATA` and
 persists across `docker stop` / `docker start`.
 
+> Upgrade caveat: the runtime has no schema migrations (`create_all()` only
+> creates missing tables, not new columns on existing ones). Upgrading a runtime
+> that predates per-user ownership requires a **fresh `DATA_DIR`** — the new
+> `username` columns on the builds/runs tables are not added to an existing
+> database in place.
+
 > Platform note: the host Docker-socket mount is validated on Linux. macOS and
 > Windows are best-effort for this first draft (see `requirements/system.md`).
 
@@ -77,7 +88,7 @@ this work, and neither needs any action from you:
 ```bash
 npm install -g apify-cli
 export APIFY_CLIENT_BASE_URL=http://localhost:8080   # redirect the CLI here
-export APIFY_TOKEN=local-runtime-dummy-token          # any non-empty value
+export APIFY_TOKEN=alice                               # selects/creates the user "alice"
 
 cd sample_actor           # or any Actor project
 apify push --force        # creates the Actor + version and builds it

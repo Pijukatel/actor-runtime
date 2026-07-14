@@ -16,9 +16,10 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
-from .config import Settings
-from .db import Actor, Build, Database, Run, Version, utcnow
+from .config import DEFAULT_USERNAME, Settings
+from .db import AccessRight, Actor, Build, Database, Run, Storage as StorageRow, User, Version, utcnow
 from .driver import Driver, write_source_files
 from .storage import Storage
 
@@ -26,6 +27,18 @@ TERMINAL_OK = "SUCCEEDED"
 TERMINAL_FAIL = "FAILED"
 TERMINAL_ABORTED = "ABORTED"
 TERMINAL_TIMED_OUT = "TIMED-OUT"
+
+STORAGE_KV = "key-value-store"
+STORAGE_DS = "dataset"
+STORAGE_RQ = "request-queue"
+
+LEVEL_READ = "READ"
+LEVEL_WRITE = "WRITE"
+
+ACCESS_ALLOW = "allow"
+ACCESS_NOT_FOUND = "not_found"
+ACCESS_FORBIDDEN = "forbidden"
+ACCESS_ABSENT = "absent"  # no storage row exists for this id
 
 
 def _sanitize(text: str) -> str:
@@ -54,29 +67,45 @@ class Service:
         while self._tasks:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
 
+    # -- users -------------------------------------------------------------
+    async def ensure_user(self, username: str) -> None:
+        """Auto-provision ``username`` on first sight (idempotent, no password)."""
+        async with self.db.session() as s:
+            if await s.get(User, username) is not None:
+                return
+            s.add(User(username=username))
+            try:
+                await s.commit()
+            except IntegrityError:
+                await s.rollback()
+
     # -- actors / versions -------------------------------------------------
-    def _username(self) -> str:
-        from .config import USERNAME
-
-        return USERNAME
-
-    async def get_actor(self, actor_id: str) -> Actor | None:
+    async def get_actor(self, actor_id: str, username: str | None = None) -> Actor | None:
         async with self.db.session() as s:
-            return await s.get(Actor, actor_id)
+            actor = await s.get(Actor, actor_id)
+            if actor is None or (username is not None and actor.username != username):
+                return None
+            return actor
 
-    async def list_actors(self) -> list[Actor]:
+    async def list_actors(self, username: str | None = None) -> list[Actor]:
         async with self.db.session() as s:
-            return list((await s.execute(select(Actor).order_by(Actor.created_at))).scalars())
+            stmt = select(Actor).order_by(Actor.created_at)
+            if username is not None:
+                stmt = stmt.where(Actor.username == username)
+            return list((await s.execute(stmt)).scalars())
 
-    async def create_actor(self, name: str, default_run_options: dict, versions: list[dict]) -> Actor:
-        actor_id = f"{self._username()}~{name}"
+    async def create_actor(
+        self, name: str, default_run_options: dict, versions: list[dict], username: str | None = None
+    ) -> Actor:
+        username = username or DEFAULT_USERNAME
+        actor_id = f"{username}~{name}"
         async with self.db.session() as s:
             actor = await s.get(Actor, actor_id)
             if actor is None:
                 actor = Actor(
                     id=actor_id,
                     name=name,
-                    username=self._username(),
+                    username=username,
                     default_run_options=default_run_options or {},
                 )
                 s.add(actor)
@@ -126,7 +155,7 @@ class Service:
                     return b
             return None
 
-    async def update_actor(self, actor_id: str, payload: dict) -> Actor | None:
+    async def update_actor(self, actor_id: str, payload: dict, username: str | None = None) -> Actor | None:
         """Apply an in-place update (name / defaultRunOptions) to an Actor.
 
         The id (``username~name``) is kept stable so existing references remain
@@ -134,7 +163,7 @@ class Service:
         """
         async with self.db.session() as s:
             actor = await s.get(Actor, actor_id)
-            if actor is None:
+            if actor is None or (username is not None and actor.username != username):
                 return None
             if payload.get("name"):
                 actor.name = payload["name"]
@@ -171,12 +200,15 @@ class Service:
             # concurrent build triggers for the same Actor could race and produce
             # duplicate numbers; acceptable for the single-local-user threat model
             # (no concurrent pushers). Harden with SELECT ... FOR UPDATE if shared.
+            actor = await s.get(Actor, actor_id)
+            owner = actor.username if actor else DEFAULT_USERNAME
             count = len(
                 list((await s.execute(select(Build).where(Build.actor_id == actor_id))).scalars())
             )
             build = Build(
                 id=short_id(),
                 actor_id=actor_id,
+                username=owner,
                 version_number=version_number,
                 build_number=f"0.0.{count + 1}",
                 build_tag=build_tag,
@@ -224,16 +256,26 @@ class Service:
             # remove it afterwards so builds don't accumulate unbounded copies.
             await asyncio.to_thread(shutil.rmtree, build_dir, True)
 
-    async def get_build(self, build_id: str) -> Build | None:
+    async def get_build(self, build_id: str, username: str | None = None) -> Build | None:
         async with self.db.session() as s:
-            return await s.get(Build, build_id)
+            build = await s.get(Build, build_id)
+            if build is None or (username is not None and build.username != username):
+                return None
+            return build
 
-    async def list_builds(self, actor_id: str) -> list[Build]:
+    async def list_builds(self, actor_id: str, username: str | None = None) -> list[Build]:
+        async with self.db.session() as s:
+            stmt = select(Build).where(Build.actor_id == actor_id).order_by(Build.started_at.desc())
+            if username is not None:
+                stmt = stmt.where(Build.username == username)
+            return list((await s.execute(stmt)).scalars())
+
+    async def list_builds_for_user(self, username: str) -> list[Build]:
         async with self.db.session() as s:
             return list(
                 (
                     await s.execute(
-                        select(Build).where(Build.actor_id == actor_id).order_by(Build.started_at.desc())
+                        select(Build).where(Build.username == username).order_by(Build.started_at.desc())
                     )
                 ).scalars()
             )
@@ -250,20 +292,32 @@ class Service:
     async def start_run(self, actor_id: str, run_input: Any, options: dict) -> Run:
         build = await self.latest_build(actor_id)
         run_id = short_id()
-        run = Run(
-            id=run_id,
-            actor_id=actor_id,
-            build_id=build.id if build else "",
-            build_number=build.build_number if build else "0.0.0",
-            status="RUNNING",
-            options=options,
-            run_input=run_input if isinstance(run_input, dict) else {"_raw": run_input},
-            kv_store_id=f"kv_{run_id}",
-            dataset_id=f"ds_{run_id}",
-            request_queue_id=f"rq_{run_id}",
-        )
+        kv_store_id = f"kv_{run_id}"
+        dataset_id = f"ds_{run_id}"
+        request_queue_id = f"rq_{run_id}"
         async with self.db.session() as s:
+            actor = await s.get(Actor, actor_id)
+            owner = actor.username if actor else DEFAULT_USERNAME
+            run = Run(
+                id=run_id,
+                actor_id=actor_id,
+                username=owner,
+                build_id=build.id if build else "",
+                build_number=build.build_number if build else "0.0.0",
+                status="RUNNING",
+                options=options,
+                run_input=run_input if isinstance(run_input, dict) else {"_raw": run_input},
+                kv_store_id=kv_store_id,
+                dataset_id=dataset_id,
+                request_queue_id=request_queue_id,
+            )
             s.add(run)
+            # A run's default storages are first-class owned records: create one
+            # row per storage now (synchronously, before the run task spawns) so
+            # ownership and sharing are checkable independently of the run.
+            s.add(StorageRow(id=kv_store_id, type=STORAGE_KV, owner=owner))
+            s.add(StorageRow(id=dataset_id, type=STORAGE_DS, owner=owner))
+            s.add(StorageRow(id=request_queue_id, type=STORAGE_RQ, owner=owner))
             await s.commit()
             await s.refresh(run)
         self._spawn(self._run_actor(run_id, build.image_tag if build else None, run_input))
@@ -294,8 +348,6 @@ class Service:
         return storage_dir, trusted_root
 
     async def _run_actor(self, run_id: str, image_tag: str | None, run_input: Any) -> None:
-        from .config import USER_ID
-
         # The whole body runs inside a guarded block: any unexpected error (bad
         # options JSON, transient DB read, storage prep failure) transitions the
         # run to a terminal FAILED state instead of leaving the row stuck RUNNING.
@@ -310,6 +362,7 @@ class Service:
                 timeout_secs = int(run.options.get("timeoutSecs") or 300) or 300
                 mem_limit_mb = int(run.options.get("memoryMbytes") or 0) or None
                 actor_id = run.actor_id
+                owner = run.username or DEFAULT_USERNAME
 
             if not image_tag:
                 await self._finish_run(
@@ -320,7 +373,7 @@ class Service:
             environment = {
                 "APIFY_IS_AT_HOME": "0",
                 "APIFY_TOKEN": "local-runtime-token",
-                "APIFY_USER_ID": USER_ID,
+                "APIFY_USER_ID": owner,
                 "APIFY_ACTOR_ID": actor_id,
                 "APIFY_ACTOR_RUN_ID": run_id,
                 "APIFY_DEFAULT_KEY_VALUE_STORE_ID": "default",
@@ -383,24 +436,34 @@ class Service:
             run.finished_at = utcnow()
             await s.commit()
 
-    async def get_run(self, run_id: str) -> Run | None:
+    async def get_run(self, run_id: str, username: str | None = None) -> Run | None:
         async with self.db.session() as s:
-            return await s.get(Run, run_id)
+            run = await s.get(Run, run_id)
+            if run is None or (username is not None and run.username != username):
+                return None
+            return run
 
-    async def list_runs(self, actor_id: str) -> list[Run]:
+    async def list_runs(self, actor_id: str, username: str | None = None) -> list[Run]:
+        async with self.db.session() as s:
+            stmt = select(Run).where(Run.actor_id == actor_id).order_by(Run.started_at.desc())
+            if username is not None:
+                stmt = stmt.where(Run.username == username)
+            return list((await s.execute(stmt)).scalars())
+
+    async def list_runs_for_user(self, username: str) -> list[Run]:
         async with self.db.session() as s:
             return list(
                 (
                     await s.execute(
-                        select(Run).where(Run.actor_id == actor_id).order_by(Run.started_at.desc())
+                        select(Run).where(Run.username == username).order_by(Run.started_at.desc())
                     )
                 ).scalars()
             )
 
-    async def abort_run(self, run_id: str) -> Run | None:
+    async def abort_run(self, run_id: str, username: str | None = None) -> Run | None:
         async with self.db.session() as s:
             run = await s.get(Run, run_id)
-            if run is None:
+            if run is None or (username is not None and run.username != username):
                 return None
             was_running = run.status == "RUNNING"
             if was_running:
@@ -417,3 +480,114 @@ class Service:
             except Exception:  # noqa: BLE001 - best effort
                 pass
         return run
+
+    # -- storage ownership & sharing --------------------------------------
+    async def get_storage(self, storage_id: str) -> StorageRow | None:
+        async with self.db.session() as s:
+            return await s.get(StorageRow, storage_id)
+
+    async def ensure_storage(self, storage_id: str, storage_type: str, owner: str) -> str:
+        """Create-if-missing a first-class storage record; return its actual owner.
+
+        The returned owner is authoritative -- read back from the DB after the
+        commit -- so a caller that lost a create race (its INSERT hit the unique
+        PK and rolled back) learns the winner's identity instead of assuming it
+        won. The ``storages`` PK is the single source of truth about who owns the id.
+        """
+        async with self.db.session() as s:
+            existing = await s.get(StorageRow, storage_id)
+            if existing is not None:
+                return existing.owner
+            s.add(StorageRow(id=storage_id, type=storage_type, owner=owner))
+            try:
+                await s.commit()
+            except IntegrityError:
+                await s.rollback()
+            row = await s.get(StorageRow, storage_id)
+            return row.owner if row is not None else owner
+
+    async def check_storage_access(
+        self, storage_id: str, username: str, need: str, expected_type: str | None = None
+    ) -> str:
+        """Decide access for ``username`` against ``storage_id`` at ``need`` level.
+
+        owner -> allow; a matching-or-stronger grant -> allow (WRITE satisfies
+        READ); a weaker grant than needed -> forbidden (grantee can see it but may
+        not act); no grant at all -> not_found (invisible). A storage id with no row
+        yet -> absent, which the caller resolves by direction (a write auto-creates
+        the storage owned by the writer; a read is a 404, so an unknown/invented id
+        is indistinguishable from another user's).
+        """
+        async with self.db.session() as s:
+            storage = await s.get(StorageRow, storage_id)
+            if storage is None:
+                return ACCESS_ABSENT
+            # The id exists, but not as the type this endpoint addresses -- as that
+            # type it does not exist, so hide it exactly like a missing id (404).
+            if expected_type is not None and storage.type != expected_type:
+                return ACCESS_NOT_FOUND
+            if storage.owner == username:
+                return ACCESS_ALLOW
+            grant = (
+                await s.execute(
+                    select(AccessRight).where(
+                        AccessRight.resource_id == storage_id,
+                        AccessRight.grantee == username,
+                    )
+                )
+            ).scalar_one_or_none()
+            if grant is None:
+                return ACCESS_NOT_FOUND
+            if grant.level == LEVEL_WRITE or need == LEVEL_READ:
+                return ACCESS_ALLOW
+            return ACCESS_FORBIDDEN
+
+    async def grant_access(self, storage_id: str, resource_type: str, grantee: str, level: str) -> None:
+        async with self.db.session() as s:
+            existing = (
+                await s.execute(
+                    select(AccessRight).where(
+                        AccessRight.resource_id == storage_id,
+                        AccessRight.grantee == grantee,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                existing.level = level
+            else:
+                s.add(
+                    AccessRight(
+                        id=short_id(),
+                        resource_type=resource_type,
+                        resource_id=storage_id,
+                        grantee=grantee,
+                        level=level,
+                    )
+                )
+            await s.commit()
+
+    async def list_access(self, storage_id: str) -> list[AccessRight]:
+        async with self.db.session() as s:
+            return list(
+                (
+                    await s.execute(
+                        select(AccessRight).where(AccessRight.resource_id == storage_id)
+                    )
+                ).scalars()
+            )
+
+    async def revoke_access(self, storage_id: str, grantee: str) -> bool:
+        async with self.db.session() as s:
+            existing = (
+                await s.execute(
+                    select(AccessRight).where(
+                        AccessRight.resource_id == storage_id,
+                        AccessRight.grantee == grantee,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                return False
+            await s.delete(existing)
+            await s.commit()
+            return True

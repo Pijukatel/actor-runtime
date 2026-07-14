@@ -1,4 +1,6 @@
-// Minimal console. Calls the same-origin /v2 API (no auth, single user).
+// Minimal console. Calls the same-origin /v2 API. The acting user is selected by
+// a plain-text token (no password, no real auth) stored client-side and sent as
+// `Authorization: Bearer <token>` on EVERY request, exactly as apify-cli does.
 //
 // SECURITY: untrusted strings (Actor names/ids, storage contents) are NEVER
 // interpolated into inline event-handler attributes or into innerHTML. A browser
@@ -10,13 +12,54 @@
 // re-parsed as markup or code.
 const $ = (sel) => document.querySelector(sel);
 
+const TOKEN_KEY = "actor-runtime-token";
+const getToken = () => {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || "";
+  } catch (e) {
+    return "";
+  }
+};
+const setToken = (t) => {
+  try {
+    if (t) localStorage.setItem(TOKEN_KEY, t);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch (e) {
+    /* ignore */
+  }
+};
+
 async function api(path, opts) {
-  const res = await fetch(path, opts);
+  const options = Object.assign({}, opts);
+  const headers = Object.assign({}, options.headers);
+  const token = getToken();
+  // Send the token as a bearer credential on every request so the runtime
+  // resolves the acting user consistently across the whole console.
+  if (token) headers["Authorization"] = "Bearer " + token;
+  options.headers = headers;
+  const res = await fetch(path, options);
   const ct = res.headers.get("content-type") || "";
   if (ct.includes("application/json")) return res.json();
   return res.text();
 }
 const unwrap = (r) => (r && r.data !== undefined ? r.data : r);
+
+let activeTab = "actors";
+
+async function refreshUser() {
+  const me = unwrap(await api("/v2/users/me"));
+  const el = $("#current-user");
+  if (el) el.textContent = (me && me.username) || "local-user";
+}
+
+function login() {
+  const current = getToken();
+  const next = prompt("Enter your API token (any value; blank = default local user):", current);
+  if (next === null) return; // cancelled
+  setToken(next.trim());
+  refreshUser();
+  loadList();
+}
 
 // Element builder: text is set via textContent (safe), click via addEventListener.
 function mk(tag, opts = {}) {
@@ -64,19 +107,50 @@ function wrapTd(node) {
   return td;
 }
 
-async function loadActors() {
-  const data = unwrap(await api("/v2/acts"));
-  const items = data.items || [];
+// Top-level tabs are backed by the per-user aggregate endpoints, so each list is
+// already scoped to the acting user server-side (no client-side filtering).
+async function loadList() {
   const list = $("#actor-list");
-  list.innerHTML = "";
-  if (!items.length) {
-    list.appendChild(mk("li", { class: "muted", text: "No Actors yet. Push one with apify-cli." }));
-    return;
+  if (!list) return;
+  if (activeTab === "actors") {
+    const items = (unwrap(await api("/v2/users/me/actors")).items) || [];
+    list.innerHTML = "";
+    if (!items.length) {
+      list.appendChild(mk("li", { class: "muted", text: "No Actors yet. Push one with apify-cli." }));
+      return;
+    }
+    for (const a of items) {
+      list.appendChild(mk("li", { text: a.name, onClick: () => openActor(a.id) }));
+    }
+  } else if (activeTab === "builds") {
+    const items = (unwrap(await api("/v2/users/me/builds")).items) || [];
+    list.innerHTML = "";
+    if (!items.length) {
+      list.appendChild(mk("li", { class: "muted", text: "No builds yet." }));
+      return;
+    }
+    for (const b of items) {
+      list.appendChild(mk("li", { text: `${b.buildNumber} (${b.status})`, onClick: () => openBuild(b.id) }));
+    }
+  } else {
+    const items = (unwrap(await api("/v2/users/me/runs")).items) || [];
+    list.innerHTML = "";
+    if (!items.length) {
+      list.appendChild(mk("li", { class: "muted", text: "No runs yet." }));
+      return;
+    }
+    for (const r of items) {
+      list.appendChild(mk("li", { text: `${r.id} (${r.status})`, onClick: () => openRun(r.id) }));
+    }
   }
-  for (const a of items) {
-    // Closure captures a.id as a plain string - no interpolation into markup.
-    list.appendChild(mk("li", { text: a.name, onClick: () => openActor(a.id) }));
-  }
+}
+
+function selectTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll("#top-tabs span").forEach((s) => s.classList.remove("active"));
+  const el = $(`#tab-${tab}`);
+  if (el) el.classList.add("active");
+  loadList();
 }
 
 window.openActor = async function (actorId) {
@@ -235,5 +309,13 @@ function emptyOr(table, count) {
   return table;
 }
 
-loadActors();
-setInterval(loadActors, 4000);
+// Wire the header controls and top-level tabs with addEventListener (no inline
+// handlers), then start the per-user view.
+$("#login-btn").addEventListener("click", login);
+$("#tab-actors").addEventListener("click", () => selectTab("actors"));
+$("#tab-builds").addEventListener("click", () => selectTab("builds"));
+$("#tab-runs").addEventListener("click", () => selectTab("runs"));
+
+refreshUser();
+loadList();
+setInterval(loadList, 4000);
