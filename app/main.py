@@ -6,10 +6,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .auth import InvalidTokenError
 from .config import Settings, load_settings
 from .db import Database
 from .driver import Driver
-from .routers import actors, console, runs, storages
+from .responses import unauthorized
+from .routers import actors, console, runs, storages, users
 from .service import Service
 from .storage import Storage
 
@@ -51,8 +53,14 @@ def create_app(settings: Settings | None = None, driver: Driver | None = None) -
         allow_headers=["*"],
     )
 
+    @app.exception_handler(InvalidTokenError)
+    async def _invalid_token_handler(request, exc):
+        return unauthorized()
+
     # /v2/users/me
     app.include_router(actors.user_router)
+    # User management (list / create).
+    app.include_router(users.router)
     # Actor + version + build-trigger endpoints, under both spellings.
     for prefix in ("/v2/acts", "/v2/actors"):
         app.include_router(actors.router, prefix=prefix)

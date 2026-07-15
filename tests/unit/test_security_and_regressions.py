@@ -21,7 +21,7 @@ from app.storage import Storage
 class _OkDriver:
     """Minimal Docker-free driver whose build/run always succeed."""
 
-    def build(self, build_dir, image_tag) -> BuildResult:
+    def build(self, build_dir, image_tag, log_sink=None) -> BuildResult:
         return BuildResult(True, "built\n")
 
     def stop(self, container_name) -> None:
@@ -31,12 +31,12 @@ class _OkDriver:
         pass
 
     def run(self, image_tag, host_storage_dir, environment, timeout_secs,
-            container_name=None, mem_limit_mb=None) -> RunResult:
+            container_name=None, mem_limit_mb=None, log_sink=None) -> RunResult:
         return RunResult(0, "ok\n")
 
 
 def _settings(tmp_path) -> Settings:
-    return Settings(data_dir=tmp_path, host_data_dir=tmp_path, port_api=8080, port_console=8081)
+    return Settings(data_dir=tmp_path, host_data_dir=tmp_path, port_api=3333, port_console=3000)
 
 
 async def _make_service(tmp_path, driver) -> tuple[Service, Storage, Database]:
@@ -187,7 +187,7 @@ class _BlockingDriver:
         self.released = threading.Event()
         self.stopped = False
 
-    def build(self, build_dir, image_tag) -> BuildResult:
+    def build(self, build_dir, image_tag, log_sink=None) -> BuildResult:
         return BuildResult(True, "built\n")
 
     def stop(self, container_name) -> None:
@@ -198,7 +198,7 @@ class _BlockingDriver:
         pass
 
     def run(self, image_tag, host_storage_dir, environment, timeout_secs,
-            container_name=None, mem_limit_mb=None) -> RunResult:
+            container_name=None, mem_limit_mb=None, log_sink=None) -> RunResult:
         # Simulate a long-running container that only exits when killed.
         self.released.wait(timeout=10)
         return RunResult(0, "would-have-succeeded\n")  # natural exit code 0
@@ -233,7 +233,7 @@ class _CapturingDriver:
     def __init__(self) -> None:
         self.run_kwargs: dict = {}
 
-    def build(self, build_dir, image_tag) -> BuildResult:
+    def build(self, build_dir, image_tag, log_sink=None) -> BuildResult:
         return BuildResult(True, "built\n")
 
     def stop(self, container_name) -> None:
@@ -243,7 +243,7 @@ class _CapturingDriver:
         pass
 
     def run(self, image_tag, host_storage_dir, environment, timeout_secs,
-            container_name=None, mem_limit_mb=None) -> RunResult:
+            container_name=None, mem_limit_mb=None, log_sink=None) -> RunResult:
         self.run_kwargs = {
             "container_name": container_name,
             "mem_limit_mb": mem_limit_mb,
@@ -364,7 +364,7 @@ async def test_reconcile_sweeps_stale_running_jobs(tmp_path):
 
 # -- Nit #14: a real timeout produces TIMED-OUT, not FAILED ---------------
 class _TimeoutDriver:
-    def build(self, build_dir, image_tag) -> BuildResult:
+    def build(self, build_dir, image_tag, log_sink=None) -> BuildResult:
         return BuildResult(True, "built\n")
 
     def stop(self, container_name) -> None:
@@ -374,7 +374,7 @@ class _TimeoutDriver:
         pass
 
     def run(self, image_tag, host_storage_dir, environment, timeout_secs,
-            container_name=None, mem_limit_mb=None) -> RunResult:
+            container_name=None, mem_limit_mb=None, log_sink=None) -> RunResult:
         return RunResult(-1, "timed out\n", timed_out=True)
 
 

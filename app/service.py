@@ -8,24 +8,47 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
+import threading
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+from urllib.parse import unquote, urlsplit
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError, OperationalError
 
-from .config import Settings
-from .db import Actor, Build, Database, Run, Version, utcnow
-from .driver import Driver, write_source_files
+from .config import DEFAULT_USERNAME, Settings
+from .db import AccessRight, Actor, Build, Database, Run, Storage as StorageRow, User, Version, utcnow
+from .driver import Driver, extract_zip, write_source_files
 from .storage import Storage
+
+logger = logging.getLogger(__name__)
 
 TERMINAL_OK = "SUCCEEDED"
 TERMINAL_FAIL = "FAILED"
 TERMINAL_ABORTED = "ABORTED"
 TERMINAL_TIMED_OUT = "TIMED-OUT"
+
+STORAGE_KV = "key-value-store"
+STORAGE_DS = "dataset"
+STORAGE_RQ = "request-queue"
+
+# Ids minted by ``start_run`` for a run's default storages. These are internal to
+# their run: never auto-created by an absent-write, and never surfaced in (or
+# deletable through) the standalone top-level Storages view.
+_RUN_STORAGE_PREFIXES = ("kv_", "ds_", "rq_")
+
+LEVEL_READ = "READ"
+LEVEL_WRITE = "WRITE"
+
+ACCESS_ALLOW = "allow"
+ACCESS_NOT_FOUND = "not_found"
+ACCESS_FORBIDDEN = "forbidden"
+ACCESS_ABSENT = "absent"  # no storage row exists for this id
 
 
 def _sanitize(text: str) -> str:
@@ -36,6 +59,20 @@ def short_id() -> str:
     return uuid.uuid4().hex[:17]
 
 
+def _parse_tarball_url(url: str) -> tuple[str, str]:
+    """Extract ``(store_id, key)`` from a tarball URL's path.
+
+    The path segment ``/key-value-stores/{store_id}/records/{key}`` is parsed
+    verbatim; scheme, host and query string are ignored. The store id is used as
+    given (the id the CLI was handed at store creation), never recomputed.
+    """
+    path = urlsplit(url).path
+    match = re.search(r"/key-value-stores/([^/]+)/records/(.+)$", path)
+    if match is None:
+        raise ValueError(f"Cannot parse store id and record key from tarballUrl: {url!r}")
+    return unquote(match.group(1)), unquote(match.group(2))
+
+
 class Service:
     def __init__(self, settings: Settings, db: Database, storage: Storage, driver: Driver) -> None:
         self.settings = settings
@@ -43,6 +80,33 @@ class Service:
         self.storage = storage
         self.driver = driver
         self._tasks: set[asyncio.Task] = set()
+        # Per-job live log buffers, keyed by run/build id. The driver worker thread
+        # appends chunks under the lock; the streaming log endpoint snapshots them.
+        self._log_buffers: dict[str, list[str]] = {}
+        self._log_lock = threading.Lock()
+
+    def _make_log_sink(self, job_id: str) -> Callable[[str], None]:
+        """Create the job's live log buffer and return a thread-safe append sink."""
+        with self._log_lock:
+            self._log_buffers[job_id] = []
+
+        def sink(chunk: str) -> None:
+            with self._log_lock:
+                buf = self._log_buffers.get(job_id)
+                if buf is not None:
+                    buf.append(chunk)
+
+        return sink
+
+    def _discard_log_buffer(self, job_id: str) -> None:
+        with self._log_lock:
+            self._log_buffers.pop(job_id, None)
+
+    def read_log_buffer(self, job_id: str) -> str | None:
+        """Return the job's live log so far, or None if no live buffer exists."""
+        with self._log_lock:
+            buf = self._log_buffers.get(job_id)
+            return None if buf is None else "".join(buf)
 
     def _spawn(self, coro) -> None:
         task = asyncio.create_task(coro)
@@ -54,29 +118,112 @@ class Service:
         while self._tasks:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
 
+    # -- users -------------------------------------------------------------
+    async def ensure_default_user(self) -> None:
+        """Ensure the default user exists (unclaimed, token is null; idempotent)."""
+        async with self.db.session() as s:
+            if await s.get(User, DEFAULT_USERNAME) is not None:
+                return
+            s.add(User(username=DEFAULT_USERNAME))
+            try:
+                await s.commit()
+            except IntegrityError:
+                await s.rollback()
+
+    async def user_for_token(self, token: str) -> str | None:
+        """Return the username whose stored credential equals ``token``, else None."""
+        async with self.db.session() as s:
+            row = (
+                await s.execute(select(User).where(User.token == token))
+            ).scalar_one_or_none()
+            return row.username if row is not None else None
+
+    async def bind_default_token(self, token: str) -> bool:
+        """Bootstrap: atomically claim the default user's credential with ``token``.
+
+        Performed as a single conditional UPDATE
+        (``... WHERE username = default AND token IS NULL``), i.e. a compare-and-swap:
+        the one caller whose statement affects a row wins the bootstrap (returns
+        True); any concurrent first-token caller sees zero rows affected and must
+        NOT treat itself as bootstrapped (returns False), so only the winner ever
+        resolves to the default user and every loser follows the normal path (an
+        unknown token against a now-claimed default user is rejected). Safe under
+        the existing commit/rollback pattern.
+        """
+        await self.ensure_default_user()
+        async with self.db.session() as s:
+            try:
+                result = await s.execute(
+                    update(User)
+                    .where(User.username == DEFAULT_USERNAME, User.token.is_(None))
+                    .values(token=token)
+                )
+                await s.commit()
+            except (IntegrityError, OperationalError):
+                # IntegrityError: the token became another user's credential
+                # between the check and the bind. OperationalError: a residual
+                # SQLite lock survived the busy timeout under heavy concurrency.
+                # Either way this caller did not win the bind -> treat as a loser
+                # (return False) so it 401s and can retry, never a bare 500.
+                await s.rollback()
+                return False
+            return result.rowcount == 1
+
+    async def get_user(self, username: str) -> User | None:
+        async with self.db.session() as s:
+            return await s.get(User, username)
+
+    async def list_users(self) -> list[User]:
+        async with self.db.session() as s:
+            return list((await s.execute(select(User).order_by(User.created_at))).scalars())
+
+    async def create_user(self, name: str) -> User | None:
+        """Create a user whose username and token both equal ``name``.
+
+        Returns the created user, or None if the username already exists (the
+        caller renders a 409). The token-equals-name convenience applies only to
+        users created here, never to the default user's bootstrap credential.
+        """
+        async with self.db.session() as s:
+            if await s.get(User, name) is not None:
+                return None
+            user = User(username=name, token=name)
+            s.add(user)
+            try:
+                await s.commit()
+            except IntegrityError:
+                await s.rollback()
+                return None
+            await s.refresh(user)
+            return user
+
     # -- actors / versions -------------------------------------------------
-    def _username(self) -> str:
-        from .config import USERNAME
-
-        return USERNAME
-
-    async def get_actor(self, actor_id: str) -> Actor | None:
+    async def get_actor(self, actor_id: str, username: str | None = None) -> Actor | None:
         async with self.db.session() as s:
-            return await s.get(Actor, actor_id)
+            actor = await s.get(Actor, actor_id)
+            if actor is None or (username is not None and actor.username != username):
+                return None
+            return actor
 
-    async def list_actors(self) -> list[Actor]:
+    async def list_actors(self, username: str | None = None) -> list[Actor]:
         async with self.db.session() as s:
-            return list((await s.execute(select(Actor).order_by(Actor.created_at))).scalars())
+            stmt = select(Actor).order_by(Actor.created_at)
+            if username is not None:
+                stmt = stmt.where(Actor.username == username)
+            return list((await s.execute(stmt)).scalars())
 
-    async def create_actor(self, name: str, default_run_options: dict, versions: list[dict]) -> Actor:
-        actor_id = f"{self._username()}~{name}"
+    async def create_actor(
+        self, name: str, default_run_options: dict, versions: list[dict], username: str | None = None
+    ) -> Actor:
+        username = username or DEFAULT_USERNAME
+        actor_id = f"{username}~{name}"
         async with self.db.session() as s:
             actor = await s.get(Actor, actor_id)
             if actor is None:
                 actor = Actor(
                     id=actor_id,
                     name=name,
-                    username=self._username(),
+                    username=username,
                     default_run_options=default_run_options or {},
                 )
                 s.add(actor)
@@ -92,9 +239,17 @@ class Service:
             version = Version(actor_id=actor_id, version_number=vn)
             s.add(version)
         version.build_tag = payload.get("buildTag", version.build_tag or "latest")
-        version.source_type = payload.get("sourceType", version.source_type or "SOURCE_FILES")
-        if "sourceFiles" in payload:
-            version.source_files = payload["sourceFiles"]
+        source_type = payload.get("sourceType", version.source_type or "SOURCE_FILES")
+        version.source_type = source_type
+        # Replace source wholesale on every create/update so a re-push in the other
+        # mode can never leave the previous shape's source behind: a TARBALL push
+        # clears the inline files, an inline push clears the tarball pointer.
+        if source_type == "TARBALL":
+            version.tarball_url = payload.get("tarballUrl")
+            version.source_files = []
+        else:
+            version.source_files = payload.get("sourceFiles", [])
+            version.tarball_url = None
         return version
 
     async def upsert_version(self, actor_id: str, payload: dict) -> Version:
@@ -126,7 +281,7 @@ class Service:
                     return b
             return None
 
-    async def update_actor(self, actor_id: str, payload: dict) -> Actor | None:
+    async def update_actor(self, actor_id: str, payload: dict, username: str | None = None) -> Actor | None:
         """Apply an in-place update (name / defaultRunOptions) to an Actor.
 
         The id (``username~name``) is kept stable so existing references remain
@@ -134,7 +289,7 @@ class Service:
         """
         async with self.db.session() as s:
             actor = await s.get(Actor, actor_id)
-            if actor is None:
+            if actor is None or (username is not None and actor.username != username):
                 return None
             if payload.get("name"):
                 actor.name = payload["name"]
@@ -171,12 +326,15 @@ class Service:
             # concurrent build triggers for the same Actor could race and produce
             # duplicate numbers; acceptable for the single-local-user threat model
             # (no concurrent pushers). Harden with SELECT ... FOR UPDATE if shared.
+            actor = await s.get(Actor, actor_id)
+            owner = actor.username if actor else DEFAULT_USERNAME
             count = len(
                 list((await s.execute(select(Build).where(Build.actor_id == actor_id))).scalars())
             )
             build = Build(
                 id=short_id(),
                 actor_id=actor_id,
+                username=owner,
                 version_number=version_number,
                 build_number=f"0.0.{count + 1}",
                 build_tag=build_tag,
@@ -189,19 +347,51 @@ class Service:
         self._spawn(self._run_build(build.id))
         return build
 
+    async def _fetch_tarball_source(self, tarball_url: str | None) -> bytes:
+        """Read the pushed source zip's raw bytes from local key-value storage.
+
+        The store id and record key are parsed from the persisted ``tarball_url``
+        and read directly via ``self.storage.kv_record`` (no self-HTTP). A missing
+        record or a value that is not archive bytes raises, so the build worker's
+        exception handler marks the build FAILED with the error in the log.
+        """
+        if not tarball_url:
+            raise ValueError("TARBALL version has no tarballUrl to fetch source from.")
+        store_id, key = _parse_tarball_url(tarball_url)
+        record = await self.storage.kv_record(store_id, key)
+        if record is None:
+            raise ValueError(
+                f"Tarball source record not found (store {store_id!r}, key {key!r})."
+            )
+        value, _content_type = record
+        if not isinstance(value, (bytes, bytearray)):
+            raise ValueError(
+                f"Tarball source is not archive bytes (store {store_id!r}, key {key!r})."
+            )
+        return bytes(value)
+
     async def _run_build(self, build_id: str) -> None:
         build_dir = self.settings.builds_dir / build_id
         try:
             async with self.db.session() as s:
                 build = await s.get(Build, build_id)
                 version = await s.get(Version, (build.actor_id, build.version_number))
+                source_type = version.source_type if version else "SOURCE_FILES"
                 source_files = version.source_files if version else []
+                tarball_url = version.tarball_url if version else None
                 image_tag = build.image_tag
-            # Synchronous prep can raise (bad base64, disk full, illegal name);
-            # run it inside the guarded block so it transitions the build to
-            # FAILED instead of leaving it stuck RUNNING.
-            await asyncio.to_thread(write_source_files, source_files, build_dir)
-            result = await asyncio.to_thread(self.driver.build, build_dir, image_tag)
+            # Materialize whichever source shape was pushed. Synchronous prep can
+            # raise (bad base64, illegal name, missing/corrupt tarball); run it
+            # inside the guarded block so it transitions the build to FAILED
+            # instead of leaving it stuck RUNNING. A TARBALL that resolves to no
+            # usable source raises here rather than building an empty tree.
+            if source_type == "TARBALL":
+                zip_bytes = await self._fetch_tarball_source(tarball_url)
+                await asyncio.to_thread(extract_zip, zip_bytes, build_dir)
+            else:
+                await asyncio.to_thread(write_source_files, source_files, build_dir)
+            log_sink = self._make_log_sink(build_id)
+            result = await asyncio.to_thread(self.driver.build, build_dir, image_tag, log_sink)
             async with self.db.session() as s:
                 build = await s.get(Build, build_id)
                 build.status = TERMINAL_OK if result.ok else TERMINAL_FAIL
@@ -220,20 +410,31 @@ class Service:
                     build.finished_at = utcnow()
                     await s.commit()
         finally:
+            self._discard_log_buffer(build_id)
             # The per-build source tree is only needed during `docker build`;
             # remove it afterwards so builds don't accumulate unbounded copies.
             await asyncio.to_thread(shutil.rmtree, build_dir, True)
 
-    async def get_build(self, build_id: str) -> Build | None:
+    async def get_build(self, build_id: str, username: str | None = None) -> Build | None:
         async with self.db.session() as s:
-            return await s.get(Build, build_id)
+            build = await s.get(Build, build_id)
+            if build is None or (username is not None and build.username != username):
+                return None
+            return build
 
-    async def list_builds(self, actor_id: str) -> list[Build]:
+    async def list_builds(self, actor_id: str, username: str | None = None) -> list[Build]:
+        async with self.db.session() as s:
+            stmt = select(Build).where(Build.actor_id == actor_id).order_by(Build.started_at.desc())
+            if username is not None:
+                stmt = stmt.where(Build.username == username)
+            return list((await s.execute(stmt)).scalars())
+
+    async def list_builds_for_user(self, username: str) -> list[Build]:
         async with self.db.session() as s:
             return list(
                 (
                     await s.execute(
-                        select(Build).where(Build.actor_id == actor_id).order_by(Build.started_at.desc())
+                        select(Build).where(Build.username == username).order_by(Build.started_at.desc())
                     )
                 ).scalars()
             )
@@ -250,20 +451,32 @@ class Service:
     async def start_run(self, actor_id: str, run_input: Any, options: dict) -> Run:
         build = await self.latest_build(actor_id)
         run_id = short_id()
-        run = Run(
-            id=run_id,
-            actor_id=actor_id,
-            build_id=build.id if build else "",
-            build_number=build.build_number if build else "0.0.0",
-            status="RUNNING",
-            options=options,
-            run_input=run_input if isinstance(run_input, dict) else {"_raw": run_input},
-            kv_store_id=f"kv_{run_id}",
-            dataset_id=f"ds_{run_id}",
-            request_queue_id=f"rq_{run_id}",
-        )
+        kv_store_id = f"kv_{run_id}"
+        dataset_id = f"ds_{run_id}"
+        request_queue_id = f"rq_{run_id}"
         async with self.db.session() as s:
+            actor = await s.get(Actor, actor_id)
+            owner = actor.username if actor else DEFAULT_USERNAME
+            run = Run(
+                id=run_id,
+                actor_id=actor_id,
+                username=owner,
+                build_id=build.id if build else "",
+                build_number=build.build_number if build else "0.0.0",
+                status="RUNNING",
+                options=options,
+                run_input=run_input if isinstance(run_input, dict) else {"_raw": run_input},
+                kv_store_id=kv_store_id,
+                dataset_id=dataset_id,
+                request_queue_id=request_queue_id,
+            )
             s.add(run)
+            # A run's default storages are first-class owned records: create one
+            # row per storage now (synchronously, before the run task spawns) so
+            # ownership and sharing are checkable independently of the run.
+            s.add(StorageRow(id=kv_store_id, type=STORAGE_KV, owner=owner))
+            s.add(StorageRow(id=dataset_id, type=STORAGE_DS, owner=owner))
+            s.add(StorageRow(id=request_queue_id, type=STORAGE_RQ, owner=owner))
             await s.commit()
             await s.refresh(run)
         self._spawn(self._run_actor(run_id, build.image_tag if build else None, run_input))
@@ -294,8 +507,6 @@ class Service:
         return storage_dir, trusted_root
 
     async def _run_actor(self, run_id: str, image_tag: str | None, run_input: Any) -> None:
-        from .config import USER_ID
-
         # The whole body runs inside a guarded block: any unexpected error (bad
         # options JSON, transient DB read, storage prep failure) transitions the
         # run to a terminal FAILED state instead of leaving the row stuck RUNNING.
@@ -310,6 +521,7 @@ class Service:
                 timeout_secs = int(run.options.get("timeoutSecs") or 300) or 300
                 mem_limit_mb = int(run.options.get("memoryMbytes") or 0) or None
                 actor_id = run.actor_id
+                owner = run.username or DEFAULT_USERNAME
 
             if not image_tag:
                 await self._finish_run(
@@ -320,7 +532,7 @@ class Service:
             environment = {
                 "APIFY_IS_AT_HOME": "0",
                 "APIFY_TOKEN": "local-runtime-token",
-                "APIFY_USER_ID": USER_ID,
+                "APIFY_USER_ID": owner,
                 "APIFY_ACTOR_ID": actor_id,
                 "APIFY_ACTOR_RUN_ID": run_id,
                 "APIFY_DEFAULT_KEY_VALUE_STORE_ID": "default",
@@ -331,6 +543,7 @@ class Service:
                 "APIFY_LOCAL_STORAGE_DIR": "/apify_storage",
                 "ACTOR_STORAGE_DIR": "/apify_storage",
             }
+            log_sink = self._make_log_sink(run_id)
             try:
                 result = await asyncio.to_thread(
                     self.driver.run,
@@ -340,6 +553,7 @@ class Service:
                     timeout_secs,
                     self._container_name(run_id),
                     mem_limit_mb,
+                    log_sink,
                 )
             except Exception as exc:  # noqa: BLE001
                 await self._finish_run(run_id, exit_code=1, log=f"RUN ERROR: {exc}\n")
@@ -367,40 +581,53 @@ class Service:
     async def _finish_run(
         self, run_id: str, exit_code: int, log: str, status: str | None = None
     ) -> None:
+        try:
+            async with self.db.session() as s:
+                run = await s.get(Run, run_id)
+                # Only transition from RUNNING. A terminal status set out-of-band
+                # (e.g. ABORTED via abort_run) must not be clobbered by the natural
+                # finish path once the container exits.
+                if run is None or run.status != "RUNNING":
+                    return
+                run.exit_code = exit_code
+                if status is not None:
+                    run.status = status
+                else:
+                    run.status = TERMINAL_OK if exit_code == 0 else TERMINAL_FAIL
+                run.log = log
+                run.finished_at = utcnow()
+                await s.commit()
+        finally:
+            self._discard_log_buffer(run_id)
+
+    async def get_run(self, run_id: str, username: str | None = None) -> Run | None:
         async with self.db.session() as s:
             run = await s.get(Run, run_id)
-            # Only transition from RUNNING. A terminal status set out-of-band
-            # (e.g. ABORTED via abort_run) must not be clobbered by the natural
-            # finish path once the container exits.
-            if run is None or run.status != "RUNNING":
-                return
-            run.exit_code = exit_code
-            if status is not None:
-                run.status = status
-            else:
-                run.status = TERMINAL_OK if exit_code == 0 else TERMINAL_FAIL
-            run.log = log
-            run.finished_at = utcnow()
-            await s.commit()
+            if run is None or (username is not None and run.username != username):
+                return None
+            return run
 
-    async def get_run(self, run_id: str) -> Run | None:
+    async def list_runs(self, actor_id: str, username: str | None = None) -> list[Run]:
         async with self.db.session() as s:
-            return await s.get(Run, run_id)
+            stmt = select(Run).where(Run.actor_id == actor_id).order_by(Run.started_at.desc())
+            if username is not None:
+                stmt = stmt.where(Run.username == username)
+            return list((await s.execute(stmt)).scalars())
 
-    async def list_runs(self, actor_id: str) -> list[Run]:
+    async def list_runs_for_user(self, username: str) -> list[Run]:
         async with self.db.session() as s:
             return list(
                 (
                     await s.execute(
-                        select(Run).where(Run.actor_id == actor_id).order_by(Run.started_at.desc())
+                        select(Run).where(Run.username == username).order_by(Run.started_at.desc())
                     )
                 ).scalars()
             )
 
-    async def abort_run(self, run_id: str) -> Run | None:
+    async def abort_run(self, run_id: str, username: str | None = None) -> Run | None:
         async with self.db.session() as s:
             run = await s.get(Run, run_id)
-            if run is None:
+            if run is None or (username is not None and run.username != username):
                 return None
             was_running = run.status == "RUNNING"
             if was_running:
@@ -417,3 +644,162 @@ class Service:
             except Exception:  # noqa: BLE001 - best effort
                 pass
         return run
+
+    # -- storage ownership & sharing --------------------------------------
+    async def get_storage(self, storage_id: str) -> StorageRow | None:
+        async with self.db.session() as s:
+            return await s.get(StorageRow, storage_id)
+
+    async def ensure_storage(self, storage_id: str, storage_type: str, owner: str) -> str:
+        """Create-if-missing a first-class storage record; return its actual owner.
+
+        The returned owner is authoritative -- read back from the DB after the
+        commit -- so a caller that lost a create race (its INSERT hit the unique
+        PK and rolled back) learns the winner's identity instead of assuming it
+        won. The ``storages`` PK is the single source of truth about who owns the id.
+        """
+        async with self.db.session() as s:
+            existing = await s.get(StorageRow, storage_id)
+            if existing is not None:
+                return existing.owner
+            s.add(StorageRow(id=storage_id, type=storage_type, owner=owner))
+            try:
+                await s.commit()
+            except IntegrityError:
+                await s.rollback()
+            row = await s.get(StorageRow, storage_id)
+            return row.owner if row is not None else owner
+
+    async def check_storage_access(
+        self, storage_id: str, username: str, need: str, expected_type: str | None = None
+    ) -> str:
+        """Decide access for ``username`` against ``storage_id`` at ``need`` level.
+
+        owner -> allow; a matching-or-stronger grant -> allow (WRITE satisfies
+        READ); a weaker grant than needed -> forbidden (grantee can see it but may
+        not act); no grant at all -> not_found (invisible). A storage id with no row
+        yet -> absent, which the caller resolves by direction (a write auto-creates
+        the storage owned by the writer; a read is a 404, so an unknown/invented id
+        is indistinguishable from another user's).
+        """
+        async with self.db.session() as s:
+            storage = await s.get(StorageRow, storage_id)
+            if storage is None:
+                return ACCESS_ABSENT
+            # The id exists, but not as the type this endpoint addresses -- as that
+            # type it does not exist, so hide it exactly like a missing id (404).
+            if expected_type is not None and storage.type != expected_type:
+                return ACCESS_NOT_FOUND
+            if storage.owner == username:
+                return ACCESS_ALLOW
+            grant = (
+                await s.execute(
+                    select(AccessRight).where(
+                        AccessRight.resource_id == storage_id,
+                        AccessRight.grantee == username,
+                    )
+                )
+            ).scalar_one_or_none()
+            if grant is None:
+                return ACCESS_NOT_FOUND
+            if grant.level == LEVEL_WRITE or need == LEVEL_READ:
+                return ACCESS_ALLOW
+            return ACCESS_FORBIDDEN
+
+    async def grant_access(self, storage_id: str, resource_type: str, grantee: str, level: str) -> None:
+        async with self.db.session() as s:
+            existing = (
+                await s.execute(
+                    select(AccessRight).where(
+                        AccessRight.resource_id == storage_id,
+                        AccessRight.grantee == grantee,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                existing.level = level
+            else:
+                s.add(
+                    AccessRight(
+                        id=short_id(),
+                        resource_type=resource_type,
+                        resource_id=storage_id,
+                        grantee=grantee,
+                        level=level,
+                    )
+                )
+            await s.commit()
+
+    async def list_access(self, storage_id: str) -> list[AccessRight]:
+        async with self.db.session() as s:
+            return list(
+                (
+                    await s.execute(
+                        select(AccessRight).where(AccessRight.resource_id == storage_id)
+                    )
+                ).scalars()
+            )
+
+    async def revoke_access(self, storage_id: str, grantee: str) -> bool:
+        async with self.db.session() as s:
+            existing = (
+                await s.execute(
+                    select(AccessRight).where(
+                        AccessRight.resource_id == storage_id,
+                        AccessRight.grantee == grantee,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                return False
+            await s.delete(existing)
+            await s.commit()
+            return True
+
+    async def list_storages_for_user(self, username: str, type: str | None = None) -> list[StorageRow]:
+        async with self.db.session() as s:
+            stmt = select(StorageRow).where(StorageRow.owner == username).order_by(StorageRow.created_at)
+            if type is not None:
+                stmt = stmt.where(StorageRow.type == type)
+            return list((await s.execute(stmt)).scalars())
+
+    async def delete_storage(self, storage_id: str, username: str) -> str:
+        """Delete an owned storage: its row, its access-rights grants and its data.
+
+        Returns ``ACCESS_NOT_FOUND`` for an unknown id, ``ACCESS_FORBIDDEN`` for a
+        storage the caller does not own (the router maps cross-user to 404 to keep
+        existence hidden), or ``ACCESS_ALLOW`` on success. ``AccessRight`` rows are
+        not FK-linked to ``storages``, so matching grants are removed explicitly to
+        avoid dangling shares pointing at a deleted storage.
+
+        The metadata (row + grants) is the source of truth for listings and
+        isolation, so it is removed authoritatively. The underlying crawlee data is
+        then dropped best-effort: a physical-cleanup failure is logged but does not
+        turn a successful logical delete into a 500 (the storage is already gone
+        from every listing/access path, and an orphaned data blob is invisible and
+        harmless).
+        """
+        async with self.db.session() as s:
+            storage = await s.get(StorageRow, storage_id)
+            if storage is None:
+                return ACCESS_NOT_FOUND
+            if storage.owner != username:
+                return ACCESS_FORBIDDEN
+            storage_type = storage.type
+            await s.delete(storage)
+            grants = (
+                await s.execute(select(AccessRight).where(AccessRight.resource_id == storage_id))
+            ).scalars()
+            for grant in grants:
+                await s.delete(grant)
+            await s.commit()
+        try:
+            if storage_type == STORAGE_KV:
+                await self.storage.kv_drop(storage_id)
+            elif storage_type == STORAGE_DS:
+                await self.storage.dataset_drop(storage_id)
+            elif storage_type == STORAGE_RQ:
+                await self.storage.rq_drop(storage_id)
+        except Exception:  # noqa: BLE001 - metadata is gone; physical drop is best-effort
+            logger.exception("Best-effort data drop failed for storage %s", storage_id)
+        return ACCESS_ALLOW

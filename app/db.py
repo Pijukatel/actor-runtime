@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, ForeignKey, String, Text
+from sqlalchemy import JSON, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -14,6 +14,14 @@ def utcnow() -> str:
 
 class Base(DeclarativeBase):
     pass
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    username: Mapped[str] = mapped_column(String, primary_key=True)
+    token: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
 class Actor(Base):
@@ -35,6 +43,7 @@ class Version(Base):
     build_tag: Mapped[str] = mapped_column(String, default="latest")
     source_type: Mapped[str] = mapped_column(String, default="SOURCE_FILES")
     source_files: Mapped[list] = mapped_column(JSON, default=list)
+    tarball_url: Mapped[str | None] = mapped_column(String, default=None, nullable=True)
 
 
 class Build(Base):
@@ -42,6 +51,7 @@ class Build(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     actor_id: Mapped[str] = mapped_column(ForeignKey("actors.id"))
+    username: Mapped[str] = mapped_column(String, default="")
     version_number: Mapped[str] = mapped_column(String)
     build_number: Mapped[str] = mapped_column(String)
     build_tag: Mapped[str] = mapped_column(String, default="latest")
@@ -57,6 +67,7 @@ class Run(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     actor_id: Mapped[str] = mapped_column(ForeignKey("actors.id"))
+    username: Mapped[str] = mapped_column(String, default="")
     build_id: Mapped[str] = mapped_column(String)
     build_number: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="RUNNING")
@@ -71,11 +82,34 @@ class Run(Base):
     finished_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class Storage(Base):
+    __tablename__ = "storages"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    type: Mapped[str] = mapped_column(String)  # key-value-store / dataset / request-queue
+    owner: Mapped[str] = mapped_column(String)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class AccessRight(Base):
+    __tablename__ = "access_rights"
+    __table_args__ = (UniqueConstraint("grantee", "resource_id", name="uq_grantee_resource"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    resource_type: Mapped[str] = mapped_column(String)
+    resource_id: Mapped[str] = mapped_column(String)
+    grantee: Mapped[str] = mapped_column(String)
+    level: Mapped[str] = mapped_column(String)  # READ / WRITE
+
+
 class Database:
     """Owns the async engine and session factory for metadata."""
 
     def __init__(self, url: str) -> None:
-        self._engine = create_async_engine(url, future=True)
+        # Wait (up to ``timeout`` seconds) for a lock instead of failing
+        # immediately, so the bootstrap compare-and-swap serializes cleanly under
+        # concurrent first-token requests rather than raising "database is locked".
+        self._engine = create_async_engine(url, future=True, connect_args={"timeout": 30})
         self._session_factory = async_sessionmaker(self._engine, expire_on_commit=False)
 
     async def create_all(self) -> None:

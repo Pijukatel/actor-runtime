@@ -62,10 +62,8 @@ def runtime(tmp_path_factory):
             "-v", f"{data_dir}:{data_dir}",
             "-e", f"DATA_DIR={data_dir}",
             "-e", f"HOST_DATA_DIR={data_dir}",
-            "-e", "PORT_API=8080",
-            "-e", "PORT_CONSOLE=8081",
-            "-p", f"{api_port}:8080",
-            "-p", f"{console_port}:8081",
+            "-p", f"{api_port}:3333",
+            "-p", f"{console_port}:3000",
             RUNTIME_IMAGE,
         ],
         check=True,
@@ -98,7 +96,7 @@ def _apify_env(api_url: str) -> dict:
     env.update(
         {
             "APIFY_CLIENT_BASE_URL": api_url,
-            "APIFY_TOKEN": "local-runtime-dummy-token",
+            "APIFY_TOKEN": "local-user",
             "APIFY_CLI_DISABLE_TELEMETRY": "1",
             "APIFY_CLI_SKIP_UPDATE_CHECK": "1",
         }

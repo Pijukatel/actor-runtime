@@ -3,23 +3,46 @@ from __future__ import annotations
 
 from typing import Any
 
-from .config import USER_ID
-from .db import Actor, Build, Run, Version
+from .db import Actor, Build, Run, Storage, User, Version
+from .service import _RUN_STORAGE_PREFIXES
+
+
+def user_dict(u: User) -> dict[str, Any]:
+    return {
+        "id": u.username,
+        "username": u.username,
+        "token": u.token,
+        "createdAt": u.created_at,
+    }
+
+
+def storage_dict(st: Storage) -> dict[str, Any]:
+    name = st.id.split("~", 1)[1] if "~" in st.id else ""
+    return {
+        "id": st.id,
+        "name": name,
+        "type": st.type,
+        "createdAt": st.created_at,
+        "named": not st.id.startswith(_RUN_STORAGE_PREFIXES),
+    }
 
 
 def version_dict(v: Version) -> dict[str, Any]:
-    return {
+    out = {
         "versionNumber": v.version_number,
         "buildTag": v.build_tag,
         "sourceType": v.source_type,
         "sourceFiles": v.source_files,
     }
+    if v.tarball_url:
+        out["tarballUrl"] = v.tarball_url
+    return out
 
 
 def actor_dict(a: Actor, versions: list[Version], tagged_builds: dict[str, dict]) -> dict[str, Any]:
     return {
         "id": a.id,
-        "userId": USER_ID,
+        "userId": a.username,
         "name": a.name,
         "username": a.username,
         "createdAt": a.created_at,
@@ -35,6 +58,8 @@ def build_dict(b: Build) -> dict[str, Any]:
     return {
         "id": b.id,
         "actId": b.actor_id,
+        "userId": b.username,
+        "username": b.username,
         "status": b.status,
         "buildNumber": b.build_number,
         "buildTag": b.build_tag,
@@ -52,6 +77,8 @@ def run_dict(r: Run) -> dict[str, Any]:
         "id": r.id,
         "actId": r.actor_id,
         "actorId": r.actor_id,
+        "userId": r.username,
+        "username": r.username,
         "status": r.status,
         "buildId": r.build_id,
         "buildNumber": r.build_number,

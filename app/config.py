@@ -5,9 +5,14 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-# The single implicit user. There is no auth; any/no token is accepted.
-USER_ID = "me"
-USERNAME = "local-user"
+# The default user, used when no Authorization token is presented. There is no
+# real auth: the bearer token selects/creates the acting user, and its absence
+# falls back to this single default user (preserving the original behaviour).
+DEFAULT_USERNAME = "local-user"
+
+# The API and console ports are fixed and not configurable via the environment.
+API_PORT = 3333
+CONSOLE_PORT = 3000
 
 
 @dataclass(frozen=True)
@@ -48,6 +53,6 @@ def load_settings() -> Settings:
     return Settings(
         data_dir=data_dir,
         host_data_dir=host_data_dir,
-        port_api=int(os.environ.get("PORT_API", "8080")),
-        port_console=int(os.environ.get("PORT_CONSOLE", "8081")),
+        port_api=API_PORT,
+        port_console=CONSOLE_PORT,
     )

@@ -7,8 +7,13 @@ mounted socket using the Docker SDK.
 from __future__ import annotations
 
 import base64
+import io
+import shutil
+import stat
+import threading
+import zipfile
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 # Per-read (inactivity) timeout on the Docker build's streaming HTTP response.
 # It bounds a *silently* hung build - one that stops emitting output for this
@@ -53,6 +58,42 @@ def write_source_files(source_files: list[dict], dest: Path) -> None:
             target.write_text(content)
 
 
+def extract_zip(zip_bytes: bytes, dest: Path) -> None:
+    """Unzip ``zip_bytes`` into ``dest`` with the same traversal safety as
+    ``write_source_files``.
+
+    Zip entry names are fully attacker-controlled (the archive is uploaded by
+    ``apify push``), so each name is validated to stay strictly inside ``dest``
+    BEFORE anything is written: absolute names and any ``..`` traversal resolving
+    outside the build directory are rejected. ``ZipFile.extractall`` is
+    deliberately not used (it is vulnerable to zip-slip). Symlink entries are
+    never materialised as links.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    dest_resolved = dest.resolve()
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        infos = zf.infolist()
+        for info in infos:
+            name = info.filename
+            if not name or name.endswith("/"):
+                continue
+            if Path(name).is_absolute():
+                raise SourceFileNameError(f"Illegal absolute zip entry name: {name!r}")
+            target = (dest / name).resolve()
+            if target != dest_resolved and dest_resolved not in target.parents:
+                raise SourceFileNameError(f"Zip entry name escapes build directory: {name!r}")
+        for info in infos:
+            name = info.filename
+            if not name or name.endswith("/"):
+                continue
+            if stat.S_ISLNK((info.external_attr >> 16) & 0xFFFF):
+                continue
+            target = (dest / name).resolve()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info) as src, open(target, "wb") as out:
+                shutil.copyfileobj(src, out)
+
+
 def resolve_dockerfile(build_dir: Path) -> str | None:
     """Return the Dockerfile path relative to ``build_dir``, Apify conventions."""
     for candidate in (".actor/Dockerfile", "Dockerfile"):
@@ -75,7 +116,9 @@ class RunResult:
 
 
 class Driver(Protocol):
-    def build(self, build_dir: Path, image_tag: str) -> BuildResult: ...
+    def build(
+        self, build_dir: Path, image_tag: str, log_sink: Callable[[str], None] | None = None
+    ) -> BuildResult: ...
 
     def run(
         self,
@@ -85,6 +128,7 @@ class Driver(Protocol):
         timeout_secs: int,
         container_name: str | None = None,
         mem_limit_mb: int | None = None,
+        log_sink: Callable[[str], None] | None = None,
     ) -> RunResult: ...
 
     def stop(self, container_name: str) -> None: ...
@@ -95,13 +139,15 @@ class Driver(Protocol):
 class DockerDriver:
     """Real driver using the host Docker daemon via the mounted socket."""
 
-    def __init__(self) -> None:
+    def __init__(self, client=None) -> None:
         import docker
 
         self._docker = docker
-        self._client = docker.from_env()
+        self._client = docker.from_env() if client is None else client
 
-    def build(self, build_dir: Path, image_tag: str) -> BuildResult:
+    def build(
+        self, build_dir: Path, image_tag: str, log_sink: Callable[[str], None] | None = None
+    ) -> BuildResult:
         dockerfile = resolve_dockerfile(build_dir)
         if dockerfile is None:
             return BuildResult(False, "No Dockerfile found (looked for .actor/Dockerfile, Dockerfile).\n")
@@ -117,10 +163,15 @@ class DockerDriver:
                 timeout=BUILD_TIMEOUT_SECS,
             )
             for chunk in logs:
+                line = None
                 if "stream" in chunk:
-                    lines.append(chunk["stream"])
+                    line = chunk["stream"]
                 elif "error" in chunk:
-                    lines.append(chunk["error"])
+                    line = chunk["error"]
+                if line is not None:
+                    lines.append(line)
+                    if log_sink is not None:
+                        log_sink(line)
         except self._docker.errors.BuildError as exc:
             for item in getattr(exc, "build_log", []) or []:
                 if isinstance(item, dict) and "stream" in item:
@@ -140,6 +191,7 @@ class DockerDriver:
         timeout_secs: int,
         container_name: str | None = None,
         mem_limit_mb: int | None = None,
+        log_sink: Callable[[str], None] | None = None,
     ) -> RunResult:
         run_kwargs: dict = dict(
             detach=True,
@@ -158,6 +210,31 @@ class DockerDriver:
         container = self._client.containers.run(image_tag, **run_kwargs)
         timed_out = False
         exit_code = 1
+        log = ""
+        chunks: list[str] = []
+        log_thread: threading.Thread | None = None
+        if log_sink is not None:
+            # Stream logs in a sibling thread while the main flow enforces the
+            # timeout CONCURRENTLY. ``container.logs(follow=True)`` blocks until the
+            # container exits, so it cannot itself drive the timeout; running it
+            # alongside ``container.wait(timeout=...)`` lets a hung Actor still be
+            # killed. The sink only appends to memory, so a slow consumer can never
+            # apply back-pressure to this thread.
+            def _follow() -> None:
+                try:
+                    for chunk in container.logs(stream=True, follow=True):
+                        text = (
+                            chunk.decode("utf-8", errors="replace")
+                            if isinstance(chunk, (bytes, bytearray))
+                            else str(chunk)
+                        )
+                        chunks.append(text)
+                        log_sink(text)
+                except Exception:  # noqa: BLE001 - the stream ends when the container dies
+                    pass
+
+            log_thread = threading.Thread(target=_follow, daemon=True)
+            log_thread.start()
         try:
             try:
                 result = container.wait(timeout=timeout_secs)
@@ -171,8 +248,19 @@ class DockerDriver:
                         pass
                 else:
                     raise
-            log = container.logs().decode("utf-8", errors="replace")
+            if log_sink is None:
+                log = container.logs().decode("utf-8", errors="replace")
         finally:
+            if log_thread is not None:
+                # Ensure the container is stopped so the follow stream ends, then
+                # join so the log thread can never outlive the call, then assemble
+                # the final log from the accumulator.
+                try:
+                    container.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+                log_thread.join()
+                log = "".join(chunks)
             try:
                 container.remove(force=True)
             except Exception:  # noqa: BLE001

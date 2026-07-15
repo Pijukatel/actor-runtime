@@ -23,3 +23,5 @@
 - The system is isolated environment that is started by running the docker container.
 - The system user interface is accessible on localhost with specific ports for console frontend and API.
 - When the container is started it prints the relevant user interface ports in console message.
+- The API port (3333) and the console frontend port (3000) are fixed values and
+  are not configurable; they are the same on every start of the container.

@@ -5,8 +5,9 @@ import asyncio
 import json
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 
+from ..auth import resolve_user
 from ..responses import data, get_service, not_found, read_body
 from ..serializers import build_dict, run_dict
 
@@ -41,7 +42,8 @@ flat_router = APIRouter()
 @actor_runs_router.post("/{actor_id}/runs")
 async def start_run(actor_id: str, request: Request) -> object:
     svc = get_service(request)
-    actor = await svc.get_actor(actor_id)
+    user = await resolve_user(request)
+    actor = await svc.get_actor(actor_id, username=user)
     if actor is None:
         return not_found(f"Actor '{actor_id}' was not found.")
     raw = await read_body(request)
@@ -88,7 +90,8 @@ async def start_run(actor_id: str, request: Request) -> object:
 @actor_runs_router.get("/{actor_id}/runs")
 async def list_runs(actor_id: str, request: Request) -> object:
     svc = get_service(request)
-    runs = await svc.list_runs(actor_id)
+    user = await resolve_user(request)
+    runs = await svc.list_runs(actor_id, username=user)
     items = [run_dict(r) for r in runs]
     return data({"total": len(items), "count": len(items), "items": items})
 
@@ -96,7 +99,8 @@ async def list_runs(actor_id: str, request: Request) -> object:
 @flat_router.get("/v2/actor-runs/{run_id}")
 async def get_run(run_id: str, request: Request) -> object:
     svc = get_service(request)
-    run = await svc.get_run(run_id)
+    user = await resolve_user(request)
+    run = await svc.get_run(run_id, username=user)
     if run is None:
         return not_found(f"Run '{run_id}' was not found.")
     return data(run_dict(run))
@@ -105,7 +109,8 @@ async def get_run(run_id: str, request: Request) -> object:
 @flat_router.post("/v2/actor-runs/{run_id}/abort")
 async def abort_run(run_id: str, request: Request) -> object:
     svc = get_service(request)
-    run = await svc.abort_run(run_id)
+    user = await resolve_user(request)
+    run = await svc.abort_run(run_id, username=user)
     if run is None:
         return not_found(f"Run '{run_id}' was not found.")
     return data(run_dict(run))
@@ -114,7 +119,8 @@ async def abort_run(run_id: str, request: Request) -> object:
 @flat_router.get("/v2/actor-builds/{build_id}")
 async def get_build(build_id: str, request: Request) -> object:
     svc = get_service(request)
-    build = await svc.get_build(build_id)
+    user = await resolve_user(request)
+    build = await svc.get_build(build_id, username=user)
     if build is None:
         return not_found(f"Build '{build_id}' was not found.")
     return data(build_dict(build))
@@ -123,10 +129,63 @@ async def get_build(build_id: str, request: Request) -> object:
 @flat_router.get("/v2/logs/{job_id}")
 async def get_log(job_id: str, request: Request) -> PlainTextResponse:
     svc = get_service(request)
-    build = await svc.get_build(job_id)
+    user = await resolve_user(request)
+    build = await svc.get_build(job_id, username=user)
     if build is not None:
         return PlainTextResponse(build.log or "")
-    run = await svc.get_run(job_id)
+    run = await svc.get_run(job_id, username=user)
     if run is not None:
         return PlainTextResponse(run.log or "")
     return PlainTextResponse("", status_code=404)
+
+
+_TERMINAL_STATUSES = {"SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"}
+_STREAM_POLL_SECS = 0.25
+
+
+@flat_router.get("/v2/logs/{job_id}/stream")
+async def stream_log(job_id: str, request: Request):
+    svc = get_service(request)
+    user = await resolve_user(request)
+
+    # Resolve the job's kind once up front (a build and a run never share an id):
+    # this doubles as the unknown / cross-user 404 guard exactly like the one-shot
+    # endpoint, and lets each poll tick below re-fetch only the relevant object.
+    is_build = await svc.get_build(job_id, username=user) is not None
+    if not is_build and await svc.get_run(job_id, username=user) is None:
+        return PlainTextResponse("", status_code=404)
+
+    async def _status_and_log() -> tuple[bool, str]:
+        """Return ``(is_terminal, stored_log)`` for the caller's build/run."""
+        job = (
+            await svc.get_build(job_id, username=user)
+            if is_build
+            else await svc.get_run(job_id, username=user)
+        )
+        if job is None:
+            return True, ""
+        return job.status in _TERMINAL_STATUSES, (job.log or "")
+
+    async def _tail():
+        offset = 0
+        while True:
+            buf = svc.read_log_buffer(job_id)
+            if buf is not None and len(buf) > offset:
+                yield buf[offset:]
+                offset = len(buf)
+            terminal, stored = await _status_and_log()
+            if terminal:
+                # Final drain: emit anything appended to the buffer since the last
+                # read, then any stored-log tail (e.g. a post-run import error that
+                # the live stream never carried), so a client tailing right at the
+                # finish still receives the end of the log before the stream closes.
+                buf = svc.read_log_buffer(job_id)
+                if buf is not None and len(buf) > offset:
+                    yield buf[offset:]
+                    offset = len(buf)
+                if len(stored) > offset:
+                    yield stored[offset:]
+                return
+            await asyncio.sleep(_STREAM_POLL_SECS)
+
+    return StreamingResponse(_tail(), media_type="text/plain")
