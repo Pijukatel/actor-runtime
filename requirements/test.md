@@ -92,10 +92,49 @@ guarantee:
    with a clear log line and a set `finishedAt` (never stuck RUNNING, never a silent
    empty/partial `SUCCEEDED`).
 
+## Mandatory console routing / IA tests (standing regression checks)
+
+Automated, Docker-free coverage (via the in-process `wired` fixture and structural
+scans of the served `index.html` / `app.js`) MUST exist and keep passing for the
+console's URL-path-based navigation and restructured information architecture:
+ - **History-API routing (no hash).** The served `app.js` drives its view from
+   `location.pathname`, navigates via `history.pushState`, re-renders on a
+   `popstate` listener, and exposes a `navigate` helper and the storage slug→kind
+   map; it never uses hash-based routing (`location.hash`) nor full-page navigation
+   (`location.href` / `window.open(`) for routing.
+ - **Top-level nav is Actors / Storage / Users only.** The served `index.html`
+   exposes exactly these three top-level entries (`tab-actors`, `tab-storage`,
+   `tab-users`); Builds and Runs are **not** top-level (`tab-builds` / `tab-runs`
+   are absent) — they are reached only from an actor's detail page. Actor rows,
+   run/build/storage rows and sub-tabs all build real paths and navigate via
+   `pushState`.
+ - **Build detail keyed by build number.** The served `app.js` build-detail path
+   uses a build's **number** (e.g. `0.0.1`) in the URL and resolves it to a build id
+   client-side by fetching the actor's builds list and matching on `buildNumber`;
+   coverage asserts (behaviourally) that for an actor with multiple builds a given
+   number resolves to the record whose `buildNumber` equals it, and different numbers
+   resolve to different build ids.
+ - **Server serves the SPA shell for deep links / refresh.** `GET` of every SPA path
+   (`/actors`, `/actors/{id}`, `/actors/{id}/runs/{runId}`,
+   `/actors/{id}/builds/{buildNumber}`, `/storage/datasets`,
+   `/storage/datasets/{id}`, `/users`, and a non-existent resource such as
+   `/actors/no-such~actor`) returns HTTP 200 with the console's `index.html`
+   (recognizably the shell, e.g. contains `id="detail"` and the `/console/app.js`
+   script), while an unknown `/v2/...` path still returns a **404** in the Apify
+   error envelope (never the shell), `/console/app.js` still returns the JS asset,
+   and `/` still returns `index.html`. The catch-all uses an allowlist on the first
+   path segment and must not shadow the API.
+ - **Storage detail inspects contents.** The served `app.js` renders
+   `/storage/{slug}/{resourceId}` by reusing the shared content renderer with a kind
+   derived from the slug (via the slug→kind map), and storage rows link to that
+   detail path; coverage asserts (behaviourally) that both a named and a run-derived
+   storage are inspectable via the existing per-storage read endpoints, and that
+   inspection stays scoped to the acting user (a cross-user read is 404).
+
 ## Mandatory console/API behaviour tests (standing regression checks)
 
 Automated, Docker-free coverage (via the in-process `wired` / `wired_streaming`
-fixtures) MUST exist and keep passing for the following three behaviours:
+fixtures) MUST exist and keep passing for the following behaviours:
  - **Token-free user listing with no bootstrap** — `GET /v2/users` returns `200`
    and a well-formed user list with **no** `Authorization` header, and has **no
    bootstrap side effect**: presenting a bearer token to it (unknown, stale or
@@ -129,4 +168,8 @@ fixtures) MUST exist and keep passing for the following three behaviours:
    or an unknown id is `404` (no existence leak, no effect); and run-derived
    storages are **included** in the top-level listing (owner-scoped), marked
    `named: false`, still undeletable via this view (`400 invalid-request`), with
-   the run's storage left intact.
+   the run's storage left intact. Coverage MUST also assert the serialized `name`
+   is the **empty string** for a run-derived storage (not its id) while a named
+   storage keeps its given name, and that the console renders the named/run-derived
+   distinction as a **✅ / ❌** glyph gated on the same `named` flag as the delete
+   affordance.

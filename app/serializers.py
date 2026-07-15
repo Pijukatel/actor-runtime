@@ -17,7 +17,7 @@ def user_dict(u: User) -> dict[str, Any]:
 
 
 def storage_dict(st: Storage) -> dict[str, Any]:
-    name = st.id.split("~", 1)[1] if "~" in st.id else st.id
+    name = st.id.split("~", 1)[1] if "~" in st.id else ""
     return {
         "id": st.id,
         "name": name,

@@ -924,12 +924,18 @@ async def test_console_has_login_and_per_user_tabs(wired):
     assert 'id="user-select"' in index
     assert 'id="current-user"' in index
     assert "prompt(" not in app_js or "Enter your API token" not in app_js  # no free-text token prompt
-    # Four top-level tabs, including the new Users tab.
-    for tab in ('id="tab-actors"', 'id="tab-builds"', 'id="tab-runs"', 'id="tab-users"'):
+    # Top-level nav is the three new sections; Builds and Runs are no longer
+    # top-level (they live under an actor's detail).
+    for tab in ('id="tab-actors"', 'id="tab-storage"', 'id="tab-users"'):
         assert tab in index
-    # Backed by the per-user aggregate endpoints and the token is sent.
-    for endpoint in ("/v2/users/me/actors", "/v2/users/me/builds", "/v2/users/me/runs"):
-        assert endpoint in app_js
+    for gone in ('id="tab-builds"', 'id="tab-runs"'):
+        assert gone not in index
+    # The actors list is backed by the per-user aggregate endpoint; an actor's
+    # builds/runs are fetched from that actor's own per-actor endpoints; the token
+    # is sent.
+    assert "/v2/users/me/actors" in app_js
+    assert "/v2/acts/${actorId}/builds" in app_js
+    assert "/v2/acts/${actorId}/runs" in app_js
     assert "Authorization" in app_js and "Bearer" in app_js
 
 

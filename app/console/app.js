@@ -10,6 +10,13 @@
 // its text via textContent, and wired with addEventListener over a closure that
 // captures the value directly - the id stays a plain JS string that is never
 // re-parsed as markup or code.
+//
+// ROUTING: the view is driven by location.pathname via the History API (real
+// paths, not a hash), so every view is deep-linkable and refresh-safe and the
+// path shape mirrors the official console (/actors, /actors/{id}/runs/{runId},
+// /storage/{slug}/{id}, ...). navigate() pushes a real path and re-renders;
+// popstate handles Back/Forward. The server serves index.html for these SPA
+// paths (see app/routers/console.py) so a refresh/deep-link renders correctly.
 const $ = (sel) => document.querySelector(sel);
 
 const TOKEN_KEY = "actor-runtime-token";
@@ -89,8 +96,6 @@ async function streamLogInto(id, pre) {
   if (!appended) pre.textContent = "(no log)";
 }
 
-let activeTab = "actors";
-
 async function refreshUser() {
   const me = unwrap(await api("/v2/users/me"));
   const el = $("#current-user");
@@ -100,12 +105,13 @@ async function refreshUser() {
 // Switching users is client-side: pick an existing user's stored token and send
 // it as the bearer on every subsequent request. A null token (the unclaimed
 // default user) clears the stored token, i.e. acts token-less as local-user.
+// Re-render whatever view the URL currently addresses (route-aware), so the
+// switch takes effect in place rather than snapping back to a fixed view.
 function switchTo(token) {
   setToken(token == null ? "" : token);
   refreshUser();
   refreshUserSelect();
-  if (activeTab === "users") loadUsers();
-  else loadList();
+  renderRoute();
 }
 
 // Populate the header's "Switch user" dropdown from the existing users only
@@ -234,88 +240,155 @@ function wrapTd(node) {
   return td;
 }
 
-// Top-level tabs are backed by the per-user aggregate endpoints, so each list is
-// already scoped to the acting user server-side (no client-side filtering).
-async function loadList() {
-  const list = $("#actor-list");
-  if (!list) return;
-  // The Users and Storages views render into #detail, not the #actor-list panel;
-  // skip them here so the periodic refresh never clobbers those views.
-  if (activeTab === "users" || activeTab === "storages") return;
-  if (activeTab === "actors") {
-    const items = (unwrap(await api("/v2/users/me/actors")).items) || [];
-    list.innerHTML = "";
-    if (!items.length) {
-      list.appendChild(mk("li", { class: "muted", text: "No Actors yet. Push one with apify-cli." }));
-      return;
-    }
-    for (const a of items) {
-      list.appendChild(mk("li", { text: a.name, onClick: () => openActor(a.id) }));
-    }
-  } else if (activeTab === "builds") {
-    const items = (unwrap(await api("/v2/users/me/builds")).items) || [];
-    list.innerHTML = "";
-    if (!items.length) {
-      list.appendChild(mk("li", { class: "muted", text: "No builds yet." }));
-      return;
-    }
-    for (const b of items) {
-      list.appendChild(mk("li", { text: `${b.buildNumber} (${b.status})`, onClick: () => openBuild(b.id) }));
-    }
-  } else {
-    const items = (unwrap(await api("/v2/users/me/runs")).items) || [];
-    list.innerHTML = "";
-    if (!items.length) {
-      list.appendChild(mk("li", { class: "muted", text: "No runs yet." }));
-      return;
-    }
-    for (const r of items) {
-      list.appendChild(mk("li", { text: `${r.id} (${r.status})`, onClick: () => openRun(r.id) }));
-    }
-  }
-}
+// ------------------------------------------------------------------ routing
 
-function selectTab(tab) {
-  activeTab = tab;
-  document.querySelectorAll("#top-tabs span").forEach((s) => s.classList.remove("active"));
-  const el = $(`#tab-${tab}`);
-  if (el) el.classList.add("active");
-  if (tab === "users") loadUsers();
-  else if (tab === "storages") loadStorages();
-  else loadList();
-}
-
-// Top-level Storages view: the acting user's own standalone storages grouped by
-// type, each with a create-by-name form and a per-row delete. All lists are
-// server-scoped to the acting user, so no other user's storages are ever shown.
+// The storage URL slug (mirroring the official console) maps to the internal
+// kind token used by showStore. The list order is also the per-type sub-nav order.
+const STORAGE_SLUG_TO_KIND = {
+  "key-value-stores": "kv",
+  datasets: "ds",
+  "request-queues": "rq",
+};
 const STORAGE_TYPES = [
   ["key-value-stores", "Key-value stores"],
   ["datasets", "Datasets"],
   ["request-queues", "Request queues"],
 ];
 
-let showUnnamedStorages = true;
-// Cache of the last-fetched items per storage type, keyed by path, so toggling
-// the show/hide-unnamed checkbox can re-render from already-fetched data
-// instead of issuing a new fetch().
-let storageItemsCache = {};
+// Push a real path and render it. Every clickable element navigates through here
+// (via the History API only, never a full-page load or a hash fragment), so
+// navigation stays a single-page transition and the URL is a real, shareable path.
+function navigate(path) {
+  history.pushState({}, "", path);
+  renderRoute();
+}
 
-async function loadStorages() {
-  const list = $("#actor-list");
-  if (list) list.innerHTML = "";
+// Highlight the top-level nav entry for the current section.
+function highlightNav(section) {
+  document.querySelectorAll("#top-tabs span").forEach((s) => s.classList.remove("active"));
+  const map = { actors: "tab-actors", storage: "tab-storage", users: "tab-users" };
+  const el = $(`#${map[section] || "tab-actors"}`);
+  if (el) el.classList.add("active");
+}
 
-  for (const [path] of STORAGE_TYPES) {
-    storageItemsCache[path] = (unwrap(await api(`/v2/users/me/${path}`)).items) || [];
+// Parse location.pathname and dispatch to the matching view. Segments are split
+// only on "/"; the actor id (`username~name`) contains a literal "~", which is
+// not a separator, so it survives whole.
+function renderRoute() {
+  const path = location.pathname;
+  if (path === "/" || path === "") {
+    history.replaceState({}, "", "/actors");
+    return renderRoute();
+  }
+  const seg = path.split("/").filter(Boolean);
+  highlightNav(seg[0]);
+
+  if (seg[0] === "storage") {
+    if (seg.length === 1 || !STORAGE_SLUG_TO_KIND[seg[1]]) {
+      history.replaceState({}, "", "/storage/key-value-stores");
+      return renderRoute();
+    }
+    if (seg.length === 2) return loadStorages(seg[1]);
+    return showStorageDetail(seg[1], seg[2]);
   }
 
+  if (seg[0] === "users") return loadUsers();
+
+  // Default section is Actors (covers "/actors" and any unknown SPA path).
+  renderActorListPanel();
+  if (seg[0] !== "actors" || seg.length === 1) return showActorsPlaceholder();
+  const actorId = seg[1];
+  if (seg.length === 2) return openActor(actorId, "runs");
+  if (seg[2] === "builds") {
+    if (seg.length === 3) return openActor(actorId, "builds");
+    return openBuild(actorId, seg[3]);
+  }
+  // Runs sub-tab (also the fallback for an unknown sub-path under an actor).
+  if (seg.length === 3) return openActor(actorId, "runs");
+  return openRun(actorId, seg[3]);
+}
+
+// The 4s auto-refresh applies only to the Actors list route (a plain, form-less
+// left-panel list), exactly as the old periodic refresh did: it skipped detail
+// views (so a live log stream is never restarted) AND the Storage/Users views
+// (whose #detail create-by-name forms would be clobbered mid-edit by a re-render).
+function shouldAutoRefresh() {
+  const seg = location.pathname.split("/").filter(Boolean);
+  if (seg.length === 0) return true; // "/" normalizes to the Actors list
+  return seg[0] === "actors" && seg.length === 1;
+}
+
+function periodicRefresh() {
+  if (shouldAutoRefresh()) renderRoute();
+}
+
+// The left panel always shows the acting user's Actors (scoped server-side), so
+// you can switch actors from any actor route.
+async function renderActorListPanel() {
+  const list = $("#actor-list");
+  if (!list) return;
+  const items = (unwrap(await api("/v2/users/me/actors")).items) || [];
+  list.innerHTML = "";
+  if (!items.length) {
+    list.appendChild(mk("li", { class: "muted", text: "No Actors yet. Push one with apify-cli." }));
+    return;
+  }
+  for (const a of items) {
+    list.appendChild(mk("li", { text: a.name, onClick: () => navigate(`/actors/${a.id}`) }));
+  }
+}
+
+function showActorsPlaceholder() {
+  const detail = $("#detail");
+  if (!detail) return;
+  detail.innerHTML = "";
+  detail.appendChild(
+    mk("p", { class: "muted", text: "Select an Actor to inspect its runs, builds and storages." }),
+  );
+}
+
+// ------------------------------------------------------------------ storages
+
+// Cache of the last-fetched items per storage type, keyed by slug, so toggling
+// the show/hide-unnamed checkbox can re-render from already-fetched data instead
+// of issuing a new fetch(). `currentStorageSlug` is the type the page is showing.
+let showUnnamedStorages = true;
+let storageItemsCache = {};
+let currentStorageSlug = "key-value-stores";
+
+async function loadStorages(slug) {
+  currentStorageSlug = slug || currentStorageSlug;
+  const list = $("#actor-list");
+  if (list) list.innerHTML = "";
+  storageItemsCache[currentStorageSlug] =
+    (unwrap(await api(`/v2/users/me/${currentStorageSlug}`)).items) || [];
   renderStorages();
 }
 
 function renderStorages() {
+  const slug = currentStorageSlug;
   const detail = $("#detail");
   if (!detail) return;
   detail.innerHTML = "";
-  detail.appendChild(mk("h2", { text: "Storages" }));
+
+  // Per-type sub-nav: one deep-linkable path per storage type.
+  const subnav = mk("div", { class: "tabs" });
+  for (const [s, lbl] of STORAGE_TYPES) {
+    subnav.appendChild(
+      mk("span", { class: s === slug ? "active" : "", text: lbl, onClick: () => navigate(`/storage/${s}`) }),
+    );
+  }
+  detail.appendChild(subnav);
+
+  const label = (STORAGE_TYPES.find(([s]) => s === slug) || [slug, slug])[1];
+  detail.appendChild(mk("h2", { text: label }));
+
+  const form = mk("div", { class: "row" });
+  const input = mk("input");
+  input.placeholder = "New name";
+  const createBtn = mk("button", { text: "Create", onClick: () => createStorage(slug, input.value) });
+  form.append(input, createBtn);
+  detail.appendChild(form);
 
   const toggleRow = mk("div", { class: "row" });
   const toggleLabel = document.createElement("label");
@@ -333,57 +406,74 @@ function renderStorages() {
   toggleRow.appendChild(toggleLabel);
   detail.appendChild(toggleRow);
 
-  for (const [path, label] of STORAGE_TYPES) {
-    detail.appendChild(storageSection(path, label));
-  }
-}
-
-function storageSection(path, label) {
-  const wrap = mk("div");
-  wrap.appendChild(mk("h2", { text: label, style: { marginTop: "14px" } }));
-
-  const form = mk("div", { class: "row" });
-  const input = mk("input");
-  input.placeholder = "New name";
-  const createBtn = mk("button", { text: "Create", onClick: () => createStorage(path, input.value) });
-  form.append(input, createBtn);
-  wrap.appendChild(form);
-
-  const items = storageItemsCache[path] || [];
+  const items = storageItemsCache[slug] || [];
   const visible = showUnnamedStorages ? items : items.filter((st) => st.named === true);
   const rows = visible.map((st) => {
-    const marker = mk("td", { class: "muted", text: st.named ? "named" : "run-derived" });
+    // ✅ for a named/standalone storage, ❌ for a run-derived one - the same
+    // st.named flag that gates the delete affordance below.
+    const marker = mk("td", { class: "muted", text: st.named ? "✅" : "❌" });
     const del = st.named
       ? mk("button", {
           class: "secondary",
           text: "Delete",
-          onClick: () => deleteStorage(path, st.id),
+          onClick: () => deleteStorage(slug, st.id),
         })
       : mk("td", { class: "muted", text: "" });
-    return [mk("td", { text: st.name }), mk("td", { text: st.id }), marker, del];
+    const idCell = mk("td", {
+      class: "clickable",
+      text: st.id,
+      onClick: () => navigate(`/storage/${slug}/${st.id}`),
+    });
+    return [mk("td", { text: st.name }), idCell, marker, del];
   });
-  wrap.appendChild(tableEl(["Name", "Id", "Named", ""], rows));
-  return wrap;
+  detail.appendChild(tableEl(["Name", "Id", "Named", ""], rows));
 }
 
-async function createStorage(path, name) {
+async function createStorage(slug, name) {
   const trimmed = (name || "").trim();
   if (!trimmed) return;
-  await api(`/v2/${path}`, {
+  await api(`/v2/${slug}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ name: trimmed }),
   });
-  loadStorages();
+  loadStorages(slug);
 }
 
-async function deleteStorage(path, id) {
+async function deleteStorage(slug, id) {
   if (!confirm(`Delete storage "${id}"? This permanently removes its data and cannot be undone.`)) return;
-  await api(`/v2/${path}/${id}`, { method: "DELETE" });
-  loadStorages();
+  await api(`/v2/${slug}/${id}`, { method: "DELETE" });
+  loadStorages(slug);
 }
 
-window.openActor = async function (actorId) {
+// Storage detail: inspect any storage's contents (keys+records / items /
+// requests) at /storage/{slug}/{id}, reusing showStore via the slug→kind map.
+async function showStorageDetail(slug, resourceId) {
+  const kind = STORAGE_SLUG_TO_KIND[slug];
+  const list = $("#actor-list");
+  if (list) list.innerHTML = "";
+  const detail = $("#detail");
+  if (!detail) return;
+  detail.innerHTML = "";
+
+  const head = mk("div", { class: "row" });
+  head.appendChild(mk("h2", { text: resourceId, style: { margin: "0" } }));
+  detail.appendChild(head);
+  const store = mk("div");
+  store.id = "store";
+  detail.append(
+    store,
+    mk("button", { class: "secondary", text: "Back", onClick: () => navigate(`/storage/${slug}`) }),
+  );
+  await showStore(null, kind, resourceId);
+}
+
+// ------------------------------------------------------------------ actors
+
+// Actor detail is a tabbed page (Runs / Builds sub-tabs), mirroring the official
+// console. Runs and builds are reached from here, never as top-level sections.
+window.openActor = async function (actorId, subTab) {
+  subTab = subTab === "builds" ? "builds" : "runs";
   const actor = unwrap(await api(`/v2/acts/${actorId}`));
   const builds = (unwrap(await api(`/v2/acts/${actorId}/builds`)).items) || [];
   const runs = (unwrap(await api(`/v2/acts/${actorId}/runs`)).items) || [];
@@ -397,32 +487,53 @@ window.openActor = async function (actorId) {
   const actions = mk("div", { class: "row" });
   actions.appendChild(mk("button", { text: "Build", onClick: () => doBuild(actorId) }));
   actions.appendChild(mk("button", { text: "Run", onClick: () => doRun(actorId) }));
-  actions.appendChild(mk("button", { class: "secondary", text: "Refresh", onClick: () => openActor(actorId) }));
-
-  const buildsRows = builds.map((b) => [
-    mk("td", { class: "clickable", text: b.id, onClick: () => openBuild(b.id) }),
-    mk("td", { text: b.buildNumber }),
-    badgeEl(b.status),
-  ]);
-  const runsRows = runs.map((r) => [
-    mk("td", { class: "clickable", text: r.id, onClick: () => openRun(r.id) }),
-    mk("td", { text: r.buildNumber }),
-    badgeEl(r.status),
-  ]);
-
-  detail.append(
-    head,
-    actions,
-    mk("h2", { text: "Builds" }),
-    tableEl(["Build", "Number", "Status"], buildsRows),
-    mk("h2", { text: "Runs", style: { marginTop: "14px" } }),
-    tableEl(["Run", "Build", "Status"], runsRows),
+  actions.appendChild(
+    mk("button", { class: "secondary", text: "Refresh", onClick: () => navigate(`/actors/${actorId}/${subTab}`) }),
   );
+
+  const tabs = mk("div", { class: "tabs" });
+  const runsTab = mk("span", {
+    class: subTab === "runs" ? "active" : "",
+    text: "Runs",
+    onClick: () => navigate(`/actors/${actorId}/runs`),
+  });
+  const buildsTab = mk("span", {
+    class: subTab === "builds" ? "active" : "",
+    text: "Builds",
+    onClick: () => navigate(`/actors/${actorId}/builds`),
+  });
+  tabs.append(runsTab, buildsTab);
+
+  detail.append(head, actions, tabs);
+
+  if (subTab === "builds") {
+    const buildsRows = builds.map((b) => [
+      mk("td", {
+        class: "clickable",
+        text: b.buildNumber,
+        onClick: () => navigate(`/actors/${actorId}/builds/${b.buildNumber}`),
+      }),
+      mk("td", { text: b.buildNumber }),
+      badgeEl(b.status),
+    ]);
+    detail.append(mk("h2", { text: "Builds" }), tableEl(["Build", "Number", "Status"], buildsRows));
+  } else {
+    const runsRows = runs.map((r) => [
+      mk("td", {
+        class: "clickable",
+        text: r.id,
+        onClick: () => navigate(`/actors/${actorId}/runs/${r.id}`),
+      }),
+      mk("td", { text: r.buildNumber }),
+      badgeEl(r.status),
+    ]);
+    detail.append(mk("h2", { text: "Runs" }), tableEl(["Run", "Build", "Status"], runsRows));
+  }
 };
 
 window.doBuild = async function (actorId) {
   await api(`/v2/acts/${actorId}/builds?version=0.0`, { method: "POST" });
-  setTimeout(() => openActor(actorId), 500);
+  setTimeout(() => navigate(`/actors/${actorId}/builds`), 500);
 };
 
 window.doRun = async function (actorId) {
@@ -432,16 +543,37 @@ window.doRun = async function (actorId) {
     headers: { "content-type": "application/json" },
     body: input,
   });
-  setTimeout(() => openActor(actorId), 500);
+  setTimeout(() => navigate(`/actors/${actorId}/runs`), 500);
 };
 
-window.openBuild = async function (buildId) {
-  const b = unwrap(await api(`/v2/actor-builds/${buildId}`));
+// Build detail is addressed by buildNumber (e.g. 0.0.1), like the official
+// console - not by internal build id. There is no by-number endpoint, so resolve
+// it client-side: fetch the actor's builds list and match the buildNumber, then
+// render that build's log. An unknown buildNumber renders "build not found"
+// rather than silently showing an arbitrary build.
+window.openBuild = async function (actorId, buildNumber) {
+  const builds = (unwrap(await api(`/v2/acts/${actorId}/builds`)).items) || [];
+  const match = builds.find((b) => b.buildNumber === buildNumber);
   const detail = $("#detail");
   detail.innerHTML = "";
+  const back = mk("button", {
+    class: "secondary",
+    text: "Back",
+    onClick: () => navigate(`/actors/${actorId}/builds`),
+  });
 
+  if (!match) {
+    detail.append(
+      mk("h2", { text: "Build not found" }),
+      mk("p", { class: "muted", text: `No build ${buildNumber} for this Actor.` }),
+      back,
+    );
+    return;
+  }
+
+  const b = unwrap(await api(`/v2/actor-builds/${match.id}`));
   const head = mk("div", { class: "row" });
-  head.appendChild(mk("h2", { text: `Build ${b.id}`, style: { margin: "0" } }));
+  head.appendChild(mk("h2", { text: `Build ${b.buildNumber}`, style: { margin: "0" } }));
   head.appendChild(badgeEl(b.status));
 
   const logPre = mk("pre");
@@ -450,12 +582,12 @@ window.openBuild = async function (buildId) {
     mk("p", { class: "muted", text: `Actor: ${b.actId} · number ${b.buildNumber}` }),
     mk("h2", { text: "Build log" }),
     logPre,
-    mk("button", { class: "secondary", text: "Back", onClick: () => openActor(b.actId) }),
+    back,
   );
-  streamLogInto(buildId, logPre);
+  streamLogInto(match.id, logPre);
 };
 
-window.openRun = async function (runId) {
+window.openRun = async function (actorId, runId) {
   const r = unwrap(await api(`/v2/actor-runs/${runId}`));
   const detail = $("#detail");
   detail.innerHTML = "";
@@ -483,7 +615,11 @@ window.openRun = async function (runId) {
     mk("p", { class: "muted", text: `Actor: ${r.actId} · exit code ${r.exitCode}` }),
     tabs,
     store,
-    mk("button", { class: "secondary", text: "Back", onClick: () => openActor(r.actId) }),
+    mk("button", {
+      class: "secondary",
+      text: "Back",
+      onClick: () => navigate(`/actors/${actorId}/runs`),
+    }),
   );
   showStore(kvTab, "kv", r.defaultKeyValueStoreId);
 };
@@ -541,17 +677,17 @@ function emptyOr(table, count) {
   return table;
 }
 
-// Wire the header controls and top-level tabs with addEventListener (no inline
-// handlers), then start the per-user view.
+// Wire the header controls and top-level nav with addEventListener (no inline
+// handlers). The three top-level entries navigate to real paths; popstate
+// re-renders on Back/Forward. Then render the initial route from the URL.
 const _userSelect = $("#user-select");
 if (_userSelect) _userSelect.addEventListener("change", () => switchTo(_userSelect.value));
-$("#tab-actors").addEventListener("click", () => selectTab("actors"));
-$("#tab-builds").addEventListener("click", () => selectTab("builds"));
-$("#tab-runs").addEventListener("click", () => selectTab("runs"));
-$("#tab-storages").addEventListener("click", () => selectTab("storages"));
-$("#tab-users").addEventListener("click", () => selectTab("users"));
+$("#tab-actors").addEventListener("click", () => navigate("/actors"));
+$("#tab-storage").addEventListener("click", () => navigate("/storage/key-value-stores"));
+$("#tab-users").addEventListener("click", () => navigate("/users"));
+window.addEventListener("popstate", renderRoute);
 
 refreshUser();
 refreshUserSelect();
-loadList();
-setInterval(loadList, 4000);
+renderRoute();
+setInterval(periodicRefresh, 4000);

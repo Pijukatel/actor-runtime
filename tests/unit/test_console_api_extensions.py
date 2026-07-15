@@ -508,7 +508,8 @@ async def test_run_derived_and_named_storages_scoped_per_user(wired):
 async def test_console_has_storages_tab(wired):
     client, _service = wired
     html = (await client.get("/")).text
-    assert 'id="tab-storages"' in html
+    # Storage is a single top-level nav entry now (singular), reached at /storage.
+    assert 'id="tab-storage"' in html
     js = (await client.get("/console/app.js")).text
     assert "loadStorages" in js
     assert "createStorage" in js
@@ -554,9 +555,13 @@ async def test_console_left_column_has_separate_nav_and_list_boxes(wired):
     client, _service = wired
     html = (await client.get("/")).text
 
-    # Every id app.js/tests depend on is preserved.
-    for tab_id in ("tab-actors", "tab-builds", "tab-runs", "tab-storages", "tab-users"):
+    # Top-level nav is exactly the three new sections (Actors / Storage / Users);
+    # Builds and Runs are no longer top-level destinations (they live under an
+    # actor's detail).
+    for tab_id in ("tab-actors", "tab-storage", "tab-users"):
         assert f'id="{tab_id}"' in html
+    for gone in ("tab-builds", "tab-runs", "tab-storages"):
+        assert f'id="{gone}"' not in html
     assert 'id="actor-list"' in html
     assert 'id="detail"' in html
     assert 'id="top-tabs"' in html
@@ -576,3 +581,239 @@ async def test_console_left_column_has_separate_nav_and_list_boxes(wired):
     actor_list_pos = html.index('id="actor-list"')
     assert nav_box_start < top_tabs_pos < list_box_start
     assert list_box_start < actor_list_pos
+
+
+# --------------------------------------------------------- (4) console routing
+
+
+async def test_console_uses_history_api_router(wired):
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+    # Real History-API routing off location.pathname (no hash routing).
+    assert "location.pathname" in js
+    assert "history.pushState" in js
+    assert 'addEventListener("popstate"' in js
+    assert "function navigate(" in js
+    # No hash routing anywhere: neither reading nor writing location.hash.
+    assert "location.hash" not in js
+    # The slug→kind map that backs the /storage/{slug} paths.
+    assert "STORAGE_SLUG_TO_KIND" in js
+    assert '"key-value-stores": "kv"' in js
+
+
+async def test_console_actor_row_navigates_via_pushstate(wired):
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+    # Clicking an actor builds the /actors/{id} path and navigates (pushState),
+    # not location.href/window.open, and the run/build sub-paths are built too.
+    assert "navigate(`/actors/${a.id}`)" in js
+    assert "navigate(`/actors/${actorId}/runs`)" in js
+    assert "navigate(`/actors/${actorId}/builds`)" in js
+    assert "navigate(`/actors/${actorId}/runs/${r.id}`)" in js
+    assert "location.href" not in js
+    assert "window.open(" not in js
+
+
+async def test_console_build_detail_resolves_by_build_number(wired):
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+    # Build detail is keyed by buildNumber in the path and resolved to a build id
+    # client-side by fetching the actor's builds list and matching on buildNumber.
+    assert "navigate(`/actors/${actorId}/builds/${b.buildNumber}`)" in js
+    assert "await api(`/v2/acts/${actorId}/builds`)" in js
+    assert "builds.find((b) => b.buildNumber === buildNumber)" in js
+
+
+async def test_console_storage_marker_is_check_and_cross(wired):
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+    # The named/run-derived marker is a ✅/❌ glyph gated on st.named, not the
+    # plain "run-derived" text label used before.
+    assert 'st.named ? "✅" : "❌"' in js
+    assert '"run-derived"' not in js
+
+
+async def test_console_storage_detail_inspects_via_showstore(wired):
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+    # The /storage/{slug}/{id} detail route renders contents by reusing showStore
+    # with a kind derived from the slug, and rows link to that detail path.
+    assert "function showStorageDetail(" in js
+    assert "STORAGE_SLUG_TO_KIND[slug]" in js
+    assert "showStore(null, kind, resourceId)" in js
+    assert "navigate(`/storage/${slug}/${st.id}`)" in js
+
+
+# --------------------------------------------- (5) server serves the SPA shell
+
+
+async def _provision_build_and_run(client, service, token="deep", name="act"):
+    """Provision an actor with a build and a run; return (actor_id, run, build)."""
+    run = await _provision_run(client, service, token, name=name)
+    actor_id = f"{token}~{name}"
+    builds = (
+        await client.get(f"/v2/acts/{actor_id}/builds", headers=auth(token))
+    ).json()["data"]["items"]
+    return actor_id, run, builds[0]
+
+
+async def test_server_serves_index_html_for_spa_paths(wired):
+    client, service = wired
+    actor_id, run, build = await _provision_build_and_run(client, service)
+    run_id = run["id"]
+    build_number = build["buildNumber"]
+
+    spa_paths = [
+        "/actors",
+        f"/actors/{actor_id}",
+        f"/actors/{actor_id}/runs/{run_id}",
+        f"/actors/{actor_id}/builds/{build_number}",
+        "/storage/datasets",
+        f"/storage/datasets/{run['defaultDatasetId']}",
+        "/users",
+        # A resource that does not exist still serves the shell: "not found" is a
+        # client-side concern, not a server 404.
+        "/actors/no-such~actor",
+    ]
+    for path in spa_paths:
+        resp = await client.get(path)
+        assert resp.status_code == 200, f"{path} -> {resp.status_code}"
+        assert 'id="detail"' in resp.text, f"{path} did not serve the console shell"
+        assert '/console/app.js' in resp.text
+
+
+async def test_server_spa_catch_all_does_not_shadow_api_or_assets(wired):
+    client, _service = wired
+    # An unknown /v2/* path is still a normal API 404 (Apify envelope), NOT the
+    # console shell.
+    bogus = await client.get("/v2/bogus")
+    assert bogus.status_code == 404
+    assert bogus.json()["error"]["type"] == "record-not-found"
+    assert 'id="detail"' not in bogus.text
+
+    # A non-SPA, non-API path is also a plain 404 (allowlist, not denylist).
+    other = await client.get("/totally-unknown")
+    assert other.status_code == 404
+    assert 'id="detail"' not in other.text
+
+    # A non-GET request to an unknown path answers a uniform 404 (Apify
+    # envelope), NOT a 405: the catch-all must not make a nonexistent path look
+    # like it exists-but-rejects-the-verb.
+    for method in ("post", "put", "patch", "delete"):
+        resp = await getattr(client, method)("/v2/bogus")
+        assert resp.status_code == 404, f"{method.upper()} /v2/bogus -> {resp.status_code}"
+        assert resp.json()["error"]["type"] == "record-not-found"
+
+    # The literal asset path still returns the JS, unshadowed.
+    app_js = await client.get("/console/app.js")
+    assert app_js.status_code == 200
+    assert "application/javascript" in app_js.headers.get("content-type", "")
+    assert app_js.text.strip()
+
+    # / still returns index.html.
+    root = await client.get("/")
+    assert root.status_code == 200
+    assert 'id="detail"' in root.text
+
+
+# --------------------------------------------- (6) storage serializer fold-ins
+
+
+async def test_run_derived_storage_name_is_empty(wired):
+    client, service = wired
+    run = await _provision_run(client, service, "namer")
+    for endpoint, key in (
+        ("key-value-stores", "defaultKeyValueStoreId"),
+        ("datasets", "defaultDatasetId"),
+        ("request-queues", "defaultRequestQueueId"),
+    ):
+        listed = (
+            await client.get(f"/v2/users/me/{endpoint}", headers=auth("namer"))
+        ).json()["data"]["items"]
+        entry = next(s for s in listed if s["id"] == run[key])
+        assert entry["name"] == "", f"{endpoint}: expected empty name, got {entry['name']!r}"
+        assert entry["named"] is False
+
+
+async def test_named_storage_keeps_its_name(wired):
+    client, _service = wired
+    await _create_user(client, "keeper")
+    await client.post("/v2/datasets", json={"name": "mydata"}, headers=auth("keeper"))
+    listed = (
+        await client.get("/v2/users/me/datasets", headers=auth("keeper"))
+    ).json()["data"]["items"]
+    entry = next(s for s in listed if s["id"] == "keeper~mydata")
+    assert entry["name"] == "mydata"
+    assert entry["named"] is True
+
+
+async def test_build_number_resolves_to_correct_build(wired):
+    """Console-facing data resolution: for an actor with multiple builds, matching
+    on buildNumber selects the row whose buildNumber equals the target (5.4)."""
+    client, service = wired
+    await _create_user(client, "multi")
+    actor_id = "multi~act"
+    await client.post(
+        "/v2/acts",
+        json={"name": "act", "versions": [{"versionNumber": "0.0", "buildTag": "latest"}]},
+        headers=auth("multi"),
+    )
+    await client.post(
+        f"/v2/actors/{actor_id}/versions",
+        json={
+            "versionNumber": "0.0",
+            "sourceType": "SOURCE_FILES",
+            "sourceFiles": [{"name": "main.py", "format": "TEXT", "content": "print('hi')\n"}],
+        },
+        headers=auth("multi"),
+    )
+    await client.post(f"/v2/acts/{actor_id}/builds?version=0.0", headers=auth("multi"))
+    await service.wait_idle()
+    await client.post(f"/v2/acts/{actor_id}/builds?version=0.0", headers=auth("multi"))
+    await service.wait_idle()
+
+    builds = (
+        await client.get(f"/v2/acts/{actor_id}/builds", headers=auth("multi"))
+    ).json()["data"]["items"]
+    numbers = {b["buildNumber"]: b["id"] for b in builds}
+    assert len(numbers) >= 2, numbers
+
+    # The client resolution (find the row whose buildNumber equals the target)
+    # picks the matching build, and different numbers resolve to different ids.
+    (num_a, num_b) = sorted(numbers)[:2]
+    match_a = next(b for b in builds if b["buildNumber"] == num_a)
+    match_b = next(b for b in builds if b["buildNumber"] == num_b)
+    assert match_a["buildNumber"] == num_a
+    assert match_b["buildNumber"] == num_b
+    assert match_a["id"] != match_b["id"]
+
+
+async def test_storage_detail_inspect_is_owner_scoped(wired):
+    """Every storage is inspectable at its detail path via the existing per-storage
+    read endpoints, and inspection stays scoped to the acting user (6.4/6.6)."""
+    client, service = wired
+    run = await _provision_run(client, service, "insp")
+    kv_id = run["defaultKeyValueStoreId"]
+
+    # A named storage is inspectable and its content matches what was written.
+    await client.post("/v2/key-value-stores", json={"name": "named"}, headers=auth("insp"))
+    await client.put(
+        "/v2/key-value-stores/insp~named/records/greeting",
+        json={"hello": "world"},
+        headers={**auth("insp"), "content-type": "application/json"},
+    )
+    rec = await client.get(
+        "/v2/key-value-stores/insp~named/records/greeting", headers=auth("insp")
+    )
+    assert rec.status_code == 200 and rec.json() == {"hello": "world"}
+
+    # A run-derived storage is inspectable too (only its delete affordance differs).
+    keys = (
+        await client.get(f"/v2/key-value-stores/{kv_id}/keys", headers=auth("insp"))
+    ).json()["data"]["items"]
+    assert any(k["key"] == "OUTPUT" for k in keys)
+
+    # Owner-scoping: another user cannot inspect insp's run-derived storage.
+    await _create_user(client, "other")
+    cross = await client.get(f"/v2/key-value-stores/{kv_id}/keys", headers=auth("other"))
+    assert cross.status_code == 404

@@ -192,13 +192,15 @@
 - `GET /v2/users/me/key-value-stores`, `GET /v2/users/me/datasets`,
   `GET /v2/users/me/request-queues` each return **all** of the acting user's owned
   storages of that type in the standard envelope (each item has `id`, `name`
-  [derived from the id], `type`, `createdAt`, and `named`). Run-derived storages are
-  **included** alongside standalone ones (they also remain browsable via their
-  run's detail view). Each item's `named` field is a boolean: `true` for a
-  standalone (`username~name`) storage, `false` for a run-derived
-  (`kv_/ds_/rq_<runId>`) one, so a client can tell the two apart from the listing
-  response alone. Each listing is strictly scoped to the acting user — another
-  user's storages never appear.
+  [derived from the id], `type`, `createdAt`, and `named`). The `name` is the part
+  after `~` for a standalone (`username~name`) storage; a **run-derived**
+  (`kv_/ds_/rq_<runId>`) storage has **no meaningful name and serializes `name`
+  as the empty string `""`** (not its id), since it was never explicitly named.
+  Run-derived storages are **included** alongside standalone ones (they also remain
+  browsable via their run's detail view). Each item's `named` field is a boolean:
+  `true` for a standalone storage, `false` for a run-derived one, so a client can
+  tell the two apart from the listing response alone. Each listing is strictly
+  scoped to the acting user — another user's storages never appear.
 - `POST /v2/{type}` creates a standalone storage by name (namespaced `username~name`,
   idempotent for the owner; a `409` if the id resolves to another owner), for all
   three types.
@@ -212,3 +214,22 @@
     managed with its run and cannot be deleted here (deleting it would orphan the
     run's storage references);
   - success → the standard envelope.
+
+## Console SPA serving (catch-all)
+
+- The console is a History-API single-page app whose client routes are real paths
+  (`/actors...`, `/storage...`, `/users`). So a deep link or a browser refresh to
+  one of those paths renders correctly, the app is served by a **catch-all**
+  registered **last** (after every `/v2/*` API route and after the explicit `/`,
+  `/console` and `/console/app.js` routes): `GET /{full_path}` returns the console's
+  `index.html` (HTTP 200) **only** when the first path segment is one the SPA owns —
+  an **allowlist** of `actors`, `storage`, `users`. The shell is served even when the
+  addressed resource does not exist (e.g. `/actors/no-such~actor`); "not found" is a
+  client-side concern, not a server 404.
+- The catch-all **never shadows the API**: any other unmatched path — including any
+  unknown `/v2/...` path — returns a normal **404 `record-not-found`** in the Apify
+  error envelope, not `index.html`. Because the catch-all is registered last and only
+  matches paths no earlier route claimed, every real `/v2/*` endpoint and the literal
+  `/console/app.js` asset keep their existing responses unchanged.
+- The catch-all is defined once on the shared app instance, so it behaves identically
+  on both the API and console ports.
