@@ -14,7 +14,20 @@ the run's default storages (key-value store, dataset, request queue).
   providing dataset, key-value store and request queue.
 - **Actor driver** - builds Actor images with `docker build` and runs them as
   containers via the mounted host Docker socket, wiring in the run input and the
-  run's default storages (Apify container conventions).
+  run's default storages (Apify container conventions). Every Actor container
+  gets a working `APIFY_API_BASE_URL` callback and a real (but never the
+  bound-secret) `APIFY_TOKEN`, over a shared Docker network the runtime and
+  every Actor container join, so containers can also reach each other by name.
+- **Standby actors** - an Actor pushed with `usesStandbyMode: true` in
+  `.actor/actor.json` is kept warm as a long-lived container instead of running
+  once and exiting: its serialized object exposes a `standbyUrl`, and
+  `{method} /v2/actor-standby/{actorId}/{path}` lazily starts it, waits for
+  readiness, and reverse-proxies requests to it (idle-timeout torn down
+  automatically). `standbyUrl` resolves only from **inside another Actor
+  container** on the shared Docker network — a host-side caller (e.g. `curl`
+  on your machine) must instead use
+  `http://localhost:<published-api-port>/v2/actor-standby/{actorId}/...`. See
+  `requirements/api.md`'s "Standby actors" section.
 - **Console** - a tiny server-rendered SPA (no build tooling) to list Actors,
   builds and runs, trigger Build/Run, and browse a finished run's storages.
 - **Multiple users via placeholder login.** The API token selects the acting user
@@ -54,10 +67,13 @@ Data (Actors, versions, builds, runs and their storages) lives under `$DATA` and
 persists across `docker stop` / `docker start`.
 
 > Upgrade caveat: the runtime has no schema migrations (`create_all()` only
-> creates missing tables, not new columns on existing ones). Upgrading a runtime
-> that predates per-user ownership requires a **fresh `DATA_DIR`** — the new
-> `username` columns on the builds/runs tables are not added to an existing
-> database in place.
+> creates missing tables, not new columns on existing ones). **Any release that
+> adds columns to an existing table requires a fresh `DATA_DIR`** — new columns
+> are never added to an existing database in place, only entirely new tables
+> are. This has applied to every such release so far: the `username` columns
+> added for per-user ownership, and this release's `users.container_token`,
+> `actors.actor_standby` and `runs.is_standby` columns (added for standby-actor
+> support).
 
 > Platform note: the host Docker-socket mount is validated on Linux. macOS and
 > Windows are best-effort for this first draft (see `requirements/system.md`).

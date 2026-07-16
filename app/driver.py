@@ -8,12 +8,17 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import shutil
 import stat
 import threading
 import zipfile
 from pathlib import Path
 from typing import Callable, Protocol
+
+from .config import ACTOR_STANDBY_PORT, NETWORK_ALIAS, NETWORK_NAME
+
+logger = logging.getLogger(__name__)
 
 # Per-read (inactivity) timeout on the Docker build's streaming HTTP response.
 # It bounds a *silently* hung build - one that stops emitting output for this
@@ -131,19 +136,92 @@ class Driver(Protocol):
         log_sink: Callable[[str], None] | None = None,
     ) -> RunResult: ...
 
+    def ensure_network(self) -> None: ...
+
+    def start(
+        self,
+        image_tag: str,
+        host_storage_dir: str,
+        environment: dict[str, str],
+        container_name: str,
+        mem_limit_mb: int | None = None,
+    ) -> str: ...
+
+    def reap(self, container_name: str) -> None: ...
+
     def stop(self, container_name: str) -> None: ...
 
     def remove_image(self, image_tag: str) -> None: ...
+
+    def logs(self, container_name: str) -> str: ...
 
 
 class DockerDriver:
     """Real driver using the host Docker daemon via the mounted socket."""
 
-    def __init__(self, client=None) -> None:
+    def __init__(self, client=None, network_name: str = NETWORK_NAME) -> None:
         import docker
 
         self._docker = docker
         self._client = docker.from_env() if client is None else client
+        self._network_name = network_name
+        # Set True only once `ensure_network()` has confirmed the shared
+        # network actually exists (found or freshly created). Both `run()`
+        # and `start()` below key off this instead of blindly assuming the
+        # named network is there -- see the fallback logic in each.
+        self._network_available = False
+
+    def ensure_network(self) -> None:
+        """Create the shared user-defined network (idempotent) and self-attach.
+
+        Actor containers only get embedded DNS (resolving each other, and the
+        runtime, by name) on a user-defined network -- the default bridge has
+        none. Self-attach needs the runtime to actually be a container whose
+        id is discoverable via its own hostname; when it is not (e.g. running
+        directly on a host, as in local dev outside Docker), self-attach is
+        skipped -- Actor containers still join the network below, but the
+        runtime itself stays unreachable by name from inside them, so
+        APIFY_API_BASE_URL will not resolve for those containers.
+
+        If the network itself cannot be found OR created (e.g. a daemon that
+        restricts user-defined network creation), ``self._network_available``
+        is left ``False``: ``run()`` then falls back to the default bridge
+        network (preserving pre-standby on-demand-run behavior) and ``start()``
+        raises a clear, actionable error instead of referencing a network that
+        does not exist.
+        """
+        try:
+            self._client.networks.get(self._network_name)
+        except self._docker.errors.NotFound:
+            try:
+                self._client.networks.create(self._network_name, driver="bridge")
+            except Exception:  # noqa: BLE001 - best-effort; run()/start() fall back below
+                logger.warning("Could not create Docker network %r.", self._network_name)
+                return
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not look up Docker network %r.", self._network_name)
+            return
+        # The network exists (found, or just created) -- on-demand runs and
+        # standby starts can now safely reference it by name.
+        self._network_available = True
+        try:
+            import socket
+
+            self_container = self._client.containers.get(socket.gethostname())
+            self._client.networks.get(self._network_name).connect(
+                self_container, aliases=[NETWORK_ALIAS]
+            )
+        except self._docker.errors.APIError as exc:
+            # Already connected (e.g. a restarted, not recreated, container) is
+            # the common, harmless case -- only warn for anything else.
+            if "already exists" not in str(exc).lower() and "already connected" not in str(exc).lower():
+                logger.warning("Could not self-attach to network %r: %s", self._network_name, exc)
+        except Exception:  # noqa: BLE001 - not running as a container: guarded fallback, not fatal
+            logger.warning(
+                "Could not self-attach to network %r under alias %r (not running as a "
+                "container?); APIFY_API_BASE_URL will not be reachable from Actor containers.",
+                self._network_name, NETWORK_ALIAS,
+            )
 
     def build(
         self, build_dir: Path, image_tag: str, log_sink: Callable[[str], None] | None = None
@@ -197,12 +275,23 @@ class DockerDriver:
             detach=True,
             environment=environment,
             volumes={host_storage_dir: {"bind": "/apify_storage", "mode": "rw"}},
-            network_mode="bridge",
             # Resource caps: enforce the caller's memory budget and apply sane
             # process/CPU ceilings so a runaway Actor cannot exhaust the host.
             pids_limit=DEFAULT_PIDS_LIMIT,
             nano_cpus=DEFAULT_NANO_CPUS,
         )
+        if self._network_available:
+            # The shared user-defined network (not the default bridge) so this
+            # container can reach the runtime's APIFY_API_BASE_URL, and be
+            # reached in turn, by name.
+            run_kwargs["network"] = self._network_name
+        else:
+            # `ensure_network()` couldn't create/look up the shared network at
+            # boot -- fall back to Docker's always-present default bridge so
+            # on-demand runs keep working exactly as they did before standby
+            # support existed (network-name-reachability and standby
+            # forwarding simply won't work in this degraded case).
+            run_kwargs["network_mode"] = "bridge"
         if container_name:
             run_kwargs["name"] = container_name
         if mem_limit_mb:
@@ -267,12 +356,87 @@ class DockerDriver:
                 pass
         return RunResult(exit_code, log, timed_out=timed_out)
 
+    def start(
+        self,
+        image_tag: str,
+        host_storage_dir: str,
+        environment: dict[str, str],
+        container_name: str,
+        mem_limit_mb: int | None = None,
+    ) -> str:
+        """Non-blocking start: launch a detached, long-lived container and return
+        immediately with its forwarding endpoint (no ``wait``, no auto-remove --
+        that is ``reap``'s job). Used for standby Actor runs, where the caller
+        needs a live handle rather than a completed :class:`RunResult`.
+
+        The container's name doubles as its DNS name on the shared network, so
+        the endpoint is known synchronously without inspecting the container.
+
+        Raises ``RuntimeError`` with a clear, actionable message if the shared
+        network is not available (``ensure_network()`` failed at boot) instead
+        of attempting to join a network that doesn't exist: unlike an on-demand
+        ``run()``, a standby container is unreachable by anything but its
+        network DNS name, so there is no degraded-but-working fallback here.
+        """
+        if not self._network_available:
+            raise RuntimeError(
+                f"Cannot start a standby Actor container: the shared Docker "
+                f"network {self._network_name!r} is not available (network "
+                "setup failed at runtime boot -- see the 'Could not create/"
+                "look up Docker network' warning in the runtime's own logs). "
+                "Standby actors require container-to-container networking by "
+                "name; on-demand runs are unaffected and keep working via the "
+                "default bridge network. Fix the daemon's network-creation "
+                "permissions and restart the runtime to enable standby actors."
+            )
+        run_kwargs: dict = dict(
+            detach=True,
+            environment=environment,
+            volumes={host_storage_dir: {"bind": "/apify_storage", "mode": "rw"}},
+            network=self._network_name,
+            name=container_name,
+            pids_limit=DEFAULT_PIDS_LIMIT,
+            nano_cpus=DEFAULT_NANO_CPUS,
+        )
+        if mem_limit_mb:
+            run_kwargs["mem_limit"] = f"{int(mem_limit_mb)}m"
+        self._client.containers.run(image_tag, **run_kwargs)
+        return f"http://{container_name}:{ACTOR_STANDBY_PORT}"
+
+    def reap(self, container_name: str) -> None:
+        """Kill and remove a container started via ``start`` (idempotent)."""
+        try:
+            container = self._client.containers.get(container_name)
+        except Exception:  # noqa: BLE001 - already gone
+            return
+        try:
+            container.remove(force=True)
+        except Exception:  # noqa: BLE001
+            pass
+
     def stop(self, container_name: str) -> None:
         """Best-effort kill of a run container (used by abort)."""
         try:
             self._client.containers.get(container_name).kill()
         except Exception:  # noqa: BLE001 - container may already be gone
             pass
+
+    def logs(self, container_name: str) -> str:
+        """Best-effort fetch of a still-alive container's accumulated stdout/stderr.
+
+        Standby runs have no live ``log_sink`` the way the blocking ``run()``
+        path does (there is no in-flight call to attach one to), so the
+        service calls this at reap/teardown time -- before ``reap`` kills and
+        removes the container -- to populate ``Run.log`` instead of leaving it
+        permanently empty for a standby run's whole warm lifetime. Returns an
+        empty string if the container is already gone or logs can't be read;
+        never raises.
+        """
+        try:
+            container = self._client.containers.get(container_name)
+            return container.logs().decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001 - best-effort only
+            return ""
 
     def remove_image(self, image_tag: str) -> None:
         """Best-effort removal of a built image (used to clean up failed builds)."""

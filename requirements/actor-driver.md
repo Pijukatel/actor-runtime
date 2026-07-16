@@ -21,3 +21,36 @@
     timed-out
   - Exposes a log
   - Can be inspected from frontend console
+
+# Networking
+- Every Actor container joins a shared, user-defined Docker network (not the
+  default bridge), so Actor containers can reach each other, and the runtime
+  itself, by name
+- The runtime self-attaches to that same network under a stable alias at boot,
+  so `APIFY_API_BASE_URL` inside any Actor container resolves back to the
+  runtime's own API. When the runtime is not itself running as a container
+  (e.g. run directly on a host), self-attach is skipped with a warning rather
+  than failing boot; Actor containers still join the network
+- If the shared network itself cannot be created or found at boot (e.g. a
+  daemon that restricts user-defined network creation), on-demand runs fall
+  back to Docker's default bridge network so they keep working exactly as
+  before standby actors existed; a standby Actor's non-blocking start fails
+  immediately with a clear, actionable error instead, since it has no
+  degraded-but-working mode (its container is only reachable by network DNS
+  name)
+
+# Standby actor
+- An Actor may opt into standby mode (`usesStandbyMode: true` in
+  `.actor/actor.json`, or an explicit API field): instead of running once and
+  exiting, the system keeps at most one warm, long-lived container per such
+  Actor, started lazily on the first forwarded HTTP request
+- Before forwarding, the system waits for the container to answer the
+  readiness probe on its fixed `ACTOR_STANDBY_PORT`; a container that never
+  becomes ready fails the request observably rather than hanging
+- After a configurable idle timeout with no forwarded requests, the system
+  stops and removes the container on its own (no further request required) and
+  the underlying run reaches a terminal status
+- A standby run's options (build, memory, no wall-clock timeout) are forced
+  from the Actor's standby config, not any caller-supplied value
+- See `api.md`'s "Standby actors" section for the forwarding route and
+  authorization rules

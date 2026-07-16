@@ -13,50 +13,58 @@ import os
 import re
 import shutil
 import threading
-import uuid
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import unquote, urlsplit
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from .config import DEFAULT_USERNAME, Settings
+# TERMINAL_*/STORAGE_*/short_id are re-exported from `app/constants.py` (a
+# dependency-free leaf module), purely so existing `from .service import
+# STORAGE_KV` etc. call sites (routers, tests) keep working unchanged now
+# that `app/standby.py`/`app/storage_access.py` import them directly from
+# that module -- see its docstring.
+from .constants import (
+    STORAGE_DS,
+    STORAGE_KV,
+    STORAGE_RQ,
+    TERMINAL_ABORTED,
+    TERMINAL_FAIL,
+    TERMINAL_OK,
+    TERMINAL_TIMED_OUT,
+    short_id,
+)
 from .db import AccessRight, Actor, Build, Database, Run, Storage as StorageRow, User, Version, utcnow
 from .driver import Driver, extract_zip, write_source_files
+from .standby import StandbyManager, _extract_uses_standby_mode, _normalize_standby_config
 from .storage import Storage
+# ACCESS_*/LEVEL_* are re-exported from `app/storage_access.py` (imported,
+# not redefined) purely so existing `from .service import ACCESS_ALLOW` etc.
+# call sites (routers, tests) keep working unchanged now that the
+# storage-ownership/sharing logic itself lives there -- see that module's
+# docstring.
+from .storage_access import (
+    ACCESS_ABSENT,
+    ACCESS_ALLOW,
+    ACCESS_FORBIDDEN,
+    ACCESS_NOT_FOUND,
+    LEVEL_READ,
+    LEVEL_WRITE,
+    StorageAccessManager,
+)
 
 logger = logging.getLogger(__name__)
-
-TERMINAL_OK = "SUCCEEDED"
-TERMINAL_FAIL = "FAILED"
-TERMINAL_ABORTED = "ABORTED"
-TERMINAL_TIMED_OUT = "TIMED-OUT"
-
-STORAGE_KV = "key-value-store"
-STORAGE_DS = "dataset"
-STORAGE_RQ = "request-queue"
 
 # Ids minted by ``start_run`` for a run's default storages. These are internal to
 # their run: never auto-created by an absent-write, and never surfaced in (or
 # deletable through) the standalone top-level Storages view.
 _RUN_STORAGE_PREFIXES = ("kv_", "ds_", "rq_")
 
-LEVEL_READ = "READ"
-LEVEL_WRITE = "WRITE"
-
-ACCESS_ALLOW = "allow"
-ACCESS_NOT_FOUND = "not_found"
-ACCESS_FORBIDDEN = "forbidden"
-ACCESS_ABSENT = "absent"  # no storage row exists for this id
-
 
 def _sanitize(text: str) -> str:
     return re.sub(r"[^a-z0-9_.-]+", "-", text.lower()).strip("-") or "actor"
-
-
-def short_id() -> str:
-    return uuid.uuid4().hex[:17]
 
 
 def _parse_tarball_url(url: str) -> tuple[str, str]:
@@ -84,6 +92,16 @@ class Service:
         # appends chunks under the lock; the streaming log endpoint snapshots them.
         self._log_buffers: dict[str, list[str]] = {}
         self._log_lock = threading.Lock()
+        # The standby-actor subsystem (warm-run state, per-actor locks, the
+        # idle-reap watchdog) is a self-contained unit extracted into its own
+        # module -- see app/standby.py's module docstring. Composed here
+        # (rather than constructed by main.py) so every Service, including
+        # the ones tests build directly without going through main.py's
+        # lifespan, gets one automatically.
+        self.standby = StandbyManager(self)
+        # Same extraction, same reasoning, for storage ownership/sharing --
+        # see app/storage_access.py's module docstring.
+        self.storage_access = StorageAccessManager(self)
 
     def _make_log_sink(self, job_id: str) -> Callable[[str], None]:
         """Create the job's live log buffer and return a thread-safe append sink."""
@@ -120,23 +138,57 @@ class Service:
 
     # -- users -------------------------------------------------------------
     async def ensure_default_user(self) -> None:
-        """Ensure the default user exists (unclaimed, token is null; idempotent)."""
+        """Ensure the default user exists (unclaimed, token is null; idempotent).
+
+        ``container_token`` is minted immediately, unlike ``token`` -- it is
+        never claimed by an inbound request, only ever generated locally, so
+        there is nothing to wait to bind.
+        """
         async with self.db.session() as s:
             if await s.get(User, DEFAULT_USERNAME) is not None:
                 return
-            s.add(User(username=DEFAULT_USERNAME))
+            s.add(User(username=DEFAULT_USERNAME, container_token=short_id()))
             try:
                 await s.commit()
             except IntegrityError:
                 await s.rollback()
 
     async def user_for_token(self, token: str) -> str | None:
-        """Return the username whose stored credential equals ``token``, else None."""
+        """Return the username whose ``token`` OR ``container_token`` equals
+        ``token``, else None.
+
+        Resolving either column is what makes a container's own injected
+        ``APIFY_TOKEN`` (always ``container_token``, never the bound ``token``
+        -- see ``_build_environment``) a working bearer credential against the
+        runtime's own API, e.g. for an on-demand Actor's standby lookup.
+        """
         async with self.db.session() as s:
             row = (
-                await s.execute(select(User).where(User.token == token))
+                await s.execute(
+                    select(User).where(or_(User.token == token, User.container_token == token))
+                )
             ).scalar_one_or_none()
             return row.username if row is not None else None
+
+    async def container_token_for(self, username: str) -> str:
+        """Return ``username``'s ``container_token``, minting one lazily if absent.
+
+        Both known user-creation paths (``ensure_default_user``, ``create_user``)
+        already mint this at insert time; the lazy mint here is a defensive
+        fallback so a run can never be started with no container credential at
+        all, not a path exercised in normal operation.
+        """
+        async with self.db.session() as s:
+            user = await s.get(User, username)
+            if user is not None and user.container_token:
+                return user.container_token
+            token = short_id()
+            if user is None:
+                s.add(User(username=username, container_token=token))
+            else:
+                user.container_token = token
+            await s.commit()
+            return token
 
     async def bind_default_token(self, token: str) -> bool:
         """Bootstrap: atomically claim the default user's credential with ``token``.
@@ -187,7 +239,7 @@ class Service:
         async with self.db.session() as s:
             if await s.get(User, name) is not None:
                 return None
-            user = User(username=name, token=name)
+            user = User(username=name, token=name, container_token=short_id())
             s.add(user)
             try:
                 await s.commit()
@@ -213,10 +265,20 @@ class Service:
             return list((await s.execute(stmt)).scalars())
 
     async def create_actor(
-        self, name: str, default_run_options: dict, versions: list[dict], username: str | None = None
+        self,
+        name: str,
+        default_run_options: dict,
+        versions: list[dict],
+        username: str | None = None,
+        actor_standby: dict | None = None,
     ) -> Actor:
         username = username or DEFAULT_USERNAME
         actor_id = f"{username}~{name}"
+        # An explicit ``actorStandby`` field on THIS call always wins over
+        # whatever ``.actor/actor.json`` inference the version pushes below
+        # would otherwise apply (matches apify-core: "the payload from the API
+        # takes precedence over actor.json").
+        explicit_standby = actor_standby is not None
         async with self.db.session() as s:
             actor = await s.get(Actor, actor_id)
             if actor is None:
@@ -225,14 +287,21 @@ class Service:
                     name=name,
                     username=username,
                     default_run_options=default_run_options or {},
+                    actor_standby=(
+                        _normalize_standby_config(actor_standby, explicit=True) if explicit_standby else {}
+                    ),
                 )
                 s.add(actor)
+            elif explicit_standby:
+                actor.actor_standby = _normalize_standby_config(actor_standby, explicit=True)
             for v in versions or []:
-                await self._upsert_version_in_session(s, actor_id, v)
+                await self._upsert_version_in_session(s, actor_id, v, infer_standby=not explicit_standby)
             await s.commit()
             return await s.get(Actor, actor_id)
 
-    async def _upsert_version_in_session(self, s, actor_id: str, payload: dict) -> Version:
+    async def _upsert_version_in_session(
+        self, s, actor_id: str, payload: dict, infer_standby: bool = True
+    ) -> Version:
         vn = payload.get("versionNumber", "0.0")
         version = await s.get(Version, (actor_id, vn))
         if version is None:
@@ -250,6 +319,28 @@ class Service:
         else:
             version.source_files = payload.get("sourceFiles", [])
             version.tarball_url = None
+
+        # Standby opt-in mirrors apify-core: parsed from the pushed
+        # ``.actor/actor.json``'s ``usesStandbyMode``, unless this call's
+        # caller already supplied an explicit ``actorStandby`` field
+        # (``infer_standby=False``), which always takes precedence. Only a
+        # SOURCE_FILES push carries an inspectable manifest at push time; a
+        # TARBALL's manifest is inside the (not yet unzipped) archive.
+        #
+        # An explicit override from an EARLIER call must also survive a later,
+        # plain actor.json-only push (design decision 2: "persists until the
+        # next call that carries an explicit actorStandby field") -- so
+        # inference is skipped entirely once the actor's persisted config
+        # already carries the ``explicitlySet`` marker, regardless of what
+        # THIS call's own ``infer_standby`` flag says.
+        if infer_standby and source_type != "TARBALL":
+            actor = await s.get(Actor, actor_id)
+            if actor is not None and not (actor.actor_standby or {}).get("explicitlySet"):
+                uses_standby = _extract_uses_standby_mode(version.source_files)
+                if uses_standby is not None:
+                    cfg = dict(actor.actor_standby or {})
+                    cfg["isEnabled"] = uses_standby
+                    actor.actor_standby = _normalize_standby_config(cfg)
         return version
 
     async def upsert_version(self, actor_id: str, payload: dict) -> Version:
@@ -295,6 +386,8 @@ class Service:
                 actor.name = payload["name"]
             if "defaultRunOptions" in payload and payload["defaultRunOptions"] is not None:
                 actor.default_run_options = payload["defaultRunOptions"]
+            if "actorStandby" in payload and payload["actorStandby"] is not None:
+                actor.actor_standby = _normalize_standby_config(payload["actorStandby"], explicit=True)
             actor.modified_at = utcnow()
             await s.commit()
             return await s.get(Actor, actor_id)
@@ -309,6 +402,7 @@ class Service:
         row, so it would otherwise stay RUNNING forever. Builds become FAILED,
         runs become ABORTED, both with a terminal ``finished_at``.
         """
+        standby_container_names: list[str] = []
         async with self.db.session() as s:
             for b in (await s.execute(select(Build).where(Build.status == "RUNNING"))).scalars():
                 b.status = TERMINAL_FAIL
@@ -317,7 +411,21 @@ class Service:
             for r in (await s.execute(select(Run).where(Run.status == "RUNNING"))).scalars():
                 r.status = TERMINAL_ABORTED
                 r.finished_at = utcnow()
+                if r.is_standby:
+                    standby_container_names.append(self._container_name(r.id))
             await s.commit()
+        # Best-effort: unlike an on-demand run() container (whose blocking
+        # driver.run() call was itself killed with the crashed process), a
+        # standby container is long-lived and detached, so it can easily
+        # still be running after the Run row above is swept to ABORTED --
+        # the in-memory standby bookkeeping that tracked it was lost with the
+        # previous process, but the container name is deterministic from the
+        # run id, so it can still be reaped by name alone.
+        for container_name in standby_container_names:
+            try:
+                await asyncio.to_thread(self.driver.reap, container_name)
+            except Exception:  # noqa: BLE001 - never block boot on this
+                pass
 
     # -- builds ------------------------------------------------------------
     async def start_build(self, actor_id: str, version_number: str, build_tag: str) -> Build:
@@ -506,6 +614,45 @@ class Service:
         trusted_root = os.path.realpath(storage_dir)
         return storage_dir, trusted_root
 
+    def _build_environment(
+        self,
+        *,
+        owner: str,
+        container_token: str,
+        actor_id: str,
+        run_id: str,
+        kv_store_id: str,
+        dataset_id: str,
+        request_queue_id: str,
+    ) -> dict[str, str]:
+        """The env dict every Actor container gets, on-demand or standby alike.
+
+        Mirrors the real platform: ``APIFY_IS_AT_HOME=1``, a working API
+        callback URL, real storage ids, and both the legacy ``APIFY_``-prefixed
+        and modern unprefixed id vars. ``APIFY_TOKEN`` is always the owner's
+        fabricated ``container_token`` -- never the bound ``token`` used to
+        authenticate inbound requests, which for local-user may be a real
+        externally-issued secret (see requirements/test.md's anti-leak
+        guarantee).
+        """
+        return {
+            "APIFY_IS_AT_HOME": "1",
+            "APIFY_API_BASE_URL": self.settings.container_api_base_url,
+            "APIFY_TOKEN": container_token,
+            "APIFY_USER_ID": owner,
+            "APIFY_ACTOR_ID": actor_id,
+            "ACTOR_ID": actor_id,
+            "APIFY_ACTOR_RUN_ID": run_id,
+            "ACTOR_RUN_ID": run_id,
+            "APIFY_DEFAULT_KEY_VALUE_STORE_ID": kv_store_id,
+            "APIFY_DEFAULT_DATASET_ID": dataset_id,
+            "APIFY_DEFAULT_REQUEST_QUEUE_ID": request_queue_id,
+            "APIFY_INPUT_KEY": "INPUT",
+            "CRAWLEE_STORAGE_DIR": "/apify_storage",
+            "APIFY_LOCAL_STORAGE_DIR": "/apify_storage",
+            "ACTOR_STORAGE_DIR": "/apify_storage",
+        }
+
     async def _run_actor(self, run_id: str, image_tag: str | None, run_input: Any) -> None:
         # The whole body runs inside a guarded block: any unexpected error (bad
         # options JSON, transient DB read, storage prep failure) transitions the
@@ -522,6 +669,9 @@ class Service:
                 mem_limit_mb = int(run.options.get("memoryMbytes") or 0) or None
                 actor_id = run.actor_id
                 owner = run.username or DEFAULT_USERNAME
+                kv_store_id, dataset_id, request_queue_id = (
+                    run.kv_store_id, run.dataset_id, run.request_queue_id,
+                )
 
             if not image_tag:
                 await self._finish_run(
@@ -529,20 +679,16 @@ class Service:
                 )
                 return
 
-            environment = {
-                "APIFY_IS_AT_HOME": "0",
-                "APIFY_TOKEN": "local-runtime-token",
-                "APIFY_USER_ID": owner,
-                "APIFY_ACTOR_ID": actor_id,
-                "APIFY_ACTOR_RUN_ID": run_id,
-                "APIFY_DEFAULT_KEY_VALUE_STORE_ID": "default",
-                "APIFY_DEFAULT_DATASET_ID": "default",
-                "APIFY_DEFAULT_REQUEST_QUEUE_ID": "default",
-                "APIFY_INPUT_KEY": "INPUT",
-                "CRAWLEE_STORAGE_DIR": "/apify_storage",
-                "APIFY_LOCAL_STORAGE_DIR": "/apify_storage",
-                "ACTOR_STORAGE_DIR": "/apify_storage",
-            }
+            container_token = await self.container_token_for(owner)
+            environment = self._build_environment(
+                owner=owner,
+                container_token=container_token,
+                actor_id=actor_id,
+                run_id=run_id,
+                kv_store_id=kv_store_id,
+                dataset_id=dataset_id,
+                request_queue_id=request_queue_id,
+            )
             log_sink = self._make_log_sink(run_id)
             try:
                 result = await asyncio.to_thread(
@@ -625,181 +771,133 @@ class Service:
             )
 
     async def abort_run(self, run_id: str, username: str | None = None) -> Run | None:
+        # A quick, unlocked peek: only used to learn whether this run is a
+        # standby run (and its actor_id), so we know whether the per-actor
+        # standby lock below is needed at all -- ordinary runs are unaffected
+        # and still need no lock. Both fields are fixed for a run's whole
+        # lifetime, so this early, separate read can never itself go stale.
+        async with self.db.session() as s:
+            probe = await s.get(Run, run_id)
+            if probe is None or (username is not None and probe.username != username):
+                return None
+            is_standby, actor_id = probe.is_standby, probe.actor_id
+
+        if is_standby:
+            # Acquire the SAME per-actor lock `ensure_standby_run()` /
+            # `reap_idle_standby_runs()` use BEFORE the status check-and-commit
+            # below (not just around the teardown, as before this fix) --
+            # otherwise this method's ABORTED commit and a concurrent
+            # `ensure_standby_run()` readiness-timeout's own terminal-status
+            # commit (via `_finish_run`) could each act on a stale "still
+            # RUNNING" snapshot without ever seeing each other, so whichever
+            # terminal status (ABORTED vs FAILED) ended up stuck depended on
+            # scheduling alone rather than which happened first. Holding the
+            # lock across the whole check-and-commit makes the two mutually
+            # exclusive: whichever happens first commits, and the loser's own
+            # already-terminal check (`was_running` below, or `_finish_run`'s
+            # `status != "RUNNING"` guard) then reliably sees the winner's
+            # committed status and no-ops instead of racing it.
+            lock = self.standby.actor_lock(actor_id)
+            async with lock:
+                return await self._abort_run_locked(run_id, username)
+        return await self._abort_run_locked(run_id, username)
+
+    async def _abort_run_locked(self, run_id: str, username: str | None) -> Run | None:
+        """The status check-and-commit plus teardown for ``abort_run``.
+
+        Called by ``abort_run`` above, either under the per-actor standby
+        lock (standby runs) or lock-free (ordinary runs).
+        """
         async with self.db.session() as s:
             run = await s.get(Run, run_id)
             if run is None or (username is not None and run.username != username):
                 return None
             was_running = run.status == "RUNNING"
+            is_standby = run.is_standby
             if was_running:
                 run.status = TERMINAL_ABORTED
                 run.finished_at = utcnow()
                 await s.commit()
                 await s.refresh(run)
         if was_running:
-            # Actually stop the container so it stops consuming resources; the
-            # in-flight task's _finish_run is now a no-op (status != RUNNING), so
-            # the ABORTED state set above survives the container's natural exit.
-            try:
-                await asyncio.to_thread(self.driver.stop, self._container_name(run_id))
-            except Exception:  # noqa: BLE001 - best effort
-                pass
+            if is_standby:
+                # A standby run has no in-flight `driver.run()` call whose
+                # `finally` removes the container, so it needs the full
+                # kill+remove reap; its warm-run bookkeeping must also be
+                # dropped so the next standbyUrl request starts a fresh
+                # container instead of forwarding into this now-dead one.
+                # (The per-actor lock guarding this whole method -- see
+                # `abort_run` -- also still serializes this bookkeeping
+                # update against a concurrent `ensure_standby_run()`/
+                # `reap_idle_standby_runs()` exactly as before this fix.)
+                # See app/standby.py::StandbyManager.teardown_aborted_run for
+                # the actual container/storage teardown (shared with the
+                # idle-reap path via `_teardown_container`).
+                await self.standby.teardown_aborted_run(run)
+            else:
+                # Actually stop the container so it stops consuming resources; the
+                # in-flight task's _finish_run is now a no-op (status != RUNNING), so
+                # the ABORTED state set above survives the container's natural exit.
+                try:
+                    await asyncio.to_thread(self.driver.stop, self._container_name(run_id))
+                except Exception:  # noqa: BLE001 - best effort
+                    pass
         return run
 
+    # -- standby -------------------------------------------------------------
+    # The standby-actor subsystem (warm-run lifecycle, idle-reap watchdog,
+    # opt-in config parsing, the standby half of abort) lives in
+    # `app/standby.py`'s `StandbyManager` (`self.standby`, constructed in
+    # `__init__` above) -- see that module's docstring for why it was split
+    # out. These thin delegators are kept on `Service` so `main.py`, the
+    # standby router and existing tests keep reaching standby behavior
+    # through the same `Service` object as everything else, with no caller
+    # needing to know a `StandbyManager` exists at all.
+    async def ensure_standby_run(self, actor_id: str) -> str | None:
+        return await self.standby.ensure_standby_run(actor_id)
+
+    def mark_standby_request_started(self, actor_id: str) -> None:
+        self.standby.mark_standby_request_started(actor_id)
+
+    def mark_standby_request_finished(self, actor_id: str) -> None:
+        self.standby.mark_standby_request_finished(actor_id)
+
+    async def reap_idle_standby_runs(self) -> None:
+        await self.standby.reap_idle_standby_runs()
+
+    def start_standby_watchdog(self, interval_secs: float = 0.5) -> None:
+        self.standby.start_standby_watchdog(interval_secs)
+
+    async def stop_standby_watchdog(self) -> None:
+        await self.standby.stop_standby_watchdog()
+
     # -- storage ownership & sharing --------------------------------------
+    # Owner/grant-based access decisions and sharing live in
+    # `app/storage_access.py`'s `StorageAccessManager` (`self.storage_access`,
+    # constructed in `__init__` above) -- see that module's docstring. Thin
+    # delegators, same rationale as the "-- standby --" section above.
     async def get_storage(self, storage_id: str) -> StorageRow | None:
-        async with self.db.session() as s:
-            return await s.get(StorageRow, storage_id)
+        return await self.storage_access.get_storage(storage_id)
 
     async def ensure_storage(self, storage_id: str, storage_type: str, owner: str) -> str:
-        """Create-if-missing a first-class storage record; return its actual owner.
-
-        The returned owner is authoritative -- read back from the DB after the
-        commit -- so a caller that lost a create race (its INSERT hit the unique
-        PK and rolled back) learns the winner's identity instead of assuming it
-        won. The ``storages`` PK is the single source of truth about who owns the id.
-        """
-        async with self.db.session() as s:
-            existing = await s.get(StorageRow, storage_id)
-            if existing is not None:
-                return existing.owner
-            s.add(StorageRow(id=storage_id, type=storage_type, owner=owner))
-            try:
-                await s.commit()
-            except IntegrityError:
-                await s.rollback()
-            row = await s.get(StorageRow, storage_id)
-            return row.owner if row is not None else owner
+        return await self.storage_access.ensure_storage(storage_id, storage_type, owner)
 
     async def check_storage_access(
         self, storage_id: str, username: str, need: str, expected_type: str | None = None
     ) -> str:
-        """Decide access for ``username`` against ``storage_id`` at ``need`` level.
-
-        owner -> allow; a matching-or-stronger grant -> allow (WRITE satisfies
-        READ); a weaker grant than needed -> forbidden (grantee can see it but may
-        not act); no grant at all -> not_found (invisible). A storage id with no row
-        yet -> absent, which the caller resolves by direction (a write auto-creates
-        the storage owned by the writer; a read is a 404, so an unknown/invented id
-        is indistinguishable from another user's).
-        """
-        async with self.db.session() as s:
-            storage = await s.get(StorageRow, storage_id)
-            if storage is None:
-                return ACCESS_ABSENT
-            # The id exists, but not as the type this endpoint addresses -- as that
-            # type it does not exist, so hide it exactly like a missing id (404).
-            if expected_type is not None and storage.type != expected_type:
-                return ACCESS_NOT_FOUND
-            if storage.owner == username:
-                return ACCESS_ALLOW
-            grant = (
-                await s.execute(
-                    select(AccessRight).where(
-                        AccessRight.resource_id == storage_id,
-                        AccessRight.grantee == username,
-                    )
-                )
-            ).scalar_one_or_none()
-            if grant is None:
-                return ACCESS_NOT_FOUND
-            if grant.level == LEVEL_WRITE or need == LEVEL_READ:
-                return ACCESS_ALLOW
-            return ACCESS_FORBIDDEN
+        return await self.storage_access.check_storage_access(storage_id, username, need, expected_type)
 
     async def grant_access(self, storage_id: str, resource_type: str, grantee: str, level: str) -> None:
-        async with self.db.session() as s:
-            existing = (
-                await s.execute(
-                    select(AccessRight).where(
-                        AccessRight.resource_id == storage_id,
-                        AccessRight.grantee == grantee,
-                    )
-                )
-            ).scalar_one_or_none()
-            if existing is not None:
-                existing.level = level
-            else:
-                s.add(
-                    AccessRight(
-                        id=short_id(),
-                        resource_type=resource_type,
-                        resource_id=storage_id,
-                        grantee=grantee,
-                        level=level,
-                    )
-                )
-            await s.commit()
+        await self.storage_access.grant_access(storage_id, resource_type, grantee, level)
 
     async def list_access(self, storage_id: str) -> list[AccessRight]:
-        async with self.db.session() as s:
-            return list(
-                (
-                    await s.execute(
-                        select(AccessRight).where(AccessRight.resource_id == storage_id)
-                    )
-                ).scalars()
-            )
+        return await self.storage_access.list_access(storage_id)
 
     async def revoke_access(self, storage_id: str, grantee: str) -> bool:
-        async with self.db.session() as s:
-            existing = (
-                await s.execute(
-                    select(AccessRight).where(
-                        AccessRight.resource_id == storage_id,
-                        AccessRight.grantee == grantee,
-                    )
-                )
-            ).scalar_one_or_none()
-            if existing is None:
-                return False
-            await s.delete(existing)
-            await s.commit()
-            return True
+        return await self.storage_access.revoke_access(storage_id, grantee)
 
     async def list_storages_for_user(self, username: str, type: str | None = None) -> list[StorageRow]:
-        async with self.db.session() as s:
-            stmt = select(StorageRow).where(StorageRow.owner == username).order_by(StorageRow.created_at)
-            if type is not None:
-                stmt = stmt.where(StorageRow.type == type)
-            return list((await s.execute(stmt)).scalars())
+        return await self.storage_access.list_storages_for_user(username, type)
 
     async def delete_storage(self, storage_id: str, username: str) -> str:
-        """Delete an owned storage: its row, its access-rights grants and its data.
-
-        Returns ``ACCESS_NOT_FOUND`` for an unknown id, ``ACCESS_FORBIDDEN`` for a
-        storage the caller does not own (the router maps cross-user to 404 to keep
-        existence hidden), or ``ACCESS_ALLOW`` on success. ``AccessRight`` rows are
-        not FK-linked to ``storages``, so matching grants are removed explicitly to
-        avoid dangling shares pointing at a deleted storage.
-
-        The metadata (row + grants) is the source of truth for listings and
-        isolation, so it is removed authoritatively. The underlying crawlee data is
-        then dropped best-effort: a physical-cleanup failure is logged but does not
-        turn a successful logical delete into a 500 (the storage is already gone
-        from every listing/access path, and an orphaned data blob is invisible and
-        harmless).
-        """
-        async with self.db.session() as s:
-            storage = await s.get(StorageRow, storage_id)
-            if storage is None:
-                return ACCESS_NOT_FOUND
-            if storage.owner != username:
-                return ACCESS_FORBIDDEN
-            storage_type = storage.type
-            await s.delete(storage)
-            grants = (
-                await s.execute(select(AccessRight).where(AccessRight.resource_id == storage_id))
-            ).scalars()
-            for grant in grants:
-                await s.delete(grant)
-            await s.commit()
-        try:
-            if storage_type == STORAGE_KV:
-                await self.storage.kv_drop(storage_id)
-            elif storage_type == STORAGE_DS:
-                await self.storage.dataset_drop(storage_id)
-            elif storage_type == STORAGE_RQ:
-                await self.storage.rq_drop(storage_id)
-        except Exception:  # noqa: BLE001 - metadata is gone; physical drop is best-effort
-            logger.exception("Best-effort data drop failed for storage %s", storage_id)
-        return ACCESS_ALLOW
+        return await self.storage_access.delete_storage(storage_id, username)

@@ -1,9 +1,11 @@
-"""Regression tests for the iteration-2 review findings.
+"""Security and correctness regression tests: path traversal, symlink-following
+storage-import disclosure, run/build terminal-status integrity, memory-limit
+forwarding, binary KV round-tripping, malformed-body handling, and console
+XSS-safety.
 
-Each test would have failed against the iteration-1 code and covers a specific
-blocker/major/minor fix. All run without a Docker daemon, using the ``wired``
-fixture (in-process app + StubDriver) or a small service built on the same
-Docker-free driver pattern.
+Each test reproduces a specific bug and would fail against the pre-fix code.
+All run without a Docker daemon, using the ``wired`` fixture (in-process app +
+StubDriver) or a small service built on the same Docker-free driver pattern.
 """
 from __future__ import annotations
 
@@ -104,12 +106,13 @@ async def test_import_run_storage_ignores_symlink(tmp_path):
 
 
 # -- Major #2 (reopened): symlinked DIRECTORY bypass in import_run_storage -
-# The iteration-2 fix only rejected symlinked leaf *files*. A malicious Actor
+# The earlier fix only rejected symlinked leaf *files*. A malicious Actor
 # (RW on the bind-mounted storage) can instead replace an intermediate directory
 # (``default``, ``key_value_stores``, or the storage root) with a symlink to an
 # arbitrary location; every regular file under the target then passed the old
-# per-file check. These tests would import the target's files against iter-2 and
-# import nothing after the directory-chain check was added.
+# per-file check. These tests would import the target's files against the old
+# per-file-only check and import nothing once the directory-chain check
+# guards every ancestor too.
 async def test_import_ignores_symlinked_default_directory(tmp_path):
     storage = Storage(_settings(tmp_path).storage_db_url)
     await storage.start()

@@ -1,6 +1,7 @@
 """FastAPI application factory."""
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -11,7 +12,7 @@ from .config import Settings, load_settings
 from .db import Database
 from .driver import Driver
 from .responses import unauthorized
-from .routers import actors, console, runs, storages, users
+from .routers import actors, console, runs, standby, storages, users
 from .service import Service
 from .storage import Storage
 
@@ -33,15 +34,23 @@ def create_app(settings: Settings | None = None, driver: Driver | None = None) -
         if drv is None:
             from .driver import DockerDriver
 
-            drv = DockerDriver()
+            drv = DockerDriver(network_name=settings.network_name)
+        # Create (if absent) the shared network and self-attach under the
+        # container-facing alias; guarded no-op when not running as a
+        # container (see DockerDriver.ensure_network). Blocking Docker-SDK
+        # I/O, so run it off the event loop like every other driver call.
+        await asyncio.to_thread(drv.ensure_network)
 
         service = Service(settings, db, storage, drv)
         # Sweep any Build/Run rows left RUNNING by a previous unclean shutdown.
         await service.reconcile_stale_jobs()
+        # Background idle-reap loop for warm standby runs.
+        service.start_standby_watchdog()
         app.state.service = service
         try:
             yield
         finally:
+            await service.stop_standby_watchdog()
             await storage.stop()
             await db.dispose()
 
@@ -67,6 +76,7 @@ def create_app(settings: Settings | None = None, driver: Driver | None = None) -
         app.include_router(runs.actor_runs_router, prefix=prefix)
     # Flat resources and storages.
     app.include_router(runs.flat_router)
+    app.include_router(standby.router)
     app.include_router(storages.router)
     # Console SPA.
     app.include_router(console.router)

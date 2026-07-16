@@ -383,11 +383,16 @@ async def test_container_env_user_id_is_username(wired):
     assert env["APIFY_USER_ID"] == "alice"
 
 
-# -- THE ANTI-LEAK GUARANTEE (criterion 4) --------------------------------
-# A secret-looking token presented as the FIRST-EVER token bootstraps the default
-# user; the token must appear in NONE of the durable/user-visible surfaces (Actor
-# id, serialized userId/username on actor/build/run, image tag, storage ids,
-# container env), while every identity field equals the default username.
+# -- THE ANTI-LEAK GUARANTEE (criterion 21, narrowed) ----------------------
+# Scope (per explicit human decision): this guarantee covers exactly the
+# FIRST BOUND token -- the credential apify-cli's first-ever request
+# presented, bound to the default local-user, which may be a real
+# externally-issued secret. It does NOT cover every token in the system:
+# every user's ``container_token`` (injected as APIFY_TOKEN -- see
+# service._build_environment) is a runtime-fabricated credential and is BY
+# DESIGN expected to appear in container env; that is exactly the mechanism
+# the positive half of this test asserts below, not something this guarantee
+# forbids.
 async def test_secret_token_never_leaks_into_ids_responses_or_env(wired):
     client, service = wired
     secret = "apify_api_SECRET123"
@@ -426,6 +431,12 @@ async def test_secret_token_never_leaks_into_ids_responses_or_env(wired):
     env = service.driver.captured_envs[-1]
     assert env["APIFY_USER_ID"] == "local-user"
 
+    # -- Negative half: the bound secret appears NOWHERE, including as the
+    # value of APIFY_TOKEN itself -- the one place it could plausibly have
+    # coincided with the container credential had ``container_token`` not been
+    # a distinct, second, fabricated value (this closes the gap the narrowed
+    # scope note above calls out: local-user's own runs, where the bound token
+    # and APIFY_TOKEN could otherwise coincide).
     haystacks = [
         actor["id"], actor["userId"], actor["username"],
         fetched_build["id"], fetched_build["userId"], fetched_build["username"],
@@ -437,6 +448,17 @@ async def test_secret_token_never_leaks_into_ids_responses_or_env(wired):
     blob = "\n".join(str(h) for h in haystacks)
     assert secret not in blob, "raw token leaked into an id/response/tag/storage-id/env"
     assert "SECRET123" not in blob, "token fragment leaked"
+
+    # -- Positive half: APIFY_TOKEN is nonetheless a WORKING credential for
+    # local-user (criterion 17). The anti-leak guarantee narrows to the bound
+    # secret; it does not (and must not) forbid a *different*, fabricated
+    # token from doing its job as a real bearer credential.
+    assert env["APIFY_TOKEN"]
+    assert env["APIFY_TOKEN"] != secret
+    me = (
+        await client.get("/v2/users/me", headers={"Authorization": f"Bearer {env['APIFY_TOKEN']}"})
+    ).json()["data"]
+    assert me["username"] == "local-user"
 
 
 # -- Per-user ownership (criteria 5-8) ------------------------------------

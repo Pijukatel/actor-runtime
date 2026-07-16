@@ -1,0 +1,8 @@
+{
+  "actorSpecification": 1,
+  "name": "standby-actor",
+  "version": "0.0",
+  "buildTag": "latest",
+  "dockerfile": "./Dockerfile",
+  "usesStandbyMode": true
+}
