@@ -31,7 +31,12 @@ def main() -> None:
     kv = default_dir("key_value_stores")
     input_path = kv / "INPUT.json"
     actor_input = json.loads(input_path.read_text()) if input_path.exists() else {}
-    standby_actor_id = actor_input["standbyActorId"]
+    standby_actor_id = actor_input.get("standbyActorId")
+    if not standby_actor_id:
+        raise SystemExit(
+            'Missing required input field "standbyActorId" (the id of the standby '
+            'Actor to call, e.g. {"standbyActorId": "local-user~standby-actor"}).'
+        )
     greeting = actor_input.get("greeting", "hi")
 
     base_url = os.environ["APIFY_API_BASE_URL"]

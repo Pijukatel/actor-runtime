@@ -336,6 +336,10 @@ class StandbyManager:
                 request_queue_id=request_queue_id,
             )
             environment["ACTOR_STANDBY_PORT"] = str(ACTOR_STANDBY_PORT)
+            # The platform-documented way for an Actor to tell standby from a
+            # standard start is APIFY_META_ORIGIN == "STANDBY"; override the
+            # env builder's "API" default for standby-origin runs only.
+            environment["APIFY_META_ORIGIN"] = "STANDBY"
             container_name = svc._container_name(run_id)
 
             try:

@@ -163,6 +163,7 @@ async def test_env_dict_alignment_for_every_run(wired):
 
     assert env["APIFY_IS_AT_HOME"] == "1"
     assert env["APIFY_API_BASE_URL"] == "http://actor-runtime:3333"
+    assert env["APIFY_META_ORIGIN"] == "API"
 
     assert env["APIFY_DEFAULT_KEY_VALUE_STORE_ID"] == run["defaultKeyValueStoreId"]
     assert env["APIFY_DEFAULT_DATASET_ID"] == run["defaultDatasetId"]
@@ -209,6 +210,12 @@ async def test_standby_cold_start_forwards_and_reuses_warm_container(wired_fast_
     assert body1["method"] == "GET"
     assert body1["path"] == "/echo?greeting=hi"
     assert body1["requestCount"] == 1
+
+    # Standby-origin runs carry the platform-documented mode signal, so an
+    # Actor can branch on standby vs standard start.
+    standby_env = service.driver.captured_envs[-1]
+    assert standby_env["APIFY_META_ORIGIN"] == "STANDBY"
+    assert standby_env["ACTOR_STANDBY_PORT"]
 
     runs = (await client.get(f"/v2/acts/{actor_id}/runs", headers=auth("alice"))).json()["data"]["items"]
     assert len(runs) == 1

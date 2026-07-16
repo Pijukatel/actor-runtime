@@ -1,18 +1,19 @@
 """Dependency-free standby fixture Actor for the on-demand-calls-standby e2e test.
 
-Listens on ACTOR_STANDBY_PORT, answers the readiness probe, and otherwise
-echoes the request it received (method, path+query, body) plus a per-process
-request counter -- mirroring apify-core's own standby fixture actors
+When started in standby mode (APIFY_META_ORIGIN == "STANDBY"), listens on
+ACTOR_STANDBY_PORT, answers the readiness probe, and otherwise echoes the
+request it received (method, path+query, body) plus a per-process request
+counter -- mirroring apify-core's own standby fixture actors
 (``shared_actors.js``) -- so the caller can prove both exact forwarding and
-warm-container reuse across requests. Deliberately stdlib-only (no apify SDK)
-so the image builds offline and behaviour is fully deterministic, like
-``sample_actor``.
+warm-container reuse across requests. When started in standard mode it exits
+successfully with a note, as the platform docs recommend for standby-capable
+Actors. Deliberately stdlib-only (no apify SDK) so the image builds offline
+and behaviour is fully deterministic, like ``sample_actor``.
 """
 import http.server
 import json
 import os
 
-PORT = int(os.environ["ACTOR_STANDBY_PORT"])
 request_count = 0
 
 
@@ -51,8 +52,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"Standby fixture Actor listening on port {PORT}", flush=True)
+    # Standby-capable Actors can still be started in standard mode (a plain
+    # `apify call` / POST .../runs). Per the platform docs, the two modes are
+    # distinguished by APIFY_META_ORIGIN == "STANDBY"; a standard start has
+    # nothing to serve, so exit successfully instead of crashing on the
+    # standby-only ACTOR_STANDBY_PORT variable.
+    if os.environ.get("APIFY_META_ORIGIN") != "STANDBY":
+        print("Started in standard (non-standby) mode; nothing to serve, exiting.", flush=True)
+        return
+    port = int(os.environ["ACTOR_STANDBY_PORT"])
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    print(f"Standby fixture Actor listening on port {port}", flush=True)
     server.serve_forever()
 
 

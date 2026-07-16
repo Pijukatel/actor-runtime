@@ -633,10 +633,14 @@ class Service:
         fabricated ``container_token`` -- never the bound ``token`` used to
         authenticate inbound requests, which for local-user may be a real
         externally-issued secret (see requirements/test.md's anti-leak
-        guarantee).
+        guarantee). ``APIFY_META_ORIGIN`` defaults to ``API`` (every local run
+        arrives through the API, apify-cli included); the standby manager
+        overrides it to ``STANDBY`` -- the platform-documented signal an Actor
+        uses to detect standby mode.
         """
         return {
             "APIFY_IS_AT_HOME": "1",
+            "APIFY_META_ORIGIN": "API",
             "APIFY_API_BASE_URL": self.settings.container_api_base_url,
             "APIFY_TOKEN": container_token,
             "APIFY_USER_ID": owner,

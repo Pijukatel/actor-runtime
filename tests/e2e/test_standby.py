@@ -147,11 +147,13 @@ def test_on_demand_actor_discovers_and_calls_standby_actor(runtime, tmp_path):
 
     # The on-demand Actor discovers standbyUrl itself (criterion 22) and calls
     # it container-to-container (criterion 23) -- see sample_actor_caller/main.py.
+    # Input goes through --input-file, not `-i`: apify-cli treats any inline
+    # `--input` value containing "~" (every `username~name` actor id) as a file
+    # path and rejects it (apify/apify-cli#1281).
+    input_file = tmp_path / "caller-input.json"
+    input_file.write_text(json.dumps({"standbyActorId": standby_actor_id, "greeting": "howdy"}))
     call = subprocess.run(
-        [
-            "apify", "call", "-i",
-            json.dumps({"standbyActorId": standby_actor_id, "greeting": "howdy"}),
-        ],
+        ["apify", "call", f"--input-file={input_file}"],
         cwd=caller_project, env=env, stdin=subprocess.DEVNULL,
         capture_output=True, text=True, timeout=300,
     )

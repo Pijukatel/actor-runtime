@@ -111,6 +111,11 @@
 
 - `APIFY_IS_AT_HOME=1` (mirrors the real platform; an SDK/client instantiated
   in the container reports `isAtHome`/`is_at_home = true`).
+- `APIFY_META_ORIGIN` — `API` for ordinary runs (every local run arrives via
+  the API, apify-cli included), `STANDBY` for standby-origin runs. This is the
+  platform-documented way for a standby-capable Actor to detect which mode it
+  was started in and, on a standard start, do its batch work (or exit) instead
+  of binding `ACTOR_STANDBY_PORT`, which is only set on standby runs.
 - `APIFY_API_BASE_URL` — the runtime's own API, reachable by name from any
   Actor container on the shared Docker network (see "Networking" in
   `actor-driver.md`).
