@@ -39,7 +39,7 @@ from .config import (
     STANDBY_IDLE_TIMEOUT_DEFAULT_SECS,
     STANDBY_IDLE_TIMEOUT_MIN_SECS,
 )
-from .constants import STORAGE_DS, STORAGE_KV, STORAGE_RQ, TERMINAL_ABORTED, short_id
+from .constants import STORAGE_DS, STORAGE_KV, STORAGE_RQ, TERMINAL_ABORTED, log_stamp, short_id
 from .db import Actor, Run, Storage as StorageRow
 
 if TYPE_CHECKING:
@@ -348,7 +348,7 @@ class StandbyManager:
                     container_name, mem_limit_mb,
                 )
             except Exception as exc:  # noqa: BLE001
-                await svc._finish_run(run_id, exit_code=1, log=f"STANDBY START ERROR: {exc}\n")
+                await svc._finish_run(run_id, exit_code=1, log=f"{log_stamp()} STANDBY START ERROR: {exc}\n")
                 # Distinct from `return None` ("no successful build"): the
                 # build IS fine, launching its container failed for an
                 # infrastructure reason (e.g. the shared Docker network never
@@ -370,7 +370,7 @@ class StandbyManager:
                 container_log = await self._teardown_container(container_name=container_name, entry=None)
                 await svc._finish_run(
                     run_id, exit_code=1,
-                    log=container_log + "Standby container never answered the readiness probe.\n",
+                    log=container_log + f"{log_stamp()} Standby container never answered the readiness probe.\n",
                 )
                 raise StandbyReadinessTimeout(actor_id)
 
@@ -503,7 +503,7 @@ class StandbyManager:
                 )
                 await self.service._finish_run(
                     entry.run_id, exit_code=0,
-                    log=container_log + "Standby Actor stopped after idle timeout.\n",
+                    log=container_log + f"{log_stamp()} Standby Actor stopped after idle timeout.\n",
                     status=TERMINAL_ABORTED,
                 )
 

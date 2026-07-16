@@ -34,6 +34,7 @@ from .constants import (
     TERMINAL_FAIL,
     TERMINAL_OK,
     TERMINAL_TIMED_OUT,
+    log_stamp,
     short_id,
 )
 from .db import AccessRight, Actor, Build, Database, Run, Storage as StorageRow, User, Version, utcnow
@@ -406,7 +407,7 @@ class Service:
         async with self.db.session() as s:
             for b in (await s.execute(select(Build).where(Build.status == "RUNNING"))).scalars():
                 b.status = TERMINAL_FAIL
-                b.log = (b.log or "") + "\nBuild interrupted by runtime restart.\n"
+                b.log = (b.log or "") + f"\n{log_stamp()} Build interrupted by runtime restart.\n"
                 b.finished_at = utcnow()
             for r in (await s.execute(select(Run).where(Run.status == "RUNNING"))).scalars():
                 r.status = TERMINAL_ABORTED
@@ -514,7 +515,7 @@ class Service:
                 build = await s.get(Build, build_id)
                 if build is not None and build.status == "RUNNING":
                     build.status = TERMINAL_FAIL
-                    build.log = (build.log or "") + f"\nBUILD ERROR: {exc}\n"
+                    build.log = (build.log or "") + f"\n{log_stamp()} BUILD ERROR: {exc}\n"
                     build.finished_at = utcnow()
                     await s.commit()
         finally:
@@ -679,7 +680,7 @@ class Service:
 
             if not image_tag:
                 await self._finish_run(
-                    run_id, exit_code=1, log="No successful build available to run.\n"
+                    run_id, exit_code=1, log=f"{log_stamp()} No successful build available to run.\n"
                 )
                 return
 
@@ -706,7 +707,7 @@ class Service:
                     log_sink,
                 )
             except Exception as exc:  # noqa: BLE001
-                await self._finish_run(run_id, exit_code=1, log=f"RUN ERROR: {exc}\n")
+                await self._finish_run(run_id, exit_code=1, log=f"{log_stamp()} RUN ERROR: {exc}\n")
                 return
 
             # Import whatever the Actor wrote into the runtime's SQL storage.
@@ -720,13 +721,13 @@ class Service:
                     trusted_root=trusted_root,
                 )
             except Exception as exc:  # noqa: BLE001
-                result.log += f"\nSTORAGE IMPORT ERROR: {exc}\n"
+                result.log += f"\n{log_stamp()} STORAGE IMPORT ERROR: {exc}\n"
             status = TERMINAL_TIMED_OUT if result.timed_out else None
             await self._finish_run(
                 run_id, exit_code=result.exit_code, log=result.log, status=status
             )
         except Exception as exc:  # noqa: BLE001 - never leave a run stuck RUNNING
-            await self._finish_run(run_id, exit_code=1, log=f"RUN ERROR: {exc}\n")
+            await self._finish_run(run_id, exit_code=1, log=f"{log_stamp()} RUN ERROR: {exc}\n")
 
     async def _finish_run(
         self, run_id: str, exit_code: int, log: str, status: str | None = None

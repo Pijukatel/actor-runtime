@@ -19,7 +19,10 @@
   - Is saved under specific `User`/`Actor`/`Runs`
   - Has a status that reaches a terminal state: succeeded, failed, aborted or
     timed-out
-  - Exposes a log
+  - Exposes a log; every line carries a UTC timestamp prefix (container
+    output is captured with Docker's per-line RFC3339 timestamps, mirroring
+    real-platform run logs; the runtime's own log lines -- RUN ERROR, standby
+    teardown notes, ... -- are stamped the same way at write time)
   - Can be inspected from frontend console
 
 # Networking

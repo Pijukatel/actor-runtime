@@ -20,6 +20,9 @@ request_count = 0
 class Handler(http.server.BaseHTTPRequestHandler):
     def _handle(self) -> None:
         global request_count
+        # One log line per handled request (probes included), so the run's
+        # captured log shows the standby traffic.
+        print(f"Handling request: {self.command} {self.path}", flush=True)
         if self.headers.get("x-apify-container-server-readiness-probe"):
             self.send_response(200)
             self.end_headers()

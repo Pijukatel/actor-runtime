@@ -311,7 +311,9 @@ class DockerDriver:
             # apply back-pressure to this thread.
             def _follow() -> None:
                 try:
-                    for chunk in container.logs(stream=True, follow=True):
+                    # timestamps=True makes Docker prefix every line with an
+                    # RFC3339Nano timestamp, mirroring real-platform run logs.
+                    for chunk in container.logs(stream=True, follow=True, timestamps=True):
                         text = (
                             chunk.decode("utf-8", errors="replace")
                             if isinstance(chunk, (bytes, bytearray))
@@ -338,7 +340,7 @@ class DockerDriver:
                 else:
                     raise
             if log_sink is None:
-                log = container.logs().decode("utf-8", errors="replace")
+                log = container.logs(timestamps=True).decode("utf-8", errors="replace")
         finally:
             if log_thread is not None:
                 # Ensure the container is stopped so the follow stream ends, then
@@ -434,7 +436,7 @@ class DockerDriver:
         """
         try:
             container = self._client.containers.get(container_name)
-            return container.logs().decode("utf-8", errors="replace")
+            return container.logs(timestamps=True).decode("utf-8", errors="replace")
         except Exception:  # noqa: BLE001 - best-effort only
             return ""
 

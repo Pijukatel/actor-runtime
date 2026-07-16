@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 
 from starlette.requests import Request
@@ -559,6 +560,13 @@ async def test_standby_idle_teardown_captures_container_log(wired_fast_standby):
     log = (await client.get(f"/v2/logs/{run_id}", headers=auth("alice"))).text
     assert f"stub container log for {service._container_name(run_id)}" in log
     assert "Standby Actor stopped after idle timeout." in log
+    # Runtime-written log lines carry a UTC timestamp prefix (container output
+    # gets its own per-line timestamps from Docker, which stubs don't emulate).
+    assert re.search(
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z Standby Actor stopped after idle timeout\.$",
+        log,
+        re.MULTILINE,
+    )
 
 
 async def test_reap_idle_standby_runs_serializes_with_ensure_standby_run(wired_fast_standby):
