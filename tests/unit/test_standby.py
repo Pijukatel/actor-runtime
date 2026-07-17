@@ -569,6 +569,23 @@ async def test_standby_idle_teardown_captures_container_log(wired_fast_standby):
     )
 
 
+async def test_standby_warm_run_log_is_live_fetched_from_container(wired_fast_standby):
+    """Regression: while a standby run is warm (RUNNING) its log exists only
+    inside the container -- the log endpoint must fetch it live instead of
+    serving the empty stored log until teardown persists it."""
+    client, service = wired_fast_standby
+    actor_id = await _provision_standby_actor(client, service, "alice")
+
+    resp = await client.get(f"/v2/actor-standby/{actor_id}/echo", headers=auth("alice"))
+    assert resp.status_code == 200
+    runs = (await client.get(f"/v2/acts/{actor_id}/runs", headers=auth("alice"))).json()["data"]["items"]
+    run_id = runs[0]["id"]
+    assert runs[0]["status"] == "RUNNING"
+
+    log = (await client.get(f"/v2/logs/{run_id}", headers=auth("alice"))).text
+    assert f"stub container log for {service._container_name(run_id)}" in log
+
+
 async def test_reap_idle_standby_runs_serializes_with_ensure_standby_run(wired_fast_standby):
     """Regression: reap_idle_standby_runs() must take the SAME per-actor lock
     ensure_standby_run() uses, so a request arriving right at the idle

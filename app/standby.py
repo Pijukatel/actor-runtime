@@ -423,6 +423,21 @@ class StandbyManager:
             entry.in_flight = max(0, entry.in_flight - 1)
             entry.last_request = time.monotonic()
 
+    async def live_container_log(self, run) -> str | None:
+        """Current stdout/stderr of a warm standby run's container, or ``None``.
+
+        A standby run has no live log_sink/buffer the way a blocking run does:
+        while it is RUNNING its log exists only inside the container (it is
+        persisted to ``Run.log`` at teardown), so the log endpoints fetch it
+        on demand through the driver. Returns ``None`` for anything that is
+        not a currently-RUNNING standby run, so callers can fall back to the
+        stored log.
+        """
+        if not run.is_standby or run.status != "RUNNING":
+            return None
+        container_name = self.service._container_name(run.id)
+        return await asyncio.to_thread(self.service.driver.logs, container_name)
+
     async def _teardown_container(
         self, *, container_name: str, entry: StandbyRun | None,
     ) -> str:

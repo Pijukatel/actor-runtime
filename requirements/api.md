@@ -106,6 +106,11 @@
   key-value store / dataset / request queue up to that point, exactly like an
   idle-timeout teardown does — an explicit abort is a routine way to stop a
   standby Actor (e.g. to push a new build) and must not discard its output.
+- A warm (RUNNING) standby run's log is fetched **live from its container**
+  by both `GET /v2/logs/{runId}` and its `/stream` variant — a standby run
+  has no in-process log buffer, and its log is only persisted to the stored
+  run log at teardown (same text plus a closing note), so without the live
+  fetch it would read as empty for the run's whole warm lifetime.
 
 ## Environment variables in every Actor container (on-demand and standby)
 
@@ -271,8 +276,10 @@
   after a restart), the stream falls back to yielding the **complete stored log**
   once, so opening it for a finished job returns the full log exactly like the
   one-shot endpoint.
-- The one-shot `GET /v2/logs/{jobId}` is unchanged: a single `PlainTextResponse` of
-  the stored log, still valid for finished jobs and any non-streaming consumer.
+- The one-shot `GET /v2/logs/{jobId}` returns a single `PlainTextResponse` of
+  the stored log, still valid for finished jobs and any non-streaming consumer
+  — except a warm standby run, whose log both endpoints fetch live from its
+  container (see the standby section).
 - Ownership/isolation matches every other job endpoint: the stream is scoped to the
   acting user; an unknown or cross-user job id is **404**, indistinguishable from a
   missing id.

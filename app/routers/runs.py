@@ -135,6 +135,11 @@ async def get_log(job_id: str, request: Request) -> PlainTextResponse:
         return PlainTextResponse(build.log or "")
     run = await svc.get_run(job_id, username=user)
     if run is not None:
+        # A warm standby run's log lives only in its container until teardown
+        # persists it; fetch it live so the log is not empty while RUNNING.
+        live = await svc.standby.live_container_log(run)
+        if live is not None:
+            return PlainTextResponse(live)
         return PlainTextResponse(run.log or "")
     return PlainTextResponse("", status_code=404)
 
@@ -166,10 +171,25 @@ async def stream_log(job_id: str, request: Request):
             return True, ""
         return job.status in _TERMINAL_STATUSES, (job.log or "")
 
+    async def _live_standby_log() -> str | None:
+        """Live container log for a warm standby run, else None (see get_log)."""
+        if is_build:
+            return None
+        run = await svc.get_run(job_id, username=user)
+        if run is None:
+            return None
+        return await svc.standby.live_container_log(run)
+
     async def _tail():
         offset = 0
         while True:
             buf = svc.read_log_buffer(job_id)
+            if buf is None:
+                # Standby runs never create a live buffer; their in-container
+                # log grows monotonically and teardown persists that same text
+                # (plus a trailing note), so the offset stays consistent when
+                # the terminal drain below switches to the stored log.
+                buf = await _live_standby_log()
             if buf is not None and len(buf) > offset:
                 yield buf[offset:]
                 offset = len(buf)
