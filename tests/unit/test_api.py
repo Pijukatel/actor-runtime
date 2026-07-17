@@ -141,3 +141,18 @@ async def test_console_assets_are_served_no_cache(wired):
         resp = await client.get(path)
         assert resp.status_code == 200, path
         assert resp.headers.get("cache-control") == "no-cache", path
+
+
+async def test_log_endpoints_are_never_cached(wired):
+    """Regression: a cacheable log response lets the browser queue a re-opened
+    log view behind a still-open earlier stream to the same URL (endless for a
+    warm standby run), rendering it empty forever."""
+    client, service = wired
+    await _push_actor(client)
+    build = (await client.post("/v2/acts/local-user~sample-actor/builds?version=0.0")).json()["data"]
+    await service.wait_idle()
+
+    one_shot = await client.get(f"/v2/logs/{build['id']}")
+    assert one_shot.headers.get("cache-control") == "no-store"
+    async with client.stream("GET", f"/v2/logs/{build['id']}/stream") as stream:
+        assert stream.headers.get("cache-control") == "no-store"

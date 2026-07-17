@@ -136,21 +136,28 @@ async def get_build(build_id: str, request: Request) -> object:
     return data(build_dict(build))
 
 
+# Logs are dynamic and must never be cached. no-store also opts these
+# responses out of the browser's same-URL cache lock, which would otherwise
+# queue a re-opened log view behind a still-open (never-ending, for a warm
+# standby run) earlier stream to the same URL and render it empty forever.
+_LOG_NO_STORE = {"Cache-Control": "no-store"}
+
+
 @flat_router.get("/v2/logs/{job_id}")
 async def get_log(job_id: str, request: Request) -> PlainTextResponse:
     svc = get_service(request)
     user = await resolve_user(request)
     build = await svc.get_build(job_id, username=user)
     if build is not None:
-        return PlainTextResponse(build.log or "")
+        return PlainTextResponse(build.log or "", headers=_LOG_NO_STORE)
     run = await svc.get_run(job_id, username=user)
     if run is not None:
         # A warm standby run's log lives only in its container until teardown
         # persists it; fetch it live so the log is not empty while RUNNING.
         live = await svc.standby.live_container_log(run)
         if live is not None:
-            return PlainTextResponse(live)
-        return PlainTextResponse(run.log or "")
+            return PlainTextResponse(live, headers=_LOG_NO_STORE)
+        return PlainTextResponse(run.log or "", headers=_LOG_NO_STORE)
     return PlainTextResponse("", status_code=404)
 
 
@@ -218,4 +225,4 @@ async def stream_log(job_id: str, request: Request):
                 return
             await asyncio.sleep(_STREAM_POLL_SECS)
 
-    return StreamingResponse(_tail(), media_type="text/plain")
+    return StreamingResponse(_tail(), media_type="text/plain", headers=_LOG_NO_STORE)
