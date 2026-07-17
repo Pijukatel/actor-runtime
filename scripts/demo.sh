@@ -76,7 +76,11 @@ step "4. Pointing apify-cli at the local runtime"
 # APIFY_CLIENT_BASE_URL is the variable the stock apify-cli passes to its
 # underlying apify-client — both `apify push` and `apify call` honour it (see
 # requirements/cli.md). APIFY_TOKEN selects the acting user: the first token
-# ever presented binds the default `local-user`. No `apify login` is needed.
+# ever presented binds the default `local-user`. No `apify login` is needed —
+# but note that a CLI you HAVE logged in before may present its stored token
+# instead of this env value; that is fine (whatever token comes first simply
+# binds `local-user`), it just means scripts cannot assume they know the
+# bound token — see the read-back step below.
 export APIFY_CLIENT_BASE_URL="$API_URL"
 export APIFY_TOKEN="local-user"
 export APIFY_CLI_DISABLE_TELEMETRY=1
@@ -108,17 +112,21 @@ JSON
 (cd "$WORK/caller-actor" && apify call --input-file="$INPUT_FILE")
 
 step "7. Reading the results back over the API"
+# Deliberately NO Authorization header: a request without a token always falls
+# back to the default user `local-user` and is never rejected. Sending a
+# guessed token would 401 here whenever the CLI presented its own stored
+# (logged-in) token in step 5/6 — that token, not our env value, then holds
+# the `local-user` binding, and unknown tokens are rejected once the binding
+# is claimed.
 python3 - "$API_URL" <<'PY'
 import json
 import sys
 import urllib.request
 
 api = sys.argv[1]
-headers = {"Authorization": "Bearer local-user"}
 
 def get(path):
-    req = urllib.request.Request(f"{api}{path}", headers=headers)
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(f"{api}{path}", timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 caller_run = get("/v2/acts/local-user~caller-actor/runs")["data"]["items"][-1]

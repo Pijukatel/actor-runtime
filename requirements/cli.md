@@ -39,6 +39,13 @@
 - No `apify login` step and no `~/.apify/auth.json` set-up are required when
   `APIFY_TOKEN` and `APIFY_CLIENT_BASE_URL` are exported in the environment; switching
   users is just a matter of exporting a different `APIFY_TOKEN`.
+- **Caveat for previously logged-in CLIs:** a CLI that HAS run `apify login` may
+  present its stored `auth.json` token instead of the exported `APIFY_TOKEN`
+  (observed with v1.7.x). The flow still works — whatever token arrives first
+  simply binds `local-user` — but scripts must not assume the bound credential
+  equals their env value: read-backs should either reuse the same client or send
+  **no token at all** (the never-rejected default-user fallback), as
+  `scripts/demo.sh` does.
 
 ## Supported commands (first draft)
 
