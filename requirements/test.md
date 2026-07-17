@@ -29,8 +29,11 @@ dependency-free fixture Actors (`sample_actor_standby/`, `sample_actor_caller/`)
    hardcoded URL/port) to look up the standby Actor and read its `standbyUrl`,
    then calls that URL container-to-container.
  - The on-demand run reaches `SUCCEEDED` and its output shows the standby
-   Actor's real response (proving the round trip); the standby Actor's own run
-   is now warm and inspectable, then reaches a terminal state on its own after
+   Actor's real response including its `reply` field (proving the round trip);
+   the caller also saves that response into its own default dataset, and the
+   standby Actor saves one dataset record per call it served into its own
+   run's dataset (both written through the runtime API). The standby Actor's
+   run is warm and inspectable, then reaches a terminal state on its own after
    its (test-shortened) idle timeout, without any further request.
  - Runs in `tests/e2e/test_standby.py`, following the same Docker/`apify-cli`
    skip pattern as `tests/e2e/test_e2e.py`.

@@ -65,6 +65,11 @@
   or the periodic user-list refresh can never claim/bootstrap a token as a side
   effect; only real, user-driven work (viewing "me", listing/pushing/building/
   running, storage work) presents the token.
+- **Running jobs can be aborted from their detail page.** A run detail and a
+  build detail each render an **Abort** button while (and only while) the job's
+  status is `RUNNING`; it calls the corresponding abort endpoint
+  (`POST /v2/actor-runs/{runId}/abort` / `POST /v2/actor-builds/{buildId}/abort`)
+  and re-renders the page, so the badge flips to `ABORTED` in place.
 - The **Log view streams live.** For a running build or run, the Log tab consumes
   the streaming log endpoint (`GET /v2/logs/{id}/stream`) by reading the response
   body incrementally and appending output into the log `<pre>` as it arrives, rather

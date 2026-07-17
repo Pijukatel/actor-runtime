@@ -575,6 +575,18 @@ window.openBuild = async function (actorId, buildNumber) {
   const head = mk("div", { class: "row" });
   head.appendChild(mk("h2", { text: `Build ${b.buildNumber}`, style: { margin: "0" } }));
   head.appendChild(badgeEl(b.status));
+  if (b.status === "RUNNING") {
+    head.appendChild(
+      mk("button", {
+        class: "secondary",
+        text: "Abort build",
+        onClick: async () => {
+          await api(`/v2/actor-builds/${match.id}/abort`, { method: "POST" });
+          openBuild(actorId, buildNumber);
+        },
+      }),
+    );
+  }
 
   const logPre = mk("pre");
   detail.append(
@@ -595,6 +607,18 @@ window.openRun = async function (actorId, runId) {
   const head = mk("div", { class: "row" });
   head.appendChild(mk("h2", { text: `Run ${r.id}`, style: { margin: "0" } }));
   head.appendChild(badgeEl(r.status));
+  if (r.status === "RUNNING") {
+    head.appendChild(
+      mk("button", {
+        class: "secondary",
+        text: "Abort run",
+        onClick: async () => {
+          await api(`/v2/actor-runs/${runId}/abort`, { method: "POST" });
+          openRun(actorId, runId);
+        },
+      }),
+    );
+  }
 
   const tabs = mk("div", { class: "tabs" });
   const kvTab = mk("span", { class: "active", text: "Key-value store" });

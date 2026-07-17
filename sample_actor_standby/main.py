@@ -13,8 +13,33 @@ and behaviour is fully deterministic, like ``sample_actor``.
 import http.server
 import json
 import os
+import urllib.request
 
 request_count = 0
+
+
+def _save_served_call(record: dict) -> None:
+    """Best-effort: push one dataset item per served call through the runtime API.
+
+    Uses the same env the platform gives every container (API base URL, token,
+    default dataset id); a failure is logged, never fatal -- serving requests
+    must not depend on the bookkeeping write.
+    """
+    base_url = os.environ.get("APIFY_API_BASE_URL")
+    token = os.environ.get("APIFY_TOKEN")
+    dataset_id = os.environ.get("APIFY_DEFAULT_DATASET_ID")
+    if not (base_url and token and dataset_id):
+        return
+    req = urllib.request.Request(
+        f"{base_url}/v2/datasets/{dataset_id}/items",
+        data=json.dumps([record]).encode("utf-8"),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10).close()
+    except Exception as exc:  # noqa: BLE001 - bookkeeping only
+        print(f"Failed to save served call to dataset: {exc}", flush=True)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -31,12 +56,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         request_count += 1
         length = int(self.headers.get("content-length") or 0)
         body = self.rfile.read(length) if length else b""
+        _save_served_call(
+            {"method": self.command, "path": self.path, "requestCount": request_count}
+        )
         payload = json.dumps(
             {
                 "method": self.command,
                 "path": self.path,
                 "body": body.decode("utf-8", errors="replace"),
                 "requestCount": request_count,
+                "reply": f"Standby Actor served request #{request_count}",
             }
         ).encode("utf-8")
         self.send_response(200)

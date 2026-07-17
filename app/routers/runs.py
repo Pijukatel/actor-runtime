@@ -116,6 +116,16 @@ async def abort_run(run_id: str, request: Request) -> object:
     return data(run_dict(run))
 
 
+@flat_router.post("/v2/actor-builds/{build_id}/abort")
+async def abort_build(build_id: str, request: Request) -> object:
+    svc = get_service(request)
+    user = await resolve_user(request)
+    build = await svc.abort_build(build_id, username=user)
+    if build is None:
+        return not_found(f"Build '{build_id}' was not found.")
+    return data(build_dict(build))
+
+
 @flat_router.get("/v2/actor-builds/{build_id}")
 async def get_build(build_id: str, request: Request) -> object:
     svc = get_service(request)

@@ -170,11 +170,27 @@ def test_on_demand_actor_discovers_and_calls_standby_actor(runtime, tmp_path):
     received = output["receivedFromStandby"]
     assert received["method"] == "GET"
     assert received["path"] == "/echo?greeting=howdy"
+    assert received["reply"] == "Standby Actor served request #1"
+
+    # The caller also pushed the standby actor's response into its own dataset.
+    caller_items = httpx.get(
+        f"{api}/v2/datasets/{caller_run['defaultDatasetId']}/items", timeout=10
+    ).json()
+    assert caller_items == [received]
 
     # The standby actor's own run is now warm and inspectable (criterion 24).
     standby_runs = httpx.get(f"{api}/v2/acts/{standby_actor_id}/runs", timeout=10).json()["data"]["items"]
     assert standby_runs, "standby actor should have started a warm run"
     assert standby_runs[0]["status"] == "RUNNING"
+
+    # The standby actor saved a record for the call it served into its own
+    # (still-warm) run's dataset, through the runtime API.
+    standby_items = httpx.get(
+        f"{api}/v2/datasets/{standby_runs[0]['defaultDatasetId']}/items", timeout=10
+    ).json()
+    assert standby_items == [
+        {"method": "GET", "path": "/echo?greeting=howdy", "requestCount": 1}
+    ]
 
     # It tears itself down after the (overridden, short) idle timeout, with no
     # further request needed to trigger it (criterion 12).

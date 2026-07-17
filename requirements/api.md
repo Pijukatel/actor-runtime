@@ -25,6 +25,12 @@
     - `GET /v2/logs/{buildId|runId}/stream` (live-streamed log, see below)
   - Runs: `POST /v2/acts/{actorId}/runs`, `GET /v2/acts/{actorId}/runs`,
     `GET /v2/actor-runs/{runId}`, `POST /v2/actor-runs/{runId}/abort`
+  - Builds can be aborted too: `POST /v2/actor-builds/{buildId}/abort` marks a
+    RUNNING build terminal `ABORTED` (a finished build is returned unchanged).
+    The underlying `docker build` cannot be cancelled mid-flight; it runs to
+    completion in the background, but its finalization respects the aborted
+    status (appending its output to the log for the record) and its image is
+    discarded.
   - Request queues: `GET /v2/request-queues/{queueId}`,
     `GET /v2/request-queues/{queueId}/requests`,
     `POST /v2/request-queues/{queueId}/requests`

@@ -503,12 +503,21 @@ class Service:
             result = await asyncio.to_thread(self.driver.build, build_dir, image_tag, log_sink)
             async with self.db.session() as s:
                 build = await s.get(Build, build_id)
-                build.status = TERMINAL_OK if result.ok else TERMINAL_FAIL
-                build.log = result.log
-                build.finished_at = utcnow()
+                # An abort can land while `docker build` is still running (it
+                # cannot be cancelled mid-flight); the abort's terminal status
+                # must win, so only finalize a build that is still RUNNING and
+                # otherwise just append the docker output for the record.
+                aborted = build.status != "RUNNING"
+                if aborted:
+                    build.log = (build.log or "") + result.log
+                else:
+                    build.status = TERMINAL_OK if result.ok else TERMINAL_FAIL
+                    build.log = result.log
+                    build.finished_at = utcnow()
                 await s.commit()
-            if not result.ok:
-                # Best-effort cleanup: drop any dangling image tag from a failed build.
+            if not result.ok or aborted:
+                # Best-effort cleanup: drop the image of a failed build, or of
+                # one that completed after being aborted (its result is unwanted).
                 await asyncio.to_thread(self.driver.remove_image, image_tag)
         except Exception as exc:  # noqa: BLE001 - never leave a build stuck RUNNING
             async with self.db.session() as s:
@@ -529,6 +538,25 @@ class Service:
             build = await s.get(Build, build_id)
             if build is None or (username is not None and build.username != username):
                 return None
+            return build
+
+    async def abort_build(self, build_id: str, username: str | None = None) -> Build | None:
+        """Mark a RUNNING build ABORTED; a finished build is returned unchanged.
+
+        The underlying ``docker build`` cannot be cancelled mid-flight -- it
+        runs to completion in its worker thread, but ``_run_build``'s
+        finalization respects the already-terminal status and discards the
+        resulting image, so the abort is what sticks.
+        """
+        async with self.db.session() as s:
+            build = await s.get(Build, build_id)
+            if build is None or (username is not None and build.username != username):
+                return None
+            if build.status == "RUNNING":
+                build.status = TERMINAL_ABORTED
+                build.log = (build.log or "") + f"\n{log_stamp()} Build aborted by user.\n"
+                build.finished_at = utcnow()
+                await s.commit()
             return build
 
     async def list_builds(self, actor_id: str, username: str | None = None) -> list[Build]:
