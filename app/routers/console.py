@@ -11,6 +11,13 @@ from ..responses import not_found
 router = APIRouter()
 _CONSOLE_DIR = Path(__file__).resolve().parent.parent / "console"
 
+# Without an explicit Cache-Control, browsers apply HEURISTIC caching to these
+# static files and can keep serving a stale app.js for hours after the runtime
+# image was rebuilt with new console code. `no-cache` means "revalidate before
+# every use": FileResponse's ETag/Last-Modified turn that into cheap 304s, so
+# the console always picks up a rebuilt image without hard refreshes.
+_NO_CACHE = {"Cache-Control": "no-cache"}
+
 # First path segment of every client route the SPA owns. A deep link or refresh
 # to any of these must render the app shell (index.html), so the browser can run
 # the client router. Anything else is not a console route.
@@ -20,12 +27,12 @@ _SPA_PREFIXES = ("actors", "storage", "users")
 @router.get("/")
 @router.get("/console")
 async def index() -> FileResponse:
-    return FileResponse(_CONSOLE_DIR / "index.html")
+    return FileResponse(_CONSOLE_DIR / "index.html", headers=_NO_CACHE)
 
 
 @router.get("/console/app.js")
 async def app_js() -> FileResponse:
-    return FileResponse(_CONSOLE_DIR / "app.js", media_type="application/javascript")
+    return FileResponse(_CONSOLE_DIR / "app.js", media_type="application/javascript", headers=_NO_CACHE)
 
 
 @router.api_route(
@@ -51,5 +58,5 @@ async def spa_catch_all(request: Request, full_path: str) -> Response:
     """
     first = full_path.split("/", 1)[0]
     if request.method == "GET" and first in _SPA_PREFIXES:
-        return FileResponse(_CONSOLE_DIR / "index.html")
+        return FileResponse(_CONSOLE_DIR / "index.html", headers=_NO_CACHE)
     return not_found()

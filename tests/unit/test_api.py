@@ -130,3 +130,14 @@ async def test_abort_finished_build_returns_it_unchanged(wired):
 
     resp = (await client.post(f"/v2/actor-builds/{build['id']}/abort")).json()["data"]
     assert resp["status"] == "SUCCEEDED"
+
+
+async def test_console_assets_are_served_no_cache(wired):
+    """Regression: without an explicit Cache-Control browsers heuristically
+    cache the console's static files and keep rendering a stale app.js for
+    hours after the runtime image was rebuilt with new console code."""
+    client, _ = wired
+    for path in ("/", "/console/app.js", "/actors"):
+        resp = await client.get(path)
+        assert resp.status_code == 200, path
+        assert resp.headers.get("cache-control") == "no-cache", path
