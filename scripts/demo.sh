@@ -74,17 +74,27 @@ curl -fsS "$API_URL/v2/users" >/dev/null || { echo "runtime API never came up"; 
 
 step "4. Pointing apify-cli at the local runtime"
 # APIFY_CLIENT_BASE_URL is the variable the stock apify-cli passes to its
-# underlying apify-client — both `apify push` and `apify call` honour it (see
-# requirements/cli.md). APIFY_TOKEN selects the acting user: the first token
-# ever presented binds the default `local-user`. No `apify login` is needed —
-# but note that a CLI you HAVE logged in before may present its stored token
-# instead of this env value; that is fine (whatever token comes first simply
-# binds `local-user`), it just means scripts cannot assume they know the
-# bound token — see the read-back step below.
+# underlying apify-client — push, call and login all honour it (see
+# requirements/cli.md).
+#
+# The acting credential needs one more step: `apify push`/`apify call` always
+# use the CLI's STORED login token (they do not read APIFY_TOKEN from the
+# environment), so we log in with a demo token — inside an ISOLATED profile,
+# by overriding HOME for apify invocations only, which keeps your real
+# `apify login` untouched. APIFY_DISABLE_KEYRING stores that token in the
+# isolated profile's auth.json instead of the OS keyring. The login is the
+# first request that ever presents a token to this fresh runtime, so the
+# demo token becomes the default user's (`local-user`) bound credential —
+# the same token then authenticates the API read-backs in step 7.
 export APIFY_CLIENT_BASE_URL="$API_URL"
-export APIFY_TOKEN="local-user"
 export APIFY_CLI_DISABLE_TELEMETRY=1
 export APIFY_CLI_SKIP_UPDATE_CHECK=1
+export APIFY_DISABLE_KEYRING=1
+DEMO_TOKEN="local-user"
+CLI_HOME="$DATA/apify-cli-home"
+mkdir -p "$CLI_HOME"
+apify_cli() { HOME="$CLI_HOME" apify "$@"; }
+apify_cli login --token "$DEMO_TOKEN"
 echo "APIFY_CLIENT_BASE_URL = $APIFY_CLIENT_BASE_URL"
 
 step "5. Pushing the standby and caller Actors"
@@ -96,8 +106,8 @@ WORK="$DATA/projects"
 mkdir -p "$WORK"
 cp -r "$REPO/sample_actor_standby" "$WORK/standby-actor"
 cp -r "$REPO/sample_actor_caller" "$WORK/caller-actor"
-(cd "$WORK/standby-actor" && apify push --force)
-(cd "$WORK/caller-actor" && apify push --force)
+(cd "$WORK/standby-actor" && apify_cli push --force)
+(cd "$WORK/caller-actor" && apify_cli push --force)
 
 step "6. Running the caller Actor"
 # The caller discovers the standby Actor's standbyUrl through the runtime API
@@ -109,24 +119,21 @@ INPUT_FILE="$WORK/caller-input.json"
 cat > "$INPUT_FILE" <<'JSON'
 {"standbyActorId": "local-user~standby-actor", "greeting": "hello-from-the-demo"}
 JSON
-(cd "$WORK/caller-actor" && apify call --input-file="$INPUT_FILE")
+(cd "$WORK/caller-actor" && apify_cli call --input-file="$INPUT_FILE")
 
 step "7. Reading the results back over the API"
-# Deliberately NO Authorization header: a request without a token always falls
-# back to the default user `local-user` and is never rejected. Sending a
-# guessed token would 401 here whenever the CLI presented its own stored
-# (logged-in) token in step 5/6 — that token, not our env value, then holds
-# the `local-user` binding, and unknown tokens are rejected once the binding
-# is claimed.
-python3 - "$API_URL" <<'PY'
+# Authenticated with the same demo token the CLI logged in with (step 4): the
+# login bound it as local-user's credential, so it authorizes these reads.
+python3 - "$API_URL" "$DEMO_TOKEN" <<'PY'
 import json
 import sys
 import urllib.request
 
-api = sys.argv[1]
+api, token = sys.argv[1], sys.argv[2]
 
 def get(path):
-    with urllib.request.urlopen(f"{api}{path}", timeout=30) as resp:
+    req = urllib.request.Request(f"{api}{path}", headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 caller_run = get("/v2/acts/local-user~caller-actor/runs")["data"]["items"][-1]

@@ -20,12 +20,14 @@
 ## Authentication / token bootstrap
 
 - The runtime has **placeholder authentication with no passwords**, and identity
-  is **decoupled from the credential**: the value of **`APIFY_TOKEN`** is a private
-  token that *selects* a user, but is never turned into a username. `apify-client`
-  sends it as `Authorization: Bearer <token>`. **Changing `APIFY_TOKEN` switches
-  the user** you act as (matching how the real platform's CLI resolves the token to
-  a user) — everything you push, build or run belongs to that user, and one user
-  cannot see another user's Actors, builds, runs or storages.
+  is **decoupled from the credential**: the token a client presents is a private
+  value that *selects* a user, but is never turned into a username. `apify-client`
+  sends it as `Authorization: Bearer <token>`. **Changing the presented token
+  switches the user** you act as (matching how the real platform's CLI resolves
+  the token to a user) — everything you push, build or run belongs to that user,
+  and one user cannot see another user's Actors, builds, runs or storages. (How
+  the CLI decides which token to present is described below — it is the stored
+  login, not the `APIFY_TOKEN` environment variable.)
 - How a token resolves:
   - **The first token ever presented** binds ("bootstraps") the default user
     `local-user` — it becomes that user's stored token, and you act as `local-user`.
@@ -36,16 +38,21 @@
     user.
 - If `APIFY_TOKEN` is **absent**, requests fall back to the default user
   `local-user` and are never rejected, so existing scripts keep working unchanged.
-- No `apify login` step and no `~/.apify/auth.json` set-up are required when
-  `APIFY_TOKEN` and `APIFY_CLIENT_BASE_URL` are exported in the environment; switching
-  users is just a matter of exporting a different `APIFY_TOKEN`.
-- **Caveat for previously logged-in CLIs:** a CLI that HAS run `apify login` may
-  present its stored `auth.json` token instead of the exported `APIFY_TOKEN`
-  (observed with v1.7.x). The flow still works — whatever token arrives first
-  simply binds `local-user` — but scripts must not assume the bound credential
-  equals their env value: read-backs should either reuse the same client or send
-  **no token at all** (the never-rejected default-user fallback), as
-  `scripts/demo.sh` does.
+- **How the CLI actually presents a credential (verified against v1.7.x
+  source):** `apify push` and `apify call` use the CLI's **stored login
+  token only** — they do not read the `APIFY_TOKEN` environment variable on
+  that path. Concretely:
+  - **Not logged in:** push/call send **no token at all**, which the runtime
+    accepts via the never-rejected default-user fallback — the whole loop
+    works, but no credential ever gets bound.
+  - **Logged in:** push/call present the stored token, whatever it is — so a
+    CLI logged in against the real platform presents that (real) token, and
+    it becomes `local-user`'s bound credential on first contact.
+  - **To act as a chosen credential**, log the CLI in against the runtime:
+    `apify login -t <token>` (login honours `APIFY_CLIENT_BASE_URL`). To do
+    this without touching your real `~/.apify` login, run the apify commands
+    with an overridden `HOME` and `APIFY_DISABLE_KEYRING=1` (isolated
+    profile), exactly as `scripts/demo.sh` does.
 
 ## Supported commands (first draft)
 
