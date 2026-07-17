@@ -45,3 +45,24 @@ async def resolve_user(request: Request) -> str:
     if await service.bind_default_token(token):
         return DEFAULT_USERNAME
     raise InvalidTokenError()
+
+
+async def resolve_standby_caller(request: Request) -> str:
+    """Resolve the standby-forwarding caller's username from ``?token=`` or bearer.
+
+    Differs from ``resolve_user`` in exactly one respect: a request presenting
+    no credential at all is rejected (401) rather than falling back to the
+    default user, since forwarding into (and possibly starting) an Actor
+    container must never happen anonymously. A token that IS present goes
+    through the exact same bootstrap-or-reject resolution as everywhere else.
+    """
+    token = request.query_params.get("token") or token_from_request(request)
+    if not token:
+        raise InvalidTokenError()
+    service = request.app.state.service
+    username = await service.user_for_token(token)
+    if username is not None:
+        return username
+    if await service.bind_default_token(token):
+        return DEFAULT_USERNAME
+    raise InvalidTokenError()

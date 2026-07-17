@@ -5,3 +5,7 @@ sqlalchemy==2.0.51
 aiosqlite==0.21.0
 docker==7.1.0
 python-multipart==0.0.20
+# Runtime dependency (not just a test dep): the standby-actor reverse proxy
+# and readiness-probe polling in app/service.py + app/routers/standby.py use
+# httpx directly, in the running application, not only in tests.
+httpx==0.28.1

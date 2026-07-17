@@ -21,6 +21,12 @@ class User(Base):
 
     username: Mapped[str] = mapped_column(String, primary_key=True)
     token: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+    # A second, runtime-fabricated credential injected into every container as
+    # APIFY_TOKEN -- never the bound ``token`` above, which for local-user may
+    # be a real externally-issued secret bound by the first-ever request (see
+    # requirements/test.md's anti-leak guarantee). Minted once per user at
+    # creation (service.ensure_default_user / create_user); safe to leak.
+    container_token: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
@@ -33,6 +39,9 @@ class Actor(Base):
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     modified_at: Mapped[str] = mapped_column(String, default=utcnow)
     default_run_options: Mapped[dict] = mapped_column(JSON, default=dict)
+    # {isEnabled, idleTimeoutSecs, build, memoryMbytes, shouldPassActorInput} --
+    # mirrors apify-core's actorStandby; see standby._normalize_standby_config.
+    actor_standby: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class Version(Base):
@@ -77,6 +86,10 @@ class Run(Base):
     kv_store_id: Mapped[str] = mapped_column(String)
     dataset_id: Mapped[str] = mapped_column(String)
     request_queue_id: Mapped[str] = mapped_column(String)
+    # True for a run started by the standby manager (long-lived, reaped on
+    # idle by Service.reap_idle_standby_runs) rather than a normal one-shot
+    # POST /{actorId}/runs call.
+    is_standby: Mapped[bool] = mapped_column(default=False)
     log: Mapped[str] = mapped_column(Text, default="")
     started_at: Mapped[str] = mapped_column(String, default=utcnow)
     finished_at: Mapped[str | None] = mapped_column(String, nullable=True)

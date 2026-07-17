@@ -73,3 +73,27 @@ def unauthorized(message: str = "The provided API token is not valid.") -> JSONR
     return JSONResponse(
         {"error": {"type": "invalid-token", "message": message}}, status_code=401
     )
+
+
+def standby_unavailable(
+    message: str = "The standby Actor did not become ready in time.",
+) -> JSONResponse:
+    return JSONResponse(
+        {"error": {"type": "actor-standby-unavailable", "message": message}}, status_code=503
+    )
+
+
+def standby_start_failed(
+    message: str = "The standby Actor failed to start.",
+) -> JSONResponse:
+    """An infrastructure/driver failure while launching a standby container --
+
+    distinct from ``not_found`` ("no successful build") and from
+    ``standby_unavailable`` ("started but never became ready"): here the
+    container never even started, for a reason that has nothing to do with
+    whether the Actor id or its build exist. 500-family, not 404, so a
+    developer isn't misled into thinking they need to push a new build.
+    """
+    return JSONResponse(
+        {"error": {"type": "actor-standby-start-failed", "message": message}}, status_code=500
+    )

@@ -76,7 +76,7 @@ async def my_request_queues(request: Request) -> object:
 async def _actor_payload(svc, actor) -> dict:
     versions = await svc.list_versions(actor.id)
     tagged = await svc.tagged_builds(actor.id)
-    return actor_dict(actor, versions, tagged)
+    return actor_dict(actor, versions, tagged, svc.settings)
 
 
 @router.get("")
@@ -98,6 +98,7 @@ async def create_actor(request: Request) -> object:
         default_run_options=body.get("defaultRunOptions", {}),
         versions=body.get("versions", []),
         username=user,
+        actor_standby=body.get("actorStandby"),
     )
     return data(await _actor_payload(svc, actor), status_code=201)
 

@@ -25,6 +25,12 @@
     - `GET /v2/logs/{buildId|runId}/stream` (live-streamed log, see below)
   - Runs: `POST /v2/acts/{actorId}/runs`, `GET /v2/acts/{actorId}/runs`,
     `GET /v2/actor-runs/{runId}`, `POST /v2/actor-runs/{runId}/abort`
+  - Builds can be aborted too: `POST /v2/actor-builds/{buildId}/abort` marks a
+    RUNNING build terminal `ABORTED` (a finished build is returned unchanged).
+    The underlying `docker build` cannot be cancelled mid-flight; it runs to
+    completion in the background, but its finalization respects the aborted
+    status (appending its output to the log for the record) and its image is
+    discarded.
   - Request queues: `GET /v2/request-queues/{queueId}`,
     `GET /v2/request-queues/{queueId}/requests`,
     `POST /v2/request-queues/{queueId}/requests`
@@ -42,8 +48,109 @@
     `POST /v2/{type}/{storageId}/access-rights` (grant/update a share),
     `GET /v2/{type}/{storageId}/access-rights` (list grantees),
     `DELETE /v2/{type}/{storageId}/access-rights/{grantee}` (revoke)
+  - Standby-actor request forwarding (local addition; see "Standby actors"
+    below): `{GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS} /v2/actor-standby/{actorId}/{path}`
 - Only the endpoints exercised by the mandatory e2e flow are implemented in this
   first draft; full coverage of the `Actor Runtime API` tag is deferred.
+
+## Standby actors
+
+- An Actor opts into standby mode exactly as on the real platform: a pushed
+  `.actor/actor.json` containing `"usesStandbyMode": true` (parsed from the
+  inline `sourceFiles` of a `SOURCE_FILES` push). An explicit `actorStandby`
+  object in the same `POST /v2/acts` / `PUT /v2/acts/{actorId}` request body
+  takes precedence over `.actor/actor.json` (matching apify-core), and
+  persists until the next call that carries an explicit `actorStandby` field.
+  The config mirrors apify-core's `actorStandby`: `isEnabled`,
+  `idleTimeoutSecs` (default 300s, minimum 5s), `build`, `memoryMbytes`,
+  `shouldPassActorInput`.
+- A standby-enabled Actor's serialized object (`GET /v2/acts|actors/{actorId}`)
+  exposes a `standbyUrl` field: `{APIFY_API_BASE_URL}/v2/actor-standby/{actorId}`
+  — i.e. the runtime's own API, reachable from any Actor container on the
+  shared Docker network. A non-standby Actor has no such field at all.
+  **`standbyUrl` resolves only from inside another Actor container** on that
+  shared network (the hostname it names is not registered anywhere else); a
+  host-side caller must instead use
+  `http://localhost:<published-api-port>/v2/actor-standby/{actorId}/...` — the
+  same path, against the runtime's host-published API port.
+- `{method} /v2/actor-standby/{actorId}/{path}` forwards the request to the
+  Actor's warm container, starting one (lazily, on first request) if none is
+  running yet: it waits for the container to answer a request carrying header
+  `x-apify-container-server-readiness-probe` with `200` on `ACTOR_STANDBY_PORT`,
+  then forwards method, path, query string, headers and body unchanged —
+  including repeated header names in either direction (e.g. multiple `Cookie`
+  headers from the caller, multiple `Set-Cookie` headers from the Actor) — and
+  streams the response back. A subsequent request while the container is still
+  warm reuses it (at most one warm run per Actor). The upstream connection has
+  a bounded connect timeout (the container was already proven reachable by the
+  readiness probe moments earlier) but an unbounded read/write timeout, so a
+  legitimately long-lived or slowly-streamed response is never cut short.
+- After `idleTimeoutSecs` with **no forwarded requests** — and never while a
+  request is still actively being forwarded, no matter how long a single
+  streamed response takes — the runtime stops and removes the container on its
+  own and the run reaches a terminal status; no further request is needed to
+  trigger this.
+- Failure modes are distinguished by status code rather than collapsed into a
+  single one: `404` for a genuinely missing thing (unknown/cross-user/
+  non-standby actor id, or an actor with no successful build); `503` if the
+  container never answers its readiness probe in time, or if it drops the
+  connection mid-request after having been ready; `500` if launching the
+  container itself fails for an infrastructure reason (e.g. the shared Docker
+  network was unavailable at boot) — the build is fine, only the start failed,
+  so this is never reported as the same 404 as "no successful build".
+- Authorization accepts either a `?token=` query parameter (matching
+  apify-core's own standby-URL convention) or the usual bearer header,
+  resolved through the same token→user rules as the rest of the API — except a
+  request with **no credential at all** is rejected `401` here (unlike the
+  rest of the API, which falls back to the default user). Visibility follows
+  the same rule as every other Actor endpoint: a cross-user request is `404`,
+  identical to an unknown or non-standby actor id — never a silent on-demand
+  run as a fallback, and never a container started before authorization
+  succeeds.
+- Aborting a standby run (`POST /v2/actor-runs/{runId}/abort`) stops and
+  removes its container and imports whatever it had written to its default
+  key-value store / dataset / request queue up to that point, exactly like an
+  idle-timeout teardown does — an explicit abort is a routine way to stop a
+  standby Actor (e.g. to push a new build) and must not discard its output.
+- A warm (RUNNING) standby run's log is fetched **live from its container**
+  by both `GET /v2/logs/{runId}` and its `/stream` variant — a standby run
+  has no in-process log buffer, and its log is only persisted to the stored
+  run log at teardown (same text plus a closing note), so without the live
+  fetch it would read as empty for the run's whole warm lifetime.
+
+## Environment variables in every Actor container (on-demand and standby)
+
+- `APIFY_IS_AT_HOME=1` (mirrors the real platform; an SDK/client instantiated
+  in the container reports `isAtHome`/`is_at_home = true`).
+- `APIFY_META_ORIGIN` — `API` for ordinary runs (every local run arrives via
+  the API, apify-cli included), `STANDBY` for standby-origin runs. This is the
+  platform-documented way for a standby-capable Actor to detect which mode it
+  was started in and, on a standard start, do its batch work (or exit) instead
+  of binding `ACTOR_STANDBY_PORT`, which is only set on standby runs.
+- `APIFY_API_BASE_URL` — the runtime's own API, reachable by name from any
+  Actor container on the shared Docker network (see "Networking" in
+  `actor-driver.md`).
+- `APIFY_TOKEN` — the run owner's **`container_token`**: a second,
+  runtime-fabricated credential distinct from the owner's bound `token` (the
+  credential presented to authenticate inbound requests, which for
+  `local-user` may be a real externally-issued secret). `container_token` is
+  minted once per user at creation (including the default user, at bootstrap)
+  and resolves through the same token→user lookup as the bound `token`, so a
+  container's own `APIFY_TOKEN` is itself a working bearer credential against
+  the runtime's API (e.g. for an on-demand Actor's standby lookup). It is
+  never equal to the owner's bound `token` and is safe to leak (see
+  `test.md`'s anti-leak guarantee for the precise, narrower scope of what is
+  NOT safe to leak).
+- `APIFY_DEFAULT_KEY_VALUE_STORE_ID` / `APIFY_DEFAULT_DATASET_ID` /
+  `APIFY_DEFAULT_REQUEST_QUEUE_ID` — the run's real storage ids (as returned by
+  the API), not a placeholder.
+- `APIFY_ACTOR_ID` / `ACTOR_ID` and `APIFY_ACTOR_RUN_ID` / `ACTOR_RUN_ID` —
+  both the legacy `APIFY_`-prefixed and the modern unprefixed spellings, equal
+  in value.
+- Standby runs additionally get `ACTOR_STANDBY_PORT` (the fixed port the
+  Actor's own HTTP server must listen on) and have `timeoutSecs`/`build`/
+  `memoryMbytes` forced from the Actor's `actorStandby` config rather than any
+  caller-supplied value.
 
 ## Version source shapes
 
@@ -175,8 +282,10 @@
   after a restart), the stream falls back to yielding the **complete stored log**
   once, so opening it for a finished job returns the full log exactly like the
   one-shot endpoint.
-- The one-shot `GET /v2/logs/{jobId}` is unchanged: a single `PlainTextResponse` of
-  the stored log, still valid for finished jobs and any non-streaming consumer.
+- The one-shot `GET /v2/logs/{jobId}` returns a single `PlainTextResponse` of
+  the stored log, still valid for finished jobs and any non-streaming consumer
+  — except a warm standby run, whose log both endpoints fetch live from its
+  container (see the standby section).
 - Ownership/isolation matches every other job endpoint: the stream is scoped to the
   acting user; an unknown or cross-user job id is **404**, indistinguishable from a
   missing id.

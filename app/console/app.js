@@ -53,45 +53,70 @@ async function api(path, opts) {
 }
 const unwrap = (r) => (r && r.data !== undefined ? r.data : r);
 
+// The one active log stream, if any. A running job's stream stays open
+// indefinitely (a warm standby run's never ends at all), so an abandoned one
+// must be aborted when the user moves elsewhere: it wastes a server poller
+// and a browser connection, and an in-flight response to the same URL makes
+// the browser queue the next request for that URL behind it — a reopened Log
+// tab would otherwise hang empty forever.
+let activeLogStream = null;
+
+function abortActiveLogStream() {
+  if (activeLogStream) {
+    activeLogStream.abort();
+    activeLogStream = null;
+  }
+}
+
 // Consume the chunked text/plain log stream, appending output into `pre` as it
 // arrives (live for a running job, the full stored log in one shot for a finished
 // one). Text is added via text nodes only - never innerHTML - so log content can
 // never be interpreted as markup.
 async function streamLogInto(id, pre) {
+  abortActiveLogStream();
+  const ctrl = new AbortController();
+  activeLogStream = ctrl;
   const token = getToken();
   const headers = {};
   if (token) headers["Authorization"] = "Bearer " + token;
   let res;
   try {
-    res = await fetch(`/v2/logs/${id}/stream`, { headers });
+    res = await fetch(`/v2/logs/${id}/stream`, { headers, signal: ctrl.signal });
   } catch (e) {
-    pre.textContent = "(no log)";
+    if (!ctrl.signal.aborted) pre.textContent = "(no log)";
     return;
   }
   let appended = false;
-  if (res.body && res.body.getReader) {
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      const text = decoder.decode(value, { stream: true });
+  try {
+    if (res.body && res.body.getReader) {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true });
+        if (text) {
+          pre.appendChild(document.createTextNode(text));
+          appended = true;
+        }
+      }
+      const tail = decoder.decode();
+      if (tail) {
+        pre.appendChild(document.createTextNode(tail));
+        appended = true;
+      }
+    } else {
+      const text = await res.text();
       if (text) {
         pre.appendChild(document.createTextNode(text));
         appended = true;
       }
     }
-    const tail = decoder.decode();
-    if (tail) {
-      pre.appendChild(document.createTextNode(tail));
-      appended = true;
-    }
-  } else {
-    const text = await res.text();
-    if (text) {
-      pre.appendChild(document.createTextNode(text));
-      appended = true;
-    }
+  } catch (e) {
+    // An aborted stream (tab switch / navigation) is expected; keep whatever
+    // output already arrived.
+    if (!ctrl.signal.aborted) throw e;
+    return;
   }
   if (!appended) pre.textContent = "(no log)";
 }
@@ -275,6 +300,7 @@ function highlightNav(section) {
 // only on "/"; the actor id (`username~name`) contains a literal "~", which is
 // not a separator, so it survives whole.
 function renderRoute() {
+  abortActiveLogStream();
   const path = location.pathname;
   if (path === "/" || path === "") {
     history.replaceState({}, "", "/actors");
@@ -575,6 +601,18 @@ window.openBuild = async function (actorId, buildNumber) {
   const head = mk("div", { class: "row" });
   head.appendChild(mk("h2", { text: `Build ${b.buildNumber}`, style: { margin: "0" } }));
   head.appendChild(badgeEl(b.status));
+  if (b.status === "RUNNING") {
+    head.appendChild(
+      mk("button", {
+        class: "secondary",
+        text: "Abort build",
+        onClick: async () => {
+          await api(`/v2/actor-builds/${match.id}/abort`, { method: "POST" });
+          openBuild(actorId, buildNumber);
+        },
+      }),
+    );
+  }
 
   const logPre = mk("pre");
   detail.append(
@@ -595,6 +633,18 @@ window.openRun = async function (actorId, runId) {
   const head = mk("div", { class: "row" });
   head.appendChild(mk("h2", { text: `Run ${r.id}`, style: { margin: "0" } }));
   head.appendChild(badgeEl(r.status));
+  if (r.status === "RUNNING") {
+    head.appendChild(
+      mk("button", {
+        class: "secondary",
+        text: "Abort run",
+        onClick: async () => {
+          await api(`/v2/actor-runs/${runId}/abort`, { method: "POST" });
+          openRun(actorId, runId);
+        },
+      }),
+    );
+  }
 
   const tabs = mk("div", { class: "tabs" });
   const kvTab = mk("span", { class: "active", text: "Key-value store" });
@@ -625,6 +675,7 @@ window.openRun = async function (actorId, runId) {
 };
 
 window.showStore = async function (tab, kind, id) {
+  abortActiveLogStream();
   document.querySelectorAll(".tabs span").forEach((s) => s.classList.remove("active"));
   if (tab) tab.classList.add("active");
   const box = $("#store");

@@ -13,8 +13,10 @@ from __future__ import annotations
 import threading
 import time
 
+import pytest
 from starlette.requests import Request
 
+from app.config import NETWORK_NAME
 from app.driver import DockerDriver
 from app.routers.runs import stream_log
 
@@ -290,6 +292,133 @@ def test_docker_run_enforces_timeout_while_streaming_logs():
     assert result.exit_code == 1
     assert received, "streamed chunks were not delivered to the sink"
     assert "".join(received) == result.log
+
+
+def _fake_network_unavailable_client():
+    """A fake docker client whose network lookup/creation always fails, so
+    ``DockerDriver.ensure_network()`` leaves ``_network_available`` False --
+    simulating a daemon that restricts user-defined network creation."""
+
+    class _FakeNetworks:
+        def get(self, name):
+            raise RuntimeError("daemon rejected network lookup")
+
+    class _FakeContainers:
+        def __init__(self):
+            self.run_kwargs = None
+
+        def run(self, image_tag, **kwargs):
+            self.run_kwargs = kwargs
+            return _StubContainer()
+
+    class _StubContainer:
+        def wait(self, timeout=None):
+            return {"StatusCode": 0}
+
+        def logs(self):
+            return b""
+
+        def kill(self):
+            pass
+
+        def remove(self, force=False):
+            pass
+
+    class _FakeClient:
+        def __init__(self):
+            self.networks = _FakeNetworks()
+            self.containers = _FakeContainers()
+
+    return _FakeClient()
+
+
+def test_docker_run_falls_back_to_bridge_network_when_named_network_unavailable():
+    """Regression: if ``ensure_network()`` could not create/look up the shared
+    user-defined network at boot, on-demand runs (``run()``) must still work
+    -- exactly like the pre-standby behavior -- via Docker's default bridge
+    network, rather than referencing a network name that was never actually
+    created. Blast radius of the bug this fixes was the WHOLE run subsystem
+    (on-demand included), not just standby."""
+    client = _fake_network_unavailable_client()
+    driver = DockerDriver(client=client)
+    driver.ensure_network()  # fails -- logs a warning, leaves the network unavailable
+
+    result = driver.run("img:latest", "/tmp/nonexistent", {}, timeout_secs=1)
+
+    assert result.exit_code == 0
+    assert client.containers.run_kwargs.get("network_mode") == "bridge"
+    assert "network" not in client.containers.run_kwargs
+
+
+def test_docker_run_uses_named_network_when_available():
+    """Counterpart to the fallback test above: when the shared network IS
+    available, `run()` must still join it by name (not silently fall back to
+    bridge), since that's what makes on-demand Actor containers reachable by
+    name and able to reach APIFY_API_BASE_URL."""
+
+    class _FakeNetwork:
+        def connect(self, container, aliases=None):
+            pass
+
+    class _FakeNetworks:
+        def get(self, name):
+            return _FakeNetwork()
+
+    class _FakeContainers:
+        def __init__(self):
+            self.run_kwargs = None
+
+        def get(self, name):
+            raise RuntimeError("no self-container in this fake -- self-attach best-effort skips")
+
+        def run(self, image_tag, **kwargs):
+            self.run_kwargs = kwargs
+            return _StubContainer()
+
+    class _StubContainer:
+        def wait(self, timeout=None):
+            return {"StatusCode": 0}
+
+        def logs(self):
+            return b""
+
+        def kill(self):
+            pass
+
+        def remove(self, force=False):
+            pass
+
+    class _FakeClient:
+        def __init__(self):
+            self.networks = _FakeNetworks()
+            self.containers = _FakeContainers()
+
+    client = _FakeClient()
+    driver = DockerDriver(client=client)
+    driver.ensure_network()  # succeeds -- self-attach then best-effort-fails, which is fine
+
+    result = driver.run("img:latest", "/tmp/nonexistent", {}, timeout_secs=1)
+
+    assert result.exit_code == 0
+    assert client.containers.run_kwargs.get("network") == NETWORK_NAME
+    assert "network_mode" not in client.containers.run_kwargs
+
+
+def test_docker_standby_start_raises_clear_error_when_network_unavailable():
+    """Regression: `start()` (the non-blocking standby launch path) must fail
+    fast with an actionable error when the shared network isn't available,
+    rather than either silently joining a nonexistent network (a bare docker
+    APIError) or -- worse -- silently falling back to the bridge network,
+    which would make the container's DNS name (its only forwarding address)
+    unreachable."""
+    client = _fake_network_unavailable_client()
+    driver = DockerDriver(client=client)
+    driver.ensure_network()  # fails -- network stays unavailable
+
+    with pytest.raises(RuntimeError, match="network"):
+        driver.start("img:latest", "/tmp/nonexistent", {}, "ar-run-x")
+
+    assert client.containers.run_kwargs is None, "must not attempt to start a container at all"
 
 
 # ------------------------------------------------------------- (3) storages

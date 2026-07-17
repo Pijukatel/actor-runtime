@@ -85,3 +85,74 @@ async def test_console_served(wired):
     resp = await client.get("/")
     assert resp.status_code == 200
     assert "Actor Runtime Console" in resp.text
+
+
+async def test_abort_build_while_running_sticks_and_discards_result(wired, monkeypatch):
+    """Aborting a RUNNING build is terminal: `docker build` cannot be cancelled
+    mid-flight, so when it eventually completes its finalization must respect
+    the ABORTED status (not clobber it) and discard the unwanted image."""
+    import threading
+
+    client, service = wired
+    await _push_actor(client)
+
+    release = threading.Event()
+    real_build = service.driver.build
+    removed: list[str] = []
+
+    def slow_build(build_dir, image_tag, log_sink=None):
+        release.wait(timeout=10)
+        return real_build(build_dir, image_tag, log_sink)
+
+    monkeypatch.setattr(service.driver, "build", slow_build)
+    monkeypatch.setattr(service.driver, "remove_image", lambda tag: removed.append(tag))
+
+    build = (await client.post("/v2/acts/local-user~sample-actor/builds?version=0.0")).json()["data"]
+    aborted = (await client.post(f"/v2/actor-builds/{build['id']}/abort")).json()["data"]
+    assert aborted["status"] == "ABORTED"
+
+    release.set()
+    await service.wait_idle()
+
+    final = (await client.get(f"/v2/actor-builds/{build['id']}")).json()["data"]
+    assert final["status"] == "ABORTED"
+    log = (await client.get(f"/v2/logs/{build['id']}")).text
+    assert "Build aborted by user." in log
+    assert "stub: built" in log  # docker output still appended for the record
+    assert removed, "the completed-after-abort image must be discarded"
+
+
+async def test_abort_finished_build_returns_it_unchanged(wired):
+    client, service = wired
+    await _push_actor(client)
+    build = (await client.post("/v2/acts/local-user~sample-actor/builds?version=0.0")).json()["data"]
+    await service.wait_idle()
+
+    resp = (await client.post(f"/v2/actor-builds/{build['id']}/abort")).json()["data"]
+    assert resp["status"] == "SUCCEEDED"
+
+
+async def test_console_assets_are_served_no_cache(wired):
+    """Regression: without an explicit Cache-Control browsers heuristically
+    cache the console's static files and keep rendering a stale app.js for
+    hours after the runtime image was rebuilt with new console code."""
+    client, _ = wired
+    for path in ("/", "/console/app.js", "/actors"):
+        resp = await client.get(path)
+        assert resp.status_code == 200, path
+        assert resp.headers.get("cache-control") == "no-cache", path
+
+
+async def test_log_endpoints_are_never_cached(wired):
+    """Regression: a cacheable log response lets the browser queue a re-opened
+    log view behind a still-open earlier stream to the same URL (endless for a
+    warm standby run), rendering it empty forever."""
+    client, service = wired
+    await _push_actor(client)
+    build = (await client.post("/v2/acts/local-user~sample-actor/builds?version=0.0")).json()["data"]
+    await service.wait_idle()
+
+    one_shot = await client.get(f"/v2/logs/{build['id']}")
+    assert one_shot.headers.get("cache-control") == "no-store"
+    async with client.stream("GET", f"/v2/logs/{build['id']}/stream") as stream:
+        assert stream.headers.get("cache-control") == "no-store"

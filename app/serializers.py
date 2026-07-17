@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .config import Settings
 from .db import Actor, Build, Run, Storage, User, Version
 from .service import _RUN_STORAGE_PREFIXES
 
@@ -39,8 +40,13 @@ def version_dict(v: Version) -> dict[str, Any]:
     return out
 
 
-def actor_dict(a: Actor, versions: list[Version], tagged_builds: dict[str, dict]) -> dict[str, Any]:
-    return {
+def actor_dict(
+    a: Actor,
+    versions: list[Version],
+    tagged_builds: dict[str, dict],
+    settings: Settings,
+) -> dict[str, Any]:
+    out = {
         "id": a.id,
         "userId": a.username,
         "name": a.name,
@@ -52,6 +58,12 @@ def actor_dict(a: Actor, versions: list[Version], tagged_builds: dict[str, dict]
         "versions": [version_dict(v) for v in versions],
         "taggedBuilds": tagged_builds,
     }
+    # `standbyUrl` is present only for a standby-enabled actor (matching the
+    # real platform: a non-standby actor has no such field at all, not a
+    # null one).
+    if (a.actor_standby or {}).get("isEnabled"):
+        out["standbyUrl"] = f"{settings.container_api_base_url}/v2/actor-standby/{a.id}"
+    return out
 
 
 def build_dict(b: Build) -> dict[str, Any]:
