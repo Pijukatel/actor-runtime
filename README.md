@@ -114,6 +114,19 @@ apify call -i '{"greeting":"hi"}'   # runs it and waits for completion
 Then open the console URL, or fetch the run's storages over the API. See
 `requirements/cli.md` for details.
 
+## Demo
+
+`scripts/demo.sh` is a self-contained, commented walkthrough of the whole
+loop including standby actors: it builds the image, starts the runtime,
+points apify-cli at it, pushes the standby + caller sample Actors, runs the
+caller (which discovers and calls the standby Actor container-to-container),
+and prints the results read back over the API. Requires docker, apify-cli,
+python3 and curl:
+
+```bash
+bash scripts/demo.sh
+```
+
 ## Run the tests
 
 The oracle sets up the venv, installs dependencies and `apify-cli`, builds the
