@@ -52,7 +52,10 @@
     `apify login -t <token>` (login honours `APIFY_CLIENT_BASE_URL`). To do
     this without touching your real `~/.apify` login, run the apify commands
     with an overridden `HOME` and `APIFY_DISABLE_KEYRING=1` (isolated
-    profile), exactly as `scripts/demo.sh` does.
+    profile). Scripts that instead run with whatever credential the CLI
+    already has can discover the bound token afterwards from
+    `GET /v2/users/me` (tokens are deliberately visible there), as
+    `scripts/demo.sh` does.
 
 ## Supported commands (first draft)
 

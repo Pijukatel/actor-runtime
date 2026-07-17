@@ -73,28 +73,18 @@ done
 curl -fsS "$API_URL/v2/users" >/dev/null || { echo "runtime API never came up"; exit 1; }
 
 step "4. Pointing apify-cli at the local runtime"
-# APIFY_CLIENT_BASE_URL is the variable the stock apify-cli passes to its
-# underlying apify-client — push, call and login all honour it (see
-# requirements/cli.md).
-#
-# The acting credential needs one more step: `apify push`/`apify call` always
-# use the CLI's STORED login token (they do not read APIFY_TOKEN from the
-# environment), so we log in with a demo token — inside an ISOLATED profile,
-# by overriding HOME for apify invocations only, which keeps your real
-# `apify login` untouched. APIFY_DISABLE_KEYRING stores that token in the
-# isolated profile's auth.json instead of the OS keyring. The login is the
-# first request that ever presents a token to this fresh runtime, so the
-# demo token becomes the default user's (`local-user`) bound credential —
-# the same token then authenticates the API read-backs in step 7.
+# APIFY_CLIENT_BASE_URL is the only redirect needed: it is the base URL the
+# stock apify-cli hands to its underlying apify-client, and push/call/login
+# all honour it (see requirements/cli.md). No token is configured here — the
+# CLI simply presents whatever credential it already has:
+#   - logged in:  its stored token is the first one this fresh runtime sees,
+#                 so it becomes the default user's (`local-user`) bound
+#                 credential and everything runs as `local-user`;
+#   - logged out: push/call send no token at all, and the runtime's
+#                 default-user fallback accepts that as `local-user` too.
 export APIFY_CLIENT_BASE_URL="$API_URL"
 export APIFY_CLI_DISABLE_TELEMETRY=1
 export APIFY_CLI_SKIP_UPDATE_CHECK=1
-export APIFY_DISABLE_KEYRING=1
-DEMO_TOKEN="local-user"
-CLI_HOME="$DATA/apify-cli-home"
-mkdir -p "$CLI_HOME"
-apify_cli() { HOME="$CLI_HOME" apify "$@"; }
-apify_cli login --token "$DEMO_TOKEN"
 echo "APIFY_CLIENT_BASE_URL = $APIFY_CLIENT_BASE_URL"
 
 step "5. Pushing the standby and caller Actors"
@@ -106,8 +96,8 @@ WORK="$DATA/projects"
 mkdir -p "$WORK"
 cp -r "$REPO/sample_actor_standby" "$WORK/standby-actor"
 cp -r "$REPO/sample_actor_caller" "$WORK/caller-actor"
-(cd "$WORK/standby-actor" && apify_cli push --force)
-(cd "$WORK/caller-actor" && apify_cli push --force)
+(cd "$WORK/standby-actor" && apify push --force)
+(cd "$WORK/caller-actor" && apify push --force)
 
 step "6. Running the caller Actor"
 # The caller discovers the standby Actor's standbyUrl through the runtime API
@@ -119,22 +109,33 @@ INPUT_FILE="$WORK/caller-input.json"
 cat > "$INPUT_FILE" <<'JSON'
 {"standbyActorId": "local-user~standby-actor", "greeting": "hello-from-the-demo"}
 JSON
-(cd "$WORK/caller-actor" && apify_cli call --input-file="$INPUT_FILE")
+(cd "$WORK/caller-actor" && apify call --input-file="$INPUT_FILE")
 
 step "7. Reading the results back over the API"
-# Authenticated with the same demo token the CLI logged in with (step 4): the
-# login bound it as local-user's credential, so it authorizes these reads.
-python3 - "$API_URL" "$DEMO_TOKEN" <<'PY'
+# The script never configured a token, so it discovers the acting credential
+# from the runtime itself: a tokenless request falls back to the default user
+# `local-user`, and /v2/users/me deliberately returns the caller's stored
+# token (that is how the console's user switcher works). Whatever token the
+# CLI bound in step 5/6 — or null if it was logged out — comes back here, and
+# the remaining reads authenticate with it when present.
+python3 - "$API_URL" <<'PY'
 import json
 import sys
 import urllib.request
 
-api, token = sys.argv[1], sys.argv[2]
+api = sys.argv[1]
 
-def get(path):
-    req = urllib.request.Request(f"{api}{path}", headers={"Authorization": f"Bearer {token}"})
+def _fetch(path, token=None):
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    req = urllib.request.Request(f"{api}{path}", headers=headers)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+bound_token = _fetch("/v2/users/me")["data"]["token"]
+print(f"Acting as local-user (bound token {'set' if bound_token else 'not set'})")
+
+def get(path):
+    return _fetch(path, token=bound_token)
 
 caller_run = get("/v2/acts/local-user~caller-actor/runs")["data"]["items"][-1]
 print(f"Caller run {caller_run['id']}: {caller_run['status']}")
