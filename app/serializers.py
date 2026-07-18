@@ -5,7 +5,7 @@ from typing import Any
 
 from .config import Settings
 from .db import Actor, Build, Run, Storage, User, Version
-from .service import _RUN_STORAGE_PREFIXES
+from .service import _RUN_STORAGE_PREFIXES, storage_name_from_id
 
 
 def user_dict(u: User) -> dict[str, Any]:
@@ -18,7 +18,11 @@ def user_dict(u: User) -> dict[str, Any]:
 
 
 def storage_dict(st: Storage) -> dict[str, Any]:
-    name = st.id.split("~", 1)[1] if "~" in st.id else ""
+    # Shared with ``routers/storages.py::_storage_meta`` (see
+    # ``constants.storage_name_from_id``'s docstring) so a type-qualified
+    # ``username~{type}~name`` id derives the same bare ``name`` here as it
+    # does in the single-storage GET response, everywhere ``name`` is served.
+    name = storage_name_from_id(st.id, st.type)
     return {
         "id": st.id,
         "name": name,
@@ -85,6 +89,9 @@ def run_dict(r: Run) -> dict[str, Any]:
     options.setdefault("build", "latest")
     options.setdefault("timeoutSecs", 300)
     options.setdefault("memoryMbytes", 1024)
+    # `diskMbytes` is required (no default) by apify-sdk-python's own
+    # `ActorRunOptions` model -- see `meta`/`stats` below for why this matters.
+    options.setdefault("diskMbytes", 2048)
     return {
         "id": r.id,
         "actId": r.actor_id,
@@ -102,4 +109,16 @@ def run_dict(r: Run) -> dict[str, Any]:
         "defaultKeyValueStoreId": r.kv_store_id,
         "defaultDatasetId": r.dataset_id,
         "defaultRequestQueueId": r.request_queue_id,
+        # `meta`/`stats` are required (no default) by apify-sdk-python's own
+        # `ActorRun` pydantic model: `Actor.init()`'s charging manager always
+        # re-validates `GET /v2/actor-runs/{id}` through that model,
+        # independent of which apify-client version is pinned (both the 2.x
+        # dict-return and the SDK's own model re-validate it), so a response
+        # missing either field would crash `Actor.init()` itself before an
+        # Actor even reaches its own code. `origin` mirrors the same
+        # STANDBY-vs-API distinction `_build_environment` sets as
+        # `APIFY_META_ORIGIN`; the other `stats` fields have no local
+        # equivalent to source, so they're synthesized as zero/empty.
+        "meta": {"origin": "STANDBY" if r.is_standby else "API"},
+        "stats": {"restartCount": 0, "resurrectCount": 0, "computeUnits": 0.0},
     }

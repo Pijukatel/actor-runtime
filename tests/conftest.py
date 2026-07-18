@@ -73,11 +73,10 @@ class _StandbyProbeHandler(http.server.BaseHTTPRequestHandler):
 
         This is what lets a test prove the runtime's standby-forwarding proxy
         (``app/routers/standby.py``) genuinely streams the response back to
-        the original caller rather than buffering the whole body first
-        (success criterion 7): with real delays between writes over a real
-        (loopback) socket, the first chunk can only arrive quickly if the
-        proxy forwards bytes as they're read rather than waiting for the
-        whole body.
+        the original caller rather than buffering the whole body first: with
+        real delays between writes over a real (loopback) socket, the first
+        chunk can only arrive quickly if the proxy forwards bytes as they're
+        read rather than waiting for the whole body.
         """
         self.send_response(200)
         self.send_header("content-type", "text/plain")

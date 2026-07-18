@@ -28,11 +28,11 @@ _HOP_BY_HOP = {"host", "content-length", "transfer-encoding", "connection"}
 
 # Connect-only bound on the standby-forwarding proxy's upstream request below.
 # Read/write/pool intentionally stay unbounded so a legitimately long-lived or
-# slowly-streamed response is never cut off (success criterion 7 requires
-# supporting multi-chunk streaming); only the initial TCP connect -- to a
-# container that just answered its readiness probe moments earlier, so this
-# can't false-positive on a merely-slow response -- is bounded, so a container
-# that goes unreachable between the probe and the forward fails fast instead
+# slowly-streamed response is never cut off (multi-chunk streaming is a
+# supported case); only the initial TCP connect -- to a container that just
+# answered its readiness probe moments earlier, so this can't false-positive
+# on a merely-slow response -- is bounded, so a container that goes
+# unreachable between the probe and the forward fails fast instead
 # of hanging the caller (and the runtime worker handling it) indefinitely. A
 # plain module constant (not a `Settings` field): unlike its neighbors
 # `standby_idle_override_secs`/`standby_ready_timeout_secs`, nothing -- no env
@@ -76,8 +76,8 @@ async def forward_to_standby(actor_id: str, path: str, request: Request):
     # streamed response is still being read -- see
     # Service.mark_standby_request_started's docstring. This is what stops the
     # idle-reap watchdog from tearing down a container out from under a
-    # single request that legitimately outlives idleTimeoutSecs (success
-    # criterion 7 requires supporting multi-chunk streamed responses).
+    # single request that legitimately outlives idleTimeoutSecs (multi-chunk
+    # streamed responses are a supported case).
     svc.mark_standby_request_started(actor_id)
     try:
         body = await request.body()

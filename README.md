@@ -115,6 +115,15 @@ apify call -i '{"greeting":"hi"}'   # runs it and waits for completion
 Then open the console URL, or fetch the run's storages over the API. See
 `requirements/cli.md` for details.
 
+All four `sample_actor*/` fixtures are real `apify` SDK Actors (`async with
+Actor:`, `Actor.get_input()`/`set_value()`/`push_data()`/
+`open_request_queue()`), so their `.actor/Dockerfile` pip-installs `apify` and
+`apify-client` at image **build** time -- `apify push`/`docker build` needs
+normal internet egress for that step. At **run** time each container only
+talks to this runtime and other local containers (e.g. the caller fixture's
+container-to-container call to the standby Actor's own HTTP endpoint), so
+runs stay fully offline.
+
 ## Demo
 
 `scripts/demo.sh` is a self-contained, commented walkthrough of the whole

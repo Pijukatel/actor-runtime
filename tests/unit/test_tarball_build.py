@@ -65,7 +65,7 @@ async def _build(client, service, actor_id: str) -> dict:
     return (await client.get(f"/v2/actor-builds/{build['id']}")).json()["data"]
 
 
-# -- Criterion 1: inline push still builds the pushed files (TEXT + BASE64) ----
+# -- Inline push still builds the pushed files (TEXT + BASE64) ----------------
 async def test_inline_build_materializes_pushed_files(wired):
     client, service = wired
     actor_id = await _create_actor(client, "inline")
@@ -89,7 +89,7 @@ async def test_inline_build_materializes_pushed_files(wired):
     assert captured["blob.bin"] == blob
 
 
-# -- Criterion 2 + 7: a TARBALL build unzips the pushed zip's real contents ----
+# -- A TARBALL build unzips the pushed zip's real contents --------------------
 async def test_tarball_build_materializes_unzipped_source(wired):
     client, service = wired
     actor_id = await _create_actor(client, "tb")
@@ -114,7 +114,7 @@ async def test_tarball_build_materializes_unzipped_source(wired):
     assert captured[".actor/Dockerfile"] == b"FROM scratch\n"
 
 
-# -- Criterion 3a: tarball push after inline push builds only the tarball ------
+# -- Tarball push after inline push builds only the tarball -------------------
 async def test_no_stale_source_tarball_after_inline(wired):
     client, service = wired
     actor_id = await _create_actor(client, "sw1")
@@ -147,7 +147,7 @@ async def test_no_stale_source_tarball_after_inline(wired):
     assert "inline_marker.txt" not in files
 
 
-# -- Criterion 3b: inline push after tarball push builds only the inline files -
+# -- Inline push after tarball push builds only the inline files --------------
 async def test_no_stale_source_inline_after_tarball(wired):
     client, service = wired
     actor_id = await _create_actor(client, "sw2")
@@ -182,7 +182,7 @@ async def test_no_stale_source_inline_after_tarball(wired):
     assert "tarball_marker.txt" not in files
 
 
-# -- Criterion 4: serialized version reflects the pushed shape, clears other ---
+# -- Serialized version reflects the pushed shape, clears the other -----------
 async def test_version_dict_reflects_pushed_shape(wired):
     client, _ = wired
     actor_id = await _create_actor(client, "vd")
@@ -222,7 +222,7 @@ async def test_version_dict_reflects_pushed_shape(wired):
     assert v["sourceFiles"] == [{"name": "b.py", "format": "TEXT", "content": "y\n"}]
 
 
-# -- Criterion 5: zip traversal safety (escaping entries fail the build) -------
+# -- Zip traversal safety (escaping entries fail the build) -------------------
 async def test_tarball_traversal_entries_fail_build(wired, tmp_path):
     client, service = wired
     actor_id = await _create_actor(client, "tv")
@@ -279,7 +279,7 @@ def test_extract_zip_skips_symlink_entries(tmp_path):
     assert not list(tmp_path.rglob("evil_link"))
 
 
-# -- Criterion 6a: missing tarball record fails cleanly (not empty/SUCCEEDED) --
+# -- Missing tarball record fails cleanly (not empty/SUCCEEDED) ---------------
 async def test_tarball_missing_record_fails_cleanly(wired):
     client, service = wired
     actor_id = await _create_actor(client, "mr")
@@ -295,7 +295,7 @@ async def test_tarball_missing_record_fails_cleanly(wired):
     assert "not found" in log or "record" in log
 
 
-# -- Criterion 6b: corrupt (non-zip) bytes fail cleanly -----------------------
+# -- Corrupt (non-zip) bytes fail cleanly -------------------------------------
 async def test_tarball_corrupt_bytes_fail_cleanly(wired):
     client, service = wired
     actor_id = await _create_actor(client, "cb")
@@ -311,7 +311,7 @@ async def test_tarball_corrupt_bytes_fail_cleanly(wired):
     assert "zip" in log or "archive" in log
 
 
-# -- Criterion 7 (negative): lookup keys off the URL's store id, not a guess ---
+# -- Negative: lookup keys off the URL's store id, not a guess ----------------
 async def test_tarball_reads_store_id_from_url_not_reconstructed(wired):
     client, service = wired
     actor_id = await _create_actor(client, "prov")
@@ -325,6 +325,6 @@ async def test_tarball_reads_store_id_from_url_not_reconstructed(wired):
     )
     final = await _build(client, service, actor_id)
     # A reconstructed/guessed id would have found the zip; keying off the URL's
-    # (wrong) id must miss the record and fail per criterion 6a.
+    # (wrong) id must miss the record and fail, same as a missing tarball record.
     assert final["status"] == "FAILED"
     assert final["finishedAt"] is not None

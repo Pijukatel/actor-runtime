@@ -20,6 +20,11 @@
 # apify-cli`), python3 (used only to pretty-parse JSON responses), curl.
 # Run from anywhere; paths are resolved relative to this script's repo.
 #
+# Both fixture Actors are real `apify` SDK Actors: `apify push` (step 5)
+# triggers a `docker build` whose .actor/Dockerfile pip-installs `apify` +
+# `apify-client` (and, for the caller, `httpx`), so it needs normal internet
+# egress. Once built, both containers only ever call this runtime's own API.
+#
 # The runtime is left running at the end so you can explore the console;
 # cleanup commands are printed last.
 # =============================================================================

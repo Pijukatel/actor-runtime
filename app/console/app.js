@@ -708,7 +708,7 @@ window.showStore = async function (tab, kind, id) {
     const rows = reqs.map((q) => [
       mk("td", { text: q.url }),
       mk("td", { text: q.method }),
-      mk("td", { text: String(q.handled) }),
+      mk("td", { text: String(Boolean(q.handledAt)) }),
     ]);
     box.appendChild(emptyOr(tableEl(["URL", "Method", "Handled"], rows), reqs.length));
   } else {

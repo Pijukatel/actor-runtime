@@ -1,9 +1,10 @@
-"""End-to-end test for success criterion 20: a real ``apify-client``/``apify``
-SDK instantiated *inside* a real actor container reports ``is_at_home =
-true`` the way the client itself computes it, calls back into the runtime's
-own API using its injected ``APIFY_TOKEN``, and writes its result into its
-own default dataset THROUGH THE CLIENT -- proving an API-based storage write
-against the run's real dataset id, not a local-disk write.
+"""End-to-end test verifying that the real ``apify`` SDK, driving the full
+``Actor`` lifecycle (``async with Actor``) *inside* a real actor container,
+reports ``is_at_home = true`` the way ``Actor.is_at_home()`` itself computes
+it, calls back into the runtime's own API through ``Actor.new_client()``
+using its injected ``APIFY_TOKEN``, and writes its result into its own
+default dataset via ``Actor.push_data()`` -- proving an API-based storage
+write against the run's real dataset id, not a local-disk write.
 
 Requires Docker and apify-cli, exactly like ``tests/e2e/test_e2e.py`` (see
 that file's docstring for the shared skip/harness pattern this mirrors). Uses
@@ -12,12 +13,10 @@ e2e files stay fully independent and neither ``test_e2e.py`` nor
 ``test_standby.py`` needs any change -- mirroring how ``test_standby.py``
 already does this relative to ``test_e2e.py`` (see that file's docstring).
 
-The fixture Actor (``sample_actor_isathome/``) is the one deliberate
-exception to the "stdlib-only" rule the other ``sample_actor*`` fixtures
-follow: it pip-installs the real, published ``apify-client``/``apify``
-packages at image BUILD time (see ``sample_actor_isathome/main.py`` for
-exactly which API of each was verified against the real GitHub sources, and
-why two packages are needed).
+The fixture Actor (``sample_actor_isathome/``) pip-installs the real,
+published ``apify``/``apify-client`` packages at image BUILD time, like every
+other ``sample_actor*`` fixture now (see ``sample_actor_isathome/main.py``
+for exactly which SDK surface is used and why).
 """
 from __future__ import annotations
 
@@ -137,8 +136,8 @@ def test_real_apify_client_reports_is_at_home_and_writes_via_api(runtime, tmp_pa
     shutil.copytree(REPO / "sample_actor_isathome", project)
 
     # 1) push -> creates Actor + version and builds it (installs apify-client
-    # + apify at image build time, so allow extra headroom over the plain
-    # stdlib-only fixtures' build).
+    # + apify at image build time, like every sample_actor* fixture now, so
+    # allow extra headroom over a from-cache build).
     push = subprocess.run(
         ["apify", "push", "--force"],
         cwd=project, env=env, stdin=subprocess.DEVNULL,

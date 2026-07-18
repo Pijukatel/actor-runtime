@@ -1,4 +1,6 @@
-"""Multi-user, decoupled-identity and storage-sharing behaviour.
+"""Multi-user and decoupled-identity behaviour: per-user ownership, isolation,
+and namespaced storage creation. Storage-sharing (grant/revoke) coverage lives
+in `tests/unit/test_storage_sharing.py`.
 
 Identity (username) and credential (token) are decoupled: a user is created
 explicitly (username == token for console-created users), the default user
@@ -12,9 +14,17 @@ from __future__ import annotations
 import asyncio
 import json
 
-import pytest_asyncio
-
 from app.service import STORAGE_KV
+
+from _provisioning_harness import (  # noqa: F401 - `_seed_users` is autouse, applied via import
+    _create_user,
+    _provision,
+    _push,
+    _read_paths,
+    _seed_users,
+    _storage_id,
+    _write,
+)
 
 NOT_FOUND = "record-not-found"
 
@@ -27,110 +37,7 @@ def auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-async def _create_user(client, name):
-    """Create a user (username == token == name) via the open, token-less endpoint.
-
-    Sent without an Authorization header so it never bootstraps the default user's
-    token; token-based resolution then treats ``name`` as a known user's token.
-    """
-    await client.post("/v2/users", json={"name": name})
-
-
-@pytest_asyncio.fixture(autouse=True)
-async def _seed_users(wired):
-    """Pre-create the users whose tokens the tests present as bearer credentials.
-
-    Under the decoupled model an unknown present token is bootstrap-or-reject, so
-    ``alice``/``bob`` must exist as real users before their tokens resolve. Created
-    token-less, leaving the default user unclaimed for the bootstrap tests.
-    """
-    client, _ = wired
-    for name in ("alice", "bob"):
-        await _create_user(client, name)
-    yield
-
-
-async def _push(client, name, token):
-    await _create_user(client, token)
-    await client.post(
-        "/v2/acts",
-        json={"name": name, "versions": [{"versionNumber": "0.0", "buildTag": "latest"}]},
-        headers=auth(token),
-    )
-    actor_id = f"{token}~{name}"
-    await client.post(
-        f"/v2/actors/{actor_id}/versions",
-        json={
-            "versionNumber": "0.0",
-            "sourceType": "SOURCE_FILES",
-            "sourceFiles": [{"name": "main.py", "format": "TEXT", "content": "print('hi')\n"}],
-        },
-        headers=auth(token),
-    )
-    return actor_id
-
-
-async def _provision(client, service, token, name="sample-actor", greeting="hi"):
-    """Push, build and run an Actor under ``token``; return (actor_id, build, run)."""
-    actor_id = await _push(client, name, token)
-    build = (
-        await client.post(f"/v2/acts/{actor_id}/builds?version=0.0", headers=auth(token))
-    ).json()["data"]
-    await service.wait_idle()
-    run = (
-        await client.post(
-            f"/v2/acts/{actor_id}/runs",
-            content=json.dumps({"greeting": greeting}),
-            headers={**auth(token), "content-type": "application/json"},
-        )
-    ).json()["data"]
-    await service.wait_idle()
-    run = (await client.get(f"/v2/actor-runs/{run['id']}", headers=auth(token))).json()["data"]
-    return actor_id, build, run
-
-
-def _storage_id(run, storage_type):
-    return {
-        KV: run["defaultKeyValueStoreId"],
-        DS: run["defaultDatasetId"],
-        RQ: run["defaultRequestQueueId"],
-    }[storage_type]
-
-
-def _read_paths(storage_type, storage_id):
-    if storage_type == KV:
-        return [
-            f"/v2/{KV}/{storage_id}",
-            f"/v2/{KV}/{storage_id}/keys",
-            f"/v2/{KV}/{storage_id}/records/OUTPUT",
-        ]
-    if storage_type == DS:
-        return [f"/v2/{DS}/{storage_id}", f"/v2/{DS}/{storage_id}/items"]
-    return [f"/v2/{RQ}/{storage_id}", f"/v2/{RQ}/{storage_id}/requests"]
-
-
-async def _write(client, storage_type, storage_id, token):
-    """Perform the write-shaped op for the storage type; return the response."""
-    if storage_type == KV:
-        return await client.put(
-            f"/v2/{KV}/{storage_id}/records/GRANTEE",
-            content=json.dumps({"from": token}),
-            headers={**auth(token), "content-type": "application/json"},
-        )
-    if storage_type == DS:
-        return await client.post(
-            f"/v2/{DS}/{storage_id}/items",
-            content=json.dumps({"from": token}),
-            headers={**auth(token), "content-type": "application/json"},
-        )
-    return await client.post(
-        f"/v2/{RQ}/{storage_id}/requests",
-        content=json.dumps({"url": f"https://example.com/{token}", "uniqueKey": token}),
-        headers={**auth(token), "content-type": "application/json"},
-    )
-
-
-# -- Decoupled identity, bootstrap, reject (criteria 1-13) ----------------
+# -- Decoupled identity, bootstrap, reject --------------------------------
 async def test_token_selects_user_and_users_me_reflects_it(wired):
     client, _ = wired
     # alice/bob are real users (seeded); their tokens select them.
@@ -383,10 +290,10 @@ async def test_container_env_user_id_is_username(wired):
     assert env["APIFY_USER_ID"] == "alice"
 
 
-# -- THE ANTI-LEAK GUARANTEE (criterion 21, narrowed) ----------------------
-# Scope (per explicit human decision): this guarantee covers exactly the
-# FIRST BOUND token -- the credential apify-cli's first-ever request
-# presented, bound to the default local-user, which may be a real
+# -- THE ANTI-LEAK GUARANTEE (narrowed) ------------------------------------
+# Scope: this guarantee covers exactly the FIRST BOUND token -- the
+# credential apify-cli's first-ever request presented, bound to the default
+# local-user, which may be a real
 # externally-issued secret. It does NOT cover every token in the system:
 # every user's ``container_token`` (injected as APIFY_TOKEN -- see
 # service._build_environment) is a runtime-fabricated credential and is BY
@@ -450,7 +357,7 @@ async def test_secret_token_never_leaks_into_ids_responses_or_env(wired):
     assert "SECRET123" not in blob, "token fragment leaked"
 
     # -- Positive half: APIFY_TOKEN is nonetheless a WORKING credential for
-    # local-user (criterion 17). The anti-leak guarantee narrows to the bound
+    # local-user. The anti-leak guarantee narrows to the bound
     # secret; it does not (and must not) forbid a *different*, fabricated
     # token from doing its job as a real bearer credential.
     assert env["APIFY_TOKEN"]
@@ -461,7 +368,7 @@ async def test_secret_token_never_leaks_into_ids_responses_or_env(wired):
     assert me["username"] == "local-user"
 
 
-# -- Per-user ownership (criteria 5-8) ------------------------------------
+# -- Per-user ownership ----------------------------------------------------
 async def test_actor_owned_by_acting_user(wired):
     client, _ = wired
     actor = (
@@ -494,7 +401,7 @@ async def test_two_users_same_actor_name_no_collision(wired):
     assert [x["id"] for x in alice_list["items"]] == ["alice~sample-actor"]
 
 
-# -- Strict isolation, Actors/Builds/Runs (criteria 9-11) -----------------
+# -- Strict isolation, Actors/Builds/Runs ----------------------------------
 async def test_lists_are_disjoint_per_user(wired):
     client, service = wired
     alice_actor, _, _ = await _provision(client, service, "alice")
@@ -555,7 +462,7 @@ async def test_cross_user_mutation_is_not_found_and_has_no_effect(wired):
     assert still["status"] == "SUCCEEDED"
 
 
-# -- Owner drives own flow incl. storages (criterion 12) ------------------
+# -- Owner drives own flow incl. storages ----------------------------------
 async def test_owner_full_flow_including_storages(wired):
     client, service = wired
     _actor_id, build, run = await _provision(client, service, "alice", greeting="howdy")
@@ -575,7 +482,7 @@ async def test_owner_full_flow_including_storages(wired):
     assert meta["totalRequestCount"] == 1
 
 
-# -- Run-storage isolation, READ (criterion 13) ---------------------------
+# -- Run-storage isolation, READ -------------------------------------------
 async def test_run_storages_private_on_read(wired):
     client, service = wired
     _actor_id, _build, run = await _provision(client, service, "alice")
@@ -593,7 +500,7 @@ async def test_run_storages_private_on_read(wired):
         assert invented.json()["error"]["type"] == NOT_FOUND
 
 
-# -- Run-storage isolation, WRITE (criterion 14) --------------------------
+# -- Run-storage isolation, WRITE ------------------------------------------
 async def test_run_storages_private_on_write(wired):
     client, service = wired
     _actor_id, _build, run = await _provision(client, service, "alice")
@@ -607,164 +514,6 @@ async def test_run_storages_private_on_write(wired):
     assert all(k["key"] != "GRANTEE" for k in keys["items"])
     items = (await client.get(f"/v2/{DS}/{run['defaultDatasetId']}/items", headers=auth("alice"))).json()
     assert items == [{"message": "hi world", "index": 1}]
-
-
-# -- Sharing: grant READ (criterion 15) -----------------------------------
-async def test_grant_read_lets_grantee_read(wired):
-    client, service = wired
-    _actor_id, _build, run = await _provision(client, service, "alice")
-    for stype in (KV, DS, RQ):
-        sid = _storage_id(run, stype)
-        # Before the grant: bob is blind.
-        assert (await client.get(f"/v2/{stype}/{sid}", headers=auth("bob"))).status_code == 404
-        grant = await client.post(
-            f"/v2/{stype}/{sid}/access-rights",
-            json={"grantee": "bob", "level": "READ"},
-            headers=auth("alice"),
-        )
-        assert grant.status_code == 201
-        # After the grant: every read succeeds and matches alice's content.
-        for path in _read_paths(stype, sid):
-            bob_resp = await client.get(path, headers=auth("bob"))
-            alice_resp = await client.get(path, headers=auth("alice"))
-            assert bob_resp.status_code == 200, path
-            assert bob_resp.json() == alice_resp.json(), path
-
-
-# -- Sharing: grant WRITE (criterion 16) ----------------------------------
-async def test_grant_write_lets_grantee_write_and_owner_sees_it(wired):
-    client, service = wired
-    _actor_id, _build, run = await _provision(client, service, "alice")
-    for stype in (KV, DS, RQ):
-        sid = _storage_id(run, stype)
-        await client.post(
-            f"/v2/{stype}/{sid}/access-rights",
-            json={"grantee": "bob", "level": "WRITE"},
-            headers=auth("alice"),
-        )
-        resp = await _write(client, stype, sid, "bob")
-        assert resp.status_code in (200, 201), f"{stype} grantee write refused"
-
-        if stype == KV:
-            bob_val = (await client.get(f"/v2/{KV}/{sid}/records/GRANTEE", headers=auth("bob"))).json()
-            alice_val = (await client.get(f"/v2/{KV}/{sid}/records/GRANTEE", headers=auth("alice"))).json()
-            assert bob_val == {"from": "bob"} == alice_val
-            keys = (await client.get(f"/v2/{KV}/{sid}/keys", headers=auth("alice"))).json()["data"]
-            assert any(k["key"] == "GRANTEE" for k in keys["items"])
-        elif stype == DS:
-            bob_items = (await client.get(f"/v2/{DS}/{sid}/items", headers=auth("bob"))).json()
-            alice_items = (await client.get(f"/v2/{DS}/{sid}/items", headers=auth("alice"))).json()
-            assert {"from": "bob"} in bob_items
-            assert bob_items == alice_items
-        else:
-            bob_reqs = (await client.get(f"/v2/{RQ}/{sid}/requests", headers=auth("bob"))).json()["data"]["items"]
-            alice_reqs = (await client.get(f"/v2/{RQ}/{sid}/requests", headers=auth("alice"))).json()["data"]["items"]
-            assert any(r["url"] == "https://example.com/bob" for r in bob_reqs)
-            assert len(bob_reqs) == len(alice_reqs)
-
-
-# -- Sharing: READ grantee write is forbidden, distinct from not-found (17)
-async def test_read_grantee_write_is_forbidden_distinct_from_not_found(wired):
-    client, service = wired
-    _actor_id, _build, run = await _provision(client, service, "alice")
-    for stype in (KV, DS, RQ):
-        sid = _storage_id(run, stype)
-        await client.post(
-            f"/v2/{stype}/{sid}/access-rights",
-            json={"grantee": "bob", "level": "READ"},
-            headers=auth("alice"),
-        )
-        resp = await _write(client, stype, sid, "bob")
-        assert resp.status_code == 403, f"{stype}: expected forbidden"
-        assert resp.json()["error"]["type"] != NOT_FOUND
-        assert resp.json()["error"]["type"] == "insufficient-permissions"
-    # Alice's storage unchanged.
-    items = (await client.get(f"/v2/{DS}/{run['defaultDatasetId']}/items", headers=auth("alice"))).json()
-    assert items == [{"message": "hi world", "index": 1}]
-
-
-# -- Sharing: owner-only management (criterion 18) ------------------------
-async def test_only_owner_can_manage_shares(wired):
-    client, service = wired
-    _actor_id, _build, run = await _provision(client, service, "alice")
-    sid = run["defaultKeyValueStoreId"]
-
-    # A stranger (no access) cannot grant, list or revoke.
-    assert (await client.post(f"/v2/{KV}/{sid}/access-rights", json={"grantee": "mallory", "level": "READ"}, headers=auth("bob"))).status_code == 403
-    assert (await client.get(f"/v2/{KV}/{sid}/access-rights", headers=auth("bob"))).status_code == 403
-    assert (await client.delete(f"/v2/{KV}/{sid}/access-rights/anyone", headers=auth("bob"))).status_code == 403
-
-    # A WRITE grantee still cannot manage (no re-share / escalation).
-    await client.post(f"/v2/{KV}/{sid}/access-rights", json={"grantee": "bob", "level": "WRITE"}, headers=auth("alice"))
-    assert (await client.post(f"/v2/{KV}/{sid}/access-rights", json={"grantee": "carol", "level": "WRITE"}, headers=auth("bob"))).status_code == 403
-    assert (await client.get(f"/v2/{KV}/{sid}/access-rights", headers=auth("bob"))).status_code == 403
-    assert (await client.delete(f"/v2/{KV}/{sid}/access-rights/bob", headers=auth("bob"))).status_code == 403
-
-    # State unchanged: bob is still exactly WRITE, carol was never added.
-    rights = (await client.get(f"/v2/{KV}/{sid}/access-rights", headers=auth("alice"))).json()["data"]["items"]
-    grantees = {r["grantee"]: r["level"] for r in rights}
-    assert grantees == {"bob": "WRITE"}
-
-
-# -- Sharing: per-storage scoping (criterion 19) --------------------------
-async def test_grant_is_per_storage_only(wired):
-    client, service = wired
-    actor_id, build, run = await _provision(client, service, "alice")
-    shared = run["defaultKeyValueStoreId"]
-    await client.post(f"/v2/{KV}/{shared}/access-rights", json={"grantee": "bob", "level": "READ"}, headers=auth("alice"))
-
-    # Bob can reach only the shared KV store.
-    assert (await client.get(f"/v2/{KV}/{shared}", headers=auth("bob"))).status_code == 200
-    # The other two storages of the same run stay invisible.
-    assert (await client.get(f"/v2/{DS}/{run['defaultDatasetId']}", headers=auth("bob"))).status_code == 404
-    assert (await client.get(f"/v2/{RQ}/{run['defaultRequestQueueId']}", headers=auth("bob"))).status_code == 404
-    # The run/build/actor behind it stay invisible.
-    assert (await client.get(f"/v2/actor-runs/{run['id']}", headers=auth("bob"))).status_code == 404
-    assert (await client.get(f"/v2/actor-builds/{build['id']}", headers=auth("bob"))).status_code == 404
-    assert (await client.get(f"/v2/actors/{actor_id}", headers=auth("bob"))).status_code == 404
-    # Bob's own lists still show none of alice's objects.
-    assert (await client.get("/v2/users/me/actors", headers=auth("bob"))).json()["data"]["items"] == []
-    assert (await client.get("/v2/users/me/runs", headers=auth("bob"))).json()["data"]["items"] == []
-
-
-# -- Sharing: revoke (criterion 20) ---------------------------------------
-async def test_revoke_returns_storage_to_not_found(wired):
-    client, service = wired
-    _actor_id, _build, run = await _provision(client, service, "alice")
-    sid = run["defaultKeyValueStoreId"]
-    await client.post(f"/v2/{KV}/{sid}/access-rights", json={"grantee": "bob", "level": "WRITE"}, headers=auth("alice"))
-    assert (await client.get(f"/v2/{KV}/{sid}", headers=auth("bob"))).status_code == 200
-
-    revoke = await client.delete(f"/v2/{KV}/{sid}/access-rights/bob", headers=auth("alice"))
-    assert revoke.status_code == 200
-
-    read = await client.get(f"/v2/{KV}/{sid}", headers=auth("bob"))
-    assert read.status_code == 404 and read.json()["error"]["type"] == NOT_FOUND
-    write = await _write(client, KV, sid, "bob")
-    assert write.status_code == 404 and write.json()["error"]["type"] == NOT_FOUND
-    # Alice still reads her unchanged store.
-    assert (await client.get(f"/v2/{KV}/{sid}/records/OUTPUT", headers=auth("alice"))).status_code == 200
-
-
-# -- Sharing: list grantees reflects grants/revokes (criterion 21) --------
-async def test_list_grantees_reflects_changes(wired):
-    client, service = wired
-    _actor_id, _build, run = await _provision(client, service, "alice")
-    sid = run["defaultDatasetId"]
-
-    await client.post(f"/v2/{DS}/{sid}/access-rights", json={"grantee": "bob", "level": "READ"}, headers=auth("alice"))
-    rights = (await client.get(f"/v2/{DS}/{sid}/access-rights", headers=auth("alice"))).json()["data"]["items"]
-    assert {r["grantee"]: r["level"] for r in rights} == {"bob": "READ"}
-
-    # Upgrade to WRITE (re-grant updates the level in place).
-    await client.post(f"/v2/{DS}/{sid}/access-rights", json={"grantee": "bob", "level": "WRITE"}, headers=auth("alice"))
-    rights = (await client.get(f"/v2/{DS}/{sid}/access-rights", headers=auth("alice"))).json()["data"]["items"]
-    assert {r["grantee"]: r["level"] for r in rights} == {"bob": "WRITE"}
-
-    # Revoke removes bob from the listing.
-    await client.delete(f"/v2/{DS}/{sid}/access-rights/bob", headers=auth("alice"))
-    rights = (await client.get(f"/v2/{DS}/{sid}/access-rights", headers=auth("alice"))).json()["data"]["items"]
-    assert rights == []
 
 
 # -- Regression: standalone create-echo storages are per-user -------------
@@ -833,6 +582,47 @@ async def test_write_cannot_squat_another_users_namespaced_id(wired):
     assert (await client.get(f"/v2/{KV}/{aid}", headers=auth("bob"))).status_code == 404
 
 
+async def test_write_autocreate_rejects_invalid_embedded_name(wired):
+    """A write to an absent, caller-chosen namespaced id (``owner~name`` or
+    ``owner~{type}~name``) must reject a ``name`` portion that would not pass
+    `validate_storage_name` -- not only bare `POST .../key-value-stores?name=`
+    calls, which already reject it.
+
+    Unlike a name chosen through the documented ``POST ...?name=`` route, a
+    write's target ``store_id`` is an arbitrary URL path segment: the caller
+    can put anything after the owner's ``~`` prefix, including something that
+    is not a valid storage name at all. Without this check, the write would
+    still auto-create a row there, and a later ``GET`` would hand back that
+    invalid string verbatim as the storage's ``name`` field -- exactly the
+    shape crawlee's own domain objects reject the instant a real SDK Actor
+    opens a storage by that name.
+    """
+    client, _ = wired
+    for bad_id in (
+        "alice~has_underscore",  # underscore is not in NAME_REGEX
+        "alice~-leading-hyphen",
+        "alice~fake-type~name",  # not a real type prefix -> derived name still has "~"
+        "alice~",  # empty name
+    ):
+        resp = await client.put(
+            f"/v2/{KV}/{bad_id}/records/X",
+            content=json.dumps({"who": "alice"}),
+            headers={**auth("alice"), "content-type": "application/json"},
+        )
+        assert resp.status_code == 404, f"{bad_id!r}: expected 404, got {resp.status_code} ({resp.text})"
+        # Nothing was minted at that id -- not even visible to its own writer.
+        assert (await client.get(f"/v2/{KV}/{bad_id}", headers=auth("alice"))).status_code == 404
+
+    # A validly-named namespaced id is unaffected -- still auto-creates.
+    ok = await client.put(
+        f"/v2/{KV}/alice~valid-name/records/X",
+        content=json.dumps({"who": "alice"}),
+        headers={**auth("alice"), "content-type": "application/json"},
+    )
+    assert ok.status_code == 200
+    assert (await client.get(f"/v2/{KV}/alice~valid-name", headers=auth("alice"))).status_code == 200
+
+
 async def test_create_storage_is_idempotent_for_owner_and_covers_datasets(wired):
     client, _ = wired
     first = await client.post("/v2/datasets", json={"name": "d"}, headers=auth("alice"))
@@ -862,7 +652,7 @@ async def test_create_storage_is_idempotent_for_owner_and_covers_datasets(wired)
 # -- Regression: absent-write race cannot land in another owner's store ---
 # A writer that loses the create race for a fresh bare id must never have its
 # payload persisted into the winner's storage -- that would be a cross-user
-# write with no grant (violates criterion 14). `ensure_storage` must be
+# write with no grant. `ensure_storage` must be
 # authoritative about who owns the id, and `_guard` must deny the race
 # loser 404.
 async def test_ensure_storage_owner_is_authoritative_not_the_caller(wired):
