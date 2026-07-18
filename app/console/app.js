@@ -324,14 +324,17 @@ function renderRoute() {
   renderActorListPanel();
   if (seg[0] !== "actors" || seg.length === 1) return showActorsPlaceholder();
   const actorId = seg[1];
-  if (seg.length === 2) return openActor(actorId, "runs");
-  if (seg[2] === "builds") {
+  const subTab = seg[2];
+  if (subTab === "builds") {
     if (seg.length === 3) return openActor(actorId, "builds");
     return openBuild(actorId, seg[3]);
   }
-  // Runs sub-tab (also the fallback for an unknown sub-path under an actor).
-  if (seg.length === 3) return openActor(actorId, "runs");
-  return openRun(actorId, seg[3]);
+  if (subTab === "runs" && seg.length >= 4) return openRun(actorId, seg[3]);
+  if (subTab === "runs") return openActor(actorId, "runs");
+  // Input is the default sub-tab (mirrors the official console): a bare
+  // "/actors/{id}", the explicit "/actors/{id}/input", and any unrecognized
+  // sub-path all land here.
+  return openActor(actorId, "input");
 }
 
 // The 4s auto-refresh applies only to the Actors list route (a plain, form-less
@@ -496,13 +499,20 @@ async function showStorageDetail(slug, resourceId) {
 
 // ------------------------------------------------------------------ actors
 
-// Actor detail is a tabbed page (Runs / Builds sub-tabs), mirroring the official
-// console. Runs and builds are reached from here, never as top-level sections.
+// Actor detail is a tabbed page (Input / Runs / Builds sub-tabs), mirroring
+// the official console -- Input is the default landing tab (see
+// `renderRoute`), exactly like the real console's own Actor page. Runs and
+// Builds keep their previous content/behavior unchanged; Start now lives
+// inside the Input tab (see `renderInputTab`) rather than behind a separate
+// header "Run" button and browser-prompt dialog.
 window.openActor = async function (actorId, subTab) {
-  subTab = subTab === "builds" ? "builds" : "runs";
+  subTab = subTab === "builds" ? "builds" : subTab === "runs" ? "runs" : "input";
   const actor = unwrap(await api(`/v2/acts/${actorId}`));
-  const builds = (unwrap(await api(`/v2/acts/${actorId}/builds`)).items) || [];
-  const runs = (unwrap(await api(`/v2/acts/${actorId}/runs`)).items) || [];
+  // Fetch per-tab what the tab actually renders -- Input needs neither list
+  // (it only fetches its own schema, in `renderInputTab`), so the default
+  // landing tab no longer pays for two unused requests on every visit.
+  const builds = subTab === "builds" ? (unwrap(await api(`/v2/acts/${actorId}/builds`)).items) || [] : [];
+  const runs = subTab === "runs" ? (unwrap(await api(`/v2/acts/${actorId}/runs`)).items) || [] : [];
   const detail = $("#detail");
   detail.innerHTML = "";
 
@@ -512,12 +522,16 @@ window.openActor = async function (actorId, subTab) {
 
   const actions = mk("div", { class: "row" });
   actions.appendChild(mk("button", { text: "Build", onClick: () => doBuild(actorId) }));
-  actions.appendChild(mk("button", { text: "Run", onClick: () => doRun(actorId) }));
   actions.appendChild(
     mk("button", { class: "secondary", text: "Refresh", onClick: () => navigate(`/actors/${actorId}/${subTab}`) }),
   );
 
   const tabs = mk("div", { class: "tabs" });
+  const inputTab = mk("span", {
+    class: subTab === "input" ? "active" : "",
+    text: "Input",
+    onClick: () => navigate(`/actors/${actorId}/input`),
+  });
   const runsTab = mk("span", {
     class: subTab === "runs" ? "active" : "",
     text: "Runs",
@@ -528,7 +542,7 @@ window.openActor = async function (actorId, subTab) {
     text: "Builds",
     onClick: () => navigate(`/actors/${actorId}/builds`),
   });
-  tabs.append(runsTab, buildsTab);
+  tabs.append(inputTab, runsTab, buildsTab);
 
   detail.append(head, actions, tabs);
 
@@ -543,7 +557,7 @@ window.openActor = async function (actorId, subTab) {
       badgeEl(b.status),
     ]);
     detail.append(mk("h2", { text: "Builds" }), tableEl(["Build", "Number", "Status"], buildsRows));
-  } else {
+  } else if (subTab === "runs") {
     const runsRows = runs.map((r) => [
       mk("td", {
         class: "clickable",
@@ -554,22 +568,17 @@ window.openActor = async function (actorId, subTab) {
       badgeEl(r.status),
     ]);
     detail.append(mk("h2", { text: "Runs" }), tableEl(["Run", "Build", "Status"], runsRows));
+  } else {
+    const inputBody = mk("div");
+    inputBody.id = "input-tab";
+    detail.appendChild(inputBody);
+    await renderInputTab(actorId, inputBody);
   }
 };
 
 window.doBuild = async function (actorId) {
   await api(`/v2/acts/${actorId}/builds?version=0.0`, { method: "POST" });
   setTimeout(() => navigate(`/actors/${actorId}/builds`), 500);
-};
-
-window.doRun = async function (actorId) {
-  const input = prompt("Run input (JSON):", '{"greeting":"hello from console"}') || "{}";
-  await api(`/v2/acts/${actorId}/runs`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: input,
-  });
-  setTimeout(() => navigate(`/actors/${actorId}/runs`), 500);
 };
 
 // Build detail is addressed by buildNumber (e.g. 0.0.1), like the official

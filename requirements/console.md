@@ -37,9 +37,13 @@
   refresh renders the right view. The path map:
   - `/` normalizes to `/actors`.
   - `/actors` — the acting user's Actors.
-  - `/actors/{actorId}` — actor detail (a tabbed page with **Runs** and **Builds**
-    sub-tabs; bare path defaults to Runs). `{actorId}` is our `username~name` id used
+  - `/actors/{actorId}` — actor detail (a tabbed page with **Input**, **Runs** and
+    **Builds** sub-tabs; bare path defaults to **Input**, mirroring the official
+    console's own default landing tab). `{actorId}` is our `username~name` id used
     verbatim (the `~` is URL-path-safe and is never treated as a separator).
+  - `/actors/{actorId}/input` — the actor's Input tab (see below); also reached by
+    the bare `/actors/{actorId}` path's default and is where **Start** now lives
+    (there is no separate header "Run" button/prompt dialog any more).
   - `/actors/{actorId}/runs` and `/actors/{actorId}/runs/{runId}` — the actor's runs
     list and a specific run's detail.
   - `/actors/{actorId}/builds` and `/actors/{actorId}/builds/{buildNumber}` — the
@@ -53,10 +57,42 @@
 - The **top-level navigation is exactly three sections — Actors / Storage / Users**,
   each scoped to the acting user (backed by the `/v2/users/me/actors` and
   `/v2/users/me/key-value-stores|datasets|request-queues` endpoints, and each actor's
-  own `/v2/acts/{id}/runs|builds`). Runs and builds are **not** top-level; they are
-  reached only from their actor's detail page. From a Run, its own default storages
-  remain browsable as before. Because every view is backed by the ownership-scoped
-  API, a user never sees another user's objects or storages.
+  own `/v2/acts/{id}/input-schema|runs|builds`). Input, Runs and Builds are **not**
+  top-level; they are reached only from their actor's detail page. From a Run, its
+  own default storages remain browsable as before. Because every view is backed by
+  the ownership-scoped API, a user never sees another user's objects or storages.
+- **The Input tab autoloads the actor's input schema and offers two synced editing
+  modes**, mirroring the official console's own Actor "Input" tab. Opening it fetches
+  `GET /v2/acts/{actorId}/input-schema` exactly once (not on every keystroke or
+  Form/JSON switch) and renders a **Form** view — one widget per schema property, in
+  declaration order and grouped under any `sectionCaption` headings, mapping `string`
+  to a text/textarea/select (an `enum` always wins a select), `integer`/`number` to a
+  number input, `boolean` to a checkbox, an `array` with a `stringList`-style editor
+  to an add/remove row list, and everything else (`object`, any other array, an
+  unrecognized editor) to a labeled JSON sub-field — alongside a **JSON** view (a
+  plain textarea holding the equivalent JSON). Both open pre-populated per property
+  from `prefill` else `default` else omitted entirely, so the two views agree from
+  the start — with one necessary exception: a `boolean` property that is both
+  **required** and has neither `prefill` nor `default` still shows an unchecked
+  (`false`) checkbox the moment the Form renders, and that `false` is a real,
+  submittable value from the outset, because a checkbox has no third "unset" state
+  to represent "omitted" and a required field must resolve to something. An
+  **optional** boolean in the same situation stays entirely absent from both views,
+  exactly like every other property type, until a prefill/default/JSON edit gives it
+  a value or the user actually toggles the checkbox. Switching modes re-derives one
+  from the other: Form→JSON always
+  succeeds; JSON→Form is blocked in place with an inline error (the typed JSON is
+  left untouched) if the text doesn't parse as JSON at all, **or** if it parses to
+  something other than a JSON object (e.g. an array, a string, a number, or
+  `null`) — a schema-driven Form only ever has properties to populate from an
+  object's keys. Clicking **Start** validates the active mode
+  client-side — a missing required field or an unparseable individual value (e.g. a
+  number field) in Form mode, invalid JSON in JSON mode — and blocks the
+  `POST /v2/acts/{actorId}/runs` request with an inline error rather than sending it;
+  the server itself stays exactly as permissive as before. An actor with no
+  resolvable schema (none pushed, or a `TARBALL` version, whose manifest isn't
+  inspectable before a build unpacks it) falls back to a plain JSON editor prefilled
+  with `{}`, with no Form/JSON toggle at all.
 - The **user list is fetched without a token.** The console attaches the acting
   user's bearer token to every request except the two public, read-only `GET
   /v2/users` calls (the "Switch user" dropdown and the Users tab table), which are

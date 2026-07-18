@@ -839,6 +839,12 @@ async def test_server_spa_catch_all_does_not_shadow_api_or_assets(wired):
     assert "application/javascript" in app_js.headers.get("content-type", "")
     assert app_js.text.strip()
 
+    # The Input-tab's own script, split out of app.js, is served the same way.
+    input_tab_js = await client.get("/console/input_tab.js")
+    assert input_tab_js.status_code == 200
+    assert "application/javascript" in input_tab_js.headers.get("content-type", "")
+    assert input_tab_js.text.strip()
+
     # / still returns index.html.
     root = await client.get("/")
     assert root.status_code == 200

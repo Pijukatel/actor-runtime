@@ -137,7 +137,7 @@ async def test_console_assets_are_served_no_cache(wired):
     cache the console's static files and keep rendering a stale app.js for
     hours after the runtime image was rebuilt with new console code."""
     client, _ = wired
-    for path in ("/", "/console/app.js", "/actors"):
+    for path in ("/", "/console/app.js", "/console/input_tab.js", "/actors"):
         resp = await client.get(path)
         assert resp.status_code == 200, path
         assert resp.headers.get("cache-control") == "no-cache", path

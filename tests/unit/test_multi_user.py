@@ -522,6 +522,7 @@ async def test_cross_user_get_by_id_is_not_found(wired):
         f"/v2/actors/{alice_actor}",
         f"/v2/actor-builds/{alice_build['id']}",
         f"/v2/actor-runs/{alice_run['id']}",
+        f"/v2/actors/{alice_actor}/input-schema",
     ):
         resp = await client.get(path, headers=auth("bob"))
         assert resp.status_code == 404, path
