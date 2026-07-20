@@ -12,7 +12,13 @@ either way.
 The actual call to the standby Actor's HTTP server is NOT a storage
 operation -- there is no SDK method for "call another Actor's endpoint", so
 that one call uses ``httpx`` directly (a plain async HTTP client, not this
-runtime's own storage API and not a hand-rolled low-level socket call).
+runtime's own storage API and not a hand-rolled low-level socket call). It is
+still an authenticated call, exactly like a real platform-to-platform
+container call would be: it carries this run's own ``APIFY_TOKEN``
+(``Actor.configuration.token``) as an ``Authorization: Bearer`` header, and a
+non-2xx reply raises instead of being treated as the standby Actor's answer --
+an error envelope must never be mistaken for -- or silently persisted as --
+a successful round trip.
 Every storage interaction (input, dataset push, OUTPUT) goes through
 ``apify.Actor``.
 """
@@ -41,8 +47,11 @@ async def main() -> None:
         print(f"Calling standby Actor at {standby_url}", flush=True)
 
         call_url = f"{standby_url}/echo?greeting={greeting}"
+        headers = {"Authorization": f"Bearer {Actor.configuration.token}"}
         async with httpx.AsyncClient(timeout=30) as http_client:
-            response = await http_client.get(call_url)
+            response = await http_client.get(call_url, headers=headers)
+            # A non-2xx reply must fail this run, not be persisted as the standby's answer.
+            response.raise_for_status()
             received = response.json()
         print(f"Received from standby Actor: {json.dumps(received)}", flush=True)
 
