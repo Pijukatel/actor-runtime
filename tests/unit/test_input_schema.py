@@ -11,6 +11,19 @@ from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
+
+import pytest
+
+from app.input_schema import resolve_input_schema
+
+REPO = Path(__file__).resolve().parents[2]
+SAMPLE_ACTOR_DIRS = [
+    "sample_actor",
+    "sample_actor_caller",
+    "sample_actor_isathome",
+    "sample_actor_standby",
+]
 
 NOT_FOUND = "record-not-found"
 
@@ -446,3 +459,83 @@ async def test_start_run_stays_permissive_despite_required_schema_field(wired):
     # background task doesn't outlive the test (mirrors test_api.py's own
     # full-flow test).
     await service.wait_idle()
+
+
+# -- Every on-disk sample Actor tree resolves a real schema ------------------
+def _source_files_from_actor_tree(actor_dir: Path) -> list[dict]:
+    """Read every file under ``actor_dir/.actor`` -- the only tree
+    ``resolve_input_schema`` ever looks at -- into the same source-file shape
+    (``name``/``format``/``content``) the tests above build by hand, with
+    ``name`` rooted the way a real push roots it: relative to the Actor
+    project directory, e.g. ``.actor/actor.json``, ``.actor/input_schema.json``.
+    """
+    actor_subdir = actor_dir / ".actor"
+    source_files = []
+    for path in sorted(actor_subdir.rglob("*")):
+        if path.is_file():
+            name = f".actor/{path.relative_to(actor_subdir).as_posix()}"
+            source_files.append({"name": name, "format": "TEXT", "content": path.read_text()})
+    return source_files
+
+
+@pytest.mark.parametrize("actor_dir_name", SAMPLE_ACTOR_DIRS)
+def test_resolves_a_schema_for_every_on_disk_sample_actor(actor_dir_name):
+    """Every ``sample_actor*`` tree actually checked into this repo -- not
+    just ``sample_actor`` -- must resolve a real, non-null input schema from
+    its actual on-disk ``.actor/actor.json`` + ``.actor/input_schema.json``.
+    Reads the real files from the repo checkout (no synthetic content), so a
+    malformed or misnamed schema file in any of the four trees fails this
+    test directly, with no Docker build involved.
+    """
+    source_files = _source_files_from_actor_tree(REPO / actor_dir_name)
+    schema = resolve_input_schema(source_files)
+    assert schema is not None
+    assert isinstance(schema, dict)
+
+
+# -- Re-push regression: a schema added later shows up without a rebuild ----
+async def test_repush_of_same_version_updates_schema_without_a_new_build(wired):
+    """The exact mechanism behind "an Actor pushed before it had a schema
+    keeps showing plain JSON until re-pushed": ``Service._upsert_version_in_
+    session`` overwrites a version's ``source_files`` IN PLACE, and
+    ``get_input_schema`` always re-reads that version row live -- so pushing
+    the SAME version number again, now with a schema, changes what
+    ``GET /input-schema`` returns without triggering, or needing, any new
+    build. A plain ``apify push --force`` is enough."""
+    client, service = wired
+    actor_id = await _push_actor(
+        client,
+        "repush-actor",
+        [{"name": "main.py", "format": "TEXT", "content": "print('hi')\n"}],
+    )
+
+    # No schema yet -- confirm the pre-schema baseline (plain-JSON fallback).
+    resp = await client.get(f"/v2/acts/{actor_id}/input-schema")
+    assert resp.json()["data"] is None
+
+    await client.post(f"/v2/acts/{actor_id}/builds?version=0.0")
+    await service.wait_idle()
+
+    builds_before = (await client.get(f"/v2/acts/{actor_id}/builds")).json()["data"]
+    assert builds_before["total"] == 1
+
+    # Re-push the SAME version number, now including a schema -- a plain
+    # `apify push` from the CLI, not a new version and not a new build.
+    await client.post(
+        f"/v2/actors/{actor_id}/versions",
+        json={
+            "versionNumber": "0.0",
+            "buildTag": "latest",
+            "sourceType": "SOURCE_FILES",
+            "sourceFiles": [
+                {"name": "main.py", "format": "TEXT", "content": "print('hi')\n"},
+                {"name": ".actor/input_schema.json", "format": "TEXT", "content": json.dumps(INPUT_SCHEMA)},
+            ],
+        },
+    )
+
+    resp = await client.get(f"/v2/acts/{actor_id}/input-schema")
+    assert resp.json()["data"] == INPUT_SCHEMA
+
+    builds_after = (await client.get(f"/v2/acts/{actor_id}/builds")).json()["data"]
+    assert builds_after["total"] == 1, "re-pushing the same version must not trigger a new build"
