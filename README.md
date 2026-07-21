@@ -115,6 +115,10 @@ apify call -i '{"greeting":"hi"}'   # runs it and waits for completion
 Then open the console URL, or fetch the run's storages over the API. See
 `requirements/cli.md` for details.
 
+An Actor pushed and built before its `.actor/input_schema.json` existed keeps
+showing the console's plain-JSON input editor until you push again — a plain
+`apify push --force` picks up the new schema without needing a rebuild.
+
 ## Demo
 
 `scripts/demo.sh` is a self-contained, commented walkthrough of the whole
