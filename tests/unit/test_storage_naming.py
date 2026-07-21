@@ -16,16 +16,16 @@ from app.service import STORAGE_DS, STORAGE_RQ, StorageTypeCollisionError
 
 
 async def test_create_storage_honors_query_param_name(wired):
-    """The real ``apify-client`` (2.5.1) sends a get-or-create's ``name`` as a
-    query parameter with an empty JSON body -- ``ResourceCollectionClientAsync.
-    _get_or_create()`` calls ``params=self._params(name=name), json=resource``
-    with ``resource`` being ``None`` (request queues) or ``{}`` (datasets/KVS
-    with no schema), never a body containing ``name``. This is exactly the
-    request shape ``Actor.open_dataset(name=...)``/``open_key_value_store(
-    name=...)``/``open_request_queue(name=...)`` produce. Before the fix,
-    ``_create_storage`` only read ``body.get("name", "default")``, so every
-    such call silently created (or resolved to) a storage named "default"
-    regardless of the name actually requested.
+    """The real ``apify-client`` sends a get-or-create's ``name`` as a query
+    parameter, never in the JSON body -- ``ResourceClientAsync._get_or_create()``
+    (``apify_client/_resource_clients/_resource_client.py``) builds the request
+    via ``params=self._build_params(name=name)``, with the body left ``None``
+    or schema-only. This is exactly the request shape ``Actor.open_dataset(
+    name=...)``/``open_key_value_store(name=...)``/``open_request_queue(
+    name=...)`` produce. Before the fix, ``_create_storage`` only read
+    ``body.get("name", "default")``, so every such call silently created (or
+    resolved to) a storage named "default" regardless of the name actually
+    requested.
     """
     client, _service = wired
     resp = await client.post("/v2/key-value-stores", params={"name": "query-named"})

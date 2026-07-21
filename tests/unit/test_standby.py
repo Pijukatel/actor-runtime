@@ -9,6 +9,7 @@ import asyncio
 import json
 import re
 import time
+from urllib.parse import urlsplit
 
 from starlette.requests import Request
 
@@ -154,6 +155,57 @@ async def test_non_standby_actor_behaves_exactly_as_before(wired):
     assert run["status"] == "SUCCEEDED"
     actor = (await client.get(f"/v2/actors/{actor_id}", headers=auth("dave"))).json()["data"]
     assert "standbyUrl" not in actor
+
+
+async def test_standby_url_discovery_is_generic_via_real_apify_client_actor_model(wired):
+    """Design decision 7: callers must read the standby URL off the fetched
+    Actor's ``.standby_url`` attribute (apify-client's real ``Actor`` model),
+    never a raw dict index. Validated here for two standby Actors and one
+    non-standby Actor by round-tripping each through the real
+    ``apify_client._models.Actor`` class, rather than asserting JSON by hand.
+    """
+    from apify_client._models import Actor as ApifyClientActor
+
+    client, service = wired
+    actor_id_one = await _provision_standby_actor(client, service, "frank", name="standby-actor-one")
+    actor_id_two = await _provision_standby_actor(client, service, "frank", name="standby-actor-two")
+    plain_actor = await _push_actor(client, "frank", name="plain-actor-for-model-check")
+
+    payload_one = (await client.get(f"/v2/actors/{actor_id_one}", headers=auth("frank"))).json()
+    payload_two = (await client.get(f"/v2/actors/{actor_id_two}", headers=auth("frank"))).json()
+    payload_plain = (await client.get(f"/v2/actors/{plain_actor['id']}", headers=auth("frank"))).json()
+
+    model_one = ApifyClientActor.model_validate(payload_one["data"])
+    model_two = ApifyClientActor.model_validate(payload_two["data"])
+    model_plain = ApifyClientActor.model_validate(payload_plain["data"])
+
+    # Distinct, correct per-Actor-id URLs -- proves the discovery mechanism
+    # generalizes over N standby Actors rather than one hardcoded case.
+    assert model_one.standby_url == f"http://actor-runtime:3333/v2/actor-standby/{actor_id_one}"
+    assert model_two.standby_url == f"http://actor-runtime:3333/v2/actor-standby/{actor_id_two}"
+    assert model_one.standby_url != model_two.standby_url
+
+    # A non-standby Actor's response still validates cleanly through the same
+    # strict model, with no standby_url (absent on the wire, None on the model).
+    assert model_plain.standby_url is None
+
+    # Each Actor's own standby_url must route to THAT Actor's own warm
+    # container, not a shared one: call each Actor's path directly (same ASGI
+    # client, host/port already asserted equal above) and confirm each
+    # cold-starts independently -- counter starts at 1 for both.
+    path_one = urlsplit(model_one.standby_url).path
+    path_two = urlsplit(model_two.standby_url).path
+    resp_one_a = await client.get(f"{path_one}/echo", headers=auth("frank"))
+    resp_two_a = await client.get(f"{path_two}/echo", headers=auth("frank"))
+    assert resp_one_a.json()["requestCount"] == 1
+    assert resp_two_a.json()["requestCount"] == 1
+
+    # A repeat call reuses each Actor's own warm container (counter -> 2)
+    # without affecting the other's -- traffic never crosses between them.
+    resp_one_b = await client.get(f"{path_one}/echo", headers=auth("frank"))
+    resp_two_b = await client.get(f"{path_two}/echo", headers=auth("frank"))
+    assert resp_one_b.json()["requestCount"] == 2
+    assert resp_two_b.json()["requestCount"] == 2
 
 
 # -- D. Environment-variable alignment --------------------------------------

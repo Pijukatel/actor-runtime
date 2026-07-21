@@ -2,9 +2,13 @@
 the full Apify SDK lifecycle.
 
 Reads its own input via ``Actor.get_input()``, discovers the standby Actor's
-``standbyUrl`` through the SDK-configured client (``Actor.new_client()`` ->
-``actor(standby_actor_id).get()``), calls it once container-to-container, and
-persists the response both into its own default dataset (via
+standby URL through the SDK-configured client (``Actor.new_client()`` ->
+``actor(standby_actor_id).get()``), reading it off the fetched Actor object's
+``.standby_url`` attribute (apify-client's own ``Actor`` response model,
+never a raw dict) -- the same read works for any standby-enabled Actor id,
+since the runtime always parameterizes the URL by the requested Actor's own
+id, not a hardcoded one. Calls the discovered URL once container-to-container,
+and persists the response both into its own default dataset (via
 ``Actor.push_data()``) and as the key-value store ``OUTPUT`` record (via
 ``Actor.set_value()``), so the test can read the round trip back over the API
 either way.
@@ -43,7 +47,7 @@ async def main() -> None:
         print(f"Discovering standby Actor {standby_actor_id!r} via the configured client", flush=True)
         client = Actor.new_client()
         actor = await client.actor(standby_actor_id).get()
-        standby_url = actor["standbyUrl"]
+        standby_url = actor.standby_url
         print(f"Calling standby Actor at {standby_url}", flush=True)
 
         call_url = f"{standby_url}/echo?greeting={greeting}"

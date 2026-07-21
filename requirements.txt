@@ -9,3 +9,10 @@ python-multipart==0.0.20
 # and readiness-probe polling in app/service.py + app/routers/standby.py use
 # httpx directly, in the running application, not only in tests.
 httpx==0.28.1
+# Runtime dependency: apify-client>=3.x's own internal storage API client
+# (and any explicit `Actor.new_client()` caller) compresses request bodies
+# with `Content-Encoding: br` (Brotli) by default -- real Apify Actors using
+# the SDK's storage surface (set_value/push_data/add_request/...) send every
+# write this way, so the runtime must be able to decompress it the same way
+# the real platform does (see app/responses.py::read_body()).
+brotli==1.2.0

@@ -18,17 +18,6 @@ import asyncio
 from apify import Actor
 
 
-def _resolve_username(me: object) -> str | None:
-    """Best-effort read of the acting user's identity from whatever shape
-    ``UserClientAsync.get()`` returns: a plain dict per apify-client 2.5.1's
-    current source (handled first here), with an attribute-based fallback in
-    case a different client version ever returns a model instead.
-    """
-    if isinstance(me, dict):
-        return me.get("username") or me.get("id")
-    return getattr(me, "username", None) or getattr(me, "id", None)
-
-
 async def main() -> None:
     async with Actor:
         # (a) is_at_home, through the SDK's own accessor.
@@ -40,7 +29,8 @@ async def main() -> None:
         # Actor's Configuration, same as everywhere else in the SDK).
         client = Actor.new_client()
         me = await client.user("me").get()
-        username = _resolve_username(me)
+        # v4 returns a response model (UserPublicInfo/UserPrivateInfo), never a dict.
+        username = getattr(me, "username", None)
 
         result = {"is_at_home": bool(is_at_home), "user": username, "dataset_id": dataset_id}
         print(f"isathome Actor resolved: {result}", flush=True)

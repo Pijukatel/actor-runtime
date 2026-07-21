@@ -17,7 +17,7 @@ async def test_request_queue_full_surface(wired):
     requests/unlock) on top of the pre-existing create/get/list/single-add
     surface. None of the four sample-actor fixtures exercise these routes
     (they only add-and-forget through the single/batch add path) -- this is
-    the sole coverage for the fuller client surface apify-client 2.5.1's
+    the sole coverage for the fuller client surface apify-client 3.1.0's
     ``RequestQueueClient``/``RequestQueueClientAsync`` expose.
     """
     client, _service = wired

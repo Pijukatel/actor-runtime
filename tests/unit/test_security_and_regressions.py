@@ -307,6 +307,37 @@ async def test_bad_gzip_body_returns_4xx(wired):
     assert resp.status_code == 400
 
 
+async def test_brotli_compressed_body_is_transparently_decompressed(wired):
+    """apify-client 3.x's own internal storage API client (and any explicit
+    ``Actor.new_client()`` caller) compresses request bodies with
+    ``Content-Encoding: br`` by default -- every SDK storage write
+    (set_value/push_data/add_request/...) arrives this way under the SDK v4
+    pin, so the runtime must decompress it exactly like the real platform
+    does, not just tolerate the older gzip encoding.
+    """
+    import brotli
+
+    client, _ = wired
+    body = brotli.compress(b'{"name": "brotli-actor"}')
+    resp = await client.post(
+        "/v2/acts",
+        content=body,
+        headers={"content-type": "application/json", "content-encoding": "br"},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["data"]["name"] == "brotli-actor"
+
+
+async def test_bad_brotli_body_returns_4xx(wired):
+    client, _ = wired
+    resp = await client.post(
+        "/v2/acts",
+        content=b"this is not brotli",
+        headers={"content-type": "application/json", "content-encoding": "br"},
+    )
+    assert resp.status_code == 400
+
+
 # -- Minor #7: PUT /v2/acts/{id} actually applies the payload -------------
 async def test_update_actor_applies_payload(wired):
     client, _ = wired

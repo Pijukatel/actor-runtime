@@ -3,3 +3,10 @@ pytest==8.3.4
 pytest-asyncio==0.25.2
 # httpx is now a runtime dependency (see requirements.txt); inherited via
 # `-r requirements.txt` above, listed there rather than duplicated here.
+# apify-client is a TEST-ONLY dependency here (the runtime app itself never
+# imports it): tests/unit/test_standby.py validates standby-actor GET
+# responses through the real apify_client.Actor response model to prove the
+# standby-URL discovery mechanism generalizes, without needing a Docker-built
+# fixture container. Pinned to the same version the sample_actor*/.actor
+# Dockerfiles install at Actor image build time.
+apify-client==3.1.0

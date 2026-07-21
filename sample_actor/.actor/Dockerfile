@@ -6,11 +6,15 @@ WORKDIR /usr/src/app
 # network use is calling the runtime's own API via APIFY_API_BASE_URL, so the
 # actor stays deterministic and offline at run time. Versions are pinned
 # exactly, like every other dependency in this repo (see
-# requirements.txt/requirements-dev.txt): apify-client is pinned to 2.5.1
-# rather than its own latest (3.0.x) because apify==3.4.1 still declares
-# `apify-client>=2.3.0,<3.0.0` in its pyproject.toml, and 2.5.1 is the newest
-# apify-client release satisfying that constraint.
-RUN pip install --no-cache-dir 'apify-client==2.5.1' 'apify==3.4.1'
+# requirements.txt/requirements-dev.txt): apify==4.0.0 is the SDK's released
+# v4 line, and apify-client is pinned to 3.1.0 because apify==4.0.0 declares
+# `apify-client[brotli]<4.0.0,>=3.1.0` in its own wheel metadata, and 3.1.0 is
+# the newest apify-client release satisfying that constraint (also the newest
+# apify-client release overall). The `[brotli]` extra is what pulls the
+# `brotli` package into these containers -- no Dockerfile installs it
+# directly, and the runtime's own brotli-decompression path (responses.py)
+# depends on it landing here.
+RUN pip install --no-cache-dir 'apify-client==3.1.0' 'apify==4.0.0'
 COPY . ./
 # Run as a non-root user, like the real Apify Actor base images do. This ensures
 # the e2e test exercises the non-root storage-permission path (a root-only Actor
