@@ -124,6 +124,10 @@ talks to this runtime and other local containers (e.g. the caller fixture's
 container-to-container call to the standby Actor's own HTTP endpoint), so
 runs stay fully offline.
 
+An Actor pushed and built before its `.actor/input_schema.json` existed keeps
+showing the console's plain-JSON input editor until you push again — a plain
+`apify push --force` picks up the new schema without needing a rebuild.
+
 ## Demo
 
 `scripts/demo.sh` is a self-contained, commented walkthrough of the whole

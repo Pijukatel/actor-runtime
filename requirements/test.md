@@ -259,9 +259,9 @@ console's URL-path-based navigation and restructured information architecture:
    `/actors/no-such~actor`) returns HTTP 200 with the console's `index.html`
    (recognizably the shell, e.g. contains `id="detail"` and the `/console/app.js`
    script), while an unknown `/v2/...` path still returns a **404** in the Apify
-   error envelope (never the shell), `/console/app.js` still returns the JS asset,
-   and `/` still returns `index.html`. The catch-all uses an allowlist on the first
-   path segment and must not shadow the API.
+   error envelope (never the shell), `/console/app.js` and `/console/input_tab.js`
+   still return their JS assets, and `/` still returns `index.html`. The catch-all
+   uses an allowlist on the first path segment and must not shadow the API.
  - **Storage detail inspects contents.** The served `app.js` renders
    `/storage/{slug}/{resourceId}` by reusing the shared content renderer with a kind
    derived from the slug (via the slug→kind map), and storage rows link to that

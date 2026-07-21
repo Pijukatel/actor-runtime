@@ -38,6 +38,36 @@
     header { display: flex; align-items: center; gap: 12px; }
     header .user { font-weight: 400; font-size: 13px; color: #8b949e; }
     header button { font-size: 12px; padding: 4px 10px; }
+    /* Actor "Input" tab: schema-generated Form view + raw JSON view. Scoped
+       under #input-tab (the container `renderInputTab` renders into, see
+       app.js's `openActor`) so these rules never reach the pre-existing
+       "New user name"/"New name" inputs or the header's #user-select. */
+    #input-tab input[type="text"], #input-tab input[type="number"], #input-tab select, #input-tab textarea {
+      font: inherit; padding: 4px 6px; border: 1px solid #d0d7de; border-radius: 6px; box-sizing: border-box;
+    }
+    #input-tab textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; resize: vertical; }
+    #input-json-editor { min-height: 260px; }
+    .input-field { margin-bottom: 14px; }
+    .input-field-label { display: flex; align-items: baseline; gap: 4px; font-weight: 600; font-size: 13px; margin-bottom: 2px; }
+    .input-field-help { margin-bottom: 4px; }
+    .input-required { color: #b42318; font-weight: 700; }
+    .input-error { color: #b42318; font-size: 12px; min-height: 14px; }
+    /* Zero the gap above the first section heading -- but "first" means
+       "not preceded by another .input-section sibling", not literally
+       `:first-child`: a schema whose leading properties have no
+       `sectionCaption` (e.g. the sample Actor's own `greeting`) renders
+       before any `.input-section` wrapper exists (see `renderFormFields` in
+       input_tab.js), so the first actual `.input-section` is never the body's
+       first DOM child and `:first-child` never matches it. The
+       general-sibling rule below restores normal spacing only for a
+       section that genuinely follows another section, regardless of what
+       unsectioned fields precede the first one. */
+    .input-section h3 { font-size: 14px; margin: 0 0 4px; }
+    .input-section ~ .input-section h3 { margin-top: 16px; }
+    .string-list-row { display: flex; gap: 6px; margin-bottom: 6px; }
+    .string-list-row input { flex: 1; }
+    .string-list-rows { margin-bottom: 6px; }
+    .json-subfield textarea { min-height: 90px; }
   </style>
 </head>
 <body>
@@ -66,6 +96,7 @@
       <p class="muted">Select an item to inspect its details and storages.</p>
     </div>
   </main>
+  <script src="/console/input_tab.js"></script>
   <script src="/console/app.js"></script>
 </body>
 </html>

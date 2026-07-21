@@ -1,0 +1,21 @@
+{
+  "title": "Sample Caller Actor input",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "standbyActorId": {
+      "title": "Standby Actor ID",
+      "type": "string",
+      "description": "Id of the standby Actor to call (e.g. \"local-user~standby-actor\").",
+      "editor": "textfield"
+    },
+    "greeting": {
+      "title": "Greeting",
+      "type": "string",
+      "description": "Greeting text sent to the standby Actor's /echo endpoint.",
+      "editor": "textfield",
+      "default": "hi"
+    }
+  },
+  "required": ["standbyActorId"]
+}

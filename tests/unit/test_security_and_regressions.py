@@ -453,12 +453,14 @@ async def test_run_start_zero_or_negative_memory_returns_400(wired):
 async def test_console_has_no_inline_event_handlers(wired):
     client, _ = wired
     app_js = (await client.get("/console/app.js")).text
+    input_tab_js = (await client.get("/console/input_tab.js")).text
     index = (await client.get("/")).text
-    for src, label in ((app_js, "app.js"), (index, "index.html")):
+    for src, label in ((app_js, "app.js"), (input_tab_js, "input_tab.js"), (index, "index.html")):
         for handler in ("onclick=", "onload=", "onerror=", "onmouseover="):
             assert handler not in src.lower(), f"{label} contains inline {handler}"
     # Positive check: behaviour is wired with addEventListener.
     assert "addEventListener" in app_js
+    assert "addEventListener" in input_tab_js
 
 
 @pytest.mark.asyncio

@@ -40,6 +40,7 @@ from .constants import (
 )
 from .db import AccessRight, Actor, Build, Database, Run, Storage as StorageRow, User, Version, utcnow
 from .driver import Driver, extract_zip, write_source_files
+from .input_schema import resolve_input_schema
 from .standby import StandbyManager, _extract_uses_standby_mode, _normalize_standby_config
 from .storage import Storage
 # ACCESS_*/LEVEL_* are re-exported from `app/storage_access.py` (imported,
@@ -84,6 +85,48 @@ def _parse_tarball_url(url: str) -> tuple[str, str]:
     if match is None:
         raise ValueError(f"Cannot parse store id and record key from tarballUrl: {url!r}")
     return unquote(match.group(1)), unquote(match.group(2))
+
+
+def _version_sort_key(version: Version) -> list[tuple[int, Any]]:
+    """Best-effort numeric ordering of a dotted version number (so ``"1.2"``
+    sorts after ``"0.9"``, unlike a plain string compare), falling back to
+    the raw string per-segment for anything that doesn't parse as an int.
+
+    Only used to break ties among versions with no other signal (see
+    ``_select_schema_version``) -- good enough for a small,
+    developer-authored set of version numbers, never load-bearing for
+    anything else.
+    """
+    segments: list[tuple[int, Any]] = []
+    for piece in (version.version_number or "").split("."):
+        try:
+            segments.append((0, int(piece)))
+        except ValueError:
+            segments.append((1, piece))
+    return segments
+
+
+def _select_schema_version(versions: list[Version]) -> Version | None:
+    """Best-effort schema-version GUESS for an actor with NO successful build
+    yet: the version tagged ``latest`` (its own ``buildTag``, not a build's),
+    or the highest-numbered one if several share that tag, else the
+    highest-numbered version overall when none carries the ``latest`` tag.
+
+    This is only ever a fallback -- see ``Service.get_input_schema``. Once an
+    actor has a successful build, that build's OWN version is the only thing
+    that determines what a default (``build=latest``) run actually executes:
+    ``Service.start_run`` -> ``self.latest_build()`` picks the most recently
+    *started* successful ``Build`` row outright and never consults any
+    version's ``buildTag``. Before a first build exists there is no such
+    build to mirror, so this tag-based guess is the best available signal for
+    what an eventual first run would use. Returns ``None`` only when the
+    actor has no versions at all.
+    """
+    if not versions:
+        return None
+    tagged_latest = [v for v in versions if (v.build_tag or "latest") == "latest"]
+    pool = tagged_latest or versions
+    return max(pool, key=_version_sort_key)
 
 
 class Service:
@@ -364,6 +407,45 @@ class Service:
             return list(
                 (await s.execute(select(Version).where(Version.actor_id == actor_id))).scalars()
             )
+
+    async def get_input_schema(self, actor_id: str) -> dict | None:
+        """Resolve the actor's input schema for the console's Input tab (and
+        for ``GET /{actor_id}/input-schema`` directly).
+
+        Mirrors the SAME selection a default (``build=latest``) run actually
+        executes, not merely the version currently tagged ``latest``:
+        ``Service.start_run`` calls ``self.latest_build(actor_id)``, which
+        returns the most recently *started* successful ``Build`` row --
+        tag-blind, regardless of which version (if any) is tagged ``latest``
+        right now. This method resolves that SAME build's version and reads
+        its schema, so the schema shown always matches what actually runs --
+        e.g. if v1.0 is tagged ``latest`` and built, then v2.0 is pushed
+        tagged ``beta`` (not ``latest``) and built *later*, the schema shown
+        is v2.0's, because v2.0's build is what ``latest_build()`` -- and
+        therefore a default Start -- would run.
+
+        Falls back to ``_select_schema_version`` (the version tagged
+        ``latest``, else the highest-numbered one) only when the actor has
+        no successful build yet -- there is no build to mirror before that
+        point, so the tag-based guess is the best available signal for what
+        an eventual first run would use.
+
+        A ``TARBALL`` version's pushed archive isn't inspectable until a
+        build unpacks it (mirrors the standby opt-in inference's own gate in
+        ``_upsert_version_in_session``), so it always falls back to ``None``
+        here regardless of what it contains. Fails soft to ``None`` for
+        every other reason too (no versions, no manifest/schema file,
+        malformed JSON) -- never raises.
+        """
+        build = await self.latest_build(actor_id)
+        if build is not None:
+            version = await self.get_version(actor_id, build.version_number)
+        else:
+            versions = await self.list_versions(actor_id)
+            version = _select_schema_version(versions)
+        if version is None or version.source_type == "TARBALL":
+            return None
+        return resolve_input_schema(version.source_files)
 
     async def latest_build(self, actor_id: str) -> Build | None:
         async with self.db.session() as s:

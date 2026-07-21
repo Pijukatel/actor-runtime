@@ -16,6 +16,12 @@
     - `GET /v2/users/me`, `GET /v2/users`, `POST /v2/users`
     - `GET|POST /v2/acts` and `/v2/actors` (list / create Actor; both spellings)
     - `GET|PUT /v2/acts/{actorId}` (get / update Actor)
+    - `GET /v2/acts/{actorId}/input-schema` (local addition, not in the public
+      spec: resolves the actor's input schema for the console's Input tab, from
+      the version behind the actor's most recent successful build, falling back
+      to its latest-tagged version when no build exists yet; `data(null)` -- not
+      a 404 -- when no schema can be resolved: no schema file, a `TARBALL`
+      version, or malformed JSON)
     - `GET /v2/acts/{actorId}/versions/{versionNumber}`,
       `POST /v2/acts/{actorId}/versions`,
       `PUT /v2/acts/{actorId}/versions/{versionNumber}` (upload source; see
@@ -377,15 +383,17 @@
   (`/actors...`, `/storage...`, `/users`). So a deep link or a browser refresh to
   one of those paths renders correctly, the app is served by a **catch-all**
   registered **last** (after every `/v2/*` API route and after the explicit `/`,
-  `/console` and `/console/app.js` routes): `GET /{full_path}` returns the console's
-  `index.html` (HTTP 200) **only** when the first path segment is one the SPA owns —
-  an **allowlist** of `actors`, `storage`, `users`. The shell is served even when the
-  addressed resource does not exist (e.g. `/actors/no-such~actor`); "not found" is a
-  client-side concern, not a server 404.
+  `/console`, `/console/app.js` and `/console/input_tab.js` routes): `GET
+  /{full_path}` returns the console's `index.html` (HTTP 200) **only** when the
+  first path segment is one the SPA owns — an **allowlist** of `actors`,
+  `storage`, `users`. The shell is served even when the addressed resource does
+  not exist (e.g. `/actors/no-such~actor`); "not found" is a client-side
+  concern, not a server 404.
 - The catch-all **never shadows the API**: any other unmatched path — including any
   unknown `/v2/...` path — returns a normal **404 `record-not-found`** in the Apify
   error envelope, not `index.html`. Because the catch-all is registered last and only
-  matches paths no earlier route claimed, every real `/v2/*` endpoint and the literal
-  `/console/app.js` asset keep their existing responses unchanged.
+  matches paths no earlier route claimed, every real `/v2/*` endpoint and the
+  literal `/console/app.js` and `/console/input_tab.js` assets keep their
+  existing responses unchanged.
 - The catch-all is defined once on the shared app instance, so it behaves identically
   on both the API and console ports.

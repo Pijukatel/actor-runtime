@@ -124,6 +124,28 @@ async def update_actor(actor_id: str, request: Request) -> object:
     return data(await _actor_payload(svc, actor))
 
 
+@router.get("/{actor_id}/input-schema")
+async def get_input_schema(actor_id: str, request: Request) -> object:
+    """Resolve the actor's input schema for the console's Input tab.
+
+    Resolved from the SAME version a default (``build=latest``) run would
+    actually execute -- the version behind the actor's most recent
+    successful build, falling back to its latest-tagged version only when no
+    build exists yet (see ``Service.get_input_schema``'s docstring for why).
+    Returns ``data(None)`` -- not a 404 -- whenever no schema can be resolved
+    (no versions, no manifest/schema file, a TARBALL version, or a malformed
+    schema file), matching ``.actor/actor.json``'s own fail-soft inference
+    contract. Only an unknown/inaccessible actor id is a 404.
+    """
+    svc = get_service(request)
+    user = await resolve_user(request)
+    actor = await svc.get_actor(actor_id, username=user)
+    if actor is None:
+        return not_found(f"Actor '{actor_id}' was not found.")
+    schema = await svc.get_input_schema(actor_id)
+    return data(schema)
+
+
 @router.get("/{actor_id}/versions/{version_number}")
 async def get_version(actor_id: str, version_number: str, request: Request) -> object:
     svc = get_service(request)
