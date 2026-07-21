@@ -25,10 +25,14 @@ Actors driven by the full Apify SDK `Actor` lifecycle
  - Push a standby-enabled Actor (`.actor/actor.json` with `usesStandbyMode: true`)
    and a plain on-demand Actor.
  - Before any request reaches it, the standby Actor has no running container.
- - Run the on-demand Actor with the standby Actor's id as input; from inside its
-   own container it uses `APIFY_API_BASE_URL` + its own `APIFY_TOKEN` (no
-   hardcoded URL/port) to look up the standby Actor and read its `standbyUrl`,
-   then calls that URL container-to-container.
+ - Run the on-demand Actor with the standby Actor's NAME as input (never a
+   username-qualified id): from inside its own container it uses
+   `APIFY_API_BASE_URL` + its own `APIFY_TOKEN` (no hardcoded URL/port) to
+   resolve the acting user's own username (`client.user("me").get()`), builds
+   the standby Actor's id itself as `{username}~{name}` (the platform's own id
+   convention -- `josef.prochazka~standby-actor` on the real platform,
+   `local-user~standby-actor` here, from the exact same code), looks up that
+   Actor and reads its `standbyUrl`, then calls that URL container-to-container.
  - The on-demand run reaches `SUCCEEDED` and its output shows the standby
    Actor's real response including its `reply` field (proving the round trip);
    the caller also saves that response into its own default dataset, and the

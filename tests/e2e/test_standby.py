@@ -145,15 +145,10 @@ def test_on_demand_actor_discovers_and_calls_standby_actor(runtime, tmp_path):
     actor = httpx.get(f"{api}/v2/actors/{standby_actor_id}", timeout=10).json()["data"]
     assert actor.get("standbyUrl"), "standby-enabled actor must expose standbyUrl"
 
-    # The on-demand Actor discovers standbyUrl itself and calls it
-    # container-to-container -- see sample_actor_caller/main.py.
-    # Input goes through --input-file, not `-i`: apify-cli treats any inline
-    # `--input` value containing "~" (every `username~name` actor id) as a file
-    # path and rejects it (apify/apify-cli#1281).
-    input_file = tmp_path / "caller-input.json"
-    input_file.write_text(json.dumps({"standbyActorId": standby_actor_id, "greeting": "howdy"}))
+    # Contract: input is the standby Actor's name only -- the caller resolves
+    # its own username and builds the id itself (see sample_actor_caller/main.py).
     call = subprocess.run(
-        ["apify", "call", f"--input-file={input_file}"],
+        ["apify", "call", "-i", json.dumps({"standbyActorName": "standby-actor", "greeting": "howdy"})],
         cwd=caller_project, env=env, stdin=subprocess.DEVNULL,
         capture_output=True, text=True, timeout=300,
     )

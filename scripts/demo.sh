@@ -105,14 +105,11 @@ cp -r "$REPO/sample_actor_caller" "$WORK/caller-actor"
 (cd "$WORK/caller-actor" && apify push --force)
 
 step "6. Running the caller Actor"
-# The caller discovers the standby Actor's standbyUrl through the runtime API
-# (no hardcoded URL) and calls it container-to-container; the first request
-# cold-starts the standby container. Input goes through --input-file rather
-# than inline -i: apify-cli mis-detects any inline JSON containing "~" (as in
-# the `local-user~standby-actor` id) as a file path (apify/apify-cli#1281).
+# Contract: input is the standby Actor's name only -- the caller resolves
+# its own username and builds the id itself (see sample_actor_caller/main.py).
 INPUT_FILE="$WORK/caller-input.json"
 cat > "$INPUT_FILE" <<'JSON'
-{"standbyActorId": "local-user~standby-actor", "greeting": "hello-from-the-demo"}
+{"standbyActorName": "standby-actor", "greeting": "hello-from-the-demo"}
 JSON
 (cd "$WORK/caller-actor" && apify call --input-file="$INPUT_FILE")
 

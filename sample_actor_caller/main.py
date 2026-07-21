@@ -1,17 +1,29 @@
 """On-demand fixture Actor for the on-demand-calls-standby e2e test, driven by
 the full Apify SDK lifecycle.
 
-Reads its own input via ``Actor.get_input()``, discovers the standby Actor's
-standby URL through the SDK-configured client (``Actor.new_client()`` ->
-``actor(standby_actor_id).get()``), reading it off the fetched Actor object's
-``.standby_url`` attribute (apify-client's own ``Actor`` response model,
-never a raw dict) -- the same read works for any standby-enabled Actor id,
-since the runtime always parameterizes the URL by the requested Actor's own
-id, not a hardcoded one. Calls the discovered URL once container-to-container,
-and persists the response both into its own default dataset (via
-``Actor.push_data()``) and as the key-value store ``OUTPUT`` record (via
-``Actor.set_value()``), so the test can read the round trip back over the API
-either way.
+Reads its own input via ``Actor.get_input()``: the standby Actor's NAME only
+(``standbyActorName``), never a username-qualified id -- an id like
+``josef.prochazka~standby-actor`` is only ever meaningful on whatever single
+environment minted it (a real platform username there, ``local-user`` here),
+so hardcoding or accepting one as input would make this Actor's code differ
+between environments. Instead, the acting user's username is resolved at
+run time through the SDK-configured client (``Actor.new_client()`` ->
+``client.user("me").get()``, reading the returned user model's ``.username``
+attribute -- the same real-network-round-trip pattern
+``sample_actor_isathome/main.py`` uses) and combined with the given name
+using the platform's own ``username~name`` Actor-id convention (the same
+convention the runtime itself uses to mint Actor ids -- see
+``app/service.py``'s ``create_actor``) into ``f"{username}~{name}"``. That id
+is then used to discover the standby Actor's standby URL through the same
+client (``client.actor(standby_actor_id).get()``), reading it off the
+fetched Actor object's ``.standby_url`` attribute (apify-client's own
+``Actor`` response model, never a raw dict) -- the same read works for any
+standby-enabled Actor id, since the runtime always parameterizes the URL by
+the requested Actor's own id, not a hardcoded one. Calls the discovered URL
+once container-to-container, and persists the response both into its own
+default dataset (via ``Actor.push_data()``) and as the key-value store
+``OUTPUT`` record (via ``Actor.set_value()``), so the test can read the
+round trip back over the API either way.
 
 The actual call to the standby Actor's HTTP server is NOT a storage
 operation -- there is no SDK method for "call another Actor's endpoint", so
@@ -36,16 +48,25 @@ from apify import Actor
 async def main() -> None:
     async with Actor:
         actor_input = await Actor.get_input() or {}
-        standby_actor_id = actor_input.get("standbyActorId")
-        if not standby_actor_id:
+        standby_actor_name = actor_input.get("standbyActorName")
+        if not standby_actor_name:
             raise ValueError(
-                'Missing required input field "standbyActorId" (the id of the standby '
-                'Actor to call, e.g. {"standbyActorId": "local-user~standby-actor"}).'
+                'Missing required input field "standbyActorName" (the name of the standby '
+                'Actor to call, e.g. {"standbyActorName": "standby-actor"}).'
             )
         greeting = actor_input.get("greeting", "hi")
 
-        print(f"Discovering standby Actor {standby_actor_id!r} via the configured client", flush=True)
         client = Actor.new_client()
+
+        # Username resolved live, never hardcoded or taken as input (see module docstring).
+        print("Resolving the acting user via the configured client (client.user('me').get())", flush=True)
+        me = await client.user("me").get()
+        username = getattr(me, "username", None)
+        if not username:
+            raise ValueError("Could not resolve the acting user's username from client.user('me').get().")
+        standby_actor_id = f"{username}~{standby_actor_name}"
+
+        print(f"Discovering standby Actor {standby_actor_id!r} via the configured client", flush=True)
         actor = await client.actor(standby_actor_id).get()
         standby_url = actor.standby_url
         print(f"Calling standby Actor at {standby_url}", flush=True)
