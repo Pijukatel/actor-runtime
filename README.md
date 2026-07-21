@@ -119,6 +119,57 @@ An Actor pushed and built before its `.actor/input_schema.json` existed keeps
 showing the console's plain-JSON input editor until you push again — a plain
 `apify push --force` picks up the new schema without needing a rebuild.
 
+## Proxies: Apify Proxy and your own servers
+
+Actors use the platform's standard proxy input — the object the Console's
+proxy editor (`"editor": "proxy"` in the input schema) produces:
+
+```jsonc
+{ "useApifyProxy": true, "apifyProxyGroups": ["RESIDENTIAL"], "apifyProxyCountry": "US" }
+// or your own (generic) servers:
+{ "useApifyProxy": false, "proxyUrls": ["http://user:pass@host:port"] }
+```
+
+The runtime mirrors the platform's side of the contract. Every Actor container
+gets the platform's proxy connection env vars (`APIFY_PROXY_HOSTNAME`,
+`APIFY_PROXY_PORT`, `APIFY_PROXY_STATUS_URL` — `proxy.apify.com` / `8000` /
+`http://proxy.apify.com` unless you override them with env vars of the same
+names on the runtime container). What the runtime cannot do is mint Apify
+Proxy credentials: to use the **real Apify Proxy** locally, copy your own
+proxy password from <https://console.apify.com/proxy> and add it to the
+`docker run` command above:
+
+```bash
+  -e APIFY_PROXY_PASSWORD=<your-proxy-password> \
+```
+
+With that in place every Actor run gets `APIFY_PROXY_PASSWORD`, and
+`{"useApifyProxy": true}` works exactly as on the platform — the SDK inside
+the container builds `http://groups-...,country-...:<password>@proxy.apify.com:8000`
+URLs and traffic really flows through Apify Proxy. Without it the variable is
+absent (never empty), so such a run fails with the SDK's clear
+missing-password error. Generic `proxyUrls` need nothing from the runtime at
+all.
+
+`sample_actor_proxy/` demonstrates both modes, resolving the proxy input the
+same way the SDK's `Actor.create_proxy_configuration` does (see its module
+docstring) while staying dependency-free:
+
+```bash
+cd sample_actor_proxy
+apify push --force
+# Real Apify Proxy (needs APIFY_PROXY_PASSWORD on the runtime container):
+apify call -i '{"proxyConfiguration":{"useApifyProxy":true},"targetUrl":"https://api.apify.com/v2/browser-info"}'
+# Your own proxy server:
+apify call -i '{"proxyConfiguration":{"useApifyProxy":false,"proxyUrls":["http://user:pass@host:port"]},"targetUrl":"https://api.apify.com/v2/browser-info"}'
+```
+
+Its OUTPUT record shows the resolved proxy URLs (passwords always masked),
+the Apify Proxy access-check result, and a preview of the page fetched
+through the proxy — `browser-info` echoes the IP the request came from, so a
+working proxy shows its IP instead of yours. Leave `targetUrl` empty to only
+resolve and report the configuration without any network use.
+
 ## Demo
 
 `scripts/demo.sh` is a self-contained, commented walkthrough of the whole

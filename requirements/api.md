@@ -153,6 +153,19 @@
 - `APIFY_ACTOR_ID` / `ACTOR_ID` and `APIFY_ACTOR_RUN_ID` / `ACTOR_RUN_ID` —
   both the legacy `APIFY_`-prefixed and the modern unprefixed spellings, equal
   in value.
+- `APIFY_PROXY_HOSTNAME` / `APIFY_PROXY_PORT` / `APIFY_PROXY_STATUS_URL` —
+  Apify Proxy connection facts, always present. They default to the
+  platform's production values (`proxy.apify.com` / `8000` /
+  `http://proxy.apify.com`, the status URL following an overridden hostname)
+  and can be overridden by env vars of the same names on the runtime
+  container.
+- `APIFY_PROXY_PASSWORD` — present **only when the user populated the
+  variable of the same name on the runtime container** with their own Apify
+  Proxy password (from `https://console.apify.com/proxy`; the runtime cannot
+  mint proxy credentials). Absent otherwise — never set to an empty string —
+  so an SDK asked for Apify Proxy without it raises its clear
+  missing-password error, the same failure a platform run with a broken
+  password credential gets. See `actor-driver.md`'s "Proxy" section.
 - Standby runs additionally get `ACTOR_STANDBY_PORT` (the fixed port the
   Actor's own HTTP server must listen on) and have `timeoutSecs`/`build`/
   `memoryMbytes` forced from the Actor's `actorStandby` config rather than any

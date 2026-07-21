@@ -32,6 +32,18 @@ ACTOR_STANDBY_PORT = 4321
 STANDBY_IDLE_TIMEOUT_DEFAULT_SECS = 300
 STANDBY_IDLE_TIMEOUT_MIN_SECS = 5
 
+# Apify Proxy connection defaults, mirroring apify-core's production
+# `superProxy` settings (hostname/port/statusPageUrl). The real platform
+# injects these into every Actor container as APIFY_PROXY_HOSTNAME /
+# APIFY_PROXY_PORT / APIFY_PROXY_STATUS_URL; the runtime does the same so an
+# Actor (or the apify SDK inside it) builds exactly the same
+# `http://<username>:<password>@proxy.apify.com:8000` URLs it would build on
+# the platform. The runtime cannot mint proxy passwords -- the user supplies
+# their own via APIFY_PROXY_PASSWORD on the runtime container (see
+# `load_settings`).
+PROXY_HOSTNAME_DEFAULT = "proxy.apify.com"
+PROXY_PORT_DEFAULT = 8000
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -53,6 +65,19 @@ class Settings:
     # readiness probe before giving up. A Settings field (not a constant) so
     # tests can shrink it instead of waiting out the production default.
     standby_ready_timeout_secs: float = 30.0
+    # Apify Proxy wiring for Actor containers (see PROXY_HOSTNAME_DEFAULT's
+    # comment). `proxy_password` is the user's own Apify Proxy password
+    # (populated via the APIFY_PROXY_PASSWORD env var on the runtime
+    # container); `None` means the user provided none, and Actor containers
+    # then get no APIFY_PROXY_PASSWORD at all -- so an Actor requesting Apify
+    # Proxy fails with the SDK's own clear "password must be provided" error,
+    # exactly as on the platform with a missing password.
+    proxy_password: str | None = None
+    proxy_hostname: str = PROXY_HOSTNAME_DEFAULT
+    proxy_port: int = PROXY_PORT_DEFAULT
+    # Defaults to `http://<proxy_hostname>` in `load_settings` (matching the
+    # platform, where the status page lives on the proxy hostname itself).
+    proxy_status_url: str = f"http://{PROXY_HOSTNAME_DEFAULT}"
     # NOTE: the standby-forwarding proxy's upstream connect timeout is a
     # plain module constant in app/routers/standby.py
     # (`_STANDBY_FORWARD_CONNECT_TIMEOUT_SECS`), not a `Settings` field --
@@ -90,10 +115,23 @@ def load_settings() -> Settings:
     data_dir = Path(os.environ.get("DATA_DIR", "/data")).resolve()
     host_data_dir = Path(os.environ.get("HOST_DATA_DIR", str(data_dir)))
     override_raw = os.environ.get("STANDBY_IDLE_OVERRIDE_SECS")
+    proxy_hostname = os.environ.get("APIFY_PROXY_HOSTNAME") or PROXY_HOSTNAME_DEFAULT
+    try:
+        proxy_port = int(os.environ.get("APIFY_PROXY_PORT") or PROXY_PORT_DEFAULT)
+    except ValueError:
+        proxy_port = PROXY_PORT_DEFAULT
     return Settings(
         data_dir=data_dir,
         host_data_dir=host_data_dir,
         port_api=API_PORT,
         port_console=CONSOLE_PORT,
         standby_idle_override_secs=float(override_raw) if override_raw else None,
+        # Empty-string password counts as "not provided": passing an empty
+        # APIFY_PROXY_PASSWORD through to Actor containers would make the SDK
+        # build proxy URLs with a blank password instead of raising its clear
+        # missing-password error.
+        proxy_password=os.environ.get("APIFY_PROXY_PASSWORD") or None,
+        proxy_hostname=proxy_hostname,
+        proxy_port=proxy_port,
+        proxy_status_url=os.environ.get("APIFY_PROXY_STATUS_URL") or f"http://{proxy_hostname}",
     )

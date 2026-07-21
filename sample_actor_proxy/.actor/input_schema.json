@@ -1,0 +1,24 @@
+{
+  "title": "Proxy sample Actor input",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "proxyConfiguration": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "description": "Proxies used by the Actor -- the same object the platform's proxy editor produces. Either Apify Proxy ({\"useApifyProxy\": true} with optional \"apifyProxyGroups\" and \"apifyProxyCountry\"; needs APIFY_PROXY_PASSWORD, see the runtime README) or your own servers ({\"useApifyProxy\": false, \"proxyUrls\": [\"http://user:pass@host:port\"]}).",
+      "prefill": { "useApifyProxy": true },
+      "editor": "proxy"
+    },
+    "targetUrl": {
+      "sectionCaption": "Proxied request",
+      "sectionDescription": "Optionally prove the resolved proxy works by fetching a page through it.",
+      "title": "Target URL",
+      "type": "string",
+      "description": "URL to fetch through the resolved proxy (leave empty to skip the request; the Actor then only resolves and reports the proxy configuration). https://api.apify.com/v2/browser-info echoes the IP the request came from, so it shows the proxy's IP instead of yours.",
+      "editor": "textfield",
+      "prefill": "https://api.apify.com/v2/browser-info"
+    }
+  },
+  "required": []
+}

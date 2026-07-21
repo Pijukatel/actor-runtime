@@ -51,6 +51,42 @@ owner, and the dataset id matches the run's real `defaultDatasetId`. Runs in
 `tests/e2e/test_isathome.py`, following the same Docker/`apify-cli` skip
 pattern as `tests/e2e/test_e2e.py`.
 
+## Platform-style proxy behavior (sample_actor_proxy)
+Test cases must verify the proxy contract (`actor-driver.md`'s "Proxy"
+section, `api.md`'s proxy env vars) at both levels:
+- e2e (`tests/e2e/test_proxy.py`, same Docker/`apify-cli` skip pattern as
+  `tests/e2e/test_e2e.py`, own runtime instance): a runtime started with
+  `-e APIFY_PROXY_PASSWORD=...` injects all four `APIFY_PROXY_*` vars into a
+  real Actor container (observed via `sample_actor_proxy`'s `apifyProxyEnv`
+  OUTPUT echo, which never repeats the password itself — only whether it was
+  set). The pushed fixture resolves a generic-proxy `proxyConfiguration`
+  (`useApifyProxy: false` + `proxyUrls`, credentials included) to a
+  SUCCEEDED run whose OUTPUT/dataset list the URLs credential-masked in
+  round-robin order, and NEITHER the runtime's proxy password NOR the custom
+  URLs' userinfo appears anywhere in the stored OUTPUT, dataset items or run
+  log; `useApifyProxy: false` with no `proxyUrls` resolves to "no proxy" and
+  still SUCCEEDs. (The Apify Proxy branch itself is exercised at unit level
+  below — e2e-asserting it would need a real proxy password and network
+  egress, making the suite non-deterministic.)
+- unit, runtime side (`tests/unit/test_proxy_env.py` plus `load_settings`
+  cases in `tests/unit/test_config.py`): the three connection-fact vars are
+  ALWAYS in the container env with platform defaults
+  (`proxy.apify.com`/`8000`/`http://proxy.apify.com`); `APIFY_PROXY_PASSWORD`
+  is present exactly when configured and never forwarded as an empty string
+  (an empty env value on the runtime container counts as "not provided").
+- unit, fixture side (`tests/unit/test_sample_actor_proxy.py`, direct-import
+  like `tests/unit/test_sample_actor.py`, network stubbed via the fixture's
+  single `http_get` seam): the SDK-parity resolution matrix — Apify Proxy
+  URL/username building (`groups-A+B,country-XX`, `auto` when bare, env
+  hostname/port/status honoured), missing-password run failure naming
+  `APIFY_PROXY_PASSWORD`, access-check semantics (unreachable status page →
+  warning only, two attempts; `connected: false` → failed run quoting the
+  page's `connectionError`), round-robin `proxyUrls` rotation incl.
+  wrap-around, group/country/URL validation failures, the optional
+  `targetUrl` fetch routed through the resolved proxy (or direct when none),
+  and the no-credential-leak guarantee across OUTPUT, dataset, log and error
+  messages.
+
 ## Mandatory multi-user, isolation and storage-sharing tests
 Automated coverage (runnable Docker-free via the in-process `wired` fixture, with
 the acting user set per request through `Authorization: Bearer <token>`) MUST

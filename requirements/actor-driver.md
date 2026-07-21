@@ -42,6 +42,24 @@
   degraded-but-working mode (its container is only reachable by network DNS
   name)
 
+# Proxy
+- Every Actor container (on-demand and standby alike) receives the platform's
+  Apify Proxy environment variables — see `api.md`'s environment-variable
+  section for the exact contract: connection facts always, the password only
+  when the user populated `APIFY_PROXY_PASSWORD` on the runtime container
+- With a real password provided, proxy use is identical to the platform: an
+  Actor (or the apify SDK inside it) resolves the platform's proxy input
+  object (`useApifyProxy` / `apifyProxyGroups` / `apifyProxyCountry`, produced
+  by `"editor": "proxy"` in an input schema) into
+  `http://<username>:<password>@proxy.apify.com:8000` URLs and traffic flows
+  through the real Apify Proxy; generic proxies (`proxyUrls` in the same
+  input object) need nothing from the runtime at all
+- `sample_actor_proxy/` demonstrates both modes, resolving that input object
+  with the same semantics as the SDK's `Actor.create_proxy_configuration`
+  (username scheme, missing-password failure, status-page access check,
+  round-robin `proxyUrls` rotation) while staying dependency-free, and never
+  writing an unmasked credential into its OUTPUT, dataset or log
+
 # Standby actor
 - An Actor may opt into standby mode (`usesStandbyMode: true` in
   `.actor/actor.json`, or an explicit API field): instead of running once and

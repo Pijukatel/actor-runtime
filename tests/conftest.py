@@ -1,6 +1,7 @@
 """Shared test fixtures: an in-process app wired to a Docker-free stub driver."""
 from __future__ import annotations
 
+import dataclasses
 import http.server
 import json
 import threading
@@ -363,5 +364,28 @@ async def wired_fast_standby(tmp_path):
     (criteria that would otherwise need multi-second/minute real waits).
     """
     settings = make_settings(tmp_path, standby_idle_override_secs=0.2, standby_ready_timeout_secs=1.0)
+    async for pair in _wire(tmp_path, StubDriver(), settings=settings):
+        yield pair
+
+
+# The proxy settings tests/unit/test_proxy_env.py's ``wired_proxy`` fixture
+# wires in -- one shared place so its tests assert against the exact values
+# the fixture set (a user-supplied Apify Proxy password plus non-default
+# hostname/port/status overrides).
+PROXY_TEST_SETTINGS = {
+    "proxy_password": "test-proxy-password",
+    "proxy_hostname": "proxy.example.com",
+    "proxy_port": 9000,
+    "proxy_status_url": "http://proxy-status.example.com",
+}
+
+
+@pytest_asyncio.fixture
+async def wired_proxy(tmp_path):
+    """Like ``wired`` but with Apify Proxy settings configured (as if the user
+    started the runtime with APIFY_PROXY_PASSWORD etc. -- see
+    ``config.load_settings``), so tests can assert what reaches Actor
+    container environments."""
+    settings = dataclasses.replace(make_settings(tmp_path), **PROXY_TEST_SETTINGS)
     async for pair in _wire(tmp_path, StubDriver(), settings=settings):
         yield pair

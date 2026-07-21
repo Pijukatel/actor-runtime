@@ -748,8 +748,16 @@ class Service:
         arrives through the API, apify-cli included); the standby manager
         overrides it to ``STANDBY`` -- the platform-documented signal an Actor
         uses to detect standby mode.
+
+        Apify Proxy vars mirror the platform too: ``APIFY_PROXY_HOSTNAME`` /
+        ``APIFY_PROXY_PORT`` / ``APIFY_PROXY_STATUS_URL`` are always present
+        (they are connection facts, not credentials), while
+        ``APIFY_PROXY_PASSWORD`` is set only when the user gave the runtime
+        one (see ``Settings.proxy_password``) -- an Actor requesting Apify
+        Proxy without it gets the SDK's own clear missing-password error,
+        the same failure a platform run with a broken password gets.
         """
-        return {
+        environment = {
             "APIFY_IS_AT_HOME": "1",
             "APIFY_META_ORIGIN": "API",
             "APIFY_API_BASE_URL": self.settings.container_api_base_url,
@@ -766,7 +774,13 @@ class Service:
             "CRAWLEE_STORAGE_DIR": "/apify_storage",
             "APIFY_LOCAL_STORAGE_DIR": "/apify_storage",
             "ACTOR_STORAGE_DIR": "/apify_storage",
+            "APIFY_PROXY_HOSTNAME": self.settings.proxy_hostname,
+            "APIFY_PROXY_PORT": str(self.settings.proxy_port),
+            "APIFY_PROXY_STATUS_URL": self.settings.proxy_status_url,
         }
+        if self.settings.proxy_password:
+            environment["APIFY_PROXY_PASSWORD"] = self.settings.proxy_password
+        return environment
 
     async def _run_actor(self, run_id: str, image_tag: str | None, run_input: Any) -> None:
         # The whole body runs inside a guarded block: any unexpected error (bad
