@@ -54,7 +54,9 @@
     with an overridden `HOME` and `APIFY_DISABLE_KEYRING=1` (isolated
     profile). The read-only commands below resolve credentials the same way,
     so `scripts/demo.sh` never itself discovers or passes a token, and runs
-    unmodified against both this runtime and the real platform.
+    unmodified against both this runtime and the real platform (`demo.sh
+    --remote` runs the identical push/call/read-back steps against the real
+    platform instead, skipping only the local image build/container steps).
 
 ## Supported commands (first draft)
 

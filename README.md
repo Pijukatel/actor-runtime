@@ -141,6 +141,13 @@ python3 and curl:
 bash scripts/demo.sh
 ```
 
+Pass `--remote` to run the same demo against the real Apify platform instead
+(skips the image build/container steps; requires `apify login` beforehand):
+
+```bash
+bash scripts/demo.sh --remote
+```
+
 ## Run the tests
 
 The oracle sets up the venv, installs dependencies and `apify-cli`, builds the
