@@ -1,27 +1,10 @@
-"""Standby fixture Actor for the on-demand-calls-standby e2e test, driven by
-the full Apify SDK lifecycle.
+"""Standby fixture Actor for the on-demand-calls-standby e2e test.
 
-When started in standby mode (APIFY_META_ORIGIN == "STANDBY"), listens on
-ACTOR_STANDBY_PORT, answers the readiness probe, and otherwise echoes the
-request it received (method, path+query, body) plus a per-process request
-counter -- mirroring apify-core's own standby fixture actors
-(``shared_actors.js``) -- so the caller can prove both exact forwarding and
-warm-container reuse across requests. When started in standard mode it exits
-successfully with a note, as the platform docs recommend for standby-capable
-Actors.
-
-The stdlib ``http.server`` handler itself (readiness probe, echo payload
-shape, request counter, per-request log lines, standard-mode early exit) is
-kept EXACTLY as before -- ``http.server`` is the server this fixture *is*,
-not an HTTP client, so it stays. What changed is the one storage write: each
-served call's bookkeeping record now goes through ``Actor.push_data()``
-instead of a hand-rolled ``urllib`` POST. Since ``ThreadingHTTPServer``
-handles each request on its own plain (non-async) worker thread, and
-``Actor.push_data()`` is a coroutine that must run on the event loop holding
-the ``Actor`` context, each push is marshaled onto that loop via
-``asyncio.run_coroutine_threadsafe`` -- best-effort and non-fatal, exactly
-like the previous ``_save_served_call``: a failure here must never interrupt
-serving requests.
+In standby mode, listens on ``ACTOR_STANDBY_PORT``, answers the readiness
+probe, and echoes each request (method, path+query, body) plus a per-process
+counter, so a caller can prove both exact forwarding and warm-container
+reuse. In standard mode it exits immediately. Uses stdlib ``http.server``
+because this fixture IS the server under test, not an HTTP client.
 """
 import asyncio
 import http.server

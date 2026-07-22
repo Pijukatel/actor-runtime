@@ -1,20 +1,11 @@
-"""Sample Actor for the e2e dev-loop test, driven by the full Apify SDK lifecycle.
-
-Reads its INPUT through ``Actor.get_input()``, writes an ``OUTPUT`` record via
-``Actor.set_value()``, pushes dataset items via ``Actor.push_data()``, and
-enqueues one request via ``Actor.open_request_queue()`` -- the full storage
-surface a real Apify Actor uses, all through the SDK's own API-backed storage
-client. No direct disk access, no hand-rolled HTTP: every storage interaction
-goes through ``apify.Actor``.
+"""Sample Actor exercising the full Apify SDK storage surface: INPUT read,
+OUTPUT write, dataset push and request-queue enqueue.
 
 ``tone``/``repeatCount``/``shout``/``recipients`` (see
-``.actor/input_schema.json``) are the Input tab's widget showcase -- each has
-a real, observable effect on ``processedGreeting``/``recipientGreetings``
-below. Every one of them defaults/no-ops so that a run which omits them
-(e.g. the Docker-dependent ``tests/e2e/test_e2e.py`` call, which only ever
-sends ``{"greeting": "howdy"}``) reproduces the previous (pre-input-schema)
-version's output values byte-for-byte, so the existing e2e assertions keep
-passing unchanged.
+``.actor/input_schema.json``) showcase the Input tab's widget types; each
+defaults to a no-op, so a run that omits them (e.g. ``tests/e2e/test_e2e.py``'s
+plain ``{"greeting": "howdy"}``) keeps producing the same output as before
+the input schema existed.
 """
 import asyncio
 

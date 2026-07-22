@@ -28,7 +28,7 @@ Actors driven by the full Apify SDK `Actor` lifecycle
  - Run the on-demand Actor with the standby Actor's NAME as input (never a
    username-qualified id): from inside its own container it uses
    `APIFY_API_BASE_URL` + its own `APIFY_TOKEN` (no hardcoded URL/port) to
-   resolve the acting user's own username (`client.user("me").get()`), builds
+   resolve the acting user's own username (`client.user(Actor.configuration.user_id).get()`), builds
    the standby Actor's id itself as `{username}~{name}` (the platform's own id
    convention -- `josef.prochazka~standby-actor` on the real platform,
    `local-user~standby-actor` here, from the exact same code), looks up that

@@ -290,6 +290,61 @@ async def test_container_env_user_id_is_username(wired):
     assert env["APIFY_USER_ID"] == "alice"
 
 
+# -- GET /v2/users/{userIdOrUsername} (public profile, any user) ----------
+# Id and username are the same value in this runtime (a `User` row's primary
+# key IS its username -- see `test_container_env_user_id_is_username` above
+# for the same fact from the container-env side), so "by id" and "by
+# username" below exercise the identical lookup path.
+async def test_get_user_by_id_or_username_returns_public_data(wired):
+    client, _ = wired
+    resp = await client.get("/v2/users/alice", headers=auth("bob"))
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["username"] == "alice"
+    assert body["id"] == "alice"
+    # Public data only -- never the target's token, unlike /v2/users/me.
+    assert "token" not in body
+
+
+async def test_get_user_by_id_or_username_no_token_still_resolves(wired):
+    client, _ = wired
+    # No token is never rejected here either -- same policy as every other route.
+    resp = await client.get("/v2/users/bob")
+    assert resp.status_code == 200
+    assert resp.json()["data"]["username"] == "bob"
+
+
+async def test_get_user_unknown_id_or_username_is_404(wired):
+    client, _ = wired
+    resp = await client.get("/v2/users/does-not-exist", headers=auth("alice"))
+    assert resp.status_code == 404
+    assert resp.json()["error"]["type"] == "record-not-found"
+
+
+async def test_get_user_by_id_rejects_unknown_token_after_bootstrap(wired):
+    client, _ = wired
+    # Same bootstrap-or-reject guard as every other authenticated route (see
+    # test_unknown_token_rejected_after_claim): claim the default user's
+    # credential first, then a genuinely unknown token is rejected.
+    claimed = await client.get("/v2/users/me", headers=auth("claim-tok"))
+    assert claimed.status_code == 200
+    rejected = await client.get("/v2/users/alice", headers=auth("intruder-xyz"))
+    assert rejected.status_code == 401
+    assert rejected.json()["error"]["type"] == "invalid-token"
+
+
+async def test_get_user_me_route_still_takes_priority_over_path_param(wired):
+    client, _ = wired
+    # Regression: the new `/v2/users/{user_id_or_username}` route must not
+    # shadow the literal `/v2/users/me` route declared above it -- `me` must
+    # keep resolving to the acting user (with `token`), not a public lookup
+    # for a user literally named "me".
+    resp = await client.get("/v2/users/me", headers=auth("alice"))
+    assert resp.status_code == 200
+    assert resp.json()["data"]["username"] == "alice"
+    assert resp.json()["data"]["token"] == "alice"
+
+
 # -- THE ANTI-LEAK GUARANTEE (narrowed) ------------------------------------
 # Scope: this guarantee covers exactly the FIRST BOUND token -- the
 # credential apify-cli's first-ever request presented, bound to the default

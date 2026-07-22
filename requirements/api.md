@@ -13,7 +13,8 @@
   and fetching the request queue, the local API is a **superset** of that tag. In
   addition to the tag above it implements, from the same public Apify spec:
   - Actor / version / build management (needed for `apify push` + build):
-    - `GET /v2/users/me`, `GET /v2/users`, `POST /v2/users`
+    - `GET /v2/users/me`, `GET /v2/users/{userIdOrUsername}` (public profile, any
+      user), `GET /v2/users`, `POST /v2/users`
     - `GET|POST /v2/acts` and `/v2/actors` (list / create Actor; both spellings)
     - `GET|PUT /v2/acts/{actorId}` (get / update Actor)
     - `GET /v2/acts/{actorId}/input-schema` (local addition, not in the public
@@ -228,6 +229,9 @@
 - **User management.**
   - `GET /v2/users/me` reflects the acting user: its `username`, `id` (= username)
     and `token`.
+  - `GET /v2/users/{userIdOrUsername}` returns PUBLIC profile data (`username`,
+    `id`, never `token`) for any user, resolved by the same guard as every other
+    authenticated route; unknown id/username is `404 record-not-found`.
   - `GET /v2/users` lists every user with `username`, `token` and `createdAt`.
     Tokens are returned in plaintext deliberately — this is the mechanism the
     console uses to reveal and switch users. This endpoint is unguarded and must

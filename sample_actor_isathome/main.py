@@ -1,17 +1,7 @@
-"""Fixture Actor proving the real apify SDK path end to end: the full
-``Actor`` lifecycle (``async with Actor``), ``Actor.is_at_home()``,
-``Actor.new_client()`` for a real API round trip (a user-lookup call), and
-``Actor.push_data()`` for the storage write -- all through the SDK's
-Actor/storage-client abstraction. Unlike this fixture's previous version, no
-low-level client is constructed by hand anywhere in this file; the one
-client instance in use is obtained exclusively through ``Actor.new_client()``,
-the SDK's own sanctioned accessor.
-
-Two packages: ``apify`` (the Actor SDK) for the lifecycle, storage and
-``is_at_home``/``new_client`` accessors; ``apify-client`` only implicitly, as
-``apify``'s own dependency providing the client `Actor.new_client()` returns.
-Both are pip-installed at image BUILD time (see ``.actor/Dockerfile``); at RUN
-time the only network use is calling the runtime's own API.
+"""Fixture Actor exercising the full apify SDK path: ``async with Actor``,
+``Actor.is_at_home()``, a real API round trip via
+``Actor.new_client().user("me").get()`` (the ``"me"`` alias round trip), and
+``Actor.push_data()`` for the storage write.
 """
 import asyncio
 
