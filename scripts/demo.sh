@@ -11,13 +11,20 @@
 #   4. point the stock apify-cli at it via APIFY_CLIENT_BASE_URL,
 #   5. push the two sample Actors (a standby echo server and an on-demand
 #      caller) with `apify push`,
-#   6. run the caller with `apify call` — from inside its container it looks
-#      up the standby Actor through the runtime API, calls its standbyUrl
-#      (cold-starting the standby container), and saves the response,
-#   7. read the results back over the API.
+#   6. run the caller with `apify call --json` — from inside its container it
+#      looks up the standby Actor through the runtime API, calls its
+#      standbyUrl (cold-starting the standby container), and saves the
+#      response; `--json` also hands this script the run's own id and
+#      default storage ids on stdout,
+#   7. read the results back through apify-cli itself (`apify info`, `apify
+#      runs ls`, `apify key-value-stores get-value`, `apify datasets
+#      get-items`) — never a raw HTTP call, so credential handling is
+#      entirely the CLI's own and this script runs unchanged against the
+#      real platform.
 #
 # Prerequisites: docker (daemon running), apify-cli on PATH (`npm i -g
-# apify-cli`), python3 (used only to pretty-parse JSON responses), curl.
+# apify-cli`), python3 (parses apify-cli's JSON output; it never makes an
+# HTTP request itself), curl (liveness poll only, see step 3).
 # Run from anywhere; paths are resolved relative to this script's repo.
 #
 # Both fixture Actors are real `apify` SDK Actors: `apify push` (step 5)
@@ -70,6 +77,9 @@ docker run -d --name "$CONTAINER_NAME" \
   "$IMAGE_TAG"
 
 echo -n "Waiting for the API to come up "
+# A liveness poll on the container this script itself just started -- plain
+# infrastructure, not a demo API call, so it stays a bare HTTP check. Every
+# actual read of demo data happens in step 7, entirely through apify-cli.
 for _ in $(seq 1 60); do
   if curl -fsS "$API_URL/v2/users" >/dev/null 2>&1; then echo " up!"; break; fi
   echo -n "."
@@ -78,15 +88,8 @@ done
 curl -fsS "$API_URL/v2/users" >/dev/null || { echo "runtime API never came up"; exit 1; }
 
 step "4. Pointing apify-cli at the local runtime"
-# APIFY_CLIENT_BASE_URL is the only redirect needed: it is the base URL the
-# stock apify-cli hands to its underlying apify-client, and push/call/login
-# all honour it (see requirements/cli.md). No token is configured here — the
-# CLI simply presents whatever credential it already has:
-#   - logged in:  its stored token is the first one this fresh runtime sees,
-#                 so it becomes the default user's (`local-user`) bound
-#                 credential and everything runs as `local-user`;
-#   - logged out: push/call send no token at all, and the runtime's
-#                 default-user fallback accepts that as `local-user` too.
+# Redirects apify-cli's underlying apify-client at the runtime; no token is
+# configured here (see "Authentication / token bootstrap" in requirements/cli.md).
 export APIFY_CLIENT_BASE_URL="$API_URL"
 export APIFY_CLI_DISABLE_TELEMETRY=1
 export APIFY_CLI_SKIP_UPDATE_CHECK=1
@@ -111,52 +114,55 @@ INPUT_FILE="$WORK/caller-input.json"
 cat > "$INPUT_FILE" <<'JSON'
 {"standbyActorName": "standby-actor", "greeting": "hello-from-the-demo"}
 JSON
-(cd "$WORK/caller-actor" && apify call --input-file="$INPUT_FILE")
+# --json prints the finished run's id and default storage ids to stdout
+# (captured below, for step 7); the human-readable progress log `apify call`
+# normally prints still streams live, to stderr, so capturing stdout into a
+# variable does not hide it.
+CALL_JSON="$(cd "$WORK/caller-actor" && apify call --input-file="$INPUT_FILE" --json)"
 
-step "7. Reading the results back over the API"
-# The script never configured a token, so it discovers the acting credential
-# from the runtime itself: a tokenless request falls back to the default user
-# `local-user`, and /v2/users/me deliberately returns the caller's stored
-# token (that is how the console's user switcher works). Whatever token the
-# CLI bound in step 5/6 — or null if it was logged out — comes back here, and
-# the remaining reads authenticate with it when present.
-python3 - "$API_URL" <<'PY'
-import json
-import sys
-import urllib.request
+step "7. Reading the results back through apify-cli"
+# Same credential contract as step 4: every read below goes through
+# apify-cli, never a raw HTTP call.
+USERNAME="$(apify info | sed -n 's/^username: //p')"
+echo "Acting as ${USERNAME}"
 
-api = sys.argv[1]
+CALLER_META="$(python3 -c '
+import json, sys
+run = json.load(sys.stdin)
+print(run["run"]["id"], run["run"]["status"], run["storage"]["defaultDatasetId"], run["storage"]["defaultKeyValueStoreId"])
+' <<<"$CALL_JSON")"
+read -r CALLER_RUN_ID CALLER_RUN_STATUS CALLER_DATASET_ID CALLER_KV_ID <<<"$CALLER_META"
+echo "Caller run ${CALLER_RUN_ID}: ${CALLER_RUN_STATUS}"
 
-def _fetch(path, token=None):
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    req = urllib.request.Request(f"{api}{path}", headers=headers)
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+echo
+echo "What the caller received from the standby Actor (OUTPUT record):"
+apify key-value-stores get-value "$CALLER_KV_ID" OUTPUT
 
-bound_token = _fetch("/v2/users/me")["data"]["token"]
-print(f"Acting as local-user (bound token {'set' if bound_token else 'not set'})")
+echo
+echo "Caller's dataset (the same response, saved as an item):"
+apify datasets get-items "$CALLER_DATASET_ID" | python3 -m json.tool
 
-def get(path):
-    return _fetch(path, token=bound_token)
+# `apify call` only ever reports the run IT started (the caller's), so the
+# standby Actor's run -- warmed as a side effect, inside the caller's own
+# container -- still needs one listing to find; --desc --limit 1 asks the
+# CLI itself for "the most recent run" instead of fetching every run and
+# picking the last one client-side.
+STANDBY_ACTOR_ID="${USERNAME}~standby-actor"
+STANDBY_JSON="$(apify runs ls "$STANDBY_ACTOR_ID" --json --desc --limit 1)"
+STANDBY_META="$(python3 -c '
+import json, sys
+items = json.load(sys.stdin)["items"]
+if not items:
+    sys.exit("No runs found yet for " + sys.argv[1])
+run = items[0]
+print(run["id"], run["status"], run["defaultDatasetId"])
+' "$STANDBY_ACTOR_ID" <<<"$STANDBY_JSON")"
+read -r STANDBY_RUN_ID STANDBY_RUN_STATUS STANDBY_DATASET_ID <<<"$STANDBY_META"
+echo
+echo "Standby run ${STANDBY_RUN_ID}: ${STANDBY_RUN_STATUS} (stays warm until its idle timeout)"
 
-caller_run = get("/v2/acts/local-user~caller-actor/runs")["data"]["items"][-1]
-print(f"Caller run {caller_run['id']}: {caller_run['status']}")
-
-output = get(f"/v2/key-value-stores/{caller_run['defaultKeyValueStoreId']}/records/OUTPUT")
-print("\nWhat the caller received from the standby Actor (OUTPUT record):")
-print(json.dumps(output, indent=2))
-
-items = get(f"/v2/datasets/{caller_run['defaultDatasetId']}/items")
-print("\nCaller's dataset (the same response, saved as an item):")
-print(json.dumps(items, indent=2))
-
-standby_run = get("/v2/acts/local-user~standby-actor/runs")["data"]["items"][-1]
-print(f"\nStandby run {standby_run['id']}: {standby_run['status']} (stays warm until its idle timeout)")
-
-served = get(f"/v2/datasets/{standby_run['defaultDatasetId']}/items")
-print("Standby Actor's dataset (one record per call it served):")
-print(json.dumps(served, indent=2))
-PY
+echo "Standby Actor's dataset (one record per call it served):"
+apify datasets get-items "$STANDBY_DATASET_ID" | python3 -m json.tool
 
 step "Done"
 cat <<EOF
