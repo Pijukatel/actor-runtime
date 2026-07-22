@@ -1,7 +1,7 @@
 """On-demand fixture Actor for the on-demand-calls-standby e2e test.
 
 Input is the standby Actor's NAME only (``standbyActorName``), never a
-username-qualified id -- an id like ``josef.prochazka~standby-actor`` is only
+username-qualified id -- an id like ``username~standby-actor`` is only
 ever meaningful on whatever single environment minted it, so this Actor
 resolves its own owning user's id live and builds ``{username}~{name}``
 itself, the same on the real platform and locally.

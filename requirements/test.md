@@ -30,7 +30,7 @@ Actors driven by the full Apify SDK `Actor` lifecycle
    `APIFY_API_BASE_URL` + its own `APIFY_TOKEN` (no hardcoded URL/port) to
    resolve the acting user's own username (`client.user(Actor.configuration.user_id).get()`), builds
    the standby Actor's id itself as `{username}~{name}` (the platform's own id
-   convention -- `josef.prochazka~standby-actor` on the real platform,
+   convention -- `username~standby-actor` on the real platform,
    `local-user~standby-actor` here, from the exact same code), looks up that
    Actor and reads its `standbyUrl`, then calls that URL container-to-container.
  - The on-demand run reaches `SUCCEEDED` and its output shows the standby
