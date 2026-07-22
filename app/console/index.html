@@ -78,6 +78,8 @@
     <label class="user" for="user-select">Switch user
       <select id="user-select"></select>
     </label>
+    <button id="api-fallback-toggle" class="secondary" aria-pressed="false"
+      title="When ON, any resource fetch (GET) that fails against the local runtime is retried against the real Apify API (api.apify.com), with the acting user's token. Mutations never fall back.">API fallback: OFF</button>
   </header>
   <main>
     <div id="left-column">

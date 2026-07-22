@@ -30,6 +30,10 @@ the run's default storages (key-value store, dataset, request queue).
   `requirements/api.md`'s "Standby actors" section.
 - **Console** - a tiny server-rendered SPA (no build tooling) to list Actors,
   builds and runs, trigger Build/Run, and browse a finished run's storages.
+  An optional **real-API fallback** — a global header toggle next to the
+  "Switch user" dropdown, OFF by default — retries any resource fetch (GET)
+  that fails against the local runtime once against the real Apify API
+  (`api.apify.com`); mutations never fall back. See `requirements/console.md`.
 - **Multiple users via placeholder login.** The API token selects the acting user
   (no passwords, no real auth): users are auto-created on first use, everything is
   owned per-user, and one user cannot see another's Actors, builds, runs or

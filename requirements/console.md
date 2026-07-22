@@ -27,6 +27,37 @@
   existing users** (via `GET /v2/users`) — no free-text token entry; selecting a
   user sets that user's token as the active bearer, refetching the list so a
   just-created user is immediately selectable.
+- **Optional real-API fallback, controlled by one global header toggle.** Every
+  API resource the console fetches is requested **local-first**: the single
+  `api()` helper always tries the local actor-runtime API, and only when that
+  attempt fails (a network error or a non-2xx status, e.g. the runtime's 404 for
+  a resource that exists only on the platform) is the **same path retried once
+  against the real Apify API** (`https://api.apify.com`). The behavior is
+  governed by an **"API fallback" button in the header, next to the "Switch
+  user" dropdown** — the header is part of the SPA shell, so the toggle can be
+  flipped from any view. The state is **global** (persisted in `localStorage`,
+  shared by every view and surviving navigation and reloads), **OFF by
+  default** (the console never contacts the real platform unless asked to; a
+  blocked `localStorage` also reads as OFF), and shown as an explicit
+  `API fallback: ON`/`OFF` label (with `aria-pressed`) so the current state is
+  always visible. Scope and semantics:
+  - **Reads only.** Only a resource *fetch* (`GET`) ever falls back; mutations
+    (`POST`/`PUT`/`DELETE`) never do — a failed local write surfaces as a
+    failure rather than silently becoming a write against the real platform.
+  - **Same credential.** The fallback request carries the same
+    `Authorization: Bearer` token as the local one (identity and credential are
+    decoupled, so a user whose stored token is a real Apify token gets their
+    real account's resources; any other token is simply rejected by the real
+    API). A `skipAuth` call stays token-free on both attempts.
+  - **Never less informative.** If the fallback request itself fails at the
+    network level, the local outcome (response or error) is kept, so enabling
+    the toggle can only add information, never replace a local error with a
+    worse one.
+  - **Logs too.** The log view's streaming fetch follows the same rule; since
+    the `/v2/logs/{id}/stream` path is a local addition, its fallback fetches
+    the same resource at the real API's one-shot `GET /v2/logs/{id}` path.
+  - The toggle is wired like every other control (`addEventListener`, no inline
+    handlers, `textContent` only).
 - **Navigation is URL-path based (History API), mirroring the official console.**
   The view is driven by `location.pathname` (real paths, never a hash fragment), so
   every view is deep-linkable and refresh-safe and the path shape matches

@@ -952,3 +952,71 @@ async def test_storage_detail_inspect_is_owner_scoped(wired):
     await _create_user(client, "other")
     cross = await client.get(f"/v2/key-value-stores/{kv_id}/keys", headers=auth("other"))
     assert cross.status_code == 404
+
+
+# --------------------------------------------- (7) real-API fallback toggle
+
+
+async def test_console_header_has_api_fallback_toggle_next_to_user_dropdown(wired):
+    client, _service = wired
+    html = (await client.get("/")).text
+    # The toggle lives in the header, right next to the "Switch user" dropdown,
+    # so it is reachable from every view (the header is part of the SPA shell).
+    header = html[html.index("<header") : html.index("</header>")]
+    assert 'id="api-fallback-toggle"' in header
+    assert header.index('id="user-select"') < header.index('id="api-fallback-toggle"')
+    # It ships in the explicit OFF state that matches the persisted default.
+    assert "API fallback: OFF" in header
+    assert 'aria-pressed="false"' in header
+
+    js = (await client.get("/console/app.js")).text
+    # Wired like every other control: addEventListener + textContent, no inline
+    # handlers; clicking flips the persisted flag and re-renders the label.
+    assert '_fallbackToggle.addEventListener("click"' in js
+    assert "setApiFallbackEnabled(!isApiFallbackEnabled())" in js
+    assert "function renderApiFallbackToggle(" in js
+    toggle_fn = js[js.index("function renderApiFallbackToggle(") : js.index("async function createUser(")]
+    assert 'btn.textContent = `API fallback: ${on ? "ON" : "OFF"}`;' in toggle_fn
+    assert 'btn.setAttribute("aria-pressed"' in toggle_fn
+
+
+async def test_console_api_fallback_state_is_global_and_off_by_default(wired):
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+    # One flag in localStorage backs the toggle, so the state is global across
+    # every view and survives navigation and reloads.
+    assert 'const FALLBACK_KEY = "actor-runtime-api-fallback";' in js
+    assert 'localStorage.getItem(FALLBACK_KEY) === "1"' in js
+    # OFF by default: only the stored "1" enables it, and a blocked/throwing
+    # localStorage reads as disabled too.
+    getter = js[js.index("const isApiFallbackEnabled") : js.index("const setApiFallbackEnabled")]
+    assert "return false;" in getter
+
+
+async def test_console_api_fallback_is_local_first_and_reads_only(wired):
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+    assert 'const REAL_API_BASE = "https://api.apify.com";' in js
+
+    api_fn = js[js.index("async function api(") : js.index("const unwrap")]
+    # Local-first: the same-origin fetch happens unconditionally, and the
+    # real-API retry follows it...
+    assert "await fetch(path, options)" in api_fn
+    assert "await fetch(REAL_API_BASE + path, options)" in api_fn
+    assert api_fn.index("await fetch(path, options)") < api_fn.index("REAL_API_BASE + path")
+    # ...gated on the toggle, on the request being a read (GET), and on the
+    # local attempt having failed (thrown or non-2xx). Mutations never fall back.
+    assert 'isApiFallbackEnabled() && method === "GET" && (localError || !res.ok)' in api_fn
+
+
+async def test_console_log_stream_falls_back_to_real_one_shot_log(wired):
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+    stream_fn = js[js.index("async function streamLogInto(") : js.index("async function refreshUser(")]
+    # The log view's own fetch (the one call that bypasses api()) follows the
+    # same rule: local stream first, and only a failed attempt is retried -
+    # against the real API's one-shot /v2/logs/{id} path, since the /stream
+    # suffix is a local addition.
+    assert "isApiFallbackEnabled() && (!res || !res.ok)" in stream_fn
+    assert "await fetch(`${REAL_API_BASE}/v2/logs/${id}`" in stream_fn
+    assert stream_fn.index("/v2/logs/${id}/stream") < stream_fn.index("${REAL_API_BASE}/v2/logs/${id}")

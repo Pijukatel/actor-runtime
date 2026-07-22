@@ -36,6 +36,34 @@ const setToken = (t) => {
   }
 };
 
+// Optional real-API fallback (the "API fallback" header toggle): when ON, a
+// resource fetch (GET) that fails against the local runtime is retried once
+// against the real Apify API. The flag lives in localStorage, so one header
+// button controls it globally - every view, every navigation, and reloads all
+// see the same state. It is OFF by default (and a blocked localStorage reads
+// as OFF): the console never talks to the real platform unless asked to. The
+// fallback request carries the same bearer credential as the local one -
+// identity and credential are decoupled, so a user whose stored token is a
+// real Apify token gets their real account's resources; any other token is
+// simply rejected by the real API.
+const REAL_API_BASE = "https://api.apify.com";
+const FALLBACK_KEY = "actor-runtime-api-fallback";
+const isApiFallbackEnabled = () => {
+  try {
+    return localStorage.getItem(FALLBACK_KEY) === "1";
+  } catch (e) {
+    return false;
+  }
+};
+const setApiFallbackEnabled = (on) => {
+  try {
+    if (on) localStorage.setItem(FALLBACK_KEY, "1");
+    else localStorage.removeItem(FALLBACK_KEY);
+  } catch (e) {
+    /* ignore */
+  }
+};
+
 async function api(path, opts) {
   const options = Object.assign({}, opts);
   const headers = Object.assign({}, options.headers);
@@ -46,7 +74,31 @@ async function api(path, opts) {
   // list) so merely loading the console can never claim/bootstrap a token.
   if (token && !options.skipAuth) headers["Authorization"] = "Bearer " + token;
   options.headers = headers;
-  const res = await fetch(path, options);
+  const method = (options.method || "GET").toUpperCase();
+  let res = null;
+  let localError = null;
+  try {
+    res = await fetch(path, options);
+  } catch (e) {
+    localError = e;
+  }
+  // Local-first with optional real-API fallback: only a *fetch* of a resource
+  // (GET) is ever retried, only while the header toggle is ON, and only after
+  // the local attempt failed - a network error or a non-2xx status (e.g. the
+  // runtime's 404 for a resource that exists only on the platform). Mutations
+  // (POST/PUT/DELETE) never fall back: a failed local write must surface as a
+  // failure, not silently become a write against the real platform. A failed
+  // fallback keeps the local outcome, so turning the toggle ON can never make
+  // an error less informative than it already was.
+  if (isApiFallbackEnabled() && method === "GET" && (localError || !res.ok)) {
+    try {
+      res = await fetch(REAL_API_BASE + path, options);
+      localError = null;
+    } catch (e) {
+      /* keep the local outcome */
+    }
+  }
+  if (localError) throw localError;
   const ct = res.headers.get("content-type") || "";
   if (ct.includes("application/json")) return res.json();
   return res.text();
@@ -79,11 +131,26 @@ async function streamLogInto(id, pre) {
   const token = getToken();
   const headers = {};
   if (token) headers["Authorization"] = "Bearer " + token;
-  let res;
+  let res = null;
   try {
     res = await fetch(`/v2/logs/${id}/stream`, { headers, signal: ctrl.signal });
   } catch (e) {
-    if (!ctrl.signal.aborted) pre.textContent = "(no log)";
+    if (ctrl.signal.aborted) return;
+  }
+  // The same local-first / real-API-fallback rule as api(), for the one fetch
+  // that bypasses it. The /stream suffix is a local addition, so the fallback
+  // fetches the same resource (the job's log) at the real API's one-shot
+  // /v2/logs/{id} path; the incremental reader below handles a one-shot body
+  // fine (it just arrives in fewer chunks).
+  if (isApiFallbackEnabled() && (!res || !res.ok)) {
+    try {
+      res = await fetch(`${REAL_API_BASE}/v2/logs/${id}`, { headers, signal: ctrl.signal });
+    } catch (e) {
+      if (ctrl.signal.aborted) return;
+    }
+  }
+  if (!res) {
+    pre.textContent = "(no log)";
     return;
   }
   let appended = false;
@@ -156,6 +223,18 @@ async function refreshUserSelect() {
     if (opt.value === current) opt.selected = true;
     sel.appendChild(opt);
   }
+}
+
+// Reflect the persisted fallback state on the header toggle: an explicit
+// ON/OFF label (blue when ON, gray "secondary" when OFF) plus aria-pressed,
+// so the global state is readable at a glance from any view.
+function renderApiFallbackToggle() {
+  const btn = $("#api-fallback-toggle");
+  if (!btn) return;
+  const on = isApiFallbackEnabled();
+  btn.textContent = `API fallback: ${on ? "ON" : "OFF"}`;
+  btn.classList.toggle("secondary", !on);
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
 }
 
 async function createUser(name) {
@@ -742,6 +821,13 @@ function emptyOr(table, count) {
 // re-renders on Back/Forward. Then render the initial route from the URL.
 const _userSelect = $("#user-select");
 if (_userSelect) _userSelect.addEventListener("change", () => switchTo(_userSelect.value));
+const _fallbackToggle = $("#api-fallback-toggle");
+if (_fallbackToggle) {
+  _fallbackToggle.addEventListener("click", () => {
+    setApiFallbackEnabled(!isApiFallbackEnabled());
+    renderApiFallbackToggle();
+  });
+}
 $("#tab-actors").addEventListener("click", () => navigate("/actors"));
 $("#tab-storage").addEventListener("click", () => navigate("/storage/key-value-stores"));
 $("#tab-users").addEventListener("click", () => navigate("/users"));
@@ -749,5 +835,6 @@ window.addEventListener("popstate", renderRoute);
 
 refreshUser();
 refreshUserSelect();
+renderApiFallbackToggle();
 renderRoute();
 setInterval(periodicRefresh, 4000);
