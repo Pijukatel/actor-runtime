@@ -21,3 +21,15 @@ def test_load_settings_ignores_port_env_overrides(monkeypatch):
     settings = load_settings()
     assert settings.port_api == 3333
     assert settings.port_console == 3000
+
+
+def test_load_settings_defaults_apify_proxy_password_to_empty(monkeypatch):
+    monkeypatch.delenv("APIFY_PROXY_PASSWORD", raising=False)
+    settings = load_settings()
+    assert settings.apify_proxy_password == ""
+
+
+def test_load_settings_reads_apify_proxy_password_env(monkeypatch):
+    monkeypatch.setenv("APIFY_PROXY_PASSWORD", "dummy-proxy-password")
+    settings = load_settings()
+    assert settings.apify_proxy_password == "dummy-proxy-password"

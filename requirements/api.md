@@ -169,6 +169,11 @@
 - `APIFY_ACTOR_ID` / `ACTOR_ID` and `APIFY_ACTOR_RUN_ID` / `ACTOR_RUN_ID` —
   both the legacy `APIFY_`-prefixed and the modern unprefixed spellings, equal
   in value.
+- `APIFY_PROXY_PASSWORD` — included **only when** the runtime itself was
+  started with `APIFY_PROXY_PASSWORD` set in its own environment (see
+  README.md's "Apify Proxy" section); otherwise the key is absent entirely,
+  never a placeholder value. One host-level password, shared unscoped across
+  every user's Actor containers — there is no per-user proxy credential.
 - Standby runs additionally get `ACTOR_STANDBY_PORT` (the fixed port the
   Actor's own HTTP server must listen on) and have `timeoutSecs`/`build`/
   `memoryMbytes` forced from the Actor's `actorStandby` config rather than any

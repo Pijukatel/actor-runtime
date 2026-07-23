@@ -759,9 +759,12 @@ class Service:
         guarantee). ``APIFY_META_ORIGIN`` defaults to ``API`` (every local run
         arrives through the API, apify-cli included); the standby manager
         overrides it to ``STANDBY`` -- the platform-documented signal an Actor
-        uses to detect standby mode.
+        uses to detect standby mode. ``APIFY_PROXY_PASSWORD`` is included only
+        when ``settings.apify_proxy_password`` is non-empty -- unset locally,
+        an Actor's ``Actor.create_proxy_configuration()`` simply has no
+        password to work with (see README.md's Apify Proxy section).
         """
-        return {
+        environment = {
             "APIFY_IS_AT_HOME": "1",
             "APIFY_META_ORIGIN": "API",
             "APIFY_API_BASE_URL": self.settings.container_api_base_url,
@@ -779,6 +782,9 @@ class Service:
             "APIFY_LOCAL_STORAGE_DIR": "/apify_storage",
             "ACTOR_STORAGE_DIR": "/apify_storage",
         }
+        if self.settings.apify_proxy_password:
+            environment["APIFY_PROXY_PASSWORD"] = self.settings.apify_proxy_password
+        return environment
 
     async def _run_actor(self, run_id: str, image_tag: str | None, run_input: Any) -> None:
         # The whole body runs inside a guarded block: any unexpected error (bad

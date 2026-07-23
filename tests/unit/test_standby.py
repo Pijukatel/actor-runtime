@@ -248,6 +248,28 @@ async def test_apify_token_env_tracks_owner_across_users(wired):
     assert me_bob["username"] == "bob"
 
 
+async def test_apify_proxy_password_reaches_actor_container_when_configured(wired_with_proxy_password):
+    """``Settings.apify_proxy_password`` (from ``APIFY_PROXY_PASSWORD`` in the
+    runtime's own environment, see ``load_settings``) is forwarded into the
+    Actor container unchanged. On-demand and standby runs share
+    ``_build_environment``, so this on-demand run exercises the single choke
+    point both paths funnel through."""
+    client, service = wired_with_proxy_password
+    await _provision_ondemand_run(client, service, "alice")
+    env = service.driver.captured_envs[-1]
+    assert env["APIFY_PROXY_PASSWORD"] == "dummy-proxy-password"
+
+
+async def test_apify_proxy_password_absent_when_not_configured(wired):
+    """The default (no ``APIFY_PROXY_PASSWORD`` in the runtime's own
+    environment) must never inject a placeholder/fake value into the Actor
+    container -- the key is simply absent."""
+    client, service = wired
+    await _provision_ondemand_run(client, service, "alice")
+    env = service.driver.captured_envs[-1]
+    assert "APIFY_PROXY_PASSWORD" not in env
+
+
 # -- B. Warm start, readiness, forwarding, authorization --------------------
 async def test_standby_cold_start_forwards_and_reuses_warm_container(wired_fast_standby):
     client, service = wired_fast_standby

@@ -302,6 +302,7 @@ def make_settings(
     tmp_path: Path,
     standby_idle_override_secs: float | None = None,
     standby_ready_timeout_secs: float = 5.0,
+    apify_proxy_password: str = "",
 ) -> Settings:
     # Unit tests default to a short readiness-wait bound (production is 30s)
     # so a deliberately-never-ready fake standby server (see
@@ -314,6 +315,7 @@ def make_settings(
         port_console=3000,
         standby_idle_override_secs=standby_idle_override_secs,
         standby_ready_timeout_secs=standby_ready_timeout_secs,
+        apify_proxy_password=apify_proxy_password,
     )
 
 
@@ -362,5 +364,15 @@ async def wired_fast_standby(tmp_path):
     (criteria that would otherwise need multi-second/minute real waits).
     """
     settings = make_settings(tmp_path, standby_idle_override_secs=0.2, standby_ready_timeout_secs=1.0)
+    async for pair in _wire(tmp_path, StubDriver(), settings=settings):
+        yield pair
+
+
+@pytest_asyncio.fixture
+async def wired_with_proxy_password(tmp_path):
+    """Like ``wired`` but with ``Settings.apify_proxy_password`` set, for
+    asserting ``APIFY_PROXY_PASSWORD`` reaches the Actor container env (see
+    ``Service._build_environment``)."""
+    settings = make_settings(tmp_path, apify_proxy_password="dummy-proxy-password")
     async for pair in _wire(tmp_path, StubDriver(), settings=settings):
         yield pair
