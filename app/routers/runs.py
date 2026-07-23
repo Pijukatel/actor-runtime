@@ -4,33 +4,13 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from ..auth import resolve_user
+from ..responses import bounded_int as _bounded_int
 from ..responses import data, get_service, not_found, read_body
 from ..serializers import build_dict, run_dict
-
-
-def _bounded_int(params, key: str, default: int, minimum: int, message: str) -> int:
-    """Parse an integer query param with a lower bound, or raise a 400 (never a bare 500).
-
-    Mirrors the malformed-body handling: a non-integer or out-of-range value is
-    caller error, so it maps to HTTP 400 in the Apify error shape rather than an
-    uncaught ``ValueError`` that FastAPI would surface as a 500. ``minimum=1``
-    yields "must be positive" semantics; ``minimum=0`` yields "must not be
-    negative" semantics.
-    """
-    raw = params.get(key)
-    if raw is None or raw == "":
-        return default
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail=f"Query parameter '{key}' must be an integer.")
-    if value < minimum:
-        raise HTTPException(status_code=400, detail=message)
-    return value
 
 # Start-run lives under the actor prefixes (/v2/acts + /v2/actors).
 actor_runs_router = APIRouter()

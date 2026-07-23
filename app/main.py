@@ -12,9 +12,10 @@ from .config import Settings, load_settings
 from .db import Database
 from .driver import Driver
 from .responses import unauthorized
-from .routers import actors, console, runs, standby, storages, users
+from .routers import actors, console, runs, runtime_config, standby, storages, users
 from .service import Service
 from .storage import Storage
+from .upstream import UpstreamFallbackMiddleware
 
 
 def create_app(settings: Settings | None = None, driver: Driver | None = None) -> FastAPI:
@@ -61,6 +62,9 @@ def create_app(settings: Settings | None = None, driver: Driver | None = None) -
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Opt-in, off by default (Service.upstream_fallback_enabled) -- see
+    # app/upstream.py's module docstring for the full contract.
+    app.add_middleware(UpstreamFallbackMiddleware)
 
     @app.exception_handler(InvalidTokenError)
     async def _invalid_token_handler(request, exc):
@@ -78,6 +82,8 @@ def create_app(settings: Settings | None = None, driver: Driver | None = None) -
     app.include_router(runs.flat_router)
     app.include_router(standby.router)
     app.include_router(storages.router)
+    # Global fallback toggle.
+    app.include_router(runtime_config.router)
     # Console SPA.
     app.include_router(console.router)
     return app

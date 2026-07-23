@@ -7,7 +7,17 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from ..auth import resolve_user
-from ..responses import bad_request, conflict, data, forbidden, get_service, not_found, read_body, read_json
+from ..responses import (
+    bad_request,
+    conflict,
+    data,
+    forbidden,
+    get_service,
+    not_found,
+    optional_bounded_int,
+    read_body,
+    read_json,
+)
 from ..service import (
     _RUN_STORAGE_PREFIXES,
     ACCESS_ABSENT,
@@ -23,7 +33,30 @@ from ..service import (
     storage_name_from_id,
     validate_storage_name,
 )
-from ..storage import DEFAULT_HEAD_LIMIT
+from ..storage import DEFAULT_HEAD_LIMIT, DEFAULT_ITEM_LIMIT
+
+# Non-negative: `offset`/`limit` slice a list, so negative values have no
+# sensible meaning (unlike e.g. `runs.py`'s `memory`/`timeout`, which need a
+# strictly-positive floor).
+_NEG_LIMIT_MSG = "Query parameter 'limit' must not be negative."
+_NEG_OFFSET_MSG = "Query parameter 'offset' must not be negative."
+
+
+def _parse_page(request: Request) -> tuple[int | None, int | None]:
+    """Return ``(limit, offset)`` from the query string, each ``None`` when
+    absent. Shared by every listing surface below so "both omitted" -- the
+    byte-for-byte-unchanged contract every non-console caller relies on --
+    is decided identically everywhere.
+    """
+    params = request.query_params
+    limit = optional_bounded_int(params, "limit", minimum=0, message=_NEG_LIMIT_MSG)
+    offset = optional_bounded_int(params, "offset", minimum=0, message=_NEG_OFFSET_MSG)
+    return limit, offset
+
+
+def _paginate(items: list, limit: int | None, offset: int | None) -> list:
+    start = offset or 0
+    return items[start : start + limit] if limit is not None else items[start:]
 
 router = APIRouter()
 
@@ -297,7 +330,19 @@ async def list_keys(store_id: str, request: Request) -> object:
     if denied:
         return denied
     keys = await svc.storage.kv_keys(store_id)
-    return data({"items": keys, "count": len(keys), "limit": len(keys), "isTruncated": False})
+    limit, offset = _parse_page(request)
+    if limit is None and offset is None:
+        return data({"items": keys, "count": len(keys), "limit": len(keys), "isTruncated": False})
+    page = _paginate(keys, limit, offset)
+    return data(
+        {
+            "items": page,
+            "count": len(page),
+            "limit": limit if limit is not None else len(page),
+            "isTruncated": False,
+            "total": len(keys),
+        }
+    )
 
 
 @router.get("/v2/key-value-stores/{store_id}/records/{key}")
@@ -396,8 +441,24 @@ async def get_items(dataset_id: str, request: Request) -> JSONResponse:
     _user, _storage, denied = await _guard(request, dataset_id, LEVEL_READ, STORAGE_DS)
     if denied:
         return denied
-    result = await svc.storage.dataset_items(dataset_id)
-    return JSONResponse(result["items"])
+    limit, offset = _parse_page(request)
+    paginated = limit is not None or offset is not None
+    kwargs = {}
+    if offset is not None:
+        kwargs["offset"] = offset
+    if limit is not None:
+        kwargs["limit"] = limit
+    result = await svc.storage.dataset_items(dataset_id, **kwargs)
+    response = JSONResponse(result["items"])
+    # Bare (no limit/offset) requests stay byte-for-byte identical to today --
+    # no new headers -- matching the real API's own `format=json` convention
+    # only once a caller actually asks to page (`X-Apify-Pagination-*`).
+    if paginated:
+        response.headers["X-Apify-Pagination-Offset"] = str(result["offset"])
+        response.headers["X-Apify-Pagination-Count"] = str(result["count"])
+        response.headers["X-Apify-Pagination-Total"] = str(result["total"])
+        response.headers["X-Apify-Pagination-Limit"] = str(limit if limit is not None else DEFAULT_ITEM_LIMIT)
+    return response
 
 
 @router.post("/v2/datasets/{dataset_id}/items")
@@ -463,7 +524,18 @@ async def list_requests(queue_id: str, request: Request) -> object:
     if denied:
         return denied
     items = await svc.storage.rq_requests(queue_id)
-    return data({"items": items, "count": len(items), "limit": len(items)})
+    limit, offset = _parse_page(request)
+    if limit is None and offset is None:
+        return data({"items": items, "count": len(items), "limit": len(items)})
+    page = _paginate(items, limit, offset)
+    return data(
+        {
+            "items": page,
+            "count": len(page),
+            "limit": limit if limit is not None else len(page),
+            "total": len(items),
+        }
+    )
 
 
 @router.post("/v2/request-queues/{queue_id}/requests")

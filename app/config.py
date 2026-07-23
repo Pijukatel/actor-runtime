@@ -53,6 +53,11 @@ class Settings:
     # readiness probe before giving up. A Settings field (not a constant) so
     # tests can shrink it instead of waiting out the production default.
     standby_ready_timeout_secs: float = 30.0
+    # Base URL the upstream-fallback middleware (app/upstream.py) replays an
+    # allowlisted local-404 request against. A `Settings` field (not a plain
+    # constant) purely so tests can point it at a local stub server instead of
+    # the real platform.
+    apify_upstream_base_url: str = "https://api.apify.com"
     # NOTE: the standby-forwarding proxy's upstream connect timeout is a
     # plain module constant in app/routers/standby.py
     # (`_STANDBY_FORWARD_CONNECT_TIMEOUT_SECS`), not a `Settings` field --
@@ -104,4 +109,5 @@ def load_settings() -> Settings:
         port_console=CONSOLE_PORT,
         standby_idle_override_secs=float(override_raw) if override_raw else None,
         apify_proxy_password=os.environ.get("APIFY_PROXY_PASSWORD", ""),
+        apify_upstream_base_url=os.environ.get("APIFY_UPSTREAM_BASE_URL", "https://api.apify.com"),
     )

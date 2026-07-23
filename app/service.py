@@ -150,6 +150,11 @@ class Service:
         # Same extraction, same reasoning, for storage ownership/sharing --
         # see app/storage_access.py's module docstring.
         self.storage_access = StorageAccessManager(self)
+        # Global runtime toggle for the upstream-fallback middleware
+        # (app/upstream.py): in-memory only, default off, resets on restart --
+        # no DB table, no migration. Shared across both ports/all users since
+        # they all serve this same `Service` instance (see app/main.py).
+        self.upstream_fallback_enabled = False
 
     def _make_log_sink(self, job_id: str) -> Callable[[str], None]:
         """Create the job's live log buffer and return a thread-safe append sink."""

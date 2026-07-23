@@ -55,6 +55,43 @@ async def read_json(request: Request) -> Any:
         raise HTTPException(status_code=400, detail=f"Malformed JSON request body: {exc}")
 
 
+def _parse_int(raw: str, key: str, minimum: int, message: str) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"Query parameter '{key}' must be an integer.")
+    if value < minimum:
+        raise HTTPException(status_code=400, detail=message)
+    return value
+
+
+def bounded_int(params, key: str, default: int, minimum: int, message: str) -> int:
+    """Parse an integer query param with a lower bound, or raise a 400 (never a bare 500).
+
+    Mirrors the malformed-body handling: a non-integer or out-of-range value is
+    caller error, so it maps to HTTP 400 in the Apify error shape rather than an
+    uncaught ``ValueError`` that FastAPI would surface as a 500. ``minimum=1``
+    yields "must be positive" semantics; ``minimum=0`` yields "must not be
+    negative" semantics.
+    """
+    raw = params.get(key)
+    if raw is None or raw == "":
+        return default
+    return _parse_int(raw, key, minimum, message)
+
+
+def optional_bounded_int(params, key: str, minimum: int, message: str) -> int | None:
+    """Like ``bounded_int``, but returns ``None`` (not a default value) when the
+    param is absent -- for optional pagination params where "absent" must stay
+    distinguishable from any concrete integer, including ``0``. Callers use
+    ``None`` to mean "keep today's unpaginated behaviour".
+    """
+    raw = params.get(key)
+    if raw is None or raw == "":
+        return None
+    return _parse_int(raw, key, minimum, message)
+
+
 def data(payload: Any, status_code: int = 200) -> JSONResponse:
     return JSONResponse({"data": payload}, status_code=status_code)
 
