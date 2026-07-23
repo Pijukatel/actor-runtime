@@ -23,6 +23,7 @@ SAMPLE_ACTOR_DIRS = [
     "sample_actor_caller",
     "sample_actor_isathome",
     "sample_actor_standby",
+    "sample_actor_crawler",
 ]
 
 NOT_FOUND = "record-not-found"
@@ -484,8 +485,8 @@ def test_resolves_a_schema_for_every_on_disk_sample_actor(actor_dir_name):
     just ``sample_actor`` -- must resolve a real, non-null input schema from
     its actual on-disk ``.actor/actor.json`` + ``.actor/input_schema.json``.
     Reads the real files from the repo checkout (no synthetic content), so a
-    malformed or misnamed schema file in any of the four trees fails this
-    test directly, with no Docker build involved.
+    malformed or misnamed schema file in any of the ``SAMPLE_ACTOR_DIRS``
+    trees fails this test directly, with no Docker build involved.
     """
     source_files = _source_files_from_actor_tree(REPO / actor_dir_name)
     schema = resolve_input_schema(source_files)

@@ -59,6 +59,13 @@ class Settings:
     # unlike `standby_idle_override_secs`/`standby_ready_timeout_secs` above,
     # nothing has ever needed to override it per-environment or in a test.
 
+    # Host-supplied Apify proxy password, forwarded into every Actor
+    # container's environment (see Service._build_environment) so the SDK's
+    # Configuration.proxy_password picks it up. Empty means "not configured" --
+    # no APIFY_PROXY_PASSWORD is injected into Actor containers at all (see
+    # README.md's Apify Proxy section).
+    apify_proxy_password: str = ""
+
     @property
     def meta_db_url(self) -> str:
         return f"sqlite+aiosqlite:///{self.data_dir / 'meta.db'}"
@@ -96,4 +103,5 @@ def load_settings() -> Settings:
         port_api=API_PORT,
         port_console=CONSOLE_PORT,
         standby_idle_override_secs=float(override_raw) if override_raw else None,
+        apify_proxy_password=os.environ.get("APIFY_PROXY_PASSWORD", ""),
     )

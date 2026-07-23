@@ -99,6 +99,54 @@ this work, and neither needs any action from you:
   which caused a `PermissionError: [Errno 13] ... /apify_storage/...` on the
   Actor's first write - that is fixed.)
 
+### Apify Proxy
+
+An Actor can use real Apify Proxy from a local run. Export your proxy
+password (Apify Console -> Proxy -> your password, distinct from your API
+token) and pass it into the **runtime** container with `-e
+APIFY_PROXY_PASSWORD`:
+
+```bash
+export APIFY_PROXY_PASSWORD=...   # from Apify Console -> Proxy
+docker run -d --name actor-runtime \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$DATA:$DATA" -e DATA_DIR="$DATA" -e HOST_DATA_DIR="$DATA" \
+  -e APIFY_PROXY_PASSWORD="$APIFY_PROXY_PASSWORD" \
+  -p 3333:3333 -p 3000:3000 \
+  actor-runtime
+```
+
+The password flows host -> runtime container -> every Actor container the
+runtime launches: the runtime reads `APIFY_PROXY_PASSWORD` from its own
+environment at startup (`load_settings()`) and, whenever it is set,
+`Service._build_environment` adds the same variable/value to every Actor
+container's environment (on-demand and standby runs alike). Inside the Actor,
+the `apify` SDK's `Configuration.proxy_password` picks it up automatically, so
+`Actor.create_proxy_configuration(...)` builds a real
+`proxy.apify.com:8000` connection with no other setup. If
+`APIFY_PROXY_PASSWORD` is never set on the runtime container, no Actor
+container ever gets the variable — there is no placeholder/fake value.
+
+`sample_actor_crawler/` is a `ParselCrawler`-based Actor that demonstrates
+this end to end: its `proxyConfiguration` input (default `{"useApifyProxy":
+true, "apifyProxyGroups": ["RESIDENTIAL"]}`) is passed straight to
+`Actor.create_proxy_configuration(actor_proxy_input=...)`, no fallback of any
+kind. Two outcomes follow directly from the SDK's own behaviour, not from
+anything this Actor codes around:
+
+- An explicit `{"useApifyProxy": false}` (with no `proxyUrls`) is the *only*
+  way to crawl direct with no proxy and no credentials — the SDK returns
+  `None` and the crawler runs without a proxy.
+- `useApifyProxy: true` — whether given explicitly, or via **omitting
+  `proxyConfiguration` entirely**, which falls through to the SDK's own
+  default `ProxyConfiguration` and behaves identically (omitting the field is
+  *not* an alternate way to run without a proxy) — with
+  `APIFY_PROXY_PASSWORD` missing or invalid causes the SDK's own live
+  proxy-access check to fail the run. This needs real outbound network
+  access to Apify's proxy infrastructure and a valid password for the
+  requested proxy group(s) to succeed; failing without one is expected,
+  documented behaviour, not a defect.
+
 ## Use it with apify-cli
 
 ```bash
@@ -115,14 +163,17 @@ apify call -i '{"greeting":"hi"}'   # runs it and waits for completion
 Then open the console URL, or fetch the run's storages over the API. See
 `requirements/cli.md` for details.
 
-All four `sample_actor*/` fixtures are real `apify` SDK Actors (`async with
+All five `sample_actor*/` fixtures are real `apify` SDK Actors (`async with
 Actor:`, `Actor.get_input()`/`set_value()`/`push_data()`/
 `open_request_queue()`), so their `.actor/Dockerfile` pip-installs `apify` and
 `apify-client` at image **build** time -- `apify push`/`docker build` needs
-normal internet egress for that step. At **run** time each container only
-talks to this runtime and other local containers (e.g. the caller fixture's
-container-to-container call to the standby Actor's own HTTP endpoint), so
-runs stay fully offline.
+normal internet egress for that step. At **run** time, the four original
+fixtures only talk to this runtime and other local containers (e.g. the
+caller fixture's container-to-container call to the standby Actor's own HTTP
+endpoint), so those runs stay fully offline. `sample_actor_crawler/` is the
+exception: it fetches its `startUrl` (and any same-domain links it
+discovers) over real outbound internet, and via `proxy.apify.com` too when
+`useApifyProxy: true` — see "Apify Proxy" above.
 
 An Actor pushed and built before its `.actor/input_schema.json` existed keeps
 showing the console's plain-JSON input editor until you push again — a plain
