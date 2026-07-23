@@ -33,3 +33,17 @@ def test_load_settings_reads_apify_proxy_password_env(monkeypatch):
     monkeypatch.setenv("APIFY_PROXY_PASSWORD", "dummy-proxy-password")
     settings = load_settings()
     assert settings.apify_proxy_password == "dummy-proxy-password"
+
+
+def test_load_settings_defaults_upstream_base_url_to_real_platform(monkeypatch):
+    monkeypatch.delenv("APIFY_UPSTREAM_BASE_URL", raising=False)
+    settings = load_settings()
+    assert settings.apify_upstream_base_url == "https://api.apify.com"
+
+
+def test_load_settings_upstream_base_url_is_overridable(monkeypatch):
+    """Purely so tests (unit and any future e2e) can point the upstream-fallback
+    middleware at a local stub instead of the real platform."""
+    monkeypatch.setenv("APIFY_UPSTREAM_BASE_URL", "http://127.0.0.1:9")
+    settings = load_settings()
+    assert settings.apify_upstream_base_url == "http://127.0.0.1:9"

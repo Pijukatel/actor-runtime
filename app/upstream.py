@@ -118,26 +118,21 @@ class UpstreamFallbackMiddleware(BaseHTTPMiddleware):
         if not (svc.upstream_fallback_enabled and is_fallback_allowlisted(request.url.path)):
             return await call_next(request)
 
-        # The downstream route handler must consume the request body to
-        # produce its own (possibly-404) response before this middleware
-        # knows whether to proxy, and a BaseHTTPMiddleware-wrapped Request
-        # doesn't share its body cache with the handler's own Request
-        # instance -- so the raw bytes are captured here as they stream past
-        # the handler's own read, rather than pre-read-and-reinjected. Scoped
-        # to this allowlisted branch only: every other request pays nothing.
-        captured = bytearray()
-        original_receive = request.receive
-
-        async def receive():
-            message = await original_receive()
-            if message["type"] == "http.request":
-                captured.extend(message.get("body", b""))
-            return message
-
-        request._receive = receive
+        # Read (and thereby cache) the body here, scoped to this
+        # allowlisted+enabled branch only, so every other request pays
+        # nothing. Many handlers on this allowlist 404 from a denied `_guard`
+        # (an ownership/existence check) BEFORE ever reading the body
+        # themselves, so there is nothing to "stream past" downstream to tee
+        # in that -- the common -- case; reading it here is the only way to
+        # still have the caller's actual body available to forward upstream.
+        # Starlette's own BaseHTTPMiddleware request wrapper recognizes a
+        # `.body()` call made from a dispatch function and replays that SAME
+        # cached body to the downstream handler instead of re-reading (and
+        # duplicating) the wire, so the handler's own response is unaffected.
+        body = await request.body()
         response = await call_next(request)
         if response.status_code != 404:
             return response
 
-        fallback = await fetch_upstream_fallback(request, bytes(captured), svc.settings)
+        fallback = await fetch_upstream_fallback(request, body, svc.settings)
         return fallback if fallback is not None else response

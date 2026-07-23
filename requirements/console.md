@@ -134,10 +134,35 @@
   reuses the same content renderer as a run's default-storage sub-tabs. All controls
   reuse the DOM-safe builders (`mk`/`tableEl`/`api`) — no `innerHTML`, no inline
   handlers; navigation is wired with `addEventListener` + `history.pushState`.
+- **Storage views always page explicitly, never a bare request.** The per-user
+  storage list (`/storage/{slug}`) and a storage's detail content (dataset items,
+  KV keys, RQ requests, reached via the shared content renderer from either
+  `/storage/{slug}/{resourceId}` or a run's own default-storage sub-tabs) each
+  always request an explicit `limit=100&offset=N` slice from the corresponding
+  API surface — never the bare/unbounded request the API itself still allows for
+  other callers. Each of these views shows a **"showing N–M of T"** line, using
+  the total the API surface reports, and **Prev/Next** controls that step by 100
+  and disable at either end of the result set.
+- **Each storage's detail view shows a stats line** above its item/key/request
+  list, rendered dynamically from that storage's own `GET` metadata response:
+  every field currently non-empty for the resource being viewed, excluding
+  identity/bookkeeping fields (`id`/`name`/`userId`/`createdAt`/`modifiedAt`/
+  `accessedAt`/`consoleUrl`) and object-valued stubs (e.g. a request queue's
+  empty `stats` sub-object) — nothing invented, nothing non-empty omitted. In
+  practice today this renders a dataset's `itemCount`/`cleanItemCount`, a
+  key-value store's `itemCount`, and a request queue's `totalRequestCount`/
+  `pendingRequestCount`/`handledRequestCount`/`hadMultipleClients`.
 - The **left column** shows the top-level category nav (Actors / Storage / Users)
   in its own bordered box, and directly below it, in a second, separate bordered
   box, the acting user's Actors list (so you can switch actors from any actor route).
   The detail panel to the right renders whichever view the URL addresses.
+- **The header's "API fallback" toggle** sits next to the "Switch user" control,
+  visible on every view (it lives in the static header, not a routed view). It
+  reads its initial state from `GET /v2/runtime-config` (token-free, like the
+  user list) on page load, and `PUT`s the flipped value on change; the runtime's
+  behavior changes immediately, for every user and both ports, since the toggle
+  is one shared runtime-global switch (see `api.md`'s "Upstream fallback"
+  section) — not a per-console-tab or per-user setting.
 
 # Out of scope for now
 - Real authentication / passwords (the token is a placeholder credential that

@@ -36,17 +36,25 @@ const setToken = (t) => {
   }
 };
 
-async function api(path, opts) {
+// The raw fetch, with the bearer-token header logic `api()` wraps. Exposed
+// separately so callers that need the raw Response (e.g. dataset items'
+// X-Apify-Pagination-* headers, which live outside the JSON body) can read it
+// without duplicating the auth-header logic.
+async function apiRaw(path, opts) {
   const options = Object.assign({}, opts);
   const headers = Object.assign({}, options.headers);
   const token = getToken();
   // Send the token as a bearer credential on every request so the runtime
   // resolves the acting user consistently across the whole console. `skipAuth`
   // opts a single call out of this (used for the public, side-effect-free user
-  // list) so merely loading the console can never claim/bootstrap a token.
+  // list, and the token-free runtime-config fallback toggle) so merely loading
+  // the console can never claim/bootstrap a token.
   if (token && !options.skipAuth) headers["Authorization"] = "Bearer " + token;
   options.headers = headers;
-  const res = await fetch(path, options);
+  return fetch(path, options);
+}
+async function api(path, opts) {
+  const res = await apiRaw(path, opts);
   const ct = res.headers.get("content-type") || "";
   if (ct.includes("application/json")) return res.json();
   return res.text();
@@ -125,6 +133,25 @@ async function refreshUser() {
   const me = unwrap(await api("/v2/users/me"));
   const el = $("#current-user");
   if (el) el.textContent = (me && me.username) || "local-user";
+}
+
+// The global "API fallback" toggle: one shared runtime-wide switch, reflected
+// in the header on every view. Token-free (like the user list) since it is
+// not per-user state.
+async function refreshFallbackToggle() {
+  const toggle = $("#fallback-toggle");
+  if (!toggle) return;
+  const cfg = unwrap(await api("/v2/runtime-config", { skipAuth: true }));
+  toggle.checked = !!(cfg && cfg.upstreamFallbackEnabled);
+}
+
+async function setFallbackEnabled(enabled) {
+  await api("/v2/runtime-config", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ upstreamFallbackEnabled: enabled }),
+    skipAuth: true,
+  });
 }
 
 // Switching users is client-side: pick an existing user's stored token and send
@@ -384,13 +411,70 @@ function showActorsPlaceholder() {
 let showUnnamedStorages = true;
 let storageItemsCache = {};
 let currentStorageSlug = "key-value-stores";
+let storageListOffset = 0;
 
-async function loadStorages(slug) {
+// Every console fetch against a paginated listing surface (dataset items, KV
+// keys, RQ requests, and this per-user storage list) always requests one
+// explicit page of this size -- never a bare/unbounded request -- and pages
+// with prev/next from the surface's reported total.
+const STORAGE_PAGE_SIZE = 100;
+
+function pagingLineEl(offset, count, total) {
+  const from = count ? offset + 1 : 0;
+  const to = offset + count;
+  return mk("p", { class: "muted", text: `showing ${from}–${to} of ${total}` });
+}
+
+function pagingControlsEl(offset, count, total, onPage) {
+  const row = mk("div", { class: "row" });
+  const prev = mk("button", {
+    class: "secondary",
+    text: "Prev",
+    onClick: () => onPage(Math.max(0, offset - STORAGE_PAGE_SIZE)),
+  });
+  const next = mk("button", {
+    class: "secondary",
+    text: "Next",
+    onClick: () => onPage(offset + STORAGE_PAGE_SIZE),
+  });
+  prev.disabled = offset <= 0;
+  next.disabled = offset + count >= total;
+  row.append(prev, next);
+  return row;
+}
+
+// Identity/bookkeeping fields every storage's own GET-detail response
+// carries that are never a "stat" to show in a detail view's stats line.
+const STORAGE_META_KEYS = new Set([
+  "id", "name", "userId", "createdAt", "modifiedAt", "accessedAt", "consoleUrl",
+]);
+
+// Every field a storage's own GET-detail response CURRENTLY returns with a
+// non-empty value -- nothing invented, nothing non-empty omitted. Object-valued
+// stubs (e.g. a request queue's empty `stats` sub-object) and plain metadata
+// are excluded; a field that is absent/zero/false for this instance is simply
+// not shown, rather than hardcoding which fields exist per storage type.
+function statsLineEl(meta) {
+  const parts = [];
+  for (const [key, value] of Object.entries(meta || {})) {
+    if (STORAGE_META_KEYS.has(key)) continue;
+    if (value && typeof value === "object") continue;
+    if (value === null || value === undefined || value === "" || value === 0 || value === false) continue;
+    parts.push(`${key}: ${value}`);
+  }
+  return mk("p", { class: "muted", text: parts.join(" · ") });
+}
+
+async function loadStorages(slug, offset) {
+  if (slug && slug !== currentStorageSlug) storageListOffset = 0;
+  else if (offset != null) storageListOffset = offset;
   currentStorageSlug = slug || currentStorageSlug;
   const list = $("#actor-list");
   if (list) list.innerHTML = "";
-  storageItemsCache[currentStorageSlug] =
-    (unwrap(await api(`/v2/users/me/${currentStorageSlug}`)).items) || [];
+  const resp = unwrap(
+    await api(`/v2/users/me/${currentStorageSlug}?limit=${STORAGE_PAGE_SIZE}&offset=${storageListOffset}`),
+  );
+  storageItemsCache[currentStorageSlug] = { items: resp.items || [], total: resp.total || 0 };
   renderStorages();
 }
 
@@ -435,8 +519,10 @@ function renderStorages() {
   toggleRow.appendChild(toggleLabel);
   detail.appendChild(toggleRow);
 
-  const items = storageItemsCache[slug] || [];
+  const cache = storageItemsCache[slug] || { items: [], total: 0 };
+  const items = cache.items;
   const visible = showUnnamedStorages ? items : items.filter((st) => st.named === true);
+  detail.appendChild(pagingLineEl(storageListOffset, items.length, cache.total));
   const rows = visible.map((st) => {
     // ✅ for a named/standalone storage, ❌ for a run-derived one - the same
     // st.named flag that gates the delete affordance below.
@@ -456,6 +542,9 @@ function renderStorages() {
     return [mk("td", { text: st.name }), idCell, marker, del];
   });
   detail.appendChild(tableEl(["Name", "Id", "Named", ""], rows));
+  detail.appendChild(
+    pagingControlsEl(storageListOffset, items.length, cache.total, (next) => loadStorages(slug, next)),
+  );
 }
 
 async function createStorage(slug, name) {
@@ -683,15 +772,41 @@ window.openRun = async function (actorId, runId) {
   showStore(kvTab, "kv", r.defaultKeyValueStoreId);
 };
 
+// Per-store paging state: reset to the first page every time a tab/detail
+// view is (re-)opened via showStore(); preserved across a prev/next click,
+// which re-renders via renderStoreContent() directly without going through
+// showStore() again.
+let storeOffset = 0;
+let storeContext = null;
+
 window.showStore = async function (tab, kind, id) {
   abortActiveLogStream();
   document.querySelectorAll(".tabs span").forEach((s) => s.classList.remove("active"));
   if (tab) tab.classList.add("active");
+  storeContext = { kind, id };
+  storeOffset = 0;
+  await renderStoreContent();
+};
+
+// Renders the current storeContext/storeOffset into #store. Shared by
+// showStore() (fresh open, offset reset to 0) and the prev/next controls
+// (same context, new offset) -- always requesting an explicit
+// limit=100&offset=N page, never a bare/unbounded request, and rendering a
+// stats line from that storage's own GET-detail response above its content.
+async function renderStoreContent() {
+  const { kind, id } = storeContext;
   const box = $("#store");
+  if (!box) return;
   box.innerHTML = "";
 
   if (kind === "kv") {
-    const keys = (unwrap(await api(`/v2/key-value-stores/${id}/keys`)).items) || [];
+    const meta = unwrap(await api(`/v2/key-value-stores/${id}`));
+    box.appendChild(statsLineEl(meta));
+    const keysResp = unwrap(
+      await api(`/v2/key-value-stores/${id}/keys?limit=${STORAGE_PAGE_SIZE}&offset=${storeOffset}`),
+    );
+    const keys = keysResp.items || [];
+    box.appendChild(pagingLineEl(storeOffset, keys.length, keysResp.total));
     const rows = [];
     for (const k of keys) {
       const rec = await api(`/v2/key-value-stores/${id}/records/${k.key}`);
@@ -702,30 +817,55 @@ window.showStore = async function (tab, kind, id) {
       rows.push([mk("td", { text: k.key }), pre]);
     }
     box.appendChild(emptyOr(tableEl(["Key", "Value"], rows), keys.length));
-  } else if (kind === "ds") {
-    const items = await api(`/v2/datasets/${id}/items`);
-    box.appendChild(mk("pre", { text: JSON.stringify(items, null, 2) }));
-  } else if (kind === "rq") {
-    const meta = unwrap(await api(`/v2/request-queues/${id}`));
-    const reqs = (unwrap(await api(`/v2/request-queues/${id}/requests`)).items) || [];
     box.appendChild(
-      mk("p", {
-        class: "muted",
-        text: `total ${meta.totalRequestCount} · pending ${meta.pendingRequestCount} · handled ${meta.handledRequestCount}`,
+      pagingControlsEl(storeOffset, keys.length, keysResp.total, (next) => {
+        storeOffset = next;
+        renderStoreContent();
       }),
     );
+  } else if (kind === "ds") {
+    const meta = unwrap(await api(`/v2/datasets/${id}`));
+    box.appendChild(statsLineEl(meta));
+    // Dataset items keep their bare-array body; the pagination info lives in
+    // response headers (mirroring the real API's own convention), so this
+    // reads the raw Response rather than going through api()/unwrap().
+    const res = await apiRaw(`/v2/datasets/${id}/items?limit=${STORAGE_PAGE_SIZE}&offset=${storeOffset}`);
+    const items = await res.json();
+    const total = Number(res.headers.get("X-Apify-Pagination-Total") || items.length);
+    box.appendChild(pagingLineEl(storeOffset, items.length, total));
+    box.appendChild(mk("pre", { text: JSON.stringify(items, null, 2) }));
+    box.appendChild(
+      pagingControlsEl(storeOffset, items.length, total, (next) => {
+        storeOffset = next;
+        renderStoreContent();
+      }),
+    );
+  } else if (kind === "rq") {
+    const meta = unwrap(await api(`/v2/request-queues/${id}`));
+    box.appendChild(statsLineEl(meta));
+    const reqsResp = unwrap(
+      await api(`/v2/request-queues/${id}/requests?limit=${STORAGE_PAGE_SIZE}&offset=${storeOffset}`),
+    );
+    const reqs = reqsResp.items || [];
+    box.appendChild(pagingLineEl(storeOffset, reqs.length, reqsResp.total));
     const rows = reqs.map((q) => [
       mk("td", { text: q.url }),
       mk("td", { text: q.method }),
       mk("td", { text: String(Boolean(q.handledAt)) }),
     ]);
     box.appendChild(emptyOr(tableEl(["URL", "Method", "Handled"], rows), reqs.length));
+    box.appendChild(
+      pagingControlsEl(storeOffset, reqs.length, reqsResp.total, (next) => {
+        storeOffset = next;
+        renderStoreContent();
+      }),
+    );
   } else {
     const logPre = mk("pre");
     box.appendChild(logPre);
     await streamLogInto(id, logPre);
   }
-};
+}
 
 // tableEl already renders a "none" row when empty; keep the previous "empty"
 // wording for storage views by relabelling that row when there are zero rows.
@@ -742,6 +882,10 @@ function emptyOr(table, count) {
 // re-renders on Back/Forward. Then render the initial route from the URL.
 const _userSelect = $("#user-select");
 if (_userSelect) _userSelect.addEventListener("change", () => switchTo(_userSelect.value));
+const _fallbackToggle = $("#fallback-toggle");
+if (_fallbackToggle) {
+  _fallbackToggle.addEventListener("change", () => setFallbackEnabled(_fallbackToggle.checked));
+}
 $("#tab-actors").addEventListener("click", () => navigate("/actors"));
 $("#tab-storage").addEventListener("click", () => navigate("/storage/key-value-stores"));
 $("#tab-users").addEventListener("click", () => navigate("/users"));
@@ -749,5 +893,6 @@ window.addEventListener("popstate", renderRoute);
 
 refreshUser();
 refreshUserSelect();
+refreshFallbackToggle();
 renderRoute();
 setInterval(periodicRefresh, 4000);

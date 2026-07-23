@@ -72,6 +72,8 @@
     `DELETE /v2/{type}/{storageId}/access-rights/{grantee}` (revoke)
   - Standby-actor request forwarding (local addition; see "Standby actors"
     below): `{GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS} /v2/actor-standby/{actorId}/{path}`
+  - Runtime-wide upstream-fallback toggle (local addition; see "Upstream
+    fallback" below): `GET|PUT /v2/runtime-config`
 - Only the endpoints exercised by the mandatory e2e flow are implemented in this
   first draft; full coverage of the `Actor Runtime API` tag is deferred.
 
@@ -139,6 +141,45 @@
   has no in-process log buffer, and its log is only persisted to the stored
   run log at teardown (same text plus a closing note), so without the live
   fetch it would read as empty for the run's whole warm lifetime.
+
+## Upstream fallback (opt-in, off by default, all HTTP methods)
+
+- The runtime can optionally fall back to the real `api.apify.com` when a
+  request 404s locally. Governed by one runtime-global boolean,
+  `GET|PUT /v2/runtime-config` (`{"data": {"upstreamFallbackEnabled": bool}}`),
+  an in-memory attribute on the shared `Service` instance: default `False`,
+  **resets to `False` on every process restart** (no DB table, no
+  persistence). `GET` is token-free (no bootstrap side effect, like
+  `GET /v2/users`); `PUT` takes effect immediately, for every user and both
+  ports, since both serve this same `Service` instance.
+- With the toggle on, ANY HTTP method (GET/POST/PUT/DELETE) to an allowlisted
+  by-id `/v2` resource route — an Actor, run, build, or one of the three
+  storage types, reached by its id — whose LOCAL response is a 404 is
+  re-attempted against `{apify_upstream_base_url}{path}?{query}` (same method,
+  query string and body) using the calling user's own bound `token` as bearer.
+  `apify_upstream_base_url` (`Settings`, default `https://api.apify.com`,
+  overridable via the `APIFY_UPSTREAM_BASE_URL` env var so tests can point it
+  at a local stub) is the only new configuration this adds; there is no
+  separate "upstream token" setting.
+- On a 2xx upstream reply, the caller receives that response **verbatim**
+  (status, headers and body — JSON envelopes, bare arrays and binary KV
+  records alike). On any upstream failure (non-2xx, timeout, unreachable
+  host), the caller receives the **original local 404 unchanged**, never the
+  upstream error's status or body; the failure is logged for debuggability.
+- The local-404-only trigger means a resource that resolves successfully
+  locally is never sent upstream, and any non-404 local status
+  (400/401/403/409/422/5xx) is never proxied either way — only a genuine
+  local 404 on an allowlisted route is a candidate.
+- The allowlist deliberately excludes standby-actor forwarding
+  (`/v2/actor-standby/...`, a local-only route with no equivalent reachable
+  the same way), `/v2/logs/*`, the console, and `/v2/runtime-config` itself.
+- Applies uniformly to writes: a POST/PUT/DELETE that 404s locally on an
+  allowlisted route falls back exactly like a GET would — a create/update/
+  delete that's missing locally can become a live, billed write against
+  whatever real Apify account the caller's bound token belongs to. Mitigated
+  by: opt-in, default off, path-allowlisted (by-id routes only, never blanket
+  `/v2/*`), and scoped to the caller's own credential only — never a
+  different, shared or hardcoded token.
 
 ## Environment variables in every Actor container (on-demand and standby)
 
@@ -385,6 +426,32 @@
   are synthesized equal to `createdAt` (no separate modification/access
   tracking exists). `cleanItemCount` mirrors `itemCount` (no separate
   "clean" — non-empty/non-hidden-field — count is tracked).
+
+## Pagination (optional `limit`/`offset`, four listing surfaces)
+
+- Four listing surfaces accept optional `limit`/`offset` query params: dataset
+  items (`GET /v2/datasets/{id}/items`), key-value-store keys
+  (`GET /v2/key-value-stores/{id}/keys`), request-queue requests
+  (`GET /v2/request-queues/{id}/requests`), and each per-user storage listing
+  (`GET /v2/users/me/{key-value-stores,datasets,request-queues}`).
+- **Omitting both params keeps today's response byte-for-byte identical** —
+  every item, uncapped, in today's shape, no new fields, no new headers. This
+  is the contract every non-console (CLI/SDK/curl) caller keeps relying on;
+  there is no server-side cap or clamp on any of these four surfaces.
+- Supplying `limit` and/or `offset` returns the corresponding slice, plus
+  enough total-count information to page:
+  - Dataset items keep their **bare-array body** (unchanged either way) and
+    additionally expose `X-Apify-Pagination-Offset`/`-Count`/`-Total`/`-Limit`
+    response headers, mirroring the real API's own `format=json` header
+    convention, only once `limit`/`offset` are actually supplied.
+  - KV keys and RQ requests gain an **additive** `total` field in their
+    envelope (alongside their existing `count`/`limit` echoes) only when
+    `limit`/`offset` are supplied — absent from the bare-request shape.
+  - The per-user storage listings already emit `{total, count, items}`;
+    `count`/`items` reflect the requested slice, `total` the full count.
+- `limit`/`offset` must each be a non-negative integer or the request is
+  `400 invalid-request` (reusing the `runs.py`-style bounded-int query-param
+  pattern).
 
 ## Console SPA serving (catch-all)
 

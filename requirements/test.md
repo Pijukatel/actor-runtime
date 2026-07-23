@@ -315,3 +315,56 @@ fixtures) MUST exist and keep passing for the following behaviours:
    storage keeps its given name, and that the console renders the named/run-derived
    distinction as a **✅ / ❌** glyph gated on the same `named` flag as the delete
    affordance.
+
+## Mandatory pagination tests (standing regression checks)
+
+Automated coverage (Docker-free via the `wired` fixture) MUST exist for each of
+the four listing surfaces — dataset items, KV keys, RQ requests, and the
+per-user storage listings — asserting BOTH:
+ - a **bare request** (neither `limit` nor `offset` supplied) returns every
+   item, uncapped, in today's exact shape: dataset items stays a bare array
+   with no `X-Apify-Pagination-*` headers; KV keys/RQ requests envelopes carry
+   no additive `total` field; per-user listings are unchanged. This is the
+   contract every non-console (CLI/SDK/curl) caller keeps relying on.
+ - a **`limit`/`offset`-supplied request** returns the corresponding slice
+   plus enough total-count information to page: dataset items via
+   `X-Apify-Pagination-Offset`/`-Count`/`-Total`/`-Limit` response headers over
+   its still-bare-array body; KV keys/RQ requests via an additive `total`
+   field; per-user listings via their existing `total`/`count` fields.
+ - a negative `limit`/`offset` is `400 invalid-request` on at least one surface.
+
+## Mandatory upstream-fallback and runtime-config-toggle tests (standing regression checks)
+
+Automated coverage (Docker-free via a wiring that points
+`Settings.apify_upstream_base_url` at a local in-process HTTP stub, following
+the same pattern as `test_standby.py`'s `FakeStandbyServer`) MUST exist for:
+ - **The toggle** — `GET /v2/runtime-config` is token-free and defaults `False`
+   on a freshly-wired `Service` (no restart-persisted state exists, since it is
+   a plain in-memory attribute with no DB table); `PUT /v2/runtime-config`
+   accepts `{"upstreamFallbackEnabled": bool}`, rejects a non-boolean value
+   (`400`), and takes effect **immediately** — the very next request reflects
+   the new state, with no restart or delay needed.
+ - **Fallback disabled (default)** — a request for a resource missing locally
+   returns the same local `404` as before this change, for every HTTP method,
+   and the upstream stub receives zero requests.
+ - **Fallback enabled, upstream succeeds** — a `GET` for a resource that 404s
+   locally is re-attempted upstream with the same method/query/body and the
+   caller's own bound token; a 2xx upstream reply is relayed to the caller
+   **verbatim** (status, headers and body). Coverage MUST also exercise at
+   least one WRITE method (`POST`/`PUT`/`DELETE`) end to end, including that
+   its body and query string are replayed unchanged — writes are the newly-risky
+   path introduced by extending fallback beyond `GET`.
+ - **Fallback enabled, upstream fails** — a non-2xx upstream response and a
+   genuine connect error (nothing listening at the configured upstream URL)
+   BOTH collapse to the original local `404`, unchanged, never the upstream's
+   own error status/body.
+ - **Guardrails** — a resource that resolves successfully locally is never
+   proxied (upstream receives zero requests) regardless of toggle state; a
+   local response with a non-404 status (e.g. a `READ`-grantee's `403`) is
+   never proxied even with the toggle on; turning the toggle off immediately
+   stops further upstream attempts, even mid-session.
+ - **Token identity** — the upstream request carries the calling user's own
+   bound `token` as its bearer credential (verified for at least two different
+   users, showing it tracks the caller rather than being constant), never a
+   different, shared or hardcoded credential; an unbound caller (no token ever
+   claimed) forwards no `Authorization` header at all rather than a placeholder.
