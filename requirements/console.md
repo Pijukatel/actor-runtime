@@ -142,7 +142,13 @@
   API surface — never the bare/unbounded request the API itself still allows for
   other callers. Each of these views shows a **"showing N–M of T"** line, using
   the total the API surface reports, and **Prev/Next** controls that step by 100
-  and disable at either end of the result set.
+  and disable at either end of the result set. **Creating or deleting a named
+  storage always returns the per-user storage list to its first page** (offset
+  reset to 0), rather than re-fetching whatever offset was already showing — a
+  newly created storage is appended past the end of the list (oldest first), so
+  re-fetching a stale later-page offset could otherwise leave it permanently
+  unseen, and deleting the last item on a later page could otherwise land on an
+  empty page.
 - **Each storage's detail view shows a stats line** above its item/key/request
   list, rendered dynamically from that storage's own `GET` metadata response:
   every field currently non-empty for the resource being viewed, excluding

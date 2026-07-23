@@ -38,7 +38,11 @@ class _FakeUpstreamHandler(http.server.BaseHTTPRequestHandler):
         )
         status, payload, headers = self.server.next_response
         self.send_response(status)
-        for k, v in headers.items():
+        # `headers` is a list of (name, value) pairs, not a dict, so a test can
+        # configure more than one header with the same name (e.g. two
+        # Set-Cookie headers) -- see test_fallback_relay_preserves_duplicate_
+        # response_headers below.
+        for k, v in headers:
             self.send_header(k, v)
         self.end_headers()
         if payload:
@@ -68,7 +72,7 @@ class FakeUpstreamServer:
     def __init__(self) -> None:
         self._httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeUpstreamHandler)
         self._httpd.requests = []
-        self._httpd.next_response = (200, b"", {})
+        self._httpd.next_response = (200, b"", [])
         self.port = self._httpd.server_address[1]
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
@@ -78,8 +82,19 @@ class FakeUpstreamServer:
     def requests(self) -> list:
         return self._httpd.requests
 
-    def set_response(self, status: int, body: bytes = b"", headers: dict | None = None) -> None:
-        self._httpd.next_response = (status, body, headers or {})
+    def set_response(
+        self, status: int, body: bytes = b"", headers: dict | list[tuple[str, str]] | None = None
+    ) -> None:
+        """`headers` may be a plain dict (the common case) or a list of
+        `(name, value)` pairs when a test needs more than one header with the
+        same name -- a dict could never represent that."""
+        if headers is None:
+            pairs: list[tuple[str, str]] = []
+        elif isinstance(headers, dict):
+            pairs = list(headers.items())
+        else:
+            pairs = list(headers)
+        self._httpd.next_response = (status, body, pairs)
 
     @property
     def base_url(self) -> str:
@@ -210,6 +225,58 @@ async def test_fallback_relayed_response_still_carries_cors_headers(wired_upstre
     )
     assert resp.status_code == 200
     assert resp.headers.get("access-control-allow-origin") == "*"
+
+
+async def test_fallback_relay_preserves_duplicate_response_headers(wired_upstream, fake_upstream):
+    """A dict comprehension over `upstream.headers.items()` would silently keep
+    only the last value for a header name the upstream repeats -- e.g. two
+    Set-Cookie headers -- contradicting `fetch_upstream_fallback`'s own
+    "relayed back verbatim" contract. Mirrors the same regression check
+    app/routers/standby.py's own upstream proxy already has for its
+    duplicate-header-preserving `MutableHeaders.append()` usage."""
+    client, service = wired_upstream
+    service.upstream_fallback_enabled = True
+    fake_upstream.set_response(
+        200,
+        b"{}",
+        [
+            ("content-type", "application/json"),
+            ("set-cookie", "a=1"),
+            ("set-cookie", "b=2"),
+        ],
+    )
+
+    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
+    assert resp.status_code == 200
+    assert resp.headers.get_list("set-cookie") == ["a=1", "b=2"]
+
+
+async def test_fallback_relay_strips_full_hop_by_hop_response_header_set(wired_upstream, fake_upstream):
+    """`_HOP_BY_HOP_RESPONSE_HEADERS` is the full RFC 7230 hop-by-hop set, not
+    just the two members (`content-encoding`/`content-length`/`transfer-
+    encoding`/`connection`) this proxy happened to need before -- none of
+    these ever belongs on a relayed response."""
+    client, service = wired_upstream
+    service.upstream_fallback_enabled = True
+    fake_upstream.set_response(
+        200,
+        b"{}",
+        [
+            ("content-type", "application/json"),
+            ("keep-alive", "timeout=5"),
+            ("proxy-authenticate", "Basic"),
+            ("proxy-authorization", "Basic abc"),
+            ("te", "trailers"),
+            ("trailer", "X-Something"),
+            ("trailers", "X-Something"),
+            ("upgrade", "h2c"),
+        ],
+    )
+
+    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
+    assert resp.status_code == 200
+    for header in ("keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "trailers", "upgrade"):
+        assert header not in resp.headers
 
 
 async def test_fallback_upstream_non_2xx_collapses_to_local_404(wired_upstream, fake_upstream):

@@ -20,6 +20,7 @@ import logging
 import re
 
 import httpx
+from starlette.datastructures import MutableHeaders
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -31,8 +32,25 @@ logger = logging.getLogger(__name__)
 
 # Headers that only make sense for the upstream hop: httpx has already decoded
 # the body (so a forwarded content-encoding would describe bytes that are no
-# longer encoded) or Starlette recomputes its own response framing.
-_HOP_BY_HOP_RESPONSE_HEADERS = {"content-encoding", "content-length", "transfer-encoding", "connection"}
+# longer encoded) or Starlette recomputes its own response framing. The
+# RFC 7230 hop-by-hop set (`connection`, `keep-alive`, `proxy-authenticate`,
+# `proxy-authorization`, `te`, `trailer(s)`, `transfer-encoding`, `upgrade`) is
+# included in full, not just the two members this proxy happened to need so
+# far, so this is genuinely *the* exclusion list for a "verbatim" relay rather
+# than a partial one that merely hasn't bitten yet.
+_HOP_BY_HOP_RESPONSE_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+    "content-encoding",
+    "content-length",
+}
 
 # Connect-only bound, mirroring app/routers/standby.py's own upstream proxy:
 # a legitimately slow upstream response is never cut short, only a connect
@@ -111,9 +129,16 @@ async def fetch_upstream_fallback(request: Request, body: bytes, settings) -> Re
         )
         return None
 
-    response_headers = {
-        k: v for k, v in upstream.headers.items() if k.lower() not in _HOP_BY_HOP_RESPONSE_HEADERS
-    }
+    # Built via MutableHeaders.append() (which explicitly preserves
+    # duplicates, per its own docstring) rather than a dict comprehension,
+    # which would silently keep only the last value for any header name the
+    # upstream repeats (e.g. two Set-Cookie headers) -- following the same
+    # precedent already established by app/routers/standby.py's own upstream
+    # proxy for exactly this reason.
+    response_headers = MutableHeaders()
+    for k, v in upstream.headers.multi_items():
+        if k.lower() not in _HOP_BY_HOP_RESPONSE_HEADERS:
+            response_headers.append(k, v)
     return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
 
 

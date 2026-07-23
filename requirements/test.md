@@ -314,7 +314,11 @@ fixtures) MUST exist and keep passing for the following behaviours:
    is the **empty string** for a run-derived storage (not its id) while a named
    storage keeps its given name, and that the console renders the named/run-derived
    distinction as a **✅ / ❌** glyph gated on the same `named` flag as the delete
-   affordance.
+   affordance. A structural check on the served `app.js` MUST also confirm
+   `createStorage`/`deleteStorage` each reset the storage list's paging offset
+   to 0 when re-fetching (`loadStorages(slug, 0)`, never a bare
+   `loadStorages(slug)`), so a mutation can never leave the view on a stale
+   offset that hides a just-created item or lands on an empty page.
 
 ## Mandatory pagination tests (standing regression checks)
 
@@ -333,6 +337,13 @@ per-user storage listings — asserting BOTH:
    field; per-user listings via their existing `total`/`count` fields.
  - a negative `limit`/`offset` is `400 invalid-request` on at least one surface.
 
+A **structural** scan of the served `app.js` MUST additionally confirm that
+every one of its own fetch call sites touching these same four surfaces
+carries an explicit `limit=${STORAGE_PAGE_SIZE}&offset=...` — never a bare
+path with the query string stripped — robust enough to fail equally on an
+existing call site losing its params or a new call site being added for one
+of these paths without them (success criterion #19).
+
 ## Mandatory upstream-fallback and runtime-config-toggle tests (standing regression checks)
 
 Automated coverage (Docker-free via a wiring that points
@@ -350,10 +361,22 @@ the same pattern as `test_standby.py`'s `FakeStandbyServer`) MUST exist for:
  - **Fallback enabled, upstream succeeds** — a `GET` for a resource that 404s
    locally is re-attempted upstream with the same method/query/body and the
    caller's own bound token; a 2xx upstream reply is relayed to the caller
-   **verbatim** (status, headers and body). Coverage MUST also exercise at
+   **verbatim** (status, headers and body), INCLUDING repeated header names
+   surviving from the upstream reply (e.g. more than one `Set-Cookie` — never
+   collapsed to only the last value) and INCLUDING the response still passing
+   through `CORSMiddleware` (relaying builds a brand-new `Response`, not the
+   one `call_next()` produced, so it must still traverse every middleware
+   registered outer to the fallback middleware). Coverage MUST also exercise at
    least one WRITE method (`POST`/`PUT`/`DELETE`) end to end, including that
-   its body and query string are replayed unchanged — writes are the newly-risky
-   path introduced by extending fallback beyond `GET`.
+   its body and query string — and, for a compressed write, its
+   `Content-Encoding` header — are replayed unchanged — writes are the
+   newly-risky path introduced by extending fallback beyond `GET`.
+ - **Excluded-path guardrails** — with the toggle ON, each of the allowlist's
+   deliberate exclusions (`/v2/logs/*`, the bare `POST /v2/acts` collection
+   route, `/v2/actor-standby/...`, an unmatched `/v2/runtime-config/...`
+   sub-path) MUST be verified to never reach the upstream stub even when the
+   local response is a 404 — the path-allowlist guard, not merely the
+   local-status guard exercised by the other guardrail checks below.
  - **Fallback enabled, upstream fails** — a non-2xx upstream response and a
    genuine connect error (nothing listening at the configured upstream URL)
    BOTH collapse to the original local `404`, unchanged, never the upstream's
@@ -368,3 +391,12 @@ the same pattern as `test_standby.py`'s `FakeStandbyServer`) MUST exist for:
    users, showing it tracks the caller rather than being constant), never a
    different, shared or hardcoded credential; an unbound caller (no token ever
    claimed) forwards no `Authorization` header at all rather than a placeholder.
+ - **Console toggle UI (structural)** — a structural scan of the served
+   `index.html`/`app.js` MUST confirm: the `#fallback-toggle` checkbox exists
+   in the header immediately next to the `#user-select` "Switch user" control;
+   `app.js` reads its initial state via a token-free `GET /v2/runtime-config`
+   on page load, reflecting the returned `upstreamFallbackEnabled` onto the
+   checkbox; and its `change` handler `PUT`s `{upstreamFallbackEnabled: ...}`
+   to the same endpoint. The backend half of the toggle is already covered
+   above; this is the console-facing wiring's existence and shape, which has
+   no other automated coverage in this Docker-free JS-runtime-free suite.

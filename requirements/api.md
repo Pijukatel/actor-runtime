@@ -163,7 +163,15 @@
   separate "upstream token" setting.
 - On a 2xx upstream reply, the caller receives that response **verbatim**
   (status, headers and body — JSON envelopes, bare arrays and binary KV
-  records alike). On any upstream failure (non-2xx, timeout, unreachable
+  records alike), INCLUDING repeated header names surviving from the upstream
+  reply (e.g. more than one `Set-Cookie`) — never collapsed to only the last
+  value — mirroring the same guarantee `/v2/actor-standby/...` forwarding
+  already makes. Only genuinely hop-by-hop headers are stripped from the
+  relay (the full RFC 7230 set — `Connection`, `Keep-Alive`,
+  `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`/`Trailers`,
+  `Transfer-Encoding`, `Upgrade` — plus `Content-Encoding`/`Content-Length`,
+  since httpx has already decoded the body and Starlette recomputes its own
+  response framing). On any upstream failure (non-2xx, timeout, unreachable
   host), the caller receives the **original local 404 unchanged**, never the
   upstream error's status or body; the failure is logged for debuggability.
 - The local-404-only trigger means a resource that resolves successfully

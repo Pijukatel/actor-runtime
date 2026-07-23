@@ -10,6 +10,7 @@ stream-plus-timeout path in ``DockerDriver.run`` (see the timeout regression tes
 """
 from __future__ import annotations
 
+import re
 import threading
 import time
 
@@ -680,6 +681,32 @@ async def test_console_storages_show_unnamed_checkbox_and_gated_delete(wired):
         assert handler not in js
 
 
+async def test_console_create_and_delete_storage_reset_paging_offset(wired):
+    """`createStorage`/`deleteStorage` must reset the paging offset when
+    re-fetching the storage list, not silently re-fetch whatever offset was
+    already showing: the list is ordered oldest-first
+    (`list_storages_for_user` orders by `created_at`), so a create appended
+    past the end of a full page can otherwise go permanently unseen (the
+    fetch never moves past the stale offset to reveal it), and a delete of
+    the last item on a later page can land on an empty page. Both must call
+    `loadStorages(slug, 0)` explicitly -- a bare `loadStorages(slug)` leaves
+    `storageListOffset` untouched (see `loadStorages`'s own reset logic:
+    `offset != null` is false for an omitted argument), reproducing exactly
+    this regression."""
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+
+    create_start = js.index("async function createStorage(slug, name)")
+    create_body = js[create_start : js.index("\n}\n", create_start)]
+    assert "loadStorages(slug, 0);" in create_body
+    assert "loadStorages(slug);" not in create_body
+
+    delete_start = js.index("async function deleteStorage(slug, id)")
+    delete_body = js[delete_start : js.index("\n}\n", delete_start)]
+    assert "loadStorages(slug, 0);" in delete_body
+    assert "loadStorages(slug);" not in delete_body
+
+
 async def test_console_stats_line_shows_boolean_false_fields(wired):
     client, _service = wired
     # Ground the JS fix in the actual data shape it must handle: a freshly
@@ -731,6 +758,83 @@ async def test_console_render_store_content_guards_against_error_envelopes(wired
     assert body.count("isErrorEnvelope(keysResp)") == 1
     assert body.count("isErrorEnvelope(reqsResp)") == 1
     assert "if (!res.ok)" in body
+
+
+async def test_console_four_listing_surfaces_always_send_limit_and_offset(wired):
+    """Success criterion #19: every console fetch against the four paginated
+    listing surfaces (per-user storage lists, KV keys, dataset items, RQ
+    requests) must carry an explicit `limit`/`offset` -- never a bare/
+    unbounded request, or a local storage with more than one page silently
+    reloads the old "fetch everything" behaviour in the browser (called out
+    by name in 2-design.md's own Risks section, and never covered by any
+    test before this one).
+
+    Structural, like this file's other app.js checks -- but instead of
+    pinning one known-good call site, this greps for every template-literal
+    URL that touches one of the four surfaces' paths, so it fails equally on
+    a stripped `limit`/`offset` on an existing call site AND on a brand-new
+    call site added later for one of these paths that forgets them."""
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+
+    surfaces = {
+        "per-user storage list": r"/v2/users/me/\$\{currentStorageSlug\}",
+        "kv keys": r"/v2/key-value-stores/\$\{id\}/keys",
+        "dataset items": r"/v2/datasets/\$\{id\}/items",
+        "rq requests": r"/v2/request-queues/\$\{id\}/requests",
+    }
+    for label, path_pattern in surfaces.items():
+        call_sites = re.findall(rf"`{path_pattern}[^`]*`", js)
+        assert call_sites, f"no fetch call site found for the {label} surface"
+        for site in call_sites:
+            assert "limit=${STORAGE_PAGE_SIZE}" in site, f"{label} call site {site!r} is missing an explicit limit"
+            assert "offset=" in site, f"{label} call site {site!r} is missing an explicit offset"
+
+
+async def test_console_fallback_toggle_present_and_wired_to_runtime_config(wired):
+    """Success criteria #10-14 (surface level): the "API fallback" toggle must
+    be present next to the existing "Switch user" control, read its state via
+    a token-free GET on load, PUT its new state to the same endpoint on
+    change, and reflect whatever the endpoint reports back onto the checkbox.
+    The backend half (GET/PUT /v2/runtime-config) already has thorough
+    coverage in test_upstream_fallback.py; this covers the console-facing
+    wiring's existence and shape, which had none."""
+    client, _service = wired
+    html = (await client.get("/")).text
+
+    # The checkbox sits in the header, immediately after (i.e. "next to") the
+    # existing "Switch user" <select> -- not just present somewhere on the page.
+    header_start = html.index("<header")
+    header_end = html.index("</header>")
+    user_select_idx = html.index('id="user-select"')
+    fallback_idx = html.index('id="fallback-toggle"')
+    assert header_start < user_select_idx < fallback_idx < header_end
+    assert fallback_idx - user_select_idx < 200
+    assert 'type="checkbox"' in html[fallback_idx - 40 : fallback_idx + 40]
+
+    js = (await client.get("/console/app.js")).text
+
+    # Reads state on load via a token-free GET, reflecting the returned
+    # boolean onto the checkbox -- not claiming/bootstrapping a token just to
+    # load the console (like the public user list).
+    refresh_start = js.index("async function refreshFallbackToggle()")
+    refresh_body = js[refresh_start : js.index("\n}\n", refresh_start)]
+    assert '$("#fallback-toggle")' in refresh_body
+    assert 'api("/v2/runtime-config", { skipAuth: true })' in refresh_body
+    assert "toggle.checked" in refresh_body and "upstreamFallbackEnabled" in refresh_body
+
+    # PUTs the new state to the same endpoint on change.
+    set_start = js.index("async function setFallbackEnabled(enabled)")
+    set_body = js[set_start : js.index("\n}\n", set_start)]
+    assert 'method: "PUT"' in set_body
+    assert '"/v2/runtime-config"' in set_body
+    assert "upstreamFallbackEnabled: enabled" in set_body
+
+    # Wired via addEventListener (no inline handler) to the checkbox's own
+    # current .checked state, and read once on every initial page load.
+    assert '$("#fallback-toggle")' in js
+    assert 'addEventListener("change", () => setFallbackEnabled(_fallbackToggle.checked))' in js
+    assert "refreshFallbackToggle();" in js
 
 
 async def test_console_left_column_has_separate_nav_and_list_boxes(wired):

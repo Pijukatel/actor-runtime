@@ -573,13 +573,23 @@ async function createStorage(slug, name) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ name: trimmed }),
   });
-  loadStorages(slug);
+  // Explicit `0`, not a bare `loadStorages(slug)`: the list is ordered oldest
+  // first, so a newly created item lands past the end of whatever page was
+  // showing -- re-fetching the SAME stale offset can leave it permanently off
+  // screen (a full last page never grows to reveal it, since offset doesn't
+  // move). Resetting to the first page is simple, deterministic, and always
+  // shows the freshest data immediately, with no empty-page case to handle.
+  loadStorages(slug, 0);
 }
 
 async function deleteStorage(slug, id) {
   if (!confirm(`Delete storage "${id}"? This permanently removes its data and cannot be undone.`)) return;
   await api(`/v2/${slug}/${id}`, { method: "DELETE" });
-  loadStorages(slug);
+  // Same reasoning as createStorage(): re-fetching the stale offset after
+  // deleting the last item on a later page would land on an empty page
+  // (`showing 0-0 of T`) until the user clicked Prev -- resetting to 0 avoids
+  // that case entirely instead of computing a clamped "last non-empty page".
+  loadStorages(slug, 0);
 }
 
 // Storage detail: inspect any storage's contents (keys+records / items /
