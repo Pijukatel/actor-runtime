@@ -5,6 +5,7 @@ import gzip
 import json
 from typing import Any
 
+import brotli
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
@@ -16,14 +17,27 @@ def get_service(request: Request) -> Service:
 
 
 async def read_body(request: Request) -> bytes:
-    """Read the raw request body, transparently gunzipping it if needed.
+    """Read the raw request body, transparently decompressing it if needed.
 
-    apify-client sends some payloads (e.g. the Actor version source files) with
-    ``Content-Encoding: gzip``; Starlette does not decompress automatically. A
-    body that claims to be gzip but is malformed yields a 400, not a bare 500.
+    apify-client sends some payloads (e.g. the Actor version source files)
+    with ``Content-Encoding: gzip``, and -- since apify-client 3.x -- every
+    storage write the SDK's own internal API client makes (``set_value``/
+    ``push_data``/``add_request``/... via ``Actor.new_client()`` too) with
+    ``Content-Encoding: br`` (Brotli), its own default compression for that
+    client. Starlette does not decompress either automatically; a body that
+    claims one of these encodings but is malformed yields a 400, not a bare
+    500.
     """
     body = await request.body()
-    if body and "gzip" in request.headers.get("content-encoding", "").lower():
+    if not body:
+        return body
+    encoding = request.headers.get("content-encoding", "").lower()
+    if "br" in encoding:
+        try:
+            body = brotli.decompress(body)
+        except brotli.error as exc:
+            raise HTTPException(status_code=400, detail=f"Malformed brotli request body: {exc}")
+    elif "gzip" in encoding:
         try:
             body = gzip.decompress(body)
         except (OSError, EOFError) as exc:

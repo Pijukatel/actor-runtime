@@ -16,7 +16,7 @@ import pytest
 from app.config import Settings
 from app.db import Database
 from app.driver import BuildResult, RunResult, SourceFileNameError, write_source_files
-from app.service import Service
+from app.service import ACCESS_ALLOW, Service
 from app.storage import Storage
 
 
@@ -307,6 +307,37 @@ async def test_bad_gzip_body_returns_4xx(wired):
     assert resp.status_code == 400
 
 
+async def test_brotli_compressed_body_is_transparently_decompressed(wired):
+    """apify-client 3.x's own internal storage API client (and any explicit
+    ``Actor.new_client()`` caller) compresses request bodies with
+    ``Content-Encoding: br`` by default -- every SDK storage write
+    (set_value/push_data/add_request/...) arrives this way under the SDK v4
+    pin, so the runtime must decompress it exactly like the real platform
+    does, not just tolerate the older gzip encoding.
+    """
+    import brotli
+
+    client, _ = wired
+    body = brotli.compress(b'{"name": "brotli-actor"}')
+    resp = await client.post(
+        "/v2/acts",
+        content=body,
+        headers={"content-type": "application/json", "content-encoding": "br"},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["data"]["name"] == "brotli-actor"
+
+
+async def test_bad_brotli_body_returns_4xx(wired):
+    client, _ = wired
+    resp = await client.post(
+        "/v2/acts",
+        content=b"this is not brotli",
+        headers={"content-type": "application/json", "content-encoding": "br"},
+    )
+    assert resp.status_code == 400
+
+
 # -- Minor #7: PUT /v2/acts/{id} actually applies the payload -------------
 async def test_update_actor_applies_payload(wired):
     client, _ = wired
@@ -414,10 +445,11 @@ async def test_run_start_zero_or_negative_memory_returns_400(wired):
 
 
 # -- Major #2 (console XSS): no untrusted string reaches an inline handler -
-# A headless browser is out of scope for this suite (documented in claim.md), so
-# validate structurally: the served console JS must not build inline event-handler
-# attributes at all - behaviour is attached with addEventListener over closures,
-# so no interpolated string is ever HTML-decoded back into an inline JS handler.
+# This unit suite has no browser dependency, so it cannot execute the served JS
+# in a real DOM to observe XSS dynamically; validate structurally instead: the
+# served console JS must not build inline event-handler attributes at all -
+# behaviour is attached with addEventListener over closures, so no interpolated
+# string is ever HTML-decoded back into an inline JS handler.
 async def test_console_has_no_inline_event_handlers(wired):
     client, _ = wired
     app_js = (await client.get("/console/app.js")).text
@@ -454,3 +486,70 @@ async def test_prepare_run_storage_is_world_writable(wired):
             assert path.stat().st_mode & 0o002, f"{path} not world-writable"
     # Input stays readable by the (non-root) Actor.
     assert (storage_dir / "key_value_stores/default/INPUT.json").stat().st_mode & 0o004
+
+
+async def test_input_is_api_readable_at_run_start(wired):
+    """Companion to ``test_prepare_run_storage_is_world_writable``'s disk-INPUT
+    assertion above: an SDK Actor's ``Actor.get_input()`` reads INPUT over the
+    ``/v2`` key-value-store API (``GET .../records/INPUT``), not from disk, so
+    INPUT must also land in the SQL-backed key-value store synchronously as
+    part of starting the run -- before the run's container is even spawned, not
+    only after the post-run disk-import step. No build/container is needed to
+    observe this: the record must already be readable the instant
+    ``POST .../runs`` returns (``waitForFinish`` defaults to 0, so the run is
+    likely still RUNNING, and there is no successful build at all here).
+
+    Regression (red before this change): INPUT was only ever written to disk in
+    ``_prepare_run_storage``; the SQL-backed store had no ``INPUT`` key until
+    the post-run ``import_run_storage`` pass, so this same assertion 404'd.
+    """
+    client, _service = wired
+    await client.post("/v2/acts", json={"name": "input-probe"})
+    run = (
+        await client.post("/v2/acts/local-user~input-probe/runs", json={"greeting": "howdy"})
+    ).json()["data"]
+
+    resp = await client.get(f"/v2/key-value-stores/{run['defaultKeyValueStoreId']}/records/INPUT")
+    assert resp.status_code == 200
+    assert resp.json() == {"greeting": "howdy"}
+
+
+# -- Minor: a vanished storage row at the single-read guard yields 404, not 500 --
+async def test_storage_deleted_between_guard_and_refetch_returns_404(wired, monkeypatch):
+    """`get_kvs`/`get_dataset`/`get_queue` each call `_guard()`, which performs
+    ONE DB read (`Service.check_storage_access`) to both decide access and hand
+    back the row for `_storage_meta()` -- no separate re-fetch. That single read
+    is now the only place a row can vanish, so this reproduces the "storage
+    disappeared" edge case at that point: monkeypatch `Service.check_storage_access`
+    to report the access decision as allowed while returning no row, simulating
+    a `DELETE` that lands inside that same read/decide step. Before the row was
+    threaded through `_guard`, this same gap (between `_guard`'s own read and the
+    route's separate `svc.get_storage()` re-fetch) let `_storage_meta(svc, None,
+    kind)` raise an uncaught `AttributeError: 'NoneType' object has no attribute
+    'id'`, surfacing as a bare 500 instead of the `not_found()` (404) every other
+    "storage disappeared" path in this file already returns (e.g.
+    `_owner_or_forbidden`, `_delete_storage`).
+
+    Green both before and after the read was consolidated: the routes' explicit
+    `if storage is None: return not_found(...)` guard is what this test actually
+    exercises, so it stays proof against the underlying `AttributeError` at
+    whatever layer performs the read.
+    """
+    client, service = wired
+    kvs = (await client.post("/v2/key-value-stores", json={"name": "racey-kv"})).json()["data"]
+    ds = (await client.post("/v2/datasets", json={"name": "racey-ds"})).json()["data"]
+    rq = (await client.post("/v2/request-queues", json={"name": "racey-rq"})).json()["data"]
+
+    async def _allowed_but_vanished(storage_id, username, need, expected_type=None):
+        return ACCESS_ALLOW, None
+
+    monkeypatch.setattr(service, "check_storage_access", _allowed_but_vanished)
+
+    for path in (
+        f"/v2/key-value-stores/{kvs['id']}",
+        f"/v2/datasets/{ds['id']}",
+        f"/v2/request-queues/{rq['id']}",
+    ):
+        resp = await client.get(path)
+        assert resp.status_code == 404, f"{path} -> {resp.status_code}: {resp.text}"
+        assert resp.json()["error"]["type"] == "record-not-found"

@@ -13,7 +13,8 @@
   and fetching the request queue, the local API is a **superset** of that tag. In
   addition to the tag above it implements, from the same public Apify spec:
   - Actor / version / build management (needed for `apify push` + build):
-    - `GET /v2/users/me`, `GET /v2/users`, `POST /v2/users`
+    - `GET /v2/users/me`, `GET /v2/users/{userIdOrUsername}` (public profile, any
+      user), `GET /v2/users`, `POST /v2/users`
     - `GET|POST /v2/acts` and `/v2/actors` (list / create Actor; both spellings)
     - `GET|PUT /v2/acts/{actorId}` (get / update Actor)
     - `GET /v2/acts/{actorId}/input-schema` (local addition, not in the public
@@ -37,9 +38,24 @@
     completion in the background, but its finalization respects the aborted
     status (appending its output to the log for the record) and its image is
     discarded.
-  - Request queues: `GET /v2/request-queues/{queueId}`,
-    `GET /v2/request-queues/{queueId}/requests`,
-    `POST /v2/request-queues/{queueId}/requests`
+  - Request queues, the full `apify-client` request-queue surface (single- and
+    shared-consumer alike), not just the single-consumer subset:
+    `GET /v2/request-queues/{queueId}` (metadata),
+    `GET /v2/request-queues/{queueId}/head` (unlocked head read),
+    `POST /v2/request-queues/{queueId}/head/lock` (head read + lock),
+    `GET /v2/request-queues/{queueId}/requests`
+    (list) / `POST .../requests` (single add) /
+    `POST .../requests/batch` (batch add) / `DELETE .../requests/batch`
+    (batch delete) / `POST .../requests/unlock` (unlock every locked
+    request), and per-request
+    `GET|PUT|DELETE /v2/request-queues/{queueId}/requests/{requestId}` plus
+    `PUT|DELETE .../requests/{requestId}/lock` (prolong / release a lock).
+    Request ids are a deterministic hash of `uniqueKey` (matching the
+    `apify` SDK's own client-side `unique_key_to_request_id`), not a raw
+    row id, so a request resolves to the same id whichever side computed it.
+  - Key-value stores also support per-record `DELETE /v2/key-value-stores/{storeId}/records/{key}`
+    and `HEAD /v2/key-value-stores/{storeId}/records/{key}` (existence check,
+    no body), alongside the existing `GET`/`PUT`.
   - Aggregate per-user listings (local additions, scoped to the acting user):
     `GET /v2/users/me/actors`, `GET /v2/users/me/builds`, `GET /v2/users/me/runs`,
     and the standalone-storage listings
@@ -213,6 +229,9 @@
 - **User management.**
   - `GET /v2/users/me` reflects the acting user: its `username`, `id` (= username)
     and `token`.
+  - `GET /v2/users/{userIdOrUsername}` returns PUBLIC profile data (`username`,
+    `id`, never `token`) for any user, resolved by the same guard as every other
+    authenticated route; unknown id/username is `404 record-not-found`.
   - `GET /v2/users` lists every user with `username`, `token` and `createdAt`.
     Tokens are returned in plaintext deliberately — this is the mechanism the
     console uses to reveal and switch users. This endpoint is unguarded and must
@@ -301,14 +320,19 @@
 ## Top-level storages (standalone list / create / delete)
 
 - Every storage (a run's default key-value store / dataset / request queue, and any
-  standalone one) is a first-class owned record. Two id shapes exist: **standalone**
-  storages are namespaced `username~name`; **run-derived** storages are minted at run
-  start as `kv_/ds_/rq_<runId>` and stay managed with their run.
+  standalone one) is a first-class owned record. Three id shapes exist:
+  **standalone** storages are namespaced `username~name`; if a *different* storage
+  type later collides with an already-claimed owner+name, it instead gets a
+  **type-qualified** id `username~{type}~name` (e.g. `username~key-value-store~name`)
+  so the two types coexist under an identical name rather than colliding; **run-derived**
+  storages are minted at run start as `kv_/ds_/rq_<runId>` and stay managed with their
+  run.
 - `GET /v2/users/me/key-value-stores`, `GET /v2/users/me/datasets`,
   `GET /v2/users/me/request-queues` each return **all** of the acting user's owned
   storages of that type in the standard envelope (each item has `id`, `name`
   [derived from the id], `type`, `createdAt`, and `named`). The `name` is the part
-  after `~` for a standalone (`username~name`) storage; a **run-derived**
+  after `~` for a standalone (`username~name`) storage, with any leading
+  `{type}~` prefix stripped for a type-qualified id; a **run-derived**
   (`kv_/ds_/rq_<runId>`) storage has **no meaningful name and serializes `name`
   as the empty string `""`** (not its id), since it was never explicitly named.
   Run-derived storages are **included** alongside standalone ones (they also remain
@@ -329,6 +353,33 @@
     managed with its run and cannot be deleted here (deleting it would orphan the
     run's storage references);
   - success → the standard envelope.
+
+## Storage metadata (single-storage GET responses)
+
+- `GET /v2/key-value-stores/{id}`, `GET /v2/datasets/{id}` and
+  `GET /v2/request-queues/{id}` are field-complete, matching every field
+  `apify-client`'s own response models require (non-optional, no default):
+  `id`, `name`, `userId`, `createdAt`/`modifiedAt`/`accessedAt`, `consoleUrl`,
+  plus dataset's `itemCount`/`cleanItemCount` and request-queue's
+  `totalRequestCount`/`pendingRequestCount`/`handledRequestCount`/
+  `hadMultipleClients`/`stats`. This isn't cosmetic: the `apify` SDK's own
+  storage-client metadata models (crawlee's `DatasetMetadata`/
+  `KeyValueStoreMetadata`/`RequestQueueMetadata`) re-validate this response on
+  every `Actor.open_dataset()`/`Actor.get_input()`/`Actor.open_request_queue()`
+  call, so a response missing any of these fields makes that call itself fail.
+- `name` is the same value the "Top-level storages" section above describes
+  (the part after `~` for a standalone storage, with any `{type}~` prefix
+  stripped for a type-qualified one, empty for a run-derived one) — **never
+  the raw id verbatim**: crawlee's own storage domain objects
+  validate a non-empty `name` against
+  `^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]$`, and every id this runtime mints
+  contains `_` or `~`, so returning the id as `name` would make the very
+  first SDK storage-open call raise.
+- `consoleUrl` is a synthesized `{apiBaseUrl}/storage/{type}/{id}` URL (the
+  runtime never sets a real public console host); `modifiedAt`/`accessedAt`
+  are synthesized equal to `createdAt` (no separate modification/access
+  tracking exists). `cleanItemCount` mirrors `itemCount` (no separate
+  "clean" — non-empty/non-hidden-field — count is tracked).
 
 ## Console SPA serving (catch-all)
 

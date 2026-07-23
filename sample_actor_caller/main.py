@@ -1,75 +1,63 @@
-"""Dependency-free on-demand fixture Actor for the on-demand-calls-standby e2e test.
+"""On-demand fixture Actor for the on-demand-calls-standby e2e test.
 
-Reads the standby Actor's id from its own INPUT, discovers that Actor's
-``standbyUrl`` through ``APIFY_API_BASE_URL`` + its own ``APIFY_TOKEN`` (no
-hardcoded runtime URL/port anywhere in this file), calls it once
-container-to-container, prints the response, and persists it both into its
-own default dataset (via the runtime API) and as its key-value store OUTPUT
-record, so the test can read the round trip back over the API either way.
-Deliberately stdlib-only (no apify SDK), like ``sample_actor``.
+Input is the standby Actor's NAME only (``standbyActorName``), never a
+username-qualified id -- an id like ``username~standby-actor`` is only
+ever meaningful on whatever single environment minted it, so this Actor
+resolves its own owning user's id live and builds ``{username}~{name}``
+itself, the same on the real platform and locally.
 """
+import asyncio
 import json
-import os
-import urllib.request
-from pathlib import Path
 
-STORAGE = Path(os.environ.get("ACTOR_STORAGE_DIR") or os.environ.get("CRAWLEE_STORAGE_DIR") or "/apify_storage")
+import httpx
+from apify import Actor
 
 
-def default_dir(kind: str) -> Path:
-    path = STORAGE / kind / "default"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+async def main() -> None:
+    async with Actor:
+        actor_input = await Actor.get_input() or {}
+        standby_actor_name = actor_input.get("standbyActorName")
+        if not standby_actor_name:
+            raise ValueError(
+                'Missing required input field "standbyActorName" (the name of the standby '
+                'Actor to call, e.g. {"standbyActorName": "standby-actor"}).'
+            )
+        greeting = actor_input.get("greeting", "hi")
 
+        client = Actor.new_client()
 
-def _get_json(url: str, token: str) -> dict:
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        # Username resolved live, never hardcoded or taken as input (see module docstring).
+        print("Resolving the acting user via the configured client (client.user(user_id).get())", flush=True)
+        me = await client.user(Actor.configuration.user_id).get()
+        username = getattr(me, "username", None)
+        if not username:
+            raise ValueError("Could not resolve the acting user's username from client.user(user_id).get().")
+        # {username}~{name} is the platform's own Actor-id convention.
+        standby_actor_id = f"{username}~{standby_actor_name}"
 
+        print(f"Discovering standby Actor {standby_actor_id!r} via the configured client", flush=True)
+        actor = await client.actor(standby_actor_id).get()
+        standby_url = actor.standby_url
+        print(f"Calling standby Actor at {standby_url}", flush=True)
 
-def _post_json(url: str, token: str, payload) -> None:
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    urllib.request.urlopen(req, timeout=30).close()
+        # No SDK method calls another Actor's HTTP endpoint, so httpx handles
+        # this one call directly (still authenticated, via this run's own token).
+        call_url = f"{standby_url}/echo?greeting={greeting}"
+        headers = {"Authorization": f"Bearer {Actor.configuration.token}"}
+        async with httpx.AsyncClient(timeout=30) as http_client:
+            response = await http_client.get(call_url, headers=headers)
+            # A non-2xx reply must fail this run, not be persisted as the standby's answer.
+            response.raise_for_status()
+            received = response.json()
+        print(f"Received from standby Actor: {json.dumps(received)}", flush=True)
 
-
-def main() -> None:
-    kv = default_dir("key_value_stores")
-    input_path = kv / "INPUT.json"
-    actor_input = json.loads(input_path.read_text()) if input_path.exists() else {}
-    standby_actor_id = actor_input.get("standbyActorId")
-    if not standby_actor_id:
-        raise SystemExit(
-            'Missing required input field "standbyActorId" (the id of the standby '
-            'Actor to call, e.g. {"standbyActorId": "local-user~standby-actor"}).'
-        )
-    greeting = actor_input.get("greeting", "hi")
-
-    base_url = os.environ["APIFY_API_BASE_URL"]
-    token = os.environ["APIFY_TOKEN"]
-    print(f"Discovering standby Actor {standby_actor_id!r} via {base_url}", flush=True)
-
-    actor = _get_json(f"{base_url}/v2/actors/{standby_actor_id}", token)["data"]
-    standby_url = actor["standbyUrl"]
-    print(f"Calling standby Actor at {standby_url}", flush=True)
-
-    call_url = f"{standby_url}/echo?greeting={greeting}"
-    received = _get_json(call_url, token)
-    print(f"Received from standby Actor: {json.dumps(received)}", flush=True)
-
-    # Persist the standby Actor's response twice: into this run's own dataset
-    # (through the runtime API, like an SDK at home would) and as the OUTPUT
-    # key-value record (imported from disk when the run finishes).
-    dataset_id = os.environ["APIFY_DEFAULT_DATASET_ID"]
-    _post_json(f"{base_url}/v2/datasets/{dataset_id}/items", token, [received])
-    (kv / "OUTPUT.json").write_text(json.dumps({"receivedFromStandby": received}))
-    print("On-demand Actor finished calling the standby Actor.", flush=True)
+        # Persist the standby Actor's response twice: into this run's own
+        # dataset (through the SDK, like an SDK Actor at home would) and as
+        # the OUTPUT key-value record.
+        await Actor.push_data([received])
+        await Actor.set_value("OUTPUT", {"receivedFromStandby": received})
+        print("On-demand Actor finished calling the standby Actor.", flush=True)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

@@ -1,17 +1,15 @@
-"""Tiny sample Actor for the e2e test.
+"""Sample Actor exercising the full Apify SDK storage surface: INPUT read,
+OUTPUT write, dataset push and request-queue enqueue.
 
-Reads its INPUT from the default key-value store and writes to all three default
-storages (key-value store, dataset, request queue) using the Apify/crawlee local
-storage layout, so the runtime can import the results after the run finishes.
-
-Deliberately dependency-free (no apify SDK) so the image builds offline and the
-behaviour is fully deterministic.
+``tone``/``repeatCount``/``shout``/``recipients`` (see
+``.actor/input_schema.json``) showcase the Input tab's widget types; each
+defaults to a no-op, so a run that omits them (e.g. ``tests/e2e/test_e2e.py``'s
+plain ``{"greeting": "howdy"}``) keeps producing the same output as before
+the input schema existed.
 """
-import json
-import os
-from pathlib import Path
+import asyncio
 
-STORAGE = Path(os.environ.get("ACTOR_STORAGE_DIR") or os.environ.get("CRAWLEE_STORAGE_DIR") or "/apify_storage")
+from apify import Actor
 
 # `tone` (.actor/input_schema.json's enum/select showcase: friendly/formal/
 # playful, default "friendly") selects the template that wraps the styled
@@ -38,110 +36,91 @@ def _styled_greeting(text: str, tone: object) -> str:
     return (template or TONE_TEMPLATES["friendly"]).format(greeting=text)
 
 
-def default_dir(kind: str) -> Path:
-    path = STORAGE / kind / "default"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+async def main() -> None:
+    async with Actor:
+        actor_input = await Actor.get_input() or {}
+        greeting = actor_input.get("greeting", "hello")
 
+        # `repeatCount`/`shout` (see .actor/input_schema.json) both default to
+        # the schema's own no-op values (1 repeat, no shouting), so an
+        # unedited/default run's processedGreeting always equals the plain
+        # greeting -- the "greeting" key below and the dataset item's wording
+        # stay exactly as before for the same input.
+        repeat_count = actor_input.get("repeatCount", 1)
+        try:
+            repeat_count = max(int(repeat_count), 0)
+        except (TypeError, ValueError):
+            repeat_count = 1
+        shout = bool(actor_input.get("shout", False))
+        # `greeting` itself is left exactly as read (any JSON type, permissive
+        # input) -- only the derived text below is coerced to a string, so a
+        # non-string greeting can never crash the Actor on `.upper()`/`.join()`.
+        greeting_text = greeting if isinstance(greeting, str) else str(greeting)
+        base = greeting_text.upper() if shout else greeting_text
 
-def main() -> None:
-    kv = default_dir("key_value_stores")
-    input_path = kv / "INPUT.json"
-    actor_input = json.loads(input_path.read_text()) if input_path.exists() else {}
-    greeting = actor_input.get("greeting", "hello")
+        # `tone` (the schema's enum/select showcase) and `recipients` (its
+        # stringList showcase) are both read and actually applied below, so
+        # every non-trivial widget kind the schema demonstrates has a real,
+        # observable effect on the Actor's output. `tone` defaults to
+        # "friendly" (a no-op template, see `TONE_TEMPLATES`), so
+        # `processed_greeting` for any input that omits `tone` matches the
+        # same no-op-defaults contract `repeatCount`/`shout` already keep
+        # above.
+        tone = actor_input.get("tone", "friendly")
+        styled_greeting = _styled_greeting(base, tone)
+        processed_greeting = " ".join([styled_greeting] * repeat_count)
 
-    # `repeatCount`/`shout` (see .actor/input_schema.json) both default to the
-    # schema's own no-op values (1 repeat, no shouting), so an unedited/
-    # default run's processedGreeting always equals the plain greeting --
-    # the "greeting" key below and the dataset item's wording stay exactly
-    # as before for the same input.
-    repeat_count = actor_input.get("repeatCount", 1)
-    try:
-        repeat_count = max(int(repeat_count), 0)
-    except (TypeError, ValueError):
-        repeat_count = 1
-    shout = bool(actor_input.get("shout", False))
-    # `greeting` itself is left exactly as read (any JSON type, permissive
-    # input) -- only the derived text below is coerced to a string, so a
-    # non-string greeting can never crash the Actor on `.upper()`/`.join()`.
-    greeting_text = greeting if isinstance(greeting, str) else str(greeting)
-    base = greeting_text.upper() if shout else greeting_text
+        # `recipients` (a list of names, stringList editor, no schema
+        # `default` -- only a console-only `prefill`): produces one styled
+        # greeting per recipient, surfaced in OUTPUT's `recipientGreetings`
+        # and pushed as extra dataset items after item 1. A missing/non-list
+        # value fails soft to an empty list -- no recipients, no extra
+        # output/dataset items -- so every existing e2e/unit-test input
+        # (which omits the key entirely) keeps producing the same dataset
+        # shape, and the same OUTPUT shape except for the always-present
+        # (empty-list, when there are no recipients) `recipientGreetings` key.
+        raw_recipients = actor_input.get("recipients", [])
+        recipients = (
+            [name if isinstance(name, str) else str(name) for name in raw_recipients]
+            if isinstance(raw_recipients, list)
+            else []
+        )
+        recipient_greetings = [f"{styled_greeting}, {name}!" for name in recipients]
 
-    # `tone` (the schema's enum/select showcase) and `recipients` (its
-    # stringList showcase) are both read and actually applied below, so
-    # every non-trivial widget kind the schema demonstrates has a real,
-    # observable effect on the Actor's output. `tone` defaults to "friendly"
-    # (a no-op template, see `TONE_TEMPLATES`), so `processed_greeting` for
-    # any input that omits `tone` matches the same no-op-defaults contract
-    # `repeatCount`/`shout` already keep above.
-    tone = actor_input.get("tone", "friendly")
-    styled_greeting = _styled_greeting(base, tone)
-    processed_greeting = " ".join([styled_greeting] * repeat_count)
+        print(f"Sample Actor started. Input greeting = {greeting!r}", flush=True)
 
-    # `recipients` (a list of names, stringList editor, no schema `default` --
-    # only a console-only `prefill`): produces one styled greeting per
-    # recipient, surfaced in OUTPUT.json's `recipientGreetings` and pushed as
-    # extra dataset items after item 1. A missing/non-list value fails soft
-    # to an empty list -- no recipients, no extra output/dataset items -- so
-    # every existing e2e/unit-test input (which omits the key entirely) keeps
-    # producing the same dataset shape, and the same OUTPUT.json shape except
-    # for the always-present (empty-list, when there are no recipients)
-    # `recipientGreetings` key.
-    raw_recipients = actor_input.get("recipients", [])
-    recipients = (
-        [name if isinstance(name, str) else str(name) for name in raw_recipients]
-        if isinstance(raw_recipients, list)
-        else []
-    )
-    recipient_greetings = [f"{styled_greeting}, {name}!" for name in recipients]
-
-    print(f"Sample Actor started. Input greeting = {greeting!r}", flush=True)
-
-    # 1) Key-value store: write an OUTPUT record that echoes the input and
-    #    shows repeatCount/shout/tone/recipients actually affecting the
-    #    greeting.
-    (kv / "OUTPUT.json").write_text(
-        json.dumps(
+        # 1) Key-value store: write an OUTPUT record that echoes the input and
+        #    shows repeatCount/shout/tone/recipients actually affecting the
+        #    greeting.
+        await Actor.set_value(
+            "OUTPUT",
             {
                 "greeting": greeting,
                 "processedGreeting": processed_greeting,
                 "recipientGreetings": recipient_greetings,
                 "receivedInput": actor_input,
                 "status": "ok",
-            }
-        )
-    )
-
-    # 2) Dataset: push one item derived from the input, plus one more per
-    #    recipient (empty `recipients` -> no extra items, so the dataset's
-    #    shape for every existing test/e2e input -- all of which omit
-    #    `recipients` -- is unchanged: still exactly the one item below).
-    ds = default_dir("datasets")
-    (ds / "000000001.json").write_text(
-        json.dumps({"message": f"{greeting} world", "index": 1})
-    )
-    for i, (name, message) in enumerate(zip(recipients, recipient_greetings), start=2):
-        (ds / f"{i:09d}.json").write_text(
-            json.dumps({"message": message, "recipient": name, "index": i})
+            },
         )
 
-    # 3) Request queue: enqueue one request.
-    rq = default_dir("request_queues")
-    (rq / "request-1.json").write_text(
-        json.dumps(
-            {
-                "url": "https://example.com/from-actor",
-                "uniqueKey": "https://example.com/from-actor",
-                "method": "GET",
-            }
-        )
-    )
+        # 2) Dataset: push one item derived from the input, plus one more per
+        #    recipient (empty `recipients` -> no extra items, so the
+        #    dataset's shape for every existing test/e2e input -- all of
+        #    which omit `recipients` -- is unchanged: still exactly the one
+        #    item below).
+        await Actor.push_data({"message": f"{greeting} world", "index": 1})
+        for i, (name, message) in enumerate(zip(recipients, recipient_greetings), start=2):
+            await Actor.push_data({"message": message, "recipient": name, "index": i})
 
-    print(
-        f"Sample Actor finished: wrote OUTPUT, {1 + len(recipients)} dataset item(s), 1 queued request.",
-        flush=True,
-    )
+        # 3) Request queue: enqueue one request.
+        request_queue = await Actor.open_request_queue()
+        await request_queue.add_request("https://example.com/from-actor")
+
+        print(
+            f"Sample Actor finished: wrote OUTPUT, {1 + len(recipients)} dataset item(s), 1 queued request.",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

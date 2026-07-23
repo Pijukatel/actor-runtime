@@ -36,6 +36,7 @@ from .constants import (
     TERMINAL_TIMED_OUT,
     log_stamp,
     short_id,
+    storage_name_from_id,
 )
 from .db import AccessRight, Actor, Build, Database, Run, Storage as StorageRow, User, Version, utcnow
 from .driver import Driver, extract_zip, write_source_files
@@ -54,7 +55,10 @@ from .storage_access import (
     ACCESS_NOT_FOUND,
     LEVEL_READ,
     LEVEL_WRITE,
+    InvalidStorageNameError,
     StorageAccessManager,
+    StorageTypeCollisionError,
+    validate_storage_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -698,6 +702,14 @@ class Service:
             s.add(StorageRow(id=request_queue_id, type=STORAGE_RQ, owner=owner))
             await s.commit()
             await s.refresh(run)
+        # Seed INPUT into the SQL-backed key-value store too (alongside the
+        # existing disk write in `_prepare_run_storage`), synchronously before
+        # the run task is even spawned -- so `GET .../records/INPUT` (what an
+        # SDK Actor's `Actor.get_input()` calls) already sees it the moment the
+        # run starts, not only after the run finishes and disk import runs.
+        await self.storage.kv_set(
+            kv_store_id, "INPUT", run_input if run_input is not None else {}, "application/json"
+        )
         self._spawn(self._run_actor(run_id, build.image_tag if build else None, run_input))
         return run
 
@@ -997,9 +1009,12 @@ class Service:
     async def ensure_storage(self, storage_id: str, storage_type: str, owner: str) -> str:
         return await self.storage_access.ensure_storage(storage_id, storage_type, owner)
 
+    async def get_or_create_named_storage(self, name: str, storage_type: str, owner: str) -> tuple[str, str, bool]:
+        return await self.storage_access.get_or_create_named_storage(name, storage_type, owner)
+
     async def check_storage_access(
         self, storage_id: str, username: str, need: str, expected_type: str | None = None
-    ) -> str:
+    ) -> tuple[str, StorageRow | None]:
         return await self.storage_access.check_storage_access(storage_id, username, need, expected_type)
 
     async def grant_access(self, storage_id: str, resource_type: str, grantee: str, level: str) -> None:

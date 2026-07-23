@@ -23,6 +23,31 @@ STORAGE_DS = "dataset"
 STORAGE_RQ = "request-queue"
 
 
+def storage_name_from_id(storage_id: str, storage_type: str) -> str:
+    """Derive a storage's public ``name`` field from its id and type.
+
+    Three id shapes exist (see ``requirements/api.md`` "Top-level storages"):
+    a run-derived id (``kv_/ds_/rq_<runId>``, never contains ``~``) has no
+    meaningful name and serializes as ``""``; a standalone id is either the
+    unqualified ``owner~name`` (the first storage type to claim that owner+
+    name), or -- once a *different* type collides on the same owner+name --
+    the type-qualified ``owner~{storage_type}~name`` minted by
+    ``_create_storage``. Splitting on the first ``~`` alone is wrong for the
+    type-qualified shape: it yields ``"{storage_type}~name"`` instead of
+    ``"name"``, a string crawlee's own ``validate_storage_name`` rejects
+    (contains ``~``), which would crash any real SDK Actor that opens two
+    storages of different types under the same name. This is the single
+    place every serializer path (``app/serializers.py::storage_dict``,
+    ``app/routers/storages.py::_storage_meta``) must derive ``name`` from,
+    so the two never drift apart again.
+    """
+    if "~" not in storage_id:
+        return ""
+    rest = storage_id.split("~", 1)[1]
+    prefix = f"{storage_type}~"
+    return rest[len(prefix):] if rest.startswith(prefix) else rest
+
+
 def short_id() -> str:
     return uuid.uuid4().hex[:17]
 

@@ -3,11 +3,12 @@
   "type": "object",
   "schemaVersion": 1,
   "properties": {
-    "standbyActorId": {
-      "title": "Standby Actor ID",
+    "standbyActorName": {
+      "title": "Standby Actor name",
       "type": "string",
-      "description": "Id of the standby Actor to call (e.g. \"local-user~standby-actor\").",
-      "editor": "textfield"
+      "description": "Name (not id) of the standby Actor to call, owned by the acting user -- e.g. \"standby-actor\". The Actor id is built at run time as \"{username}~{name}\" from the acting user's own username (resolved via client.user(Actor.configuration.user_id).get()), so the same input works unchanged on the real platform and locally.",
+      "editor": "textfield",
+      "prefill": "standby-actor"
     },
     "greeting": {
       "title": "Greeting",
@@ -17,5 +18,5 @@
       "default": "hi"
     }
   },
-  "required": ["standbyActorId"]
+  "required": ["standbyActorName"]
 }

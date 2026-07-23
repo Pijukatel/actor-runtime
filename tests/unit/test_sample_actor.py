@@ -1,15 +1,37 @@
-"""Direct-import coverage for ``sample_actor/main.py``'s ``repeatCount``/
-``shout``/``tone``/``recipients`` handling.
+"""Direct coverage for ``sample_actor/main.py``'s ``repeatCount``/``shout``/
+``tone``/``recipients`` handling.
 
 ``sample_actor/.actor/input_schema.json`` describes ``repeatCount`` ("How
 many times to repeat the greeting"), ``shout`` ("Uppercase the greeting
 before writing it out"), ``tone`` ("Style of the greeting message" -- the
 schema's enum/select showcase) and ``recipients`` ("Names to greet
 individually" -- the schema's stringList showcase). This file proves all
-four actually affect the Actor's OUTPUT/dataset, by loading and running the
-real, unmodified script directly (it's dependency-free stdlib-only code, so
-no Docker/apify-cli is needed to exercise it -- unlike the full
-``tests/e2e/test_e2e.py`` dev-loop test).
+four actually affect the Actor's OUTPUT/dataset.
+
+``main.py`` is a full ``apify`` SDK Actor (``async with Actor:``) as of the
+SDK v4 migration, not the earlier dependency-free/stdlib-only script this
+file's tests were originally written against. Two consequences drive how
+these tests now drive it:
+
+- ``Actor.exit()`` calls ``sys.exit()`` on the way out (matching a real
+  deployed Actor's own container process), so calling ``main()`` in-process
+  would kill the whole test run. Every test below runs the real, unmodified
+  ``sample_actor/main.py`` as a **subprocess** instead -- still no
+  Docker/apify-cli needed (unlike the full ``tests/e2e/test_e2e.py`` dev-loop
+  test), just a plain ``python sample_actor/main.py`` pointed at a scratch
+  local storage directory via ``CRAWLEE_STORAGE_DIR``, exactly how a
+  developer runs an Actor locally with the ``apify`` CLI. Seeding
+  ``key_value_stores/default/INPUT.json`` by hand before the run is the same
+  convention local Actor development already uses; the SDK's own
+  ``ApifyFileSystemKeyValueStoreClient`` auto-detects the bare file and
+  synthesizes its metadata.
+- Storage is API-shaped, not disk-shaped, per this migration's "no direct
+  disk access" rule -- ``main.py`` no longer exposes a raw ``STORAGE``
+  directory global to redirect. Reading ``OUTPUT``/the dataset back after the
+  subprocess exits goes through the SDK's own ``KeyValueStore``/``Dataset``
+  read API (an explicit, non-purging ``Configuration`` pointed at the same
+  scratch directory -- see ``_local_config``), not raw file parsing, so it
+  stays correct regardless of the SDK's on-disk file-naming details.
 
 Also locks in the no-op-defaults contract that keeps the existing
 Docker-dependent e2e assertions valid unmodified: with no ``repeatCount``/
@@ -22,42 +44,81 @@ meaning what they've always meant).
 """
 from __future__ import annotations
 
-import importlib.util
+import asyncio
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+from apify import Configuration
+from apify.storage_clients import FileSystemStorageClient
+from crawlee.storages import Dataset, KeyValueStore
 
 REPO = Path(__file__).resolve().parents[2]
 MAIN_PY = REPO / "sample_actor" / "main.py"
 
 
-def _load_main_module():
-    """Fresh module object per call (isolated ``STORAGE`` global) -- avoids
-    any cross-test state leaking through Python's module cache."""
-    spec = importlib.util.spec_from_file_location("sample_actor_main_under_test", MAIN_PY)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def _local_config(tmp_path: Path) -> Configuration:
+    """Explicit, non-global Configuration for reading a scratch run's storage
+    back after the fact.
+
+    ``purge_on_start=False`` is load-bearing: the default `True` purges a
+    default (unnamed) storage on every open, which is exactly what `_run`'s
+    subprocess just wrote -- the KVS purge exemption keeps `INPUT.json` but
+    would still wipe `OUTPUT`, and the dataset has no such exemption at all,
+    so a purging open here would read back nothing.
+    """
+    return Configuration(storage_dir=str(tmp_path), purge_on_start=False)
+
+
+async def _read_value(tmp_path: Path, key: str) -> object:
+    kvs = await KeyValueStore.open(configuration=_local_config(tmp_path), storage_client=FileSystemStorageClient())
+    return await kvs.get_value(key)
+
+
+async def _read_dataset_items(tmp_path: Path) -> list:
+    dataset = await Dataset.open(configuration=_local_config(tmp_path), storage_client=FileSystemStorageClient())
+    return list((await dataset.get_data()).items)
 
 
 def _run(tmp_path: Path, actor_input: dict) -> dict:
-    module = _load_main_module()
-    module.STORAGE = tmp_path  # redirect default_dir()'s base dir, no env vars needed
+    """Seed `tmp_path` as a scratch local Apify SDK storage directory, run
+    the real, unmodified `sample_actor/main.py` against it as a subprocess
+    (see module docstring for why not in-process), then read `OUTPUT` back
+    through the SDK's own `KeyValueStore` API. Call `_dataset_items`
+    separately afterward to read the dataset the same run wrote."""
     kv = tmp_path / "key_value_stores" / "default"
     kv.mkdir(parents=True)
     (kv / "INPUT.json").write_text(json.dumps(actor_input))
-    module.main()
-    return json.loads((kv / "OUTPUT.json").read_text())
+
+    # Strip any ambient Apify/Crawlee env vars (e.g. a stray APIFY_TOKEN)
+    # before pointing CRAWLEE_STORAGE_DIR at the scratch directory, so the
+    # subprocess's `Actor.is_at_home()` is guaranteed False (local
+    # FileSystemStorageClient, no network) regardless of the environment
+    # this test itself runs in.
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("APIFY_", "CRAWLEE_"))}
+    env["CRAWLEE_STORAGE_DIR"] = str(tmp_path)
+    result = subprocess.run(
+        [sys.executable, str(MAIN_PY)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        f"sample_actor/main.py exited {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+    return asyncio.run(_read_value(tmp_path, "OUTPUT"))
 
 
 def _dataset_items(tmp_path: Path) -> list:
-    """Read back every dataset item `main.py` wrote, in the same sorted
-    filename order the real runtime's `Storage._import_dataset_dir`
-    (`app/storage.py`) uses to import them -- lets a test assert on the
-    dataset's full shape, not just OUTPUT.json."""
-    ds_dir = tmp_path / "datasets" / "default"
-    return [json.loads(p.read_text()) for p in sorted(ds_dir.iterdir())]
+    """Read back every dataset item the run started by `_run` wrote, through
+    the SDK's own `Dataset` read API, in write order (index 1, 2, 3, ...) --
+    lets a test assert on the dataset's full shape, not just OUTPUT."""
+    return asyncio.run(_read_dataset_items(tmp_path))
 
 
 def test_default_repeat_count_and_shout_leave_processed_greeting_unchanged(tmp_path):

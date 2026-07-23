@@ -9,6 +9,7 @@ import asyncio
 import json
 import re
 import time
+from urllib.parse import urlsplit
 
 from starlette.requests import Request
 
@@ -88,7 +89,7 @@ async def _provision_ondemand_run(client, service, token, name="on-demand-actor"
     return actor["id"], run
 
 
-# -- A. Standby opt-in and actor metadata (criteria 1-3) -------------------
+# -- A. Standby opt-in and actor metadata -----------------------------------
 async def test_actor_json_uses_standby_mode_enables_standby_and_url(wired):
     client, service = wired
     actor_id = await _provision_standby_actor(client, service, "alice")
@@ -156,7 +157,58 @@ async def test_non_standby_actor_behaves_exactly_as_before(wired):
     assert "standbyUrl" not in actor
 
 
-# -- D. Environment-variable alignment (criteria 15-19, 21) ----------------
+async def test_standby_url_discovery_is_generic_via_real_apify_client_actor_model(wired):
+    """Design decision 7: callers must read the standby URL off the fetched
+    Actor's ``.standby_url`` attribute (apify-client's real ``Actor`` model),
+    never a raw dict index. Validated here for two standby Actors and one
+    non-standby Actor by round-tripping each through the real
+    ``apify_client._models.Actor`` class, rather than asserting JSON by hand.
+    """
+    from apify_client._models import Actor as ApifyClientActor
+
+    client, service = wired
+    actor_id_one = await _provision_standby_actor(client, service, "frank", name="standby-actor-one")
+    actor_id_two = await _provision_standby_actor(client, service, "frank", name="standby-actor-two")
+    plain_actor = await _push_actor(client, "frank", name="plain-actor-for-model-check")
+
+    payload_one = (await client.get(f"/v2/actors/{actor_id_one}", headers=auth("frank"))).json()
+    payload_two = (await client.get(f"/v2/actors/{actor_id_two}", headers=auth("frank"))).json()
+    payload_plain = (await client.get(f"/v2/actors/{plain_actor['id']}", headers=auth("frank"))).json()
+
+    model_one = ApifyClientActor.model_validate(payload_one["data"])
+    model_two = ApifyClientActor.model_validate(payload_two["data"])
+    model_plain = ApifyClientActor.model_validate(payload_plain["data"])
+
+    # Distinct, correct per-Actor-id URLs -- proves the discovery mechanism
+    # generalizes over N standby Actors rather than one hardcoded case.
+    assert model_one.standby_url == f"http://actor-runtime:3333/v2/actor-standby/{actor_id_one}"
+    assert model_two.standby_url == f"http://actor-runtime:3333/v2/actor-standby/{actor_id_two}"
+    assert model_one.standby_url != model_two.standby_url
+
+    # A non-standby Actor's response still validates cleanly through the same
+    # strict model, with no standby_url (absent on the wire, None on the model).
+    assert model_plain.standby_url is None
+
+    # Each Actor's own standby_url must route to THAT Actor's own warm
+    # container, not a shared one: call each Actor's path directly (same ASGI
+    # client, host/port already asserted equal above) and confirm each
+    # cold-starts independently -- counter starts at 1 for both.
+    path_one = urlsplit(model_one.standby_url).path
+    path_two = urlsplit(model_two.standby_url).path
+    resp_one_a = await client.get(f"{path_one}/echo", headers=auth("frank"))
+    resp_two_a = await client.get(f"{path_two}/echo", headers=auth("frank"))
+    assert resp_one_a.json()["requestCount"] == 1
+    assert resp_two_a.json()["requestCount"] == 1
+
+    # A repeat call reuses each Actor's own warm container (counter -> 2)
+    # without affecting the other's -- traffic never crosses between them.
+    resp_one_b = await client.get(f"{path_one}/echo", headers=auth("frank"))
+    resp_two_b = await client.get(f"{path_two}/echo", headers=auth("frank"))
+    assert resp_one_b.json()["requestCount"] == 2
+    assert resp_two_b.json()["requestCount"] == 2
+
+
+# -- D. Environment-variable alignment --------------------------------------
 async def test_env_dict_alignment_for_every_run(wired):
     client, service = wired
     actor_id, run = await _provision_ondemand_run(client, service, "alice")
@@ -196,12 +248,12 @@ async def test_apify_token_env_tracks_owner_across_users(wired):
     assert me_bob["username"] == "bob"
 
 
-# -- B. Warm start, readiness, forwarding, authorization (criteria 4-11) ---
+# -- B. Warm start, readiness, forwarding, authorization --------------------
 async def test_standby_cold_start_forwards_and_reuses_warm_container(wired_fast_standby):
     client, service = wired_fast_standby
     actor_id = await _provision_standby_actor(client, service, "alice")
 
-    # Before any request: no run yet (criterion 4).
+    # Before any request: no run yet.
     runs = (await client.get(f"/v2/acts/{actor_id}/runs", headers=auth("alice"))).json()["data"]["items"]
     assert runs == []
 
@@ -297,9 +349,9 @@ def _standby_request(app, actor_id: str, path: str, token: str) -> Request:
 
 
 async def test_standby_response_streams_incrementally_not_fully_buffered(wired_fast_standby):
-    """Criterion 7's streaming half: the forwarded response must reach the
-    caller as it arrives, not be fully buffered by the runtime before the
-    first byte is returned. The fake standby target's
+    """The forwarded response must reach the caller as it arrives, not be
+    fully buffered by the runtime before the first byte is returned. The
+    fake standby target's
     ``/stream-slow`` path (see ``_StandbyProbeHandler._handle_streamed`` in
     conftest.py) writes its body in three flushed chunks with a real 0.3s
     delay between them and closes the connection instead of declaring
@@ -336,7 +388,7 @@ async def test_standby_preserves_repeated_header_names_both_directions(wired_fas
     either direction -- a plain dict comprehension keeps only the LAST value
     for a duplicated header name (e.g. two Cookie headers from the caller, or
     two Set-Cookie headers from the standby Actor), contradicting the
-    "headers... unchanged" forwarding guarantee (criterion 7). Uses the same
+    "headers... unchanged" forwarding guarantee. Uses the same
     direct-router-call technique as the streaming test above (see
     ``_standby_request``) since httpx's ``ASGITransport`` would only expose
     the client's own multi-value request headers here, not let us inspect the
@@ -524,7 +576,7 @@ async def test_concurrent_first_requests_start_exactly_one_container(wired_fast_
     assert len(runs) == 1
 
 
-# -- C. Idle timeout and teardown (criteria 12-14) -------------------------
+# -- C. Idle timeout and teardown --------------------------------------------
 async def test_reap_idle_standby_runs_single_pass_is_deterministic(wired_fast_standby):
     """A single, directly-invoked reap pass (no background timing involved) --
     proves the countdown logic itself, independent of the watchdog's own loop."""
@@ -615,8 +667,8 @@ async def test_reap_idle_standby_runs_serializes_with_ensure_standby_run(wired_f
 async def test_standby_idle_clock_does_not_reap_mid_stream(wired_fast_standby):
     """Regression: a single forwarded request's OWN duration must never be
     treated as idle time, even if it legitimately outlives idleTimeoutSecs --
-    e.g. a slow, multi-chunk streamed response (criterion 7 explicitly
-    requires supporting this). The watchdog here polls every 0.05s against a
+    e.g. a slow, multi-chunk streamed response (a supported case). The
+    watchdog here polls every 0.05s against a
     0.2s idle-timeout override, so without in-flight tracking the ~0.9s
     `/stream-slow` response (three 0.3s-apart chunks, see
     ``_StandbyProbeHandler._handle_streamed``) would get its container reaped

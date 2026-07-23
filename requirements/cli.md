@@ -52,10 +52,11 @@
     `apify login -t <token>` (login honours `APIFY_CLIENT_BASE_URL`). To do
     this without touching your real `~/.apify` login, run the apify commands
     with an overridden `HOME` and `APIFY_DISABLE_KEYRING=1` (isolated
-    profile). Scripts that instead run with whatever credential the CLI
-    already has can discover the bound token afterwards from
-    `GET /v2/users/me` (tokens are deliberately visible there), as
-    `scripts/demo.sh` does.
+    profile). The read-only commands below resolve credentials the same way,
+    so `scripts/demo.sh` never itself discovers or passes a token, and runs
+    unmodified against both this runtime and the real platform (`demo.sh
+    --remote` runs the identical push/call/read-back steps against the real
+    platform instead, skipping only the local image build/container steps).
 
 ## Supported commands (first draft)
 
@@ -66,7 +67,16 @@
   store record, and sets `sourceType=TARBALL` with a `tarballUrl` pointing at that
   record. The runtime builds whichever shape was pushed (see `api.md`).
 - `apify call` - starts a run against the built Actor, streams its log, waits for it
-  to finish, and reports the run's default storages.
+  to finish, and reports the run's default storages; `--json` prints the run's id
+  and default storage ids as JSON on stdout (the human-readable progress log still
+  streams to stderr), which `scripts/demo.sh` captures instead of re-listing runs.
+- `apify info` - prints the currently authenticated account's username, used to
+  build a `username~name` Actor id the same way the caller fixture Actor does.
+- `apify runs ls <actorId> --json` - lists an Actor's runs; `scripts/demo.sh` uses
+  it (with `--desc --limit 1`) to find the standby Actor's most recent run, since
+  `apify call` only ever reports the run it itself started.
+- `apify key-value-stores get-value <storeId> <key>` / `apify datasets get-items
+  <datasetId>` - read a run's OUTPUT record / dataset items.
 
 ## Out of scope
 

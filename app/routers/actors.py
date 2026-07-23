@@ -31,6 +31,23 @@ async def get_me(request: Request) -> object:
     return data({"id": user, "username": user, "token": token})
 
 
+@user_router.get("/v2/users/{user_id_or_username}")
+async def get_user_public(user_id_or_username: str, request: Request) -> object:
+    """Public profile lookup for ANY user, by id or username.
+
+    Id and username are the same value in this runtime, so one lookup
+    serves both. Response is always the public shape (no `token`), even
+    for self-lookups. Unknown id/username -> 404 envelope. `resolve_user`
+    here is just the bootstrap-or-reject auth guard, not identity resolution.
+    """
+    svc = get_service(request)
+    await resolve_user(request)
+    row = await svc.get_user(user_id_or_username)
+    if row is None:
+        return not_found(f"User '{user_id_or_username}' was not found.")
+    return data({"id": row.username, "username": row.username})
+
+
 @user_router.get("/v2/users/me/actors")
 async def my_actors(request: Request) -> object:
     svc = get_service(request)

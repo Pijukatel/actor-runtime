@@ -156,8 +156,8 @@ class StandbyRun:
     # (see mark_standby_request_started/_finished). A positive count means
     # "busy right now", which reap_idle_standby_runs() treats as non-idle
     # regardless of how stale last_request looks -- this is what lets a single
-    # long-lived/streamed response (success criterion 7) outlive
-    # idleTimeoutSecs without being torn down mid-flight.
+    # long-lived/streamed response outlive idleTimeoutSecs without being torn
+    # down mid-flight.
     in_flight: int = 0
 
 
@@ -395,9 +395,8 @@ class StandbyManager:
         ``reap_idle_standby_runs`` can tell "idle" (no in-flight requests, and
         none recently) apart from "quiet clock, busy container" (a single
         long-running/streamed request that has simply been going on longer
-        than ``idleTimeoutSecs`` -- success criterion 7 explicitly requires
-        supporting multi-chunk streamed responses, which can legitimately
-        outlive the idle window).
+        than ``idleTimeoutSecs``: multi-chunk streamed responses are a
+        supported case, and can legitimately outlive the idle window).
 
         A no-op if the actor has no tracked entry (e.g. a race with a
         concurrent reap/abort) -- the forward itself still proceeds against
@@ -500,10 +499,10 @@ class StandbyManager:
                 if entry is None:
                     continue  # already reaped/reused by a concurrent caller
                 if entry.in_flight > 0:
-                    # A forwarded request (possibly a long-lived/streamed one,
-                    # per success criterion 7) is actively using this
-                    # container right now -- never reap out from under it,
-                    # no matter how stale last_request looks.
+                    # A forwarded request (possibly a long-lived/streamed one)
+                    # is actively using this container right now -- never
+                    # reap out from under it, no matter how stale
+                    # last_request looks.
                     continue
                 if time.monotonic() - entry.last_request < entry.idle_timeout:
                     continue  # a concurrent request refreshed it after our snapshot

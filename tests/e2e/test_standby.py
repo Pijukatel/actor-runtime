@@ -138,22 +138,17 @@ def test_on_demand_actor_discovers_and_calls_standby_actor(runtime, tmp_path):
     standby_actor_id = "local-user~standby-actor"
     caller_actor_id = "local-user~caller-actor"
 
-    # Before any request: no run yet for the standby actor (criterion 4).
+    # Before any request: no run yet for the standby actor.
     runs_before = httpx.get(f"{api}/v2/acts/{standby_actor_id}/runs", timeout=10).json()["data"]["items"]
     assert runs_before == []
 
     actor = httpx.get(f"{api}/v2/actors/{standby_actor_id}", timeout=10).json()["data"]
     assert actor.get("standbyUrl"), "standby-enabled actor must expose standbyUrl"
 
-    # The on-demand Actor discovers standbyUrl itself (criterion 22) and calls
-    # it container-to-container (criterion 23) -- see sample_actor_caller/main.py.
-    # Input goes through --input-file, not `-i`: apify-cli treats any inline
-    # `--input` value containing "~" (every `username~name` actor id) as a file
-    # path and rejects it (apify/apify-cli#1281).
-    input_file = tmp_path / "caller-input.json"
-    input_file.write_text(json.dumps({"standbyActorId": standby_actor_id, "greeting": "howdy"}))
+    # Contract: input is the standby Actor's name only -- the caller resolves
+    # its own username and builds the id itself (see sample_actor_caller/main.py).
     call = subprocess.run(
-        ["apify", "call", f"--input-file={input_file}"],
+        ["apify", "call", "-i", json.dumps({"standbyActorName": "standby-actor", "greeting": "howdy"})],
         cwd=caller_project, env=env, stdin=subprocess.DEVNULL,
         capture_output=True, text=True, timeout=300,
     )
@@ -162,7 +157,7 @@ def test_on_demand_actor_discovers_and_calls_standby_actor(runtime, tmp_path):
     caller_runs = httpx.get(f"{api}/v2/acts/{caller_actor_id}/runs", timeout=10).json()["data"]["items"]
     assert caller_runs, "no caller runs recorded"
     caller_run = _wait_run_terminal(api, caller_runs[0]["id"])
-    assert caller_run["status"] == "SUCCEEDED", f"caller run: {caller_run}"  # criterion 24
+    assert caller_run["status"] == "SUCCEEDED", f"caller run: {caller_run}"
 
     output = httpx.get(
         f"{api}/v2/key-value-stores/{caller_run['defaultKeyValueStoreId']}/records/OUTPUT", timeout=10
@@ -178,7 +173,7 @@ def test_on_demand_actor_discovers_and_calls_standby_actor(runtime, tmp_path):
     ).json()
     assert caller_items == [received]
 
-    # The standby actor's own run is now warm and inspectable (criterion 24).
+    # The standby actor's own run is now warm and inspectable.
     standby_runs = httpx.get(f"{api}/v2/acts/{standby_actor_id}/runs", timeout=10).json()["data"]["items"]
     assert standby_runs, "standby actor should have started a warm run"
     assert standby_runs[0]["status"] == "RUNNING"
@@ -193,6 +188,6 @@ def test_on_demand_actor_discovers_and_calls_standby_actor(runtime, tmp_path):
     ]
 
     # It tears itself down after the (overridden, short) idle timeout, with no
-    # further request needed to trigger it (criterion 12).
+    # further request needed to trigger it.
     standby_run = _wait_run_terminal(api, standby_runs[0]["id"], timeout=60)
     assert standby_run["status"] == "ABORTED", f"standby run: {standby_run}"

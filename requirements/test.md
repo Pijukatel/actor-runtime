@@ -19,15 +19,20 @@ The test points the stock `apify-cli` at the local runtime by exporting
 for the run. No CLI patch is needed.
 
 ## On-demand Actor discovers and calls a standby Actor
-Test case must verify the standby-actor flow end to end, using two
-dependency-free fixture Actors (`sample_actor_standby/`, `sample_actor_caller/`):
+Test case must verify the standby-actor flow end to end, using two fixture
+Actors driven by the full Apify SDK `Actor` lifecycle
+(`sample_actor_standby/`, `sample_actor_caller/`):
  - Push a standby-enabled Actor (`.actor/actor.json` with `usesStandbyMode: true`)
    and a plain on-demand Actor.
  - Before any request reaches it, the standby Actor has no running container.
- - Run the on-demand Actor with the standby Actor's id as input; from inside its
-   own container it uses `APIFY_API_BASE_URL` + its own `APIFY_TOKEN` (no
-   hardcoded URL/port) to look up the standby Actor and read its `standbyUrl`,
-   then calls that URL container-to-container.
+ - Run the on-demand Actor with the standby Actor's NAME as input (never a
+   username-qualified id): from inside its own container it uses
+   `APIFY_API_BASE_URL` + its own `APIFY_TOKEN` (no hardcoded URL/port) to
+   resolve the acting user's own username (`client.user(Actor.configuration.user_id).get()`), builds
+   the standby Actor's id itself as `{username}~{name}` (the platform's own id
+   convention -- `username~standby-actor` on the real platform,
+   `local-user~standby-actor` here, from the exact same code), looks up that
+   Actor and reads its `standbyUrl`, then calls that URL container-to-container.
  - The on-demand run reaches `SUCCEEDED` and its output shows the standby
    Actor's real response including its `reply` field (proving the round trip);
    the caller also saves that response into its own default dataset, and the
@@ -38,18 +43,18 @@ dependency-free fixture Actors (`sample_actor_standby/`, `sample_actor_caller/`)
  - Runs in `tests/e2e/test_standby.py`, following the same Docker/`apify-cli`
    skip pattern as `tests/e2e/test_e2e.py`.
 
-## Real apify-client/SDK is_at_home + API round-trip
-Test case must verify that a real `apify-client`/`apify` SDK -- pip-installed
-at image build time in the one fixture exempt from the stdlib-only rule,
-`sample_actor_isathome/` -- running inside a real Actor container reports
-`is_at_home` the way the client itself computes it, calls back into the
-runtime's own API with its injected `APIFY_TOKEN`, and pushes its result into
-its own default dataset through the client (not local disk): pushed/run via
-`apify-cli` like the other e2e cases, then the run's dataset is read back over
-the API to assert `is_at_home is True`, the resolved user matches the run's
-owner, and the dataset id matches the run's real `defaultDatasetId`. Runs in
-`tests/e2e/test_isathome.py`, following the same Docker/`apify-cli` skip
-pattern as `tests/e2e/test_e2e.py`.
+## Real apify SDK is_at_home + API round-trip
+Test case must verify that the real `apify`/`apify-client` SDK -- pip-installed
+at image build time, like every `sample_actor*` fixture -- running inside a
+real Actor container reports `is_at_home` the way `Actor.is_at_home()` itself
+computes it, calls back into the runtime's own API through
+`Actor.new_client()` using its injected `APIFY_TOKEN`, and pushes its result
+into its own default dataset through `Actor.push_data()` (not local disk):
+pushed/run via `apify-cli` like the other e2e cases, then the run's dataset is
+read back over the API to assert `is_at_home is True`, the resolved user
+matches the run's owner, and the dataset id matches the run's real
+`defaultDatasetId`. Runs in `tests/e2e/test_isathome.py`, following the same
+Docker/`apify-cli` skip pattern as `tests/e2e/test_e2e.py`.
 
 ## Mandatory multi-user, isolation and storage-sharing tests
 Automated coverage (runnable Docker-free via the in-process `wired` fixture, with

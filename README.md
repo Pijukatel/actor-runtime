@@ -115,6 +115,15 @@ apify call -i '{"greeting":"hi"}'   # runs it and waits for completion
 Then open the console URL, or fetch the run's storages over the API. See
 `requirements/cli.md` for details.
 
+All four `sample_actor*/` fixtures are real `apify` SDK Actors (`async with
+Actor:`, `Actor.get_input()`/`set_value()`/`push_data()`/
+`open_request_queue()`), so their `.actor/Dockerfile` pip-installs `apify` and
+`apify-client` at image **build** time -- `apify push`/`docker build` needs
+normal internet egress for that step. At **run** time each container only
+talks to this runtime and other local containers (e.g. the caller fixture's
+container-to-container call to the standby Actor's own HTTP endpoint), so
+runs stay fully offline.
+
 An Actor pushed and built before its `.actor/input_schema.json` existed keeps
 showing the console's plain-JSON input editor until you push again — a plain
 `apify push --force` picks up the new schema without needing a rebuild.
@@ -130,6 +139,13 @@ python3 and curl:
 
 ```bash
 bash scripts/demo.sh
+```
+
+Pass `--remote` to run the same demo against the real Apify platform instead
+(skips the image build/container steps; requires `apify login` beforehand):
+
+```bash
+bash scripts/demo.sh --remote
 ```
 
 ## Run the tests

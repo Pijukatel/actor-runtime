@@ -2,162 +2,251 @@
 # =============================================================================
 # actor-runtime demo: standby actors end to end
 # =============================================================================
-# Demonstrates the full local Actor development loop against actor-runtime,
-# including the standby-actor feature:
+# Demonstrates the full Actor development loop, including the standby-actor
+# feature, against either a local actor-runtime container (default) or the
+# real Apify platform (`--remote`):
 #
-#   1. create a temporary data directory,
-#   2. build the actor-runtime Docker image,
-#   3. start the runtime container (API + console),
-#   4. point the stock apify-cli at it via APIFY_CLIENT_BASE_URL,
-#   5. push the two sample Actors (a standby echo server and an on-demand
-#      caller) with `apify push`,
-#   6. run the caller with `apify call` — from inside its container it looks
-#      up the standby Actor through the runtime API, calls its standbyUrl
-#      (cold-starting the standby container), and saves the response,
-#   7. read the results back over the API.
+#   Local mode (default):
+#     1. create a temporary data directory,
+#     2. build the actor-runtime Docker image,
+#     3. start the runtime container (API + console),
+#     4. point the stock apify-cli at it via APIFY_CLIENT_BASE_URL,
+#     5. push the two sample Actors (a standby echo server and an on-demand
+#        caller) with `apify push`,
+#     6. run the caller with `apify call --json` — from inside its container
+#        it looks up the standby Actor through the runtime API, calls its
+#        standbyUrl (cold-starting the standby container), and saves the
+#        response; `--json` also hands this script the run's own id and
+#        default storage ids on stdout,
+#     7. read the results back through apify-cli itself (`apify info`, `apify
+#        runs ls`, `apify key-value-stores get-value`, `apify datasets
+#        get-items`) — never a raw HTTP call, so credential handling is
+#        entirely the CLI's own and this script runs unchanged against the
+#        real platform.
 #
-# Prerequisites: docker (daemon running), apify-cli on PATH (`npm i -g
-# apify-cli`), python3 (used only to pretty-parse JSON responses), curl.
+#   Remote mode (`demo.sh --remote`): steps 1-4 above don't apply — there is
+#   no runtime image to build and no container to start. apify-cli is left
+#   pointed at the real platform (no APIFY_CLIENT_BASE_URL override), using
+#   whichever account `apify login` already stored. The demo starts directly
+#   at step 5 and runs steps 5-7 unchanged, against that account.
+#
+# Usage: demo.sh [--remote]
+#   (no flag)   run against a local actor-runtime container (default)
+#   --remote    run the same demo against the real Apify platform
+#               (console.apify.com); requires `apify login` beforehand
+#
+# Prerequisites:
+#   local:  docker (daemon running), apify-cli on PATH (`npm i -g
+#           apify-cli`), python3 (parses apify-cli's JSON output; it never
+#           makes an HTTP request itself), curl (liveness poll only, see
+#           step 3).
+#   remote: apify-cli on PATH and logged in (`apify login`), python3.
 # Run from anywhere; paths are resolved relative to this script's repo.
 #
-# The runtime is left running at the end so you can explore the console;
-# cleanup commands are printed last.
+# Both fixture Actors are real `apify` SDK Actors: `apify push` (step 5)
+# triggers a `docker build` whose .actor/Dockerfile pip-installs `apify` +
+# `apify-client` (and, for the caller, `httpx`), so it needs normal internet
+# egress. Once built, both containers only ever call the runtime API they
+# were pushed to (local or real, per mode).
+#
+# Local mode leaves the runtime running at the end so you can explore the
+# console; cleanup commands are printed last. Remote mode has no container
+# or image to clean up -- it prints pointers into the real console instead.
 # =============================================================================
 set -euo pipefail
 
+# ---- mode: local actor-runtime (default) or the real platform (--remote) --
+REMOTE=0
+if [ "${1:-}" = "--remote" ]; then
+  REMOTE=1
+  shift
+fi
+if [ $# -gt 0 ]; then
+  echo "Usage: demo.sh [--remote]" >&2
+  exit 1
+fi
+
+if [ "$REMOTE" -eq 1 ]; then
+  printf '\n\033[1;45m %s \033[0m\n\n' "REMOTE MODE -- running against the REAL Apify platform (console.apify.com)"
+else
+  printf '\n\033[1;44m %s \033[0m\n\n' "LOCAL MODE -- running against a local actor-runtime container"
+fi
+
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# ---- configuration (override via environment) -------------------------------
-API_PORT="${API_PORT:-3333}"        # host port for the runtime API
-CONSOLE_PORT="${CONSOLE_PORT:-3000}" # host port for the console UI
-IMAGE_TAG="${IMAGE_TAG:-actor-runtime:demo}"
-CONTAINER_NAME="${CONTAINER_NAME:-actor-runtime-demo}"
-
-API_URL="http://localhost:${API_PORT}"
+# ---- configuration (override via environment), local mode only ------------
+if [ "$REMOTE" -eq 0 ]; then
+  API_PORT="${API_PORT:-3333}"        # host port for the runtime API
+  CONSOLE_PORT="${CONSOLE_PORT:-3000}" # host port for the console UI
+  IMAGE_TAG="${IMAGE_TAG:-actor-runtime:demo}"
+  CONTAINER_NAME="${CONTAINER_NAME:-actor-runtime-demo}"
+  API_URL="http://localhost:${API_PORT}"
+fi
 
 step() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 
 step "0. Checking prerequisites"
-command -v docker >/dev/null || { echo "docker is required"; exit 1; }
 command -v apify  >/dev/null || { echo "apify-cli is required (npm i -g apify-cli)"; exit 1; }
 command -v python3 >/dev/null || { echo "python3 is required"; exit 1; }
-docker version >/dev/null || { echo "docker daemon is not reachable"; exit 1; }
+if [ "$REMOTE" -eq 1 ]; then
+  # A leftover APIFY_CLIENT_BASE_URL in the invoking shell (e.g. from a prior
+  # local-mode run, or manual testing per requirements/cli.md) would silently
+  # redirect every apify-cli call below away from api.apify.com while the
+  # REMOTE banner keeps claiming the real platform -- clear it so remote mode
+  # always talks to the real platform regardless of ambient env. (APIFY_TOKEN
+  # is deliberately not touched here: per requirements/cli.md, apify push/call/
+  # info use only the CLI's stored login, never the APIFY_TOKEN env var, so a
+  # stale value there can't redirect or otherwise poison this path.)
+  unset APIFY_CLIENT_BASE_URL
+  # Cheap, local check (no more of a network call than step 7 already makes):
+  # every command below authenticates with apify-cli's own stored login (see
+  # requirements/cli.md), so fail fast here with a clear message instead of a
+  # mid-script 401 further down. apify-cli reports every `apify info` failure
+  # (no stored login, an unreachable API, ...) the same way -- exit 1 with a
+  # generic message -- so this can't honestly claim which one happened.
+  apify info >/dev/null || { echo "apify info failed -- make sure you are logged in (\`apify login\`) and api.apify.com is reachable."; exit 1; }
+else
+  command -v docker >/dev/null || { echo "docker is required"; exit 1; }
+  docker version >/dev/null || { echo "docker daemon is not reachable"; exit 1; }
+fi
 
-step "1. Creating the temporary data directory"
-# DATA must be an ABSOLUTE host path mounted at the SAME path inside the
-# container: the runtime bind-mounts per-run storage into the sibling Actor
-# containers it launches through the shared Docker socket, so the paths it
-# passes to `docker run` must be valid on the host.
-DATA="$(mktemp -d)"
-chmod 777 "$DATA"   # Actor containers run as a non-root user and write here
-echo "DATA_DIR = $DATA"
+if [ "$REMOTE" -eq 0 ]; then
+  step "1. Creating the temporary data directory"
+  # DATA must be an ABSOLUTE host path mounted at the SAME path inside the
+  # container: the runtime bind-mounts per-run storage into the sibling Actor
+  # containers it launches through the shared Docker socket, so the paths it
+  # passes to `docker run` must be valid on the host.
+  DATA="$(mktemp -d)"
+  chmod 777 "$DATA"   # Actor containers run as a non-root user and write here
+  echo "DATA_DIR = $DATA"
 
-step "2. Building the actor-runtime image"
-docker build -t "$IMAGE_TAG" "$REPO"
+  step "2. Building the actor-runtime image"
+  docker build -t "$IMAGE_TAG" "$REPO"
 
-step "3. Starting the runtime container"
-# Re-runs of this demo are idempotent: replace any previous demo container.
-docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-docker run -d --name "$CONTAINER_NAME" \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "$DATA:$DATA" -e DATA_DIR="$DATA" -e HOST_DATA_DIR="$DATA" \
-  -p "${API_PORT}:3333" -p "${CONSOLE_PORT}:3000" \
-  "$IMAGE_TAG"
+  step "3. Starting the runtime container"
+  # Re-runs of this demo are idempotent: replace any previous demo container.
+  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+  docker run -d --name "$CONTAINER_NAME" \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "$DATA:$DATA" -e DATA_DIR="$DATA" -e HOST_DATA_DIR="$DATA" \
+    -p "${API_PORT}:3333" -p "${CONSOLE_PORT}:3000" \
+    "$IMAGE_TAG"
 
-echo -n "Waiting for the API to come up "
-for _ in $(seq 1 60); do
-  if curl -fsS "$API_URL/v2/users" >/dev/null 2>&1; then echo " up!"; break; fi
-  echo -n "."
-  sleep 1
-done
-curl -fsS "$API_URL/v2/users" >/dev/null || { echo "runtime API never came up"; exit 1; }
+  echo -n "Waiting for the API to come up "
+  # A liveness poll on the container this script itself just started -- plain
+  # infrastructure, not a demo API call, so it stays a bare HTTP check. Every
+  # actual read of demo data happens in step 7, entirely through apify-cli.
+  for _ in $(seq 1 60); do
+    if curl -fsS "$API_URL/v2/users" >/dev/null 2>&1; then echo " up!"; break; fi
+    echo -n "."
+    sleep 1
+  done
+  curl -fsS "$API_URL/v2/users" >/dev/null || { echo "runtime API never came up"; exit 1; }
 
-step "4. Pointing apify-cli at the local runtime"
-# APIFY_CLIENT_BASE_URL is the only redirect needed: it is the base URL the
-# stock apify-cli hands to its underlying apify-client, and push/call/login
-# all honour it (see requirements/cli.md). No token is configured here — the
-# CLI simply presents whatever credential it already has:
-#   - logged in:  its stored token is the first one this fresh runtime sees,
-#                 so it becomes the default user's (`local-user`) bound
-#                 credential and everything runs as `local-user`;
-#   - logged out: push/call send no token at all, and the runtime's
-#                 default-user fallback accepts that as `local-user` too.
-export APIFY_CLIENT_BASE_URL="$API_URL"
-export APIFY_CLI_DISABLE_TELEMETRY=1
-export APIFY_CLI_SKIP_UPDATE_CHECK=1
-echo "APIFY_CLIENT_BASE_URL = $APIFY_CLIENT_BASE_URL"
+  step "4. Pointing apify-cli at the local runtime"
+  # Redirects apify-cli's underlying apify-client at the runtime; no token is
+  # configured here (see "Authentication / token bootstrap" in requirements/cli.md).
+  export APIFY_CLIENT_BASE_URL="$API_URL"
+  export APIFY_CLI_DISABLE_TELEMETRY=1
+  export APIFY_CLI_SKIP_UPDATE_CHECK=1
+  echo "APIFY_CLIENT_BASE_URL = $APIFY_CLIENT_BASE_URL"
+else
+  step "1-4. Skipped in --remote mode"
+  # No image to build, no container to start, and no APIFY_CLIENT_BASE_URL to
+  # point anywhere: apify-cli already talks to the real platform by default,
+  # using whichever account is logged in (checked above).
+fi
 
+if [ "$REMOTE" -eq 1 ]; then
+  printf '\033[1;33mWARNING:\033[0m this force-pushes actors named "standby-actor" and\n"caller-actor" into your logged-in Apify account -- any existing actors with\nthose exact names there will be overwritten.\n\n'
+fi
 step "5. Pushing the standby and caller Actors"
-# Push from copies in the temp dir so the CLI's local state files never
+# Push from copies in a scratch dir so the CLI's local state files never
 # touch the repo checkout. `apify push` builds each Actor's image through
-# the runtime; the standby Actor's .actor/actor.json carries
-# `usesStandbyMode: true`, which is what standby-enables it.
-WORK="$DATA/projects"
-mkdir -p "$WORK"
+# the target runtime; the standby Actor's .actor/actor.json carries
+# `usesStandbyMode: true`, which is what standby-enables it there too.
+if [ "$REMOTE" -eq 1 ]; then
+  WORK="$(mktemp -d)"
+else
+  WORK="$DATA/projects"
+  mkdir -p "$WORK"
+fi
 cp -r "$REPO/sample_actor_standby" "$WORK/standby-actor"
 cp -r "$REPO/sample_actor_caller" "$WORK/caller-actor"
 (cd "$WORK/standby-actor" && apify push --force)
 (cd "$WORK/caller-actor" && apify push --force)
 
 step "6. Running the caller Actor"
-# The caller discovers the standby Actor's standbyUrl through the runtime API
-# (no hardcoded URL) and calls it container-to-container; the first request
-# cold-starts the standby container. Input goes through --input-file rather
-# than inline -i: apify-cli mis-detects any inline JSON containing "~" (as in
-# the `local-user~standby-actor` id) as a file path (apify/apify-cli#1281).
+# Contract: input is the standby Actor's name only -- the caller resolves
+# its own username and builds the id itself (see sample_actor_caller/main.py).
 INPUT_FILE="$WORK/caller-input.json"
 cat > "$INPUT_FILE" <<'JSON'
-{"standbyActorId": "local-user~standby-actor", "greeting": "hello-from-the-demo"}
+{"standbyActorName": "standby-actor", "greeting": "hello-from-the-demo"}
 JSON
-(cd "$WORK/caller-actor" && apify call --input-file="$INPUT_FILE")
+# --json prints the finished run's id and default storage ids to stdout
+# (captured below, for step 7); the human-readable progress log `apify call`
+# normally prints still streams live, to stderr, so capturing stdout into a
+# variable does not hide it.
+CALL_JSON="$(cd "$WORK/caller-actor" && apify call --input-file="$INPUT_FILE" --json)"
 
-step "7. Reading the results back over the API"
-# The script never configured a token, so it discovers the acting credential
-# from the runtime itself: a tokenless request falls back to the default user
-# `local-user`, and /v2/users/me deliberately returns the caller's stored
-# token (that is how the console's user switcher works). Whatever token the
-# CLI bound in step 5/6 — or null if it was logged out — comes back here, and
-# the remaining reads authenticate with it when present.
-python3 - "$API_URL" <<'PY'
-import json
-import sys
-import urllib.request
+step "7. Reading the results back through apify-cli"
+# Same credential contract as step 4: every read below goes through
+# apify-cli, never a raw HTTP call.
+USERNAME="$(apify info | sed -n 's/^username: //p')"
+echo "Acting as ${USERNAME}"
 
-api = sys.argv[1]
+CALLER_META="$(python3 -c '
+import json, sys
+run = json.load(sys.stdin)
+print(run["run"]["id"], run["run"]["status"], run["storage"]["defaultDatasetId"], run["storage"]["defaultKeyValueStoreId"])
+' <<<"$CALL_JSON")"
+read -r CALLER_RUN_ID CALLER_RUN_STATUS CALLER_DATASET_ID CALLER_KV_ID <<<"$CALLER_META"
+echo "Caller run ${CALLER_RUN_ID}: ${CALLER_RUN_STATUS}"
 
-def _fetch(path, token=None):
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    req = urllib.request.Request(f"{api}{path}", headers=headers)
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+echo
+echo "What the caller received from the standby Actor (OUTPUT record):"
+apify key-value-stores get-value "$CALLER_KV_ID" OUTPUT
 
-bound_token = _fetch("/v2/users/me")["data"]["token"]
-print(f"Acting as local-user (bound token {'set' if bound_token else 'not set'})")
+echo
+echo "Caller's dataset (the same response, saved as an item):"
+apify datasets get-items "$CALLER_DATASET_ID" | python3 -m json.tool
 
-def get(path):
-    return _fetch(path, token=bound_token)
+# `apify call` only ever reports the run IT started (the caller's), so the
+# standby Actor's run -- warmed as a side effect, inside the caller's own
+# container -- still needs one listing to find; --desc --limit 1 asks the
+# CLI itself for "the most recent run" instead of fetching every run and
+# picking the last one client-side.
+STANDBY_ACTOR_ID="${USERNAME}~standby-actor"
+STANDBY_JSON="$(apify runs ls "$STANDBY_ACTOR_ID" --json --desc --limit 1)"
+STANDBY_META="$(python3 -c '
+import json, sys
+items = json.load(sys.stdin)["items"]
+if not items:
+    sys.exit("No runs found yet for " + sys.argv[1])
+run = items[0]
+print(run["id"], run["status"], run["defaultDatasetId"])
+' "$STANDBY_ACTOR_ID" <<<"$STANDBY_JSON")"
+read -r STANDBY_RUN_ID STANDBY_RUN_STATUS STANDBY_DATASET_ID <<<"$STANDBY_META"
+echo
+echo "Standby run ${STANDBY_RUN_ID}: ${STANDBY_RUN_STATUS} (stays warm until its idle timeout)"
 
-caller_run = get("/v2/acts/local-user~caller-actor/runs")["data"]["items"][-1]
-print(f"Caller run {caller_run['id']}: {caller_run['status']}")
-
-output = get(f"/v2/key-value-stores/{caller_run['defaultKeyValueStoreId']}/records/OUTPUT")
-print("\nWhat the caller received from the standby Actor (OUTPUT record):")
-print(json.dumps(output, indent=2))
-
-items = get(f"/v2/datasets/{caller_run['defaultDatasetId']}/items")
-print("\nCaller's dataset (the same response, saved as an item):")
-print(json.dumps(items, indent=2))
-
-standby_run = get("/v2/acts/local-user~standby-actor/runs")["data"]["items"][-1]
-print(f"\nStandby run {standby_run['id']}: {standby_run['status']} (stays warm until its idle timeout)")
-
-served = get(f"/v2/datasets/{standby_run['defaultDatasetId']}/items")
-print("Standby Actor's dataset (one record per call it served):")
-print(json.dumps(served, indent=2))
-PY
+echo "Standby Actor's dataset (one record per call it served):"
+apify datasets get-items "$STANDBY_DATASET_ID" | python3 -m json.tool
 
 step "Done"
-cat <<EOF
+if [ "$REMOTE" -eq 1 ]; then
+  cat <<EOF
+Explore on the real platform:
+  Your Actors:          https://console.apify.com/actors
+  Caller Actor run id:  ${CALLER_RUN_ID}   (Actors > caller-actor > Runs)
+  Standby Actor run id: ${STANDBY_RUN_ID}  (Actors > standby-actor > Runs;
+                                           stays warm until its idle timeout)
+
+Clean up the scratch push directory with:
+  rm -rf ${WORK}
+EOF
+else
+  cat <<EOF
 Explore the runtime:
   Console:            http://localhost:${CONSOLE_PORT}   (watch the standby run's live log + dataset,
                                                           try the Abort button while it is RUNNING)
@@ -169,3 +258,4 @@ last request (its idle timeout). Clean everything up with:
   docker rm -f ${CONTAINER_NAME}
   rm -rf ${DATA}
 EOF
+fi
