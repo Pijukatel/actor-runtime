@@ -148,10 +148,13 @@
   every field currently non-empty for the resource being viewed, excluding
   identity/bookkeeping fields (`id`/`name`/`userId`/`createdAt`/`modifiedAt`/
   `accessedAt`/`consoleUrl`) and object-valued stubs (e.g. a request queue's
-  empty `stats` sub-object) — nothing invented, nothing non-empty omitted. In
-  practice today this renders a dataset's `itemCount`/`cleanItemCount`, a
-  key-value store's `itemCount`, and a request queue's `totalRequestCount`/
-  `pendingRequestCount`/`handledRequestCount`/`hadMultipleClients`.
+  empty `stats` sub-object) — nothing invented, nothing non-empty omitted. A
+  boolean field is always shown regardless of its value — `false` is a
+  meaningful, present value, not emptiness — while a numeric/string field is
+  only shown once it is non-zero/non-blank. In practice today this renders a
+  dataset's `itemCount`/`cleanItemCount`, a key-value store's `itemCount`, and
+  a request queue's `totalRequestCount`/`pendingRequestCount`/
+  `handledRequestCount`/`hadMultipleClients` (shown whether `true` or `false`).
 - The **left column** shows the top-level category nav (Actors / Storage / Users)
   in its own bordered box, and directly below it, in a second, separate bordered
   box, the acting user's Actors list (so you can switch actors from any actor route).

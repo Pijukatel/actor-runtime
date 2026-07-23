@@ -680,6 +680,59 @@ async def test_console_storages_show_unnamed_checkbox_and_gated_delete(wired):
         assert handler not in js
 
 
+async def test_console_stats_line_shows_boolean_false_fields(wired):
+    client, _service = wired
+    # Ground the JS fix in the actual data shape it must handle: a freshly
+    # created request queue's own GET-detail response already carries
+    # `hadMultipleClients: False` -- present and non-absent, never omitted by
+    # the server -- so the console's own filter is the only place that could
+    # hide it.
+    await client.post("/v2/users", json={"name": "q"})
+    created = await client.post(
+        "/v2/request-queues", json={"name": "single-client"}, headers={"Authorization": "Bearer q"}
+    )
+    rq_id = created.json()["data"]["id"]
+    meta = (
+        await client.get(f"/v2/request-queues/{rq_id}", headers={"Authorization": "Bearer q"})
+    ).json()["data"]
+    assert meta["hadMultipleClients"] is False
+
+    js = (await client.get("/console/app.js")).text
+    # `statsLineEl`'s filter must treat a boolean specially -- `false` is a
+    # present value, not emptiness -- while zero/blank/absent counters are
+    # still suppressed (criterion 23).
+    stats_idx = js.index("function statsLineEl(meta)")
+    body = js[stats_idx : js.index("\n}", stats_idx)]
+    assert "typeof value !== \"boolean\"" in body
+    assert "value === false" not in body
+
+
+async def test_console_render_store_content_guards_against_error_envelopes(wired):
+    """`renderStoreContent`'s kv/ds/rq branches must bail out on an error
+    response (storage deleted / access revoked mid-view) before computing a
+    paging line from a shape that was never a paginated payload -- no
+    automated browser test exists for this repo's plain JS console, so this is
+    a structural check that the guard is actually wired into all three
+    branches, not just one."""
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+
+    assert "function isErrorEnvelope(resp)" in js
+    assert "function errorLineEl(err)" in js
+
+    body_start = js.index("async function renderStoreContent()")
+    body_end = js.index("\n// tableEl already renders", body_start)
+    body = js[body_start:body_end]
+    # One guard right after each of the three metadata fetches, and one more
+    # after the ds branch's own raw-Response items fetch (checked via `res.ok`
+    # instead of `isErrorEnvelope`, since a successful dataset-items response
+    # is a bare array, not an envelope).
+    assert body.count("isErrorEnvelope(meta)") == 3
+    assert body.count("isErrorEnvelope(keysResp)") == 1
+    assert body.count("isErrorEnvelope(reqsResp)") == 1
+    assert "if (!res.ok)" in body
+
+
 async def test_console_left_column_has_separate_nav_and_list_boxes(wired):
     client, _service = wired
     html = (await client.get("/")).text

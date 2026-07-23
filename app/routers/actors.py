@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from ..auth import resolve_user
-from ..responses import data, get_service, not_found, optional_bounded_int, read_json
+from ..responses import data, get_service, not_found, paginate, parse_page, read_json
 from ..serializers import actor_dict, build_dict, run_dict, storage_dict, version_dict
 from ..service import STORAGE_DS, STORAGE_KV, STORAGE_RQ
 
@@ -19,13 +19,10 @@ async def _my_storages(request: Request, storage_type: str) -> object:
     user = await resolve_user(request)
     storages = await svc.list_storages_for_user(user, type=storage_type)
     items = [storage_dict(st) for st in storages]
-    params = request.query_params
-    limit = optional_bounded_int(params, "limit", minimum=0, message="Query parameter 'limit' must not be negative.")
-    offset = optional_bounded_int(params, "offset", minimum=0, message="Query parameter 'offset' must not be negative.")
+    limit, offset = parse_page(request)
     if limit is None and offset is None:
         return data({"total": len(items), "count": len(items), "items": items})
-    start = offset or 0
-    page = items[start : start + limit] if limit is not None else items[start:]
+    page = paginate(items, limit, offset)
     return data({"total": len(items), "count": len(page), "items": page})
 
 

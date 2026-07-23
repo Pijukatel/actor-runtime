@@ -425,6 +425,19 @@ function pagingLineEl(offset, count, total) {
   return mk("p", { class: "muted", text: `showing ${from}–${to} of ${total}` });
 }
 
+// True when an already-`unwrap()`ed response is this app's error envelope
+// (`{"error": {...}}`), e.g. the storage was deleted or access revoked between
+// opening the detail view and this fetch -- a stale offset/limit re-fetch is a
+// real, if rare, race, not a shape any paging line can be built from.
+function isErrorEnvelope(resp) {
+  return !!(resp && typeof resp === "object" && resp.error);
+}
+
+function errorLineEl(err) {
+  const message = (err && err.message) || "Failed to load storage content.";
+  return mk("p", { class: "muted", text: `Error: ${message}` });
+}
+
 function pagingControlsEl(offset, count, total, onPage) {
   const row = mk("div", { class: "row" });
   const prev = mk("button", {
@@ -452,14 +465,19 @@ const STORAGE_META_KEYS = new Set([
 // Every field a storage's own GET-detail response CURRENTLY returns with a
 // non-empty value -- nothing invented, nothing non-empty omitted. Object-valued
 // stubs (e.g. a request queue's empty `stats` sub-object) and plain metadata
-// are excluded; a field that is absent/zero/false for this instance is simply
-// not shown, rather than hardcoding which fields exist per storage type.
+// are excluded. A counter-ish field that is absent/zero/blank for this instance
+// is simply not shown, rather than hardcoding which fields exist per storage
+// type -- but a boolean is a meaningful value either way (e.g. a request
+// queue's `hadMultipleClients`), so `false` is shown just like `true`, never
+// treated as "empty".
 function statsLineEl(meta) {
   const parts = [];
   for (const [key, value] of Object.entries(meta || {})) {
     if (STORAGE_META_KEYS.has(key)) continue;
     if (value && typeof value === "object") continue;
-    if (value === null || value === undefined || value === "" || value === 0 || value === false) continue;
+    if (typeof value !== "boolean" && (value === null || value === undefined || value === "" || value === 0)) {
+      continue;
+    }
     parts.push(`${key}: ${value}`);
   }
   return mk("p", { class: "muted", text: parts.join(" · ") });
@@ -801,10 +819,18 @@ async function renderStoreContent() {
 
   if (kind === "kv") {
     const meta = unwrap(await api(`/v2/key-value-stores/${id}`));
+    if (isErrorEnvelope(meta)) {
+      box.appendChild(errorLineEl(meta.error));
+      return;
+    }
     box.appendChild(statsLineEl(meta));
     const keysResp = unwrap(
       await api(`/v2/key-value-stores/${id}/keys?limit=${STORAGE_PAGE_SIZE}&offset=${storeOffset}`),
     );
+    if (isErrorEnvelope(keysResp)) {
+      box.appendChild(errorLineEl(keysResp.error));
+      return;
+    }
     const keys = keysResp.items || [];
     box.appendChild(pagingLineEl(storeOffset, keys.length, keysResp.total));
     const rows = [];
@@ -825,12 +851,20 @@ async function renderStoreContent() {
     );
   } else if (kind === "ds") {
     const meta = unwrap(await api(`/v2/datasets/${id}`));
+    if (isErrorEnvelope(meta)) {
+      box.appendChild(errorLineEl(meta.error));
+      return;
+    }
     box.appendChild(statsLineEl(meta));
     // Dataset items keep their bare-array body; the pagination info lives in
     // response headers (mirroring the real API's own convention), so this
     // reads the raw Response rather than going through api()/unwrap().
     const res = await apiRaw(`/v2/datasets/${id}/items?limit=${STORAGE_PAGE_SIZE}&offset=${storeOffset}`);
     const items = await res.json();
+    if (!res.ok) {
+      box.appendChild(errorLineEl(items && items.error));
+      return;
+    }
     const total = Number(res.headers.get("X-Apify-Pagination-Total") || items.length);
     box.appendChild(pagingLineEl(storeOffset, items.length, total));
     box.appendChild(mk("pre", { text: JSON.stringify(items, null, 2) }));
@@ -842,10 +876,18 @@ async function renderStoreContent() {
     );
   } else if (kind === "rq") {
     const meta = unwrap(await api(`/v2/request-queues/${id}`));
+    if (isErrorEnvelope(meta)) {
+      box.appendChild(errorLineEl(meta.error));
+      return;
+    }
     box.appendChild(statsLineEl(meta));
     const reqsResp = unwrap(
       await api(`/v2/request-queues/${id}/requests?limit=${STORAGE_PAGE_SIZE}&offset=${storeOffset}`),
     );
+    if (isErrorEnvelope(reqsResp)) {
+      box.appendChild(errorLineEl(reqsResp.error));
+      return;
+    }
     const reqs = reqsResp.items || [];
     box.appendChild(pagingLineEl(storeOffset, reqs.length, reqsResp.total));
     const rows = reqs.map((q) => [

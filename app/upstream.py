@@ -9,9 +9,10 @@ upstream reply is relayed back verbatim; any failure (non-2xx, timeout, connect
 error) falls back to the original local 404, logged for debuggability.
 
 Registered as a Starlette middleware in app/main.py -- see that module and
-.shepherd/2-design.md for the full contract. Deliberately excludes standby
-forwarding (``/v2/actor-standby/...``, a local-only route with no equivalent
-reachable the same way), logs, console and the runtime-config toggle itself.
+requirements/api.md's "Upstream fallback" section for the full contract.
+Deliberately excludes standby forwarding (``/v2/actor-standby/...``, a
+local-only route with no equivalent reachable the same way), logs, console
+and the runtime-config toggle itself.
 """
 from __future__ import annotations
 
@@ -79,6 +80,16 @@ async def fetch_upstream_fallback(request: Request, body: bytes, settings) -> Re
     content_type = request.headers.get("content-type")
     if content_type:
         headers["content-type"] = content_type
+    # `body` is replayed exactly as captured -- still compressed, if it was.
+    # Every apify-client 3.x storage write (`set_value`/`push_data`/
+    # `add_request`/...) sends `Content-Encoding: br` by default, so a write
+    # replay that drops this header hands the upstream API compressed bytes
+    # under a plain `content-type`, which it cannot parse: the call fails and
+    # collapses to the original local 404 (see the module docstring), silently
+    # turning a should-have-succeeded write into a false "not found".
+    content_encoding = request.headers.get("content-encoding")
+    if content_encoding:
+        headers["content-encoding"] = content_encoding
     # Never a different, shared or hardcoded credential -- only the token this
     # same request's own caller is already bound to. An unbound caller (no
     # token ever claimed) forwards no Authorization header at all.

@@ -14,7 +14,8 @@ from ..responses import (
     forbidden,
     get_service,
     not_found,
-    optional_bounded_int,
+    paginate as _paginate,
+    parse_page as _parse_page,
     read_body,
     read_json,
 )
@@ -34,29 +35,6 @@ from ..service import (
     validate_storage_name,
 )
 from ..storage import DEFAULT_HEAD_LIMIT, DEFAULT_ITEM_LIMIT
-
-# Non-negative: `offset`/`limit` slice a list, so negative values have no
-# sensible meaning (unlike e.g. `runs.py`'s `memory`/`timeout`, which need a
-# strictly-positive floor).
-_NEG_LIMIT_MSG = "Query parameter 'limit' must not be negative."
-_NEG_OFFSET_MSG = "Query parameter 'offset' must not be negative."
-
-
-def _parse_page(request: Request) -> tuple[int | None, int | None]:
-    """Return ``(limit, offset)`` from the query string, each ``None`` when
-    absent. Shared by every listing surface below so "both omitted" -- the
-    byte-for-byte-unchanged contract every non-console caller relies on --
-    is decided identically everywhere.
-    """
-    params = request.query_params
-    limit = optional_bounded_int(params, "limit", minimum=0, message=_NEG_LIMIT_MSG)
-    offset = optional_bounded_int(params, "offset", minimum=0, message=_NEG_OFFSET_MSG)
-    return limit, offset
-
-
-def _paginate(items: list, limit: int | None, offset: int | None) -> list:
-    start = offset or 0
-    return items[start : start + limit] if limit is not None else items[start:]
 
 router = APIRouter()
 

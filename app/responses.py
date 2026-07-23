@@ -92,6 +92,30 @@ def optional_bounded_int(params, key: str, minimum: int, message: str) -> int | 
     return _parse_int(raw, key, minimum, message)
 
 
+def parse_page(request: Request) -> tuple[int | None, int | None]:
+    """Return ``(limit, offset)`` from the query string, each ``None`` when
+    absent. Shared by every listing surface that supports optional
+    `limit`/`offset` slicing (dataset items, KV keys, RQ requests, per-user
+    storage lists) so "both omitted" -- the byte-for-byte-unchanged contract
+    every non-console caller relies on -- is decided identically everywhere.
+    """
+    params = request.query_params
+    limit = optional_bounded_int(params, "limit", minimum=0, message="Query parameter 'limit' must not be negative.")
+    offset = optional_bounded_int(
+        params, "offset", minimum=0, message="Query parameter 'offset' must not be negative."
+    )
+    return limit, offset
+
+
+def paginate(items: list, limit: int | None, offset: int | None) -> list:
+    """Slice ``items`` by ``(limit, offset)``: an absent ``offset`` defaults to
+    0; an absent ``limit`` means "no cap", matching the real API's own
+    ``dataset-items-get`` documented default.
+    """
+    start = offset or 0
+    return items[start : start + limit] if limit is not None else items[start:]
+
+
 def data(payload: Any, status_code: int = 200) -> JSONResponse:
     return JSONResponse({"data": payload}, status_code=status_code)
 

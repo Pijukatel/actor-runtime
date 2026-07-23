@@ -3,7 +3,7 @@ items, KV keys, RQ requests, per-user storage lists): a bare request (neither
 param supplied) stays byte-for-byte identical to today's unpaginated shape --
 the contract every non-console (CLI/SDK/curl) caller keeps relying on; supplying
 `limit`/`offset` returns the corresponding slice plus enough total-count
-information to page. See .shepherd/2-design.md's Pagination section.
+information to page. See requirements/api.md's "Pagination" section.
 """
 from __future__ import annotations
 
@@ -145,6 +145,25 @@ async def test_kv_keys_limit_only_slices_from_start(wired):
     assert body["total"] == 30
 
 
+async def test_kv_keys_offset_only_keeps_no_limit_semantics(wired):
+    """Supplying only `offset` (no `limit`) still counts as "params given" (the
+    paginated branch, gains the additive `total`), but the effective limit
+    stays "no cap" -- exercising `_paginate`'s `items[start:]` branch, not just
+    `items[start:start+limit]`."""
+    client, _service = wired
+    await _create_user(client, "kate4")
+    created = await client.post("/v2/key-value-stores", json={"name": "big4"}, headers=auth("kate4"))
+    store_id = created.json()["data"]["id"]
+    await _seed_keys(client, store_id, "kate4", 10)
+
+    resp = await client.get(f"/v2/key-value-stores/{store_id}/keys?offset=7", headers=auth("kate4"))
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["count"] == 3
+    assert body["total"] == 10
+    assert len(body["items"]) == 3
+
+
 # --------------------------------------------------------------- RQ requests
 
 
@@ -186,6 +205,25 @@ async def test_rq_requests_limit_offset_returns_slice_with_total(wired):
     assert len(body["items"]) == 30
 
 
+async def test_rq_requests_offset_only_keeps_no_limit_semantics(wired):
+    """Same `items[start:]` branch as the KV-keys equivalent above, for the
+    request-queue surface."""
+    client, service = wired
+    await _create_user(client, "rick3")
+    created = await client.post("/v2/request-queues", json={"name": "big3"}, headers=auth("rick3"))
+    rq_id = created.json()["data"]["id"]
+    await service.storage.rq_add_batch(
+        rq_id, [{"url": f"https://example.com/{i}", "uniqueKey": str(i)} for i in range(10)]
+    )
+
+    resp = await client.get(f"/v2/request-queues/{rq_id}/requests?offset=7", headers=auth("rick3"))
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["count"] == 3
+    assert body["total"] == 10
+    assert len(body["items"]) == 3
+
+
 # ---------------------------------------------------------- per-user listings
 
 
@@ -215,6 +253,22 @@ async def test_my_key_value_stores_limit_offset_returns_slice(wired):
     assert body["total"] == 15
     assert body["count"] == 5
     assert len(body["items"]) == 5
+
+
+async def test_my_key_value_stores_offset_only_keeps_no_limit_semantics(wired):
+    """Same `items[start:]` branch (no `limit` supplied) as the KV-keys/RQ
+    surfaces above, for a per-user aggregate storage listing."""
+    client, _service = wired
+    await _create_user(client, "stan4")
+    for i in range(10):
+        await client.post("/v2/key-value-stores", json={"name": f"z{i}"}, headers=auth("stan4"))
+
+    resp = await client.get("/v2/users/me/key-value-stores?offset=7", headers=auth("stan4"))
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["total"] == 10
+    assert body["count"] == 3
+    assert len(body["items"]) == 3
 
 
 async def test_my_datasets_and_request_queues_also_paginate(wired):

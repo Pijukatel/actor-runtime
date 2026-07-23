@@ -1,11 +1,13 @@
 """Upstream-API fallback middleware (app/upstream.py) + the runtime-config
 toggle it reads. All Docker-free: a tiny in-process HTTP server (mirroring
 conftest.py's own FakeStandbyServer pattern) stands in for api.apify.com, with
-`Settings.apify_upstream_base_url` pointed at it. See .shepherd/2-design.md.
+`Settings.apify_upstream_base_url` pointed at it. See requirements/api.md's
+"Upstream fallback" section.
 """
 from __future__ import annotations
 
 import dataclasses
+import gzip
 import http.server
 import json
 import threading
@@ -190,6 +192,26 @@ async def test_fallback_get_relays_upstream_2xx_verbatim(wired_upstream, fake_up
     assert seen["path"] == "/v2/key-value-stores/nobody~nothing/keys"
 
 
+async def test_fallback_relayed_response_still_carries_cors_headers(wired_upstream, fake_upstream):
+    """The middleware discards `call_next()`'s response and builds a brand-new
+    one from the upstream reply on a relay -- that new response must still
+    pass back through CORSMiddleware (registered outer to the fallback
+    middleware in app/main.py), exactly like every other response."""
+    client, service = wired_upstream
+    service.upstream_fallback_enabled = True
+    fake_upstream.set_response(
+        200,
+        json.dumps({"data": {"items": [], "count": 0, "limit": 0, "isTruncated": False}}).encode(),
+        {"content-type": "application/json"},
+    )
+
+    resp = await client.get(
+        "/v2/key-value-stores/nobody~nothing/keys", headers={"Origin": "https://example.com"}
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("access-control-allow-origin") == "*"
+
+
 async def test_fallback_upstream_non_2xx_collapses_to_local_404(wired_upstream, fake_upstream):
     client, service = wired_upstream
     # Capture the plain local 404 with fallback OFF, before any upstream
@@ -267,7 +289,76 @@ async def test_fallback_write_body_and_query_replayed_verbatim(wired_upstream, f
     assert seen["headers"].get("content-type") == "application/json"
 
 
+async def test_fallback_write_forwards_content_encoding_for_compressed_body(wired_upstream, fake_upstream):
+    """A write with a compressed body (apify-client 3.x sends every storage
+    write with `Content-Encoding: br` by default; gzip is used here since it's
+    stdlib) must replay `Content-Encoding` upstream, not just the compressed
+    bytes -- otherwise the real API tries to parse still-compressed bytes as
+    plain JSON, the upstream call fails, and the fallback's own
+    upstream-failure-collapses-to-404 rule silently swallows what should have
+    been a successful write."""
+    client, service = wired_upstream
+    service.upstream_fallback_enabled = True
+    fake_upstream.set_response(201, b'{"data":{"key":"K"}}', {"content-type": "application/json"})
+
+    compressed = gzip.compress(json.dumps({"hello": "world"}).encode())
+    resp = await client.put(
+        "/v2/key-value-stores/otheruser~theirs/records/K",
+        content=compressed,
+        headers={"content-type": "application/json", "content-encoding": "gzip"},
+    )
+    assert resp.status_code == 201
+    assert len(fake_upstream.requests) == 1
+    seen = fake_upstream.requests[0]
+    assert seen["headers"].get("content-encoding") == "gzip"
+    assert seen["body"] == compressed  # replayed byte-for-byte, still compressed
+
+
 # ------------------------------------------------------------- guardrails
+
+
+async def test_fallback_excludes_logs_path_even_on_local_404(wired_upstream, fake_upstream):
+    """`/v2/logs/...` has no real-platform analogue reachable the same way --
+    excluded from the allowlist regardless of toggle state."""
+    client, service = wired_upstream
+    service.upstream_fallback_enabled = True
+    resp = await client.get("/v2/logs/no-such-job")
+    assert resp.status_code == 404
+    assert fake_upstream.requests == []
+
+
+async def test_fallback_excludes_bare_actor_collection_route(wired_upstream, fake_upstream):
+    """`POST /v2/acts` (no id yet) is a bare collection route, not a by-id
+    resource -- it is excluded from the allowlist (and never 404s locally
+    anyway, since it always creates), so it must never reach upstream."""
+    client, service = wired_upstream
+    service.upstream_fallback_enabled = True
+    await _create_user(client, "creator")
+    resp = await client.post("/v2/acts", json={"name": "x"}, headers=auth("creator"))
+    assert resp.status_code == 201
+    assert fake_upstream.requests == []
+
+
+async def test_fallback_excludes_actor_standby_forwarding_path(wired_upstream, fake_upstream):
+    """`/v2/actor-standby/...` is a local-only route (container forwarding),
+    with no equivalent reachable the same way upstream."""
+    client, service = wired_upstream
+    service.upstream_fallback_enabled = True
+    await _create_user(client, "prober")
+    resp = await client.get("/v2/actor-standby/no-such-actor/ping", headers=auth("prober"))
+    assert resp.status_code == 404
+    assert fake_upstream.requests == []
+
+
+async def test_fallback_excludes_unmatched_runtime_config_subpath(wired_upstream, fake_upstream):
+    """An unmatched path under `/v2/runtime-config/...` 404s via the console's
+    catch-all -- it must stay excluded (the toggle endpoint itself is local-only,
+    and this sub-path matches no registered route at all)."""
+    client, service = wired_upstream
+    service.upstream_fallback_enabled = True
+    resp = await client.get("/v2/runtime-config/nope")
+    assert resp.status_code == 404
+    assert fake_upstream.requests == []
 
 
 async def test_fallback_never_proxied_when_resource_exists_locally(wired_upstream, fake_upstream):

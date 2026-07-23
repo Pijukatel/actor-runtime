@@ -56,15 +56,21 @@ def create_app(settings: Settings | None = None, driver: Driver | None = None) -
             await db.dispose()
 
     app = FastAPI(title="actor-runtime", lifespan=lifespan)
+    # Opt-in, off by default (Service.upstream_fallback_enabled) -- see
+    # app/upstream.py's module docstring for the full contract. Registered
+    # BEFORE CORSMiddleware: Starlette's add_middleware prepends, so the LAST
+    # middleware added ends up OUTERMOST. CORS must be outermost so it still
+    # wraps the brand-new Response the fallback middleware builds from a
+    # relayed upstream reply (that response never passes back through
+    # anything registered *before* it) -- reversing this order would make
+    # every relayed fallback response silently miss its CORS headers.
+    app.add_middleware(UpstreamFallbackMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    # Opt-in, off by default (Service.upstream_fallback_enabled) -- see
-    # app/upstream.py's module docstring for the full contract.
-    app.add_middleware(UpstreamFallbackMiddleware)
 
     @app.exception_handler(InvalidTokenError)
     async def _invalid_token_handler(request, exc):
