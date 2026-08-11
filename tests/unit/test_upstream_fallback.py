@@ -132,6 +132,18 @@ async def wired_upstream(tmp_path, fake_upstream):
         yield pair
 
 
+@pytest_asyncio.fixture
+async def wired_malformed_upstream(tmp_path):
+    """Like `wired`, but `apify_upstream_base_url` is malformed in a way `httpx`
+    rejects while BUILDING the request (`httpx.InvalidURL`, raised before any
+    connection is attempted) -- simulating a misconfigured
+    `APIFY_UPSTREAM_BASE_URL` (e.g. missing scheme, unparsable host). No fake
+    server needed: the failure happens before any network I/O."""
+    settings = dataclasses.replace(make_settings(tmp_path), apify_upstream_base_url="http://[::1")
+    async for pair in _wire(tmp_path, StubDriver(), settings=settings):
+        yield pair
+
+
 # ------------------------------------------------------------------- toggle
 
 
@@ -307,6 +319,74 @@ async def test_fallback_upstream_connect_error_collapses_to_local_404(wired_upst
     resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
     assert resp.status_code == 404
     assert resp.json()["error"]["type"] == "record-not-found"
+
+
+async def test_fallback_malformed_upstream_base_url_collapses_to_local_404(wired_malformed_upstream):
+    """`httpx.InvalidURL` is raised while httpx builds the outgoing request --
+    not a subclass of `httpx.HTTPError` -- so a misconfigured
+    `APIFY_UPSTREAM_BASE_URL` must still collapse to the original local 404
+    like every other fallback failure, not crash the request."""
+    client, service = wired_malformed_upstream
+    local_only = await client.get("/v2/key-value-stores/nobody~nothing/keys")
+    assert local_only.status_code == 404
+    local_body = local_only.json()
+
+    service.upstream_fallback_enabled = True
+    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
+    assert resp.status_code == 404
+    assert resp.json() == local_body
+
+
+# ---------------------------------------------- fallback: identity resolution failures
+
+
+async def test_fallback_unresolvable_token_on_spa_catchall_404_collapses_to_local_404(wired_upstream, fake_upstream):
+    """The SPA catch-all (app/routers/console.py's `spa_catch_all`) 404s an
+    allowlisted-prefix path that matches no registered route WITHOUT ever
+    calling `resolve_user` itself -- unlike every registered handler on these
+    prefixes, which authenticates before it can 404. So
+    `fetch_upstream_fallback`'s own `resolve_user` call is the FIRST
+    resolution attempt for a request like this one, and an unresolvable token
+    there must collapse to the original local 404 like any other fallback
+    failure -- never an uncaught `InvalidTokenError` (a bare 500)."""
+    client, service = wired_upstream
+    # Ground truth: the plain local 404, captured with no token involved at all.
+    local_only = await client.get("/v2/actors/someuser~someactor/no-such-nested-path")
+    assert local_only.status_code == 404
+    local_body = local_only.json()
+
+    service.upstream_fallback_enabled = True
+    # Bootstrap the default user's credential with a first token.
+    bootstrap = await client.get("/v2/users/me", headers=auth("FIRST-TOKEN"))
+    assert bootstrap.status_code == 200
+
+    # A second, unknown token can no longer bootstrap the now-claimed default
+    # user -- ordinarily a clean 401 from the FIRST `resolve_user` call a
+    # registered handler makes, but this path never reaches one.
+    resp = await client.get(
+        "/v2/actors/someuser~someactor/no-such-nested-path", headers=auth("SECOND-UNKNOWN-TOKEN")
+    )
+    assert resp.status_code == 404
+    assert resp.json() == local_body
+    assert fake_upstream.requests == []  # never got far enough to attempt the upstream call
+
+
+async def test_fallback_disabled_unresolvable_token_on_spa_catchall_is_plain_local_404(wired_upstream, fake_upstream):
+    """Companion to the test above with the toggle OFF: the same request must
+    still be the plain local 404 either way -- with fallback disabled the
+    middleware short-circuits before ever calling `resolve_user`, so an
+    unresolvable token is irrelevant."""
+    client, service = wired_upstream
+    assert service.upstream_fallback_enabled is False
+    bootstrap = await client.get("/v2/users/me", headers=auth("FIRST-TOKEN"))
+    assert bootstrap.status_code == 200
+
+    resp = await client.get(
+        "/v2/actors/someuser~someactor/no-such-nested-path", headers=auth("SECOND-UNKNOWN-TOKEN")
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"]["type"] == "record-not-found"
+    assert fake_upstream.requests == []
 
 
 # --------------------------------------------------- fallback: writes (POST/PUT/DELETE)

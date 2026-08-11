@@ -14,8 +14,8 @@ from ..responses import (
     forbidden,
     get_service,
     not_found,
-    paginate as _paginate,
-    parse_page as _parse_page,
+    paginate,
+    parse_page,
     read_body,
     read_json,
 )
@@ -308,10 +308,10 @@ async def list_keys(store_id: str, request: Request) -> object:
     if denied:
         return denied
     keys = await svc.storage.kv_keys(store_id)
-    limit, offset = _parse_page(request)
+    limit, offset = parse_page(request)
     if limit is None and offset is None:
         return data({"items": keys, "count": len(keys), "limit": len(keys), "isTruncated": False})
-    page = _paginate(keys, limit, offset)
+    page = paginate(keys, limit, offset)
     return data(
         {
             "items": page,
@@ -419,7 +419,7 @@ async def get_items(dataset_id: str, request: Request) -> JSONResponse:
     _user, _storage, denied = await _guard(request, dataset_id, LEVEL_READ, STORAGE_DS)
     if denied:
         return denied
-    limit, offset = _parse_page(request)
+    limit, offset = parse_page(request)
     paginated = limit is not None or offset is not None
     kwargs = {}
     if offset is not None:
@@ -502,10 +502,10 @@ async def list_requests(queue_id: str, request: Request) -> object:
     if denied:
         return denied
     items = await svc.storage.rq_requests(queue_id)
-    limit, offset = _parse_page(request)
+    limit, offset = parse_page(request)
     if limit is None and offset is None:
         return data({"items": items, "count": len(items), "limit": len(items)})
-    page = _paginate(items, limit, offset)
+    page = paginate(items, limit, offset)
     return data(
         {
             "items": page,

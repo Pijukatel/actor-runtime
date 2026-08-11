@@ -5,8 +5,9 @@ an allowlisted by-id ``/v2`` resource route -- an Actor, run, build, or one of
 the three storage types, reached by its id -- resolves locally to a 404, the
 same request (method, query string, body) is replayed against
 ``settings.apify_upstream_base_url`` using the caller's own bound token. A 2xx
-upstream reply is relayed back verbatim; any failure (non-2xx, timeout, connect
-error) falls back to the original local 404, logged for debuggability.
+upstream reply is relayed back verbatim; any failure -- non-2xx, timeout,
+connect error, a malformed upstream base URL, or a caller identity that fails
+to resolve -- falls back to the original local 404, logged for debuggability.
 
 Registered as a Starlette middleware in app/main.py -- see that module and
 requirements/api.md's "Upstream fallback" section for the full contract.
@@ -25,7 +26,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from .auth import resolve_user
+from .auth import InvalidTokenError, resolve_user
 from .responses import get_service
 
 logger = logging.getLogger(__name__)
@@ -83,12 +84,23 @@ async def fetch_upstream_fallback(request: Request, body: bytes, settings) -> Re
 
     The caller (the middleware below) already confirmed the local response was
     a 404 before calling this -- a ``None`` return means "return that original
-    404 unchanged", never an upstream error status/body of its own.
+    404 unchanged", never an upstream error status/body, and never an
+    exception, of its own. That "any failure" umbrella has to cover more than
+    the upstream HTTP call itself: resolving the caller's own identity
+    (``resolve_user``, below) can fail too. Every registered route handler on
+    the allowlisted prefixes already calls ``resolve_user`` before it can
+    produce a 404, so an unresolvable token there raises inside
+    ``call_next()`` and is caught by FastAPI's own ``InvalidTokenError``
+    handler (a clean 401) -- this function is never reached with a non-404
+    response. But the SPA catch-all (``app/routers/console.py``'s
+    ``spa_catch_all``) 404s an unmatched allowlisted-prefix path WITHOUT ever
+    calling ``resolve_user`` itself, so this function's own call is sometimes
+    the FIRST resolution attempt for the request -- and its
+    ``InvalidTokenError`` needs to collapse to the local 404 the same as every
+    other failure below, in the same ``try``, rather than escape uncaught
+    (nothing past ``call_next()`` returning is wrapped by that handler).
     """
     svc = get_service(request)
-    user = await resolve_user(request)
-    row = await svc.get_user(user)
-    token = row.token if row is not None else None
 
     url = f"{settings.apify_upstream_base_url}{request.url.path}"
     if request.url.query:
@@ -108,17 +120,27 @@ async def fetch_upstream_fallback(request: Request, body: bytes, settings) -> Re
     content_encoding = request.headers.get("content-encoding")
     if content_encoding:
         headers["content-encoding"] = content_encoding
-    # Never a different, shared or hardcoded credential -- only the token this
-    # same request's own caller is already bound to. An unbound caller (no
-    # token ever claimed) forwards no Authorization header at all.
-    if token:
-        headers["authorization"] = f"Bearer {token}"
 
     timeout = httpx.Timeout(_TOTAL_TIMEOUT_SECS, connect=_CONNECT_TIMEOUT_SECS)
     try:
+        # Never a different, shared or hardcoded credential -- only the token
+        # this same request's own caller is already bound to. An unbound
+        # caller (no token ever claimed) forwards no Authorization header at
+        # all. Resolved inside this `try`, not before it, so a token that
+        # fails to resolve joins every other fallback failure below instead of
+        # raising out of this function.
+        user = await resolve_user(request)
+        row = await svc.get_user(user)
+        if row is not None and row.token:
+            headers["authorization"] = f"Bearer {row.token}"
         async with httpx.AsyncClient(timeout=timeout) as client:
             upstream = await client.request(request.method, url, headers=headers, content=body or None)
-    except httpx.HTTPError as exc:
+    except (InvalidTokenError, httpx.HTTPError, httpx.InvalidURL) as exc:
+        # `httpx.InvalidURL` (e.g. a misconfigured `APIFY_UPSTREAM_BASE_URL`)
+        # is not an `httpx.HTTPError` subclass -- it's raised while building
+        # the request, before any connection is attempted -- so it needs its
+        # own name here rather than being (wrongly) assumed covered by
+        # `HTTPError` alone.
         logger.info("Upstream fallback %s %s failed: %s", request.method, request.url.path, exc)
         return None
 
