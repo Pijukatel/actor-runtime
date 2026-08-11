@@ -159,15 +159,16 @@
   later-page offset could otherwise leave it permanently unseen, and deleting
   the last item on a later page could otherwise land on an empty page.
 - **Each storage's detail view shows a stats line** above its item/key/request
-  list: every field currently non-empty for the resource being viewed,
+  list: every scalar field currently non-empty for the resource being viewed,
   excluding identity/bookkeeping fields (`id`/`name`/`userId`/`createdAt`/
-  `modifiedAt`/`accessedAt`/`consoleUrl`) and EMPTY object-valued stubs (e.g. a
-  request queue's currently-empty `stats` sub-object) — nothing invented,
-  nothing non-empty omitted; a non-empty object-valued field is still rendered
-  (JSON-stringified) rather than silently dropped just for being an object. A
-  boolean field is always shown regardless of its value — `false` is a
-  meaningful, present value, not emptiness — while a numeric/string field is
-  only shown once it is non-zero/non-blank.
+  `modifiedAt`/`accessedAt`/`consoleUrl`) and any object-valued field (no
+  storage type's own GET-detail response currently returns a non-empty one —
+  a request queue's `stats` sub-object stays an empty stub, so it is simply
+  hidden along with every other object-valued field) — nothing invented,
+  nothing non-empty omitted among the remaining fields. A boolean field is
+  always shown regardless of its value — `false` is a meaningful, present
+  value, not emptiness — while a numeric/string field is only shown once it
+  is non-zero/non-blank.
   - For **datasets and key-value stores**, the stats line's counters
     (`itemCount`/`cleanItemCount` for a dataset, `itemCount` for a KV store)
     are derived from the SAME paged listing response the view already fetches

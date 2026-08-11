@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
@@ -340,7 +341,16 @@ async def _kv_keys_cursor_envelope(
     if paginated:
         base = str(request.base_url).rstrip("/")
         page = [
-            {**item, "recordPublicUrl": f"{base}/v2/key-value-stores/{store_id}/records/{item['key']}"}
+            {
+                **item,
+                # `quote(..., safe="")` percent-encodes every reserved
+                # character (including `/`) -- a key containing e.g. a space
+                # or `#` would otherwise land in the URL unescaped, so a
+                # client following the link would either mis-split it (`#`
+                # starts a fragment, `?` a query string) or fetch a
+                # different record than the one this envelope describes.
+                "recordPublicUrl": f"{base}/v2/key-value-stores/{store_id}/records/{quote(item['key'], safe='')}",
+            }
             for item in page
         ]
     envelope: dict[str, Any] = {"items": page, "count": len(page)}
@@ -379,7 +389,12 @@ async def list_keys(store_id: str, request: Request) -> object:
     if exclusive_start_key is not None or offset is None:
         return data(await _kv_keys_cursor_envelope(svc, request, store_id, exclusive_start_key, limit))
     keys = await svc.storage.kv_keys(store_id)
-    is_truncated = limit is not None and offset + limit < len(keys)
+    # `limit == 0` is a zero-width window with nothing to truncate, exactly
+    # like the cursor path's own short-circuit (`Storage.kv_keys_page`) --
+    # without this, `offset + limit < len(keys)` reports `isTruncated: true`
+    # for a page that is always empty, a loop hazard for a naive "keep paging
+    # until isTruncated is false" caller.
+    is_truncated = limit is not None and limit > 0 and offset + limit < len(keys)
     return data(paged_envelope(keys, limit, offset, isTruncated=is_truncated))
 
 

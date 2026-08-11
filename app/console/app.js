@@ -141,12 +141,19 @@ async function refreshUser() {
 // (see requirements/api.md's "Upstream fallback" section) -- it sends the
 // acting user's bearer token, same as every other mutating request.
 
-// Invariant: bumped by every user flip, and captured by refreshFallbackToggle
-// before its own GET; a response whose captured generation no longer matches
-// the live counter was superseded by a later flip while it was in flight, and
-// is discarded instead of repainted. Without this, a periodic 4s-tick GET
-// issued just before a flip can resolve after that flip's own PUT+re-GET and
-// snap the checkbox back to the pre-flip value.
+// Invariant: bumped by every user flip (both before its PUT and again once
+// that PUT resolves -- see setFallbackEnabled), and captured by
+// refreshFallbackToggle before its own GET; a response whose captured
+// generation no longer matches the live counter was superseded by a later
+// flip while it was in flight, and is discarded instead of repainted.
+// Without the first bump, a periodic 4s-tick GET issued just before a flip
+// can resolve after that flip's own PUT+re-GET and snap the checkbox back to
+// the pre-flip value. The second bump closes a narrower window: a tick that
+// fires between the first bump and the PUT's own resolution shares that same
+// (already-bumped) generation, so it could otherwise still land after the
+// flip's own trailing refresh below; bumping again once the PUT resolves
+// discards that tick too, leaving only the trailing refresh's own generation
+// current.
 let fallbackToggleGeneration = 0;
 
 async function refreshFallbackToggle() {
@@ -173,6 +180,12 @@ async function setFallbackEnabled(enabled) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ upstreamFallbackEnabled: enabled }),
   });
+  // Bump again now that the PUT itself has resolved: a periodic tick that
+  // captured the generation bumped just above (i.e. one that fired in the
+  // window between that bump and this point) shares this flip's own
+  // generation number and could otherwise still land after the trailing
+  // refresh below. Bumping once more here discards it too.
+  fallbackToggleGeneration++;
   // Re-read the server's actual resulting state rather than assume the PUT
   // took effect as requested -- this is a shared runtime-global switch, so a
   // rejected/raced PUT must never leave this checkbox showing a flip that

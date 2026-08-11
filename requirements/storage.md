@@ -46,5 +46,8 @@
   host-side, so it must resolve on the host/port the request actually
   arrived on rather than the Docker-internal hostname those other two fields
   use (see `api.md`'s "Pagination" section for the exact item shapes). The
+  key is percent-encoded in the URL (`urllib.parse.quote(key, safe="")`), so
+  a key containing e.g. a space or `#` still produces a dereferenceable link
+  rather than one where `#` is misread as a fragment separator. The
   `offset`-sliced path keeps its `total` (it already holds the full list) and
   never adds `recordPublicUrl` (no client compatibility need for it there).

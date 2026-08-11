@@ -8,38 +8,30 @@ reverse-proxies the request with a streamed response.
 """
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
+from starlette.datastructures import MutableHeaders
 
 from ..auth import resolve_standby_caller
-from ..http_relay import filtered_header_pairs, relay_response_headers
 from ..responses import get_service, not_found, standby_start_failed, standby_unavailable
 from ..standby import StandbyReadinessTimeout, StandbyStartError
 
 router = APIRouter()
 
-# This proxy's own historical hop-by-hop exclusion set, predating
-# `app/http_relay.py`'s shared `HOP_BY_HOP` (the fuller RFC 7230 set
-# `app/upstream.py` uses instead): before the two proxies shared any code,
-# standby forwarded everything except exactly these two headers plus its own
-# two extras below -- `keep-alive`/`proxy-authenticate`/`proxy-authorization`/
-# `te`/`trailer`/`trailers`/`upgrade` all pass through unchanged. Kept
-# narrow deliberately: forwarding-wise this route is a black box to whatever
-# the standby Actor's own HTTP server does with those headers, so widening it
-# is a deliberate future call, not a side effect of sharing code with a
-# different proxy.
-_STANDBY_HOP_BY_HOP = frozenset({"connection", "transfer-encoding"})
-
-# This proxy's one fixed exclusion set, used on BOTH the outgoing request to
-# the container and the relayed response: the narrow set above plus two
-# hop-specific extras: `host` would otherwise name this runtime's own address
-# instead of the container's once httpx builds the request against
-# `target_url`, and `content-length` is recomputed on each leg (by httpx from
-# `content=body` below, by Starlette from the streamed response body).
-_EXCLUDED_HEADERS = _STANDBY_HOP_BY_HOP | {"host", "content-length"}
+# This proxy's own fixed exclusion set, used on BOTH the outgoing request to
+# the container and the relayed response: `connection`/`transfer-encoding`
+# (kept deliberately narrower than the fuller RFC 7230 set `app/upstream.py`
+# uses -- this route is a black box to whatever the standby Actor's own HTTP
+# server does with the rest, so widening it is a deliberate future call, not
+# a side effect of sharing code with a different proxy) plus `host` (would
+# otherwise name this runtime's own address instead of the container's once
+# httpx builds the request against `target_url`) and `content-length`
+# (recomputed on each leg: by httpx from `content=body` below, by Starlette
+# from the streamed response body).
+_EXCLUDED_HEADERS = frozenset({"connection", "transfer-encoding", "host", "content-length"})
 
 # Connect-only bound on the standby-forwarding proxy's upstream request below.
 # Read/write/pool intentionally stay unbounded so a legitimately long-lived or
@@ -54,6 +46,25 @@ _EXCLUDED_HEADERS = _STANDBY_HOP_BY_HOP | {"host", "content-length"}
 # var, no test -- has ever needed to override this value; if that changes, it
 # can be promoted to a `Settings` field again at that point.
 _STANDBY_FORWARD_CONNECT_TIMEOUT_SECS = 10.0
+
+
+def _filtered_header_pairs(headers: Iterable[tuple[str, str]], excluded: frozenset[str]) -> list[tuple[str, str]]:
+    """Every ``(name, value)`` pair from ``headers`` except ``excluded``, in
+    order, duplicates included -- a dict comprehension would silently keep
+    only the last value for a repeated header name (e.g. two Cookie headers).
+    """
+    return [(k, v) for k, v in headers if k.lower() not in excluded]
+
+
+def _relay_response_headers(headers: Iterable[tuple[str, str]], excluded: frozenset[str]) -> MutableHeaders:
+    """``_filtered_header_pairs`` built into a ``MutableHeaders`` via
+    ``.append()`` (which explicitly preserves duplicates) rather than a dict
+    comprehension, so e.g. two ``Set-Cookie`` headers both reach the caller.
+    """
+    result = MutableHeaders()
+    for k, v in _filtered_header_pairs(headers, excluded):
+        result.append(k, v)
+    return result
 
 
 @router.api_route(
@@ -101,7 +112,7 @@ async def forward_to_standby(actor_id: str, path: str, request: Request):
         # Cookie headers), silently breaking the "headers... unchanged"
         # forwarding guarantee. httpx accepts a sequence of pairs directly and
         # preserves duplicates through to the wire.
-        forward_headers = filtered_header_pairs(request.headers.items(), _EXCLUDED_HEADERS)
+        forward_headers = _filtered_header_pairs(request.headers.items(), _EXCLUDED_HEADERS)
         target_url = f"{endpoint}/{path}"
         if request.url.query:
             target_url += f"?{request.url.query}"
@@ -156,7 +167,6 @@ async def forward_to_standby(actor_id: str, path: str, request: Request):
             svc.mark_standby_request_finished(actor_id)
 
     # Preserves duplicate header names (e.g. more than one Set-Cookie), so a
-    # standby Actor emitting several reaches the original caller intact --
-    # see app/http_relay.py's own docstring.
-    response_headers = relay_response_headers(upstream.headers.multi_items(), _EXCLUDED_HEADERS)
+    # standby Actor emitting several reaches the original caller intact.
+    response_headers = _relay_response_headers(upstream.headers.multi_items(), _EXCLUDED_HEADERS)
     return StreamingResponse(_body(), status_code=upstream.status_code, headers=response_headers)

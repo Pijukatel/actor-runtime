@@ -73,23 +73,6 @@ async def test_console_stats_line_shows_boolean_false_fields(wired):
     assert 'typeof value !== "boolean"' in body
 
 
-async def test_console_stats_line_only_excludes_empty_objects(wired):
-    """`statsLineEl`'s object-valued filter must key off emptiness, not a
-    blanket `typeof value === "object"` check -- the latter would silently
-    drop any non-empty object-valued stat field ever added later, at odds
-    with requirements/console.md's "nothing non-empty omitted" stats-line
-    contract. Today only a request queue's permanently-empty `stats`
-    sub-object hits this filter, so the gap is latent, not a present bug --
-    this pins the fix in place. Structural, like the sibling boolean-false
-    check above: no JS runtime exists in this suite to execute `statsLineEl`
-    directly."""
-    client, _service = wired
-    js = (await client.get("/console/storage_tab.js")).text
-    stats_idx = js.index("function statsLineEl(meta)")
-    body = js[stats_idx : js.index("\n}", stats_idx)]
-    assert "Object.keys(value).length === 0" in body
-
-
 async def test_console_stats_line_renders_nothing_for_a_brand_new_empty_storage(wired):
     """Regression: a brand-new storage has every counter at 0, so
     `statsLineEl` had nothing to show yet -- but used to unconditionally
@@ -362,7 +345,12 @@ async def test_console_fallback_toggle_guards_against_a_stale_periodic_repaint(w
     shows OFF while the runtime is actually ON. `setFallbackEnabled` must bump
     a monotonically-increasing generation counter on every flip, and
     `refreshFallbackToggle` must capture it BEFORE issuing its own GET and
-    skip the repaint if the counter has since moved."""
+    skip the repaint if the counter has since moved. `setFallbackEnabled` must
+    also bump the counter a SECOND time once its own PUT resolves, before its
+    trailing refresh: a periodic tick that fires between the first bump and
+    the PUT's resolution shares that same (already-bumped) generation, so
+    without the second bump it could still land after the flip's own trailing
+    refresh below."""
     client, _service = wired
     js = (await client.get("/console/app.js")).text
 
@@ -372,10 +360,19 @@ async def test_console_fallback_toggle_guards_against_a_stale_periodic_repaint(w
 
     set_start = js.index("async function setFallbackEnabled(enabled)")
     set_body = js[set_start : js.index("\n}\n", set_start)]
-    # The bump must happen before the PUT is even issued, not after -- an
-    # in-flight periodic GET must be superseded as soon as the flip starts,
-    # not only once it completes.
+    # The first bump must happen before the PUT is even issued, not after --
+    # an in-flight periodic GET must be superseded as soon as the flip
+    # starts, not only once it completes.
     assert re.search(rf"{counter}\+\+;[\s\S]*?await api\(", set_body)
+
+    # A second bump must happen AFTER the PUT resolves and BEFORE the
+    # trailing refresh -- exactly two increments in this function, the second
+    # one sitting between the PUT and the refresh.
+    increments = [m.start() for m in re.finditer(rf"{re.escape(counter)}\+\+;", set_body)]
+    assert len(increments) == 2, "setFallbackEnabled must bump the generation twice (before AND after its PUT)"
+    put_idx = set_body.index("await api(")
+    refresh_idx = set_body.index("await refreshFallbackToggle();")
+    assert increments[0] < put_idx < increments[1] < refresh_idx
 
     refresh_start = js.index("async function refreshFallbackToggle()")
     refresh_body = js[refresh_start : js.index("\n}\n", refresh_start)]

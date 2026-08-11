@@ -141,7 +141,7 @@ class _StandbyProbeHandler(_QuietHandlerMixin, http.server.BaseHTTPRequestHandle
         headers). Shared by ``_handle_multi_header`` (two ``Set-Cookie``
         headers, proving multi-value headers survive) and
         ``_handle_hop_by_hop_echo`` (a fixed RFC-7230 hop-by-hop-ish set --
-        see ``app/routers/standby.py``'s own ``_STANDBY_HOP_BY_HOP``: none of
+        see ``app/routers/standby.py``'s own ``_EXCLUDED_HEADERS``: none of
         these must be stripped by the standby-forwarding proxy, unlike the
         upstream-fallback proxy, which uses the fuller RFC 7230 set).
         """
@@ -471,11 +471,10 @@ def make_settings(
 
 
 async def _build_app(tmp_path, driver, settings=None):
-    """Construct the wired ``(settings, db, storage, service, app)`` quintuple
-    shared by every fixture in this module -- the setup ``_wire`` and
-    ``wired_uvicorn`` both need, before they diverge on HOW the app is served
-    (``ASGITransport`` vs. a real uvicorn socket). ``app`` is returned, not
-    yet serving."""
+    """Construct the wired ``(db, storage, service, app)`` quadruple shared by
+    every fixture in this module -- the setup ``_wire`` and ``wired_uvicorn``
+    both need, before they diverge on HOW the app is served (``ASGITransport``
+    vs. a real uvicorn socket). ``app`` is returned, not yet serving."""
     settings = settings or make_settings(tmp_path)
     settings.runs_dir.mkdir(parents=True, exist_ok=True)
     settings.builds_dir.mkdir(parents=True, exist_ok=True)
@@ -486,11 +485,11 @@ async def _build_app(tmp_path, driver, settings=None):
     service = Service(settings, db, storage, driver)
     app = create_app(settings, driver)
     app.state.service = service
-    return settings, db, storage, service, app
+    return db, storage, service, app
 
 
 async def _dispose(service, storage, db) -> None:
-    """Tear down a ``_build_app`` quintuple, shared by ``_wire`` and
+    """Tear down a ``_build_app`` quadruple, shared by ``_wire`` and
     ``wired_uvicorn``.
 
     No-op on the standby watchdog if a test never started it (create_app's
@@ -504,7 +503,7 @@ async def _dispose(service, storage, db) -> None:
 
 
 async def _wire(tmp_path, driver, settings=None):
-    _settings, db, storage, service, app = await _build_app(tmp_path, driver, settings)
+    db, storage, service, app = await _build_app(tmp_path, driver, settings)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client, service
@@ -590,7 +589,7 @@ async def wired_uvicorn(tmp_path):
     at all. Yields ``(service, base_url)``; the caller builds whatever real
     HTTP client it needs against ``base_url``.
     """
-    _settings, db, storage, service, app = await _build_app(tmp_path, StubDriver())
+    db, storage, service, app = await _build_app(tmp_path, StubDriver())
 
     port = _free_port()
     # `ws="none"`: this app serves no websocket routes, so skip uvicorn's

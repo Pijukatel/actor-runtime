@@ -15,6 +15,7 @@ requirements/api.md's "Pagination" section.
 from __future__ import annotations
 
 import json
+from urllib.parse import quote
 
 import httpx
 
@@ -287,6 +288,55 @@ async def test_kv_keys_limit_offset_returns_slice_with_total(wired):
     assert list(body["items"][0].keys()) == ["key", "size"]
 
 
+async def test_kv_keys_offset_mode_limit_zero_is_a_non_truncating_empty_page(wired):
+    """Regression: the offset-sliced path's own `is_truncated` formula
+    (`offset + limit < len(keys)`) had no `limit == 0` special case, unlike
+    the cursor path's own short-circuit (`Storage.kv_keys_page`) -- so
+    `?limit=0&offset=2` against a non-empty store reported `isTruncated:
+    true` for a page that is always empty, a loop hazard for a naive "keep
+    paging until isTruncated is false" caller. Must mirror the cursor path's
+    rule: `limit=0` is a zero-width window with nothing to truncate, so it
+    is never reported as truncated, on EITHER path."""
+    client, _service = wired
+    await _create_user(client, "zed3")
+    created = await client.post("/v2/key-value-stores", json={"name": "zed3"}, headers=auth("zed3"))
+    store_id = created.json()["data"]["id"]
+    await _seed_keys(client, store_id, "zed3", 5)
+
+    resp = await client.get(f"/v2/key-value-stores/{store_id}/keys?limit=0&offset=2", headers=auth("zed3"))
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["items"] == []
+    assert body["count"] == 0
+    assert body["limit"] == 0
+    assert body["isTruncated"] is False
+    assert body["total"] == 5  # the offset path still reports a real total
+    assert "nextExclusiveStartKey" not in body
+
+
+async def test_kv_keys_offset_mode_limit_without_truncation_is_not_truncated(wired):
+    """The offset-sliced path's `is_truncated` formula previously had no test
+    for its OWN "not truncated" arm at all -- the only "not truncated"
+    coverage for this surface went through the DIFFERENT cursor-path code
+    (`test_kv_keys_limit_without_truncation_is_not_truncated`), so a
+    regression here (e.g. `<=` swapped for `<`) could slip by with nothing
+    failing. Exercises the boundary exactly (`offset + limit == len(keys)`),
+    not just comfortably under it."""
+    client, _service = wired
+    await _create_user(client, "kate2b")
+    created = await client.post("/v2/key-value-stores", json={"name": "kate2b"}, headers=auth("kate2b"))
+    store_id = created.json()["data"]["id"]
+    await _seed_keys(client, store_id, "kate2b", 5)
+
+    resp = await client.get(f"/v2/key-value-stores/{store_id}/keys?limit=3&offset=2", headers=auth("kate2b"))
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert [item["key"] for item in body["items"]] == ["k0002", "k0003", "k0004"]
+    assert body["count"] == 3
+    assert body["total"] == 5
+    assert body["isTruncated"] is False
+
+
 async def test_kv_keys_limit_only_slices_from_start(wired):
     """`limit` alone (no `offset`, no `exclusiveStartKey`) takes the
     cursor-pushdown path (see `app/storage.py::kv_keys_page`): a truncating
@@ -320,6 +370,35 @@ async def test_kv_keys_limit_only_slices_from_start(wired):
     base = str(client.base_url).rstrip("/")
     for item in body["items"]:
         assert item["recordPublicUrl"] == f"{base}/v2/key-value-stores/{store_id}/records/{item['key']}"
+
+
+async def test_kv_keys_cursor_mode_record_public_url_percent_encodes_the_key(wired):
+    """Regression: `recordPublicUrl` used to interpolate the raw key with no
+    percent-encoding, so a key containing a space or `#` produced a
+    malformed link -- `#` starts a URL fragment (everything after it is
+    dropped client-side) and a raw space breaks the URL outright. The key
+    itself (`body["items"][0]["key"]`) stays the literal, un-escaped string;
+    only the URL built from it is encoded."""
+    client, _service = wired
+    await _create_user(client, "encodeme")
+    created = await client.post("/v2/key-value-stores", json={"name": "encodeme"}, headers=auth("encodeme"))
+    store_id = created.json()["data"]["id"]
+    key = "we ird#key"
+    await client.put(
+        f"/v2/key-value-stores/{store_id}/records/{quote(key, safe='')}",
+        content=json.dumps({"v": 1}),
+        headers={**auth("encodeme"), "content-type": "application/json"},
+    )
+
+    resp = await client.get(f"/v2/key-value-stores/{store_id}/keys?limit=10", headers=auth("encodeme"))
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["items"][0]["key"] == key
+    base = str(client.base_url).rstrip("/")
+    assert (
+        body["items"][0]["recordPublicUrl"]
+        == f"{base}/v2/key-value-stores/{store_id}/records/we%20ird%23key"
+    )
 
 
 async def test_kv_keys_exclusive_start_key_alone_takes_the_cursor_path_unpaginated(wired):

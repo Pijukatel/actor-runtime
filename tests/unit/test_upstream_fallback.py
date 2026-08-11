@@ -49,10 +49,10 @@ async def test_runtime_config_put_with_no_token_works(wired):
 
 async def test_runtime_config_put_rejects_unresolvable_token(wired):
     """PUT is NOT token-free: a present token matching no existing user is
-    401, the same `resolve_user` check `POST /v2/users` already makes.
-    Bootstrap the default user's credential with a first token via ordinary
-    authenticated work, then present a SECOND, different (now genuinely
-    unresolvable) token to the PUT itself."""
+    401. Bootstrap the default user's credential with a first token via
+    ordinary authenticated work, then present a SECOND, different (now
+    genuinely unresolvable) token to the PUT itself -- this must still 401
+    even once the default user is already claimed."""
     client, service = wired
     await client.get("/v2/users/me", headers=auth("first-token"))  # bootstraps the default user
 
@@ -61,6 +61,39 @@ async def test_runtime_config_put_rejects_unresolvable_token(wired):
     )
     assert resp.status_code == 401
     assert service.upstream_fallback_enabled is False  # never touched
+
+
+async def test_runtime_config_put_fresh_runtime_unknown_token_rejected_without_bootstrap(wired):
+    """Regression: on a FRESH runtime (no user ever resolved before -- unlike
+    the test above, which already bootstraps the default user before
+    presenting its second token), `PUT /v2/runtime-config` with an unknown
+    bearer token used to bind that token as the default user's credential,
+    since the handler resolved identity via `resolve_user`'s
+    bootstrap-or-reject. That let an attacker-supplied (or stale, e.g. from a
+    console tab left open across a data-dir reset) token be silently claimed
+    here, and permanently locked the real operator's own later login out (a
+    bound default user can never again satisfy `resolve_user`'s own
+    `token IS NULL` bootstrap condition). Must 401 with NO state mutation at
+    all, and the operator's own subsequent real login must still succeed."""
+    client, service = wired
+    before = (await client.get("/v2/users")).json()["data"]["items"]
+    assert before == []
+
+    resp = await client.put(
+        "/v2/runtime-config", json={"upstreamFallbackEnabled": True}, headers=auth("attacker-token")
+    )
+    assert resp.status_code == 401
+    assert service.upstream_fallback_enabled is False  # never touched
+
+    after = (await client.get("/v2/users")).json()["data"]["items"]
+    assert after == []  # no user created or bound as a side effect
+
+    # The operator was never locked out: a later, real login token still
+    # bootstraps the default user exactly as it would have on a truly fresh
+    # runtime -- proving "attacker-token" above was never claimed.
+    login = await client.get("/v2/users/me", headers=auth("real-operator-token"))
+    assert login.status_code == 200
+    assert login.json()["data"]["token"] == "real-operator-token"
 
 
 async def test_runtime_config_put_with_valid_token_works(wired):
@@ -178,7 +211,7 @@ async def test_fallback_relay_preserves_duplicate_response_headers(wired_upstrea
 
 
 async def test_fallback_relay_strips_full_hop_by_hop_response_header_set(wired_upstream, fake_upstream):
-    """`app/http_relay.py`'s shared `HOP_BY_HOP` is the full RFC 7230
+    """`app/upstream.py`'s own `HOP_BY_HOP` is the full RFC 7230
     hop-by-hop set, not just the two extra members
     (`content-encoding`/`content-length`, unioned into
     `_EXCLUDED_RESPONSE_HEADERS` in app/upstream.py) this proxy adds on top to
@@ -232,8 +265,8 @@ async def test_fallback_relay_strips_content_encoding_and_recomputes_content_len
     wired_upstream, fake_upstream
 ):
     """`content-encoding`/`content-length` are the two members
-    app/upstream.py's `_EXCLUDED_RESPONSE_HEADERS` adds beyond the
-    shared `app/http_relay.py` RFC 7230 set: httpx already decodes a
+    app/upstream.py's `_EXCLUDED_RESPONSE_HEADERS` adds beyond its own
+    `HOP_BY_HOP` RFC 7230 set: httpx already decodes a
     response whose `Content-Encoding` it recognizes, so
     `upstream.content` is the DEcompressed bytes while `upstream.headers`
     still describes the compressed wire -- forwarding either verbatim would
@@ -309,6 +342,48 @@ async def test_fallback_upstream_connect_error_collapses_to_local_404(wired_upst
     resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
     assert resp.status_code == 404
     assert resp.json()["error"]["type"] == "record-not-found"
+
+
+async def test_fallback_upstream_timeout_is_connect_only_bound(wired_upstream, fake_upstream, monkeypatch):
+    """Regression: the module's own comment promises a connect-only bound
+    ("a legitimately slow upstream response is never cut short, only a
+    connect that never completes fails fast"), mirroring
+    `app/routers/standby.py`'s own upstream proxy (`read=None, write=None,
+    pool=None`) -- but the code used to build
+    `httpx.Timeout(30.0, connect=10.0)`, which bounds read/write/pool at 30s
+    too. A fallback `GET` against a large real dataset that legitimately
+    takes longer than that to stream would be aborted by `httpx.ReadTimeout`
+    and silently collapse to the original local 404, contradicting the
+    comment. Waiting out a real 30s+ transfer in a unit test isn't
+    practical, so this captures the actual `httpx.Timeout` the running code
+    builds (via a spy on `httpx.Timeout` itself) during a real fallback call,
+    rather than merely re-deriving the expected value independently."""
+    from app import upstream as upstream_module
+
+    captured = {}
+    real_timeout = upstream_module.httpx.Timeout
+
+    def _spy(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return real_timeout(*args, **kwargs)
+
+    monkeypatch.setattr(upstream_module.httpx, "Timeout", _spy)
+
+    client, service = wired_upstream
+    service.upstream_fallback_enabled = True
+    fake_upstream.set_response(200, b"[]", {"content-type": "application/json"})
+
+    resp = await client.get("/v2/datasets/nobody~nothing/items")
+    assert resp.status_code == 200
+    assert captured, "fetch_upstream_fallback never constructed an httpx.Timeout"
+    assert captured["args"] == ()  # no positional "default for everything" timeout
+    assert captured["kwargs"] == {
+        "connect": upstream_module._CONNECT_TIMEOUT_SECS,
+        "read": None,
+        "write": None,
+        "pool": None,
+    }
 
 
 async def test_fallback_malformed_upstream_base_url_collapses_to_local_404(wired_malformed_upstream):
@@ -510,6 +585,27 @@ async def test_fallback_write_body_and_query_replayed_verbatim(wired_upstream, f
     assert seen["path"] == "/v2/key-value-stores/otheruser~theirs/records/K?foo=bar"
     assert json.loads(seen["body"]) == {"hello": "world"}
     assert seen["headers"].get("content-type") == "application/json"
+
+
+async def test_fallback_replays_raw_percent_encoded_path_not_decoded(wired_upstream, fake_upstream):
+    """Regression: the replay used to build its outgoing URL from
+    `request.url.path` -- ASGI's already-decoded path -- so a key containing
+    an encoded `%2F` decoded to a literal `/` there, forwarding upstream as a
+    real path separator and hitting a different resource than the caller
+    asked for. The replay must instead use the raw, still-encoded wire path
+    (`scope['raw_path']`), so the caller's exact percent-encoding survives to
+    the upstream request unchanged. The decoded path (with a literal `/` from
+    the `%2F`) doesn't match this route's own `{key}` parameter (which never
+    matches a literal `/`), so this 404s locally first, exactly like any
+    other allowlisted-path miss."""
+    client, service = wired_upstream
+    service.upstream_fallback_enabled = True
+    fake_upstream.set_response(200, b'{"data":{"ok":true}}', {"content-type": "application/json"})
+
+    resp = await client.get("/v2/key-value-stores/nobody~nothing/records/we%2Fird%23key")
+    assert resp.status_code == 200
+    assert len(fake_upstream.requests) == 1
+    assert fake_upstream.requests[0]["path"] == "/v2/key-value-stores/nobody~nothing/records/we%2Fird%23key"
 
 
 async def test_fallback_write_forwards_content_encoding_for_compressed_body(wired_upstream, fake_upstream):

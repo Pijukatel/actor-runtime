@@ -25,21 +25,41 @@ import logging
 import re
 
 import httpx
+from starlette.datastructures import MutableHeaders
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
 from .auth import resolve_forwardable_token
-from .http_relay import HOP_BY_HOP, relay_response_headers
 from .responses import get_service
 
 logger = logging.getLogger(__name__)
 
-# This proxy's one fixed exclusion set for the relayed response: the shared
-# app/http_relay.py's full RFC 7230 hop-by-hop set, plus two headers that
-# only make sense for THIS upstream hop -- httpx has already decoded the body
-# (so a forwarded `content-encoding` would describe bytes that are no longer
-# encoded) and Starlette recomputes its own response framing (so a forwarded
+# The full RFC 7230 hop-by-hop set: headers whose scope is the single
+# connection they were sent on, never meaningful once copied onto the
+# brand-new response this proxy builds for the original caller. This is the
+# only proxy in this runtime that needs the full set -- app/routers/standby.py
+# keeps its own narrower, historical exclusion set instead (see that module's
+# own comment for why).
+HOP_BY_HOP = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+    }
+)
+
+# This proxy's one fixed exclusion set for the relayed response: the full
+# RFC 7230 hop-by-hop set above, plus two headers that only make sense for
+# THIS upstream hop -- httpx has already decoded the body (so a forwarded
+# `content-encoding` would describe bytes that are no longer encoded) and
+# Starlette recomputes its own response framing (so a forwarded
 # `content-length` could describe the wrong body).
 _EXCLUDED_RESPONSE_HEADERS = HOP_BY_HOP | {"content-encoding", "content-length"}
 
@@ -47,7 +67,6 @@ _EXCLUDED_RESPONSE_HEADERS = HOP_BY_HOP | {"content-encoding", "content-length"}
 # a legitimately slow upstream response is never cut short, only a connect
 # that never completes fails fast.
 _CONNECT_TIMEOUT_SECS = 10.0
-_TOTAL_TIMEOUT_SECS = 30.0
 
 # By-id `/v2` resource routes: an Actor, run, build or storage reached by its
 # id, plus any nested subpath (versions, records, items, requests, ...).
@@ -62,6 +81,20 @@ _ALLOWLISTED = re.compile(
 
 def is_fallback_allowlisted(path: str) -> bool:
     return _ALLOWLISTED.match(path) is not None
+
+
+def _raw_path(request: Request) -> str:
+    """The request's path exactly as it arrived on the wire, still percent-encoded.
+
+    ``request.url.path`` is ASGI's already-decoded ``scope['path']`` -- a key
+    containing an encoded ``%2F`` would decode to a literal ``/`` there, so
+    replaying it upstream would hit a different resource (an extra path
+    segment) than the one the caller actually asked for. ``scope['raw_path']``
+    is the still-encoded bytes Starlette also received, so replaying THAT
+    keeps the byte-for-byte fidelity this proxy's own contract promises.
+    """
+    raw_path = request.scope.get("raw_path")
+    return raw_path.decode("ascii") if raw_path else request.url.path
 
 
 async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | None:
@@ -90,7 +123,7 @@ async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | N
     svc = get_service(request)
 
     try:
-        url = f"{svc.settings.apify_upstream_base_url}{request.url.path}"
+        url = f"{svc.settings.apify_upstream_base_url}{_raw_path(request)}"
         if request.url.query:
             url += f"?{request.url.query}"
 
@@ -119,7 +152,7 @@ async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | N
         if forward_token:
             headers["authorization"] = f"Bearer {forward_token}"
 
-        timeout = httpx.Timeout(_TOTAL_TIMEOUT_SECS, connect=_CONNECT_TIMEOUT_SECS)
+        timeout = httpx.Timeout(connect=_CONNECT_TIMEOUT_SECS, read=None, write=None, pool=None)
         async with httpx.AsyncClient(timeout=timeout) as client:
             upstream = await client.request(request.method, url, headers=headers, content=body or None)
 
@@ -136,11 +169,15 @@ async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | N
             )
             return None
 
-        # Preserves duplicate header names (e.g. two Set-Cookie headers) --
-        # see app/http_relay.py's own docstring -- following the same
-        # precedent already established by app/routers/standby.py's own
-        # upstream proxy, which shares this same helper.
-        response_headers = relay_response_headers(upstream.headers.multi_items(), _EXCLUDED_RESPONSE_HEADERS)
+        # Built via `.append()` (which explicitly preserves duplicates) rather
+        # than a dict comprehension, which would silently keep only the last
+        # value for a header name the upstream repeats (e.g. two Set-Cookie
+        # headers) -- the same precedent app/routers/standby.py's own upstream
+        # proxy follows for its own relayed response.
+        response_headers = MutableHeaders()
+        for k, v in upstream.headers.multi_items():
+            if k.lower() not in _EXCLUDED_RESPONSE_HEADERS:
+                response_headers.append(k, v)
         return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
     except Exception as exc:
         # Deliberately broad -- see the docstring above. Covers (non-
