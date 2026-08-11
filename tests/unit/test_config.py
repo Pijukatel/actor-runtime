@@ -50,14 +50,13 @@ def test_load_settings_upstream_base_url_is_overridable(monkeypatch):
 
 
 def test_load_settings_strips_trailing_slash_from_upstream_base_url(monkeypatch):
-    """RED->GREEN for the finding that an operator-supplied
-    `APIFY_UPSTREAM_BASE_URL` ending in `/` (e.g. `https://api.apify.com/`)
-    produced a double slash once `fetch_upstream_fallback` (app/upstream.py)
-    concatenated it with `request.url.path` (see requirements/api.md's
-    Upstream fallback section). Normalized away by `Settings.__post_init__`
-    -- the boundary every construction path goes through -- so
-    `load_settings`, the env-var path, never carries a trailing slash
-    through."""
+    """Regression: an operator-supplied `APIFY_UPSTREAM_BASE_URL` ending in
+    `/` (e.g. `https://api.apify.com/`) produces a double slash once
+    `fetch_upstream_fallback` (app/upstream.py) concatenates it with
+    `request.url.path` (see requirements/api.md's Upstream fallback
+    section). Normalized away by `Settings.__post_init__` -- the boundary
+    every construction path goes through -- so `load_settings`, the env-var
+    path, never carries a trailing slash through."""
     monkeypatch.setenv("APIFY_UPSTREAM_BASE_URL", "https://api.apify.com/")
     settings = load_settings()
     assert settings.apify_upstream_base_url == "https://api.apify.com"

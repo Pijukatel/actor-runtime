@@ -10,11 +10,14 @@ patched in.
 
 The two proxies do NOT share the same exclusion set, though -- only the
 mechanism. ``app/upstream.py`` is new code introduced by this same feature, so
-it uses the full RFC 7230 set (``HOP_BY_HOP`` below). ``app/routers/
-standby.py`` predates it and already had its own, narrower, historical set
-(``MINIMAL_HOP_BY_HOP``); reusing this module must never silently widen what
-standby forwards, so every call here takes its exclusion set as an explicit
-``base`` argument rather than hardcoding one.
+it uses the full RFC 7230 set (``HOP_BY_HOP`` below) plus its own hop-specific
+extras. ``app/routers/standby.py`` predates it and already had its own,
+narrower, historical set (``MINIMAL_HOP_BY_HOP``) plus its own extras; reusing
+this module must never silently widen what standby forwards. Each proxy
+builds its OWN single, fixed ``excluded`` frozenset (its base union its own
+extras) and passes that whole set in -- there is nothing to vary
+independently per call, since each proxy only ever forwards with the one set
+that applies to both its outgoing request and its relayed response.
 """
 from __future__ import annotations
 
@@ -25,15 +28,12 @@ from starlette.datastructures import MutableHeaders
 # The full RFC 7230 hop-by-hop set: headers whose scope is the single
 # connection they were sent on, never meaningful once copied onto a
 # different one (a new connection to a container, or a brand-new response
-# built for the original caller). Used as the default `base` below --
-# currently by `app/upstream.py` only, see this module's own docstring for
-# why `app/routers/standby.py` passes `MINIMAL_HOP_BY_HOP` instead. Each call
-# site also adds its own EXTRA excluded headers on top for whatever that
-# particular hop additionally needs (e.g. `host` naming the wrong destination
-# once forwarded, or `content-length`/`content-encoding` describing bytes
-# that no longer apply once the body has been re-framed or decoded) -- so
-# this stays genuinely *the* hop-by-hop set, not a dumping ground for
-# hop-specific exclusions too.
+# built for the original caller). `app/upstream.py` unions this with its own
+# extra excluded headers (e.g. `content-length`/`content-encoding`,
+# describing bytes that no longer apply once the body has been re-framed or
+# decoded) into the one fixed set it passes to every call below; see this
+# module's own docstring for why `app/routers/standby.py` unions
+# `MINIMAL_HOP_BY_HOP` instead.
 HOP_BY_HOP = frozenset(
     {
         "connection",
@@ -51,34 +51,26 @@ HOP_BY_HOP = frozenset(
 # `app/routers/standby.py`'s own historical exclusion set, predating this
 # module: before the two proxies shared any code, standby forwarded
 # everything except exactly `{host, content-length, transfer-encoding,
-# connection}` (the first two supplied as standby's own `extra_excluded`,
-# these two as its base) -- keep-alive/proxy-authenticate/proxy-
-# authorization/te/trailer/trailers/upgrade all passed through unchanged.
-# Preserved here, unchanged, as `base` for standby's own calls so sharing
-# this module's mechanism with `app/upstream.py` never widens what standby
-# forwards as a side effect.
+# connection}` -- keep-alive/proxy-authenticate/proxy-authorization/te/
+# trailer/trailers/upgrade all passed through unchanged. Preserved here,
+# unchanged, as the base `app/routers/standby.py` unions its own extras onto,
+# so sharing this module's mechanism with `app/upstream.py` never widens what
+# standby forwards as a side effect.
 MINIMAL_HOP_BY_HOP = frozenset({"connection", "transfer-encoding"})
 
 
-def filtered_header_pairs(
-    headers: Iterable[tuple[str, str]],
-    extra_excluded: frozenset[str] = frozenset(),
-    base: frozenset[str] = HOP_BY_HOP,
-) -> list[tuple[str, str]]:
-    """Every ``(name, value)`` pair from ``headers`` except ``base`` and
-    ``extra_excluded``, in order, duplicates included -- the caller decides
-    what to build from the result (e.g. a plain list for an outgoing httpx
-    request).
+def filtered_header_pairs(headers: Iterable[tuple[str, str]], excluded: frozenset[str]) -> list[tuple[str, str]]:
+    """Every ``(name, value)`` pair from ``headers`` except ``excluded``, in
+    order, duplicates included -- the caller decides what to build from the
+    result (e.g. a plain list for an outgoing httpx request). ``excluded`` is
+    the caller's own single, fixed union (its hop-by-hop base plus its own
+    hop-specific extras) -- each proxy has exactly one such set, so there is
+    nothing left for this function itself to combine.
     """
-    excluded = base | extra_excluded
     return [(k, v) for k, v in headers if k.lower() not in excluded]
 
 
-def relay_response_headers(
-    headers: Iterable[tuple[str, str]],
-    extra_excluded: frozenset[str] = frozenset(),
-    base: frozenset[str] = HOP_BY_HOP,
-) -> MutableHeaders:
+def relay_response_headers(headers: Iterable[tuple[str, str]], excluded: frozenset[str]) -> MutableHeaders:
     """``filtered_header_pairs`` built into a ``MutableHeaders`` via
     ``.append()`` (which explicitly preserves duplicates, per its own
     docstring) rather than a dict comprehension, which would silently keep
@@ -86,6 +78,6 @@ def relay_response_headers(
     ``Set-Cookie`` headers).
     """
     result = MutableHeaders()
-    for k, v in filtered_header_pairs(headers, extra_excluded, base):
+    for k, v in filtered_header_pairs(headers, excluded):
         result.append(k, v)
     return result

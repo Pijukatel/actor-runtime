@@ -180,10 +180,10 @@ async def test_fallback_relay_preserves_duplicate_response_headers(wired_upstrea
 async def test_fallback_relay_strips_full_hop_by_hop_response_header_set(wired_upstream, fake_upstream):
     """`app/http_relay.py`'s shared `HOP_BY_HOP` is the full RFC 7230
     hop-by-hop set, not just the two extra members
-    (`content-encoding`/`content-length`, `_EXTRA_EXCLUDED_RESPONSE_HEADERS`
-    in app/upstream.py) this proxy adds on top to handle its own
-    decoded-body/recomputed-framing needs -- none of these ever belongs on a
-    relayed response.
+    (`content-encoding`/`content-length`, unioned into
+    `_EXCLUDED_RESPONSE_HEADERS` in app/upstream.py) this proxy adds on top to
+    handle its own decoded-body/recomputed-framing needs -- none of these
+    ever belongs on a relayed response.
     `content-encoding`/`content-length` are exercised separately, over an
     actually-compressed response, in
     `test_fallback_relay_strips_content_encoding_and_recomputes_content_length_for_compressed_response`
@@ -232,7 +232,7 @@ async def test_fallback_relay_strips_content_encoding_and_recomputes_content_len
     wired_upstream, fake_upstream
 ):
     """`content-encoding`/`content-length` are the two members
-    app/upstream.py's `_EXTRA_EXCLUDED_RESPONSE_HEADERS` adds beyond the
+    app/upstream.py's `_EXCLUDED_RESPONSE_HEADERS` adds beyond the
     shared `app/http_relay.py` RFC 7230 set: httpx already decodes a
     response whose `Content-Encoding` it recognizes, so
     `upstream.content` is the DEcompressed bytes while `upstream.headers`

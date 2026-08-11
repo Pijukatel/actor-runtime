@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
@@ -300,15 +301,67 @@ async def get_kvs(store_id: str, request: Request) -> object:
     return data(meta)
 
 
+async def _kv_keys_cursor_envelope(
+    svc, store_id: str, exclusive_start_key: str | None, limit: int | None
+) -> dict[str, Any]:
+    """Cursor-mode envelope for ``GET /v2/key-value-stores/{id}/keys``: pushes
+    ``exclusiveStartKey``/``limit`` straight through to crawlee's own
+    ascending ``iterate_keys(exclusive_start_key=, limit=)`` (see
+    ``Storage.kv_keys_page``), matching the real API's ``ListOfKeys`` cursor
+    contract closely enough for the pinned apify-client's ``iterate_keys()``
+    to page correctly at any store size.
+
+    A bare call (``exclusive_start_key`` and ``limit`` both ``None``) returns
+    every key with ``isTruncated: False`` and no ``exclusiveStartKey``/
+    ``nextExclusiveStartKey``/``total`` fields at all -- byte-for-byte the
+    same shape this surface had before cursor support existed. Either param
+    present adds an additive ``total`` (a full count, appended last so it
+    never disturbs the original field order), matching the other three
+    listing surfaces' own additive-`total` convention.
+    """
+    page, is_truncated, next_key = await svc.storage.kv_keys_page(
+        store_id, exclusive_start_key=exclusive_start_key, limit=limit
+    )
+    envelope: dict[str, Any] = {"items": page, "count": len(page)}
+    envelope["limit"] = limit if limit is not None else len(page)
+    if exclusive_start_key is not None:
+        envelope["exclusiveStartKey"] = exclusive_start_key
+    envelope["isTruncated"] = is_truncated
+    if next_key is not None:
+        envelope["nextExclusiveStartKey"] = next_key
+    if limit is not None or exclusive_start_key is not None:
+        envelope["total"] = len(await svc.storage.kv_keys(store_id))
+    return envelope
+
+
 @router.get("/v2/key-value-stores/{store_id}/keys")
 async def list_keys(store_id: str, request: Request) -> object:
+    """List a KV store's keys.
+
+    Two independent, mutually-exclusive-in-practice paging mechanisms share
+    this one endpoint: a caller-supplied ``exclusiveStartKey`` cursor (pushed
+    down to crawlee, ascending, real-API-shaped ``isTruncated``/
+    ``nextExclusiveStartKey`` -- see ``_kv_keys_cursor_envelope``) and the
+    console's own ``offset``-based paging (an already-fetched full list
+    sliced in Python, unaffected by cursor support). ``offset`` has no
+    equivalent in the real API's own KV-keys contract, so a request naming
+    BOTH ``exclusiveStartKey`` and ``offset`` treats the cursor as
+    authoritative and ignores ``offset`` entirely, rather than mixing two
+    incompatible notions of "where to start". A bare request (neither param,
+    nor ``limit``) takes the cursor path with everything ``None``, which
+    reproduces today's unpaginated shape exactly.
+    """
     svc = get_service(request)
     _user, _storage, denied = await _guard(request, store_id, LEVEL_READ, STORAGE_KV)
     if denied:
         return denied
-    keys = await svc.storage.kv_keys(store_id)
     limit, offset = parse_page(request)
-    return data(paged_envelope(keys, limit, offset, isTruncated=False))
+    exclusive_start_key = request.query_params.get("exclusiveStartKey") or None
+    if exclusive_start_key is not None or offset is None:
+        return data(await _kv_keys_cursor_envelope(svc, store_id, exclusive_start_key, limit))
+    keys = await svc.storage.kv_keys(store_id)
+    is_truncated = limit is not None and offset + limit < len(keys)
+    return data(paged_envelope(keys, limit, offset, isTruncated=is_truncated))
 
 
 @router.get("/v2/key-value-stores/{store_id}/records/{key}")

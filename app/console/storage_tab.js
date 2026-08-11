@@ -6,17 +6,27 @@
 // routing/actors/users concerns and the entire storage-browsing feature.
 // This is a third classic (non-module) script, sharing app.js's global scope
 // exactly like input_tab.js already does: `mk`, `api`, `apiRaw`, `unwrap`,
-// `navigate`, `tableEl`, `getToken`, `STORAGE_SLUG_TO_KIND` and
-// `STORAGE_TYPES` (all defined in app.js) are used here directly, and
-// `loadStorages`/`showStorageDetail`/`showStore` below are what app.js's own
-// router (`renderRoute`) and `openRun` call to render these views. index.html
-// loads this file BEFORE app.js, for the same reason it already loads
-// input_tab.js first: app.js's own top-level code (its router's initial
-// render) can reach these functions the instant it runs.
+// `navigate`, `tableEl`, `getToken` and `STORAGE_SLUG_TO_KIND` (all defined
+// in app.js) are used here directly, and `loadStorages`/`showStorageDetail`/
+// `showStore` below are what app.js's own router (`renderRoute`) and
+// `openRun` call to render these views. index.html loads this file BEFORE
+// app.js, for the same reason it already loads input_tab.js first: app.js's
+// own top-level code (its router's initial render) can reach these functions
+// the instant it runs.
 //
 // DOM safety: same convention as app.js's own header comment -- untrusted
 // strings (storage ids/names, item/key/request contents) are never
 // interpolated into inline event-handler attributes or innerHTML.
+
+// The per-type storage sub-nav: URL slug -> display label. The list order is
+// also the per-type sub-nav order. Only consumed here (`renderStorages`
+// below), unlike `STORAGE_SLUG_TO_KIND` (app.js), which app.js's own router
+// also needs.
+const STORAGE_TYPES = [
+  ["key-value-stores", "Key-value stores"],
+  ["datasets", "Datasets"],
+  ["request-queues", "Request queues"],
+];
 
 // Cache of the last-fetched items per storage type, keyed by slug, so toggling
 // the show/hide-unnamed checkbox can re-render from already-fetched data instead

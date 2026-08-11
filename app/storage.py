@@ -247,6 +247,38 @@ class Storage:
             items.append({"key": meta.key, "size": meta.size})
         return items
 
+    async def kv_keys_page(
+        self, store_id: str, exclusive_start_key: str | None = None, limit: int | None = None
+    ) -> tuple[list[dict[str, Any]], bool, str | None]:
+        """Cursor-aware page of KV keys, pushed straight through to crawlee's
+        own ascending ``key > exclusive_start_key`` filter and ``limit``
+        clause (``iterate_keys``) rather than slicing an already-fetched full
+        list -- so this scales with the page size, not the store size.
+
+        Fetches one key beyond ``limit`` (when ``limit`` is given) to detect
+        whether more keys remain: if so, that extra key is dropped from the
+        returned page and the call reports ``is_truncated=True`` with the
+        last KEPT key as the next cursor (or, for a ``limit=0`` page -- no
+        key kept at all -- the unchanged ``exclusive_start_key``, since
+        nothing was consumed); otherwise ``is_truncated=False`` and there is
+        no next cursor. ``limit=None`` returns every remaining key (from
+        ``exclusive_start_key`` onward, or from the start) with
+        ``is_truncated=False``, matching a bare request's own no-cap
+        behaviour.
+
+        Returns ``(page, is_truncated, next_exclusive_start_key)``.
+        """
+        kv = await self._client.create_kvs_client(name=store_id)
+        probe_limit = limit + 1 if limit is not None else None
+        fetched = []
+        async for meta in kv.iterate_keys(exclusive_start_key=exclusive_start_key, limit=probe_limit):
+            fetched.append({"key": meta.key, "size": meta.size})
+        if limit is not None and len(fetched) > limit:
+            page = fetched[:limit]
+            next_key = page[-1]["key"] if page else exclusive_start_key
+            return page, True, next_key
+        return fetched, False, None
+
     async def kv_record(self, store_id: str, key: str) -> tuple[Any, str] | None:
         kv = await self._client.create_kvs_client(name=store_id)
         rec = await kv.get_value(key=key)

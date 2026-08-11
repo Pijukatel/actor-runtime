@@ -1,9 +1,4 @@
-"""Helpers for the public-Apify-style response envelope and error shapes.
-
-Query-param pagination parsing/slicing (`_parse_int`/`bounded_int`/
-`parse_page`/`paginate`/`paged_envelope`) lives in `app/pagination.py`
-instead -- that is a query-param/slicing concern, not a response-shape one.
-"""
+"""Helpers for the public-Apify-style response envelope and error shapes."""
 from __future__ import annotations
 
 import gzip

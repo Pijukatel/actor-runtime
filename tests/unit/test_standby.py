@@ -458,13 +458,14 @@ async def test_standby_forwarding_strips_only_the_historical_four_headers(wired_
     must never widen standby's own header-forwarding contract. Before that
     module existed, `standby.py`'s own exclusion set was exactly `{host,
     content-length, transfer-encoding, connection}` on both legs -- an
-    iter-11 refactor accidentally widened it to the full RFC 7230 set,
+    earlier refactor accidentally widened it to the full RFC 7230 set,
     additionally stripping `keep-alive`/`proxy-authenticate`/
     `proxy-authorization`/`te`/`trailer`/`trailers`/`upgrade`. Pin the
     historical set exactly: every one of those seven headers must still
     reach the container (request side) and the original caller (response
     side) unchanged. `app/http_relay.py`'s `MINIMAL_HOP_BY_HOP` is what
-    standby.py now passes as its own `base` to guarantee this."""
+    standby.py's own `_EXCLUDED_HEADERS` unions its two extras onto, to
+    guarantee this."""
     client, service = wired_fast_standby
     actor_id = await _provision_standby_actor(client, service, "alice")
 

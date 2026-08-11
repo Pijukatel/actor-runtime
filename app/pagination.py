@@ -81,8 +81,9 @@ def paged_envelope(items: list, limit: int | None, offset: int | None, **extra: 
     optional pagination existed, so a bare request stays byte-for-byte
     identical, key order included. Supplying either adds an additive `total`
     field, appended last so it never disturbs that order. ``extra`` (e.g. KV
-    keys' constant ``isTruncated: False``) is merged in right after `limit`,
-    preserving each surface's own original field order.
+    keys' offset-mode ``isTruncated``, computed by the caller from the same
+    `(items, limit, offset)` this call already has) is merged in right after
+    `limit`, preserving each surface's own original field order.
     """
     paginated = limit is not None or offset is not None
     page = paginate(items, limit, offset) if paginated else items

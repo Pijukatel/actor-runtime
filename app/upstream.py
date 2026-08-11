@@ -37,17 +37,18 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from .auth import resolve_forwardable_token
-from .http_relay import relay_response_headers
+from .http_relay import HOP_BY_HOP, relay_response_headers
 from .responses import get_service
 
 logger = logging.getLogger(__name__)
 
-# Headers that only make sense for THIS upstream hop, beyond the shared
-# app/http_relay.py's RFC 7230 hop-by-hop set: httpx has already decoded the
-# body (so a forwarded `content-encoding` would describe bytes that are no
-# longer encoded) and Starlette recomputes its own response framing (so a
-# forwarded `content-length` could describe the wrong body).
-_EXTRA_EXCLUDED_RESPONSE_HEADERS = frozenset({"content-encoding", "content-length"})
+# This proxy's one fixed exclusion set for the relayed response: the shared
+# app/http_relay.py's full RFC 7230 hop-by-hop set, plus two headers that
+# only make sense for THIS upstream hop -- httpx has already decoded the body
+# (so a forwarded `content-encoding` would describe bytes that are no longer
+# encoded) and Starlette recomputes its own response framing (so a forwarded
+# `content-length` could describe the wrong body).
+_EXCLUDED_RESPONSE_HEADERS = HOP_BY_HOP | {"content-encoding", "content-length"}
 
 # Connect-only bound, mirroring app/routers/standby.py's own upstream proxy:
 # a legitimately slow upstream response is never cut short, only a connect
@@ -154,9 +155,7 @@ async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | N
         # see app/http_relay.py's own docstring -- following the same
         # precedent already established by app/routers/standby.py's own
         # upstream proxy, which shares this same helper.
-        response_headers = relay_response_headers(
-            upstream.headers.multi_items(), _EXTRA_EXCLUDED_RESPONSE_HEADERS
-        )
+        response_headers = relay_response_headers(upstream.headers.multi_items(), _EXCLUDED_RESPONSE_HEADERS)
         return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
     except Exception as exc:
         # Deliberately broad -- see the docstring above. Covers (non-

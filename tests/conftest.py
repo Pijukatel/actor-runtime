@@ -121,13 +121,20 @@ class _StandbyProbeHandler(_QuietHandlerMixin, http.server.BaseHTTPRequestHandle
             self.wfile.flush()
             time.sleep(0.3)
 
-    def _handle_multi_header(self) -> None:
+    def _echo_with_headers(self, response_headers: list) -> None:
         """Echo received headers as an ORDERED list of (name, value) PAIRS
         (never collapsed into a dict, which would silently drop any repeated
-        header name) and reply with two ``Set-Cookie`` headers of its own, so
-        a test can assert repeated header names survive the round trip in
-        BOTH directions -- the forwarding proxy must preserve multi-value
-        headers, not just single-value ones.
+        header name) and reply with ``response_headers`` -- a fixed set of
+        the caller's own choosing -- so a single request can pin the
+        forwarding contract on BOTH legs at once: which headers survive the
+        CALLER -> container hop (via ``receivedHeaderPairs``) and which
+        survive the container -> CALLER hop (via this response's own
+        headers). Shared by ``_handle_multi_header`` (two ``Set-Cookie``
+        headers, proving multi-value headers survive) and
+        ``_handle_hop_by_hop_echo`` (a fixed RFC-7230 hop-by-hop-ish set --
+        see ``app/http_relay.py``'s ``MINIMAL_HOP_BY_HOP``: none of these
+        must be stripped by the standby-forwarding proxy, unlike the
+        upstream-fallback proxy, which uses the fuller RFC 7230 set).
         """
         length = int(self.headers.get("content-length") or 0)
         if length:
@@ -135,32 +142,16 @@ class _StandbyProbeHandler(_QuietHandlerMixin, http.server.BaseHTTPRequestHandle
         payload = json.dumps({"receivedHeaderPairs": list(self.headers.items())}).encode("utf-8")
         self.send_response(200)
         self.send_header("content-type", "application/json")
-        self.send_header("set-cookie", "a=1")
-        self.send_header("set-cookie", "b=2")
-        self.end_headers()
-        self.wfile.write(payload)
-
-    def _handle_hop_by_hop_echo(self) -> None:
-        """Echo received headers (as an ordered pair list, like
-        ``_handle_multi_header``) AND reply with a fixed set of RFC-7230
-        hop-by-hop-ish headers of its own, so a single request can pin
-        standby's forwarding contract on BOTH legs at once: which headers
-        survive the CALLER -> container hop (via ``receivedHeaderPairs``) and
-        which survive the container -> CALLER hop (via this response's own
-        headers). See ``app/http_relay.py``'s ``MINIMAL_HOP_BY_HOP`` -- none
-        of these must be stripped by the standby-forwarding proxy, unlike the
-        upstream-fallback proxy, which uses the fuller RFC 7230 set.
-        """
-        length = int(self.headers.get("content-length") or 0)
-        if length:
-            self.rfile.read(length)
-        payload = json.dumps({"receivedHeaderPairs": list(self.headers.items())}).encode("utf-8")
-        self.send_response(200)
-        self.send_header("content-type", "application/json")
-        for k, v in _HOP_BY_HOP_ECHO_RESPONSE_HEADERS:
+        for k, v in response_headers:
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(payload)
+
+    def _handle_multi_header(self) -> None:
+        self._echo_with_headers([("set-cookie", "a=1"), ("set-cookie", "b=2")])
+
+    def _handle_hop_by_hop_echo(self) -> None:
+        self._echo_with_headers(_HOP_BY_HOP_ECHO_RESPONSE_HEADERS)
 
     def do_GET(self) -> None:
         self._handle()

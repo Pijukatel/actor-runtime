@@ -1,12 +1,13 @@
 """Console-frontend structural checks for storage list/detail pagination, the
-per-storage stats line, and the upstream-fallback toggle UI (app/console/
-app.js and index.html) -- separately scannable from
-test_console_api_extensions.py's own topic (token-free user listing, live log
-streaming, top-level standalone storage management).
+per-storage stats line, and the upstream-fallback toggle UI (mostly
+app/console/storage_tab.js, plus app.js's header toggle and index.html) --
+separately scannable from test_console_api_extensions.py's own topic
+(token-free user listing, live log streaming, top-level standalone storage
+management).
 
 All Docker-free via the `wired` fixture. Every test here is a structural scan
 of the served console assets: no JS runtime exists in this suite to execute
-app.js directly. See requirements/console.md's storage-paging/stats-line
+any of them directly. See requirements/console.md's storage-paging/stats-line
 sections and requirements/api.md's "Upstream fallback" section.
 """
 from __future__ import annotations
@@ -63,26 +64,6 @@ async def test_console_storage_list_offset_reset_is_owned_by_load_storages(wired
         fn_body = storage_js[fn_start : storage_js.index("\n}\n", fn_start)]
         assert "loadStorages(slug, 0);" in fn_body
         assert "loadStorages(slug);" not in fn_body
-
-
-async def test_console_fallback_toggle_refreshed_periodically_and_after_put(wired):
-    """Regression: the header's fallback checkbox used to be read once at
-    page load and never again, and `setFallbackEnabled`'s PUT result was
-    discarded outright -- so a flip made from another tab/port (or a
-    rejected PUT) left this checkbox silently wrong. For THIS toggle that
-    risks a developer believing local-only mode is active while writes are
-    actually being relayed upstream. `setFallbackEnabled` must re-read the
-    server's actual resulting state after its PUT rather than assume it
-    succeeded. (`periodicRefresh`'s own unconditional-refresh regression is
-    covered by the dedicated race test below, whose exact-literal assertion
-    on `periodic_body` already subsumes checking for these same three
-    substrings individually.)"""
-    client, _service = wired
-    js = (await client.get("/console/app.js")).text
-
-    set_start = js.index("async function setFallbackEnabled(enabled)")
-    set_body = js[set_start : js.index("\n}\n", set_start)]
-    assert "refreshFallbackToggle();" in set_body
 
 
 async def test_console_fallback_toggle_periodic_poll_guarded_against_in_flight_flip(wired):
@@ -209,7 +190,7 @@ async def test_console_paging_line_clamps_upper_bound_to_total(wired):
     empty page, so the line reads "showing 0-0 of T", and (b) never exceed
     `total` even on a non-empty page, so the line always correctly describes
     the current slice's position (see requirements/console.md's paging
-    section). Structural, like this file's other app.js checks: no JS
+    section). Structural, like this file's other storage_tab.js checks: no JS
     runtime exists in this suite to execute `pagingLineEl` directly."""
     client, _service = wired
     js = (await client.get("/console/storage_tab.js")).text
@@ -345,7 +326,7 @@ async def test_console_four_listing_surfaces_always_send_limit_and_offset(wired)
     everything" behaviour in the browser (see requirements/console.md's
     storage-paging section).
 
-    Structural, like this file's other app.js checks -- but instead of
+    Structural, like this file's other storage_tab.js checks -- but instead of
     pinning one known-good call site by its exact interpolated variable
     name, this matches on each surface's static PATH SHAPE with any
     `${...}` interpolation in the id/slug position, so it fails equally on
@@ -373,11 +354,13 @@ async def test_console_fallback_toggle_present_and_wired_to_runtime_config(wired
     """The "API fallback" toggle must be present next to the existing "Switch
     user" control, read its state via a token-free GET on load, PUT its new
     state to the same endpoint on change, and reflect whatever the endpoint
-    reports back onto the checkbox (see requirements/console.md's "header's
-    API fallback toggle" section). The backend half (GET/PUT
-    /v2/runtime-config) already has thorough coverage in
-    test_upstream_fallback.py; this covers the console-facing wiring's
-    existence and shape, which had none."""
+    reports back onto the checkbox -- re-reading the server's actual
+    resulting state after the PUT rather than assuming it succeeded, since a
+    flip made from another tab/port (or a rejected PUT) must never leave this
+    checkbox silently wrong (see requirements/console.md's "header's API
+    fallback toggle" section). The backend half (GET/PUT /v2/runtime-config)
+    already has thorough coverage in test_upstream_fallback.py; this covers
+    the console-facing wiring's existence and shape, which had none."""
     client, _service = wired
     html = (await client.get("/")).text
 
@@ -412,6 +395,9 @@ async def test_console_fallback_toggle_present_and_wired_to_runtime_config(wired
     assert '"/v2/runtime-config"' in set_body
     assert "upstreamFallbackEnabled: enabled" in set_body
     assert "skipAuth" not in set_body
+    # Re-reads the server's actual resulting state after the PUT rather than
+    # assuming it took effect as requested.
+    assert "refreshFallbackToggle();" in set_body
 
     # Wired via addEventListener (no inline handler) to the checkbox's own
     # current .checked state.
@@ -425,3 +411,30 @@ async def test_console_fallback_toggle_present_and_wired_to_runtime_config(wired
         "refreshUserSelect();\nrefreshFallbackToggle();\nrenderRoute();\n"
         "setInterval(periodicRefresh, 4000);"
     ) in js
+
+
+async def test_console_fallback_toggle_ignores_a_failed_or_invalid_response(wired):
+    """Regression: `api()` returns whatever a non-JSON response's body parses
+    to (raw text) rather than throwing, and an error envelope's `unwrap()`
+    passes through unchanged (only `.data` is stripped) -- so a transient
+    500/plain-text/error `GET /v2/runtime-config` response used to leave
+    `cfg.upstreamFallbackEnabled` `undefined`, which `!!(...)` turned into a
+    false "fallback is OFF" repaint. This runs on every `periodicRefresh` tick
+    (~4s), so a developer relying on an ON toggle could be shown OFF on a
+    passing failure and issue a write believing it stays local-only.
+    `toggle.checked` may only be assigned once the response is confirmed to
+    actually carry a boolean `upstreamFallbackEnabled` -- anything else must
+    leave the checkbox exactly as it was."""
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+
+    refresh_start = js.index("async function refreshFallbackToggle()")
+    refresh_body = js[refresh_start : js.index("\n}\n", refresh_start)]
+    assert re.search(
+        r'if \(cfg && typeof cfg === "object" '
+        r'&& typeof cfg\.upstreamFallbackEnabled === "boolean"\) \{\s*'
+        r"toggle\.checked = cfg\.upstreamFallbackEnabled;\s*\}",
+        refresh_body,
+    )
+    # The assignment must be gated by that check, not also happen unconditionally.
+    assert refresh_body.count("toggle.checked =") == 1

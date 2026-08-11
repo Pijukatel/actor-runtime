@@ -368,6 +368,44 @@ of how the call site names its own id/slug interpolation, so it fails equally
 on an existing call site losing its params or a new call site being added for
 one of these paths (however it names its id) without them.
 
+### KV-keys cursor pagination (standing regression checks)
+
+Automated coverage (Docker-free via the `wired` fixture) MUST additionally exist
+for the KV-keys surface's `exclusiveStartKey` cursor contract:
+ - **Curl-style cycle enumerates every key exactly once.** Against a store
+   seeded with more keys than a chosen `limit`, repeatedly requesting with
+   `limit` and feeding each response's `nextExclusiveStartKey` back as the
+   next request's `exclusiveStartKey` MUST report `isTruncated: true` plus a
+   `nextExclusiveStartKey` on every page except the last, `isTruncated: false`
+   and no `nextExclusiveStartKey` on the last page, and the concatenation of
+   every page's `items` MUST equal the full key set with no key skipped or
+   repeated.
+ - **A `limit` that does not truncate** (the store has fewer keys than
+   `limit`, or fewer remaining after `exclusiveStartKey`) reports
+   `isTruncated: false` and no `nextExclusiveStartKey` — the non-truncating
+   counterpart to the cycle test above.
+ - **`exclusiveStartKey` + `offset` together: cursor wins.** A request naming
+   both MUST behave identically to the same request with `offset` omitted
+   (i.e. `offset` is silently ignored once a cursor is present), never a
+   combination of the two.
+ - **The pinned `apify-client`'s own paging algorithm succeeds against a
+   store larger than its internal chunk size.** `apify_client`'s
+   `KeyValueStoreClientAsync.iterate_keys()` (pinned in
+   `requirements-dev.txt`) pages via `limit=1000` (its `DEFAULT_CHUNK_SIZE`)
+   and follows `nextExclusiveStartKey` until it comes back `None` — the
+   pinned version's HTTP transport (`impit`, not `httpx`) cannot be pointed
+   at this suite's ASGI-transport `wired` fixture without a real socket, so
+   coverage reproduces that exact request/loop shape directly against `wired`
+   (first call bare `limit=1000`, each subsequent call's `exclusiveStartKey`
+   taken from the previous response's `nextExclusiveStartKey`, stopping when
+   `items` is empty or `nextExclusiveStartKey` is absent) against a store
+   seeded with over 1000 keys, and asserts every key comes back exactly once.
+ - **The bare-request shape is unaffected by cursor support existing** — the
+   existing bare-request KV-keys test (key order `items, count, limit,
+   isTruncated`, no additive fields) MUST keep passing unchanged; it is the
+   direct verification that adding `exclusiveStartKey` support does not
+   narrow the surface's byte-for-byte no-params contract.
+
 ## Mandatory upstream-fallback and runtime-config-toggle tests (standing regression checks)
 
 Automated coverage (Docker-free via `conftest.py`'s own `wired_upstream`

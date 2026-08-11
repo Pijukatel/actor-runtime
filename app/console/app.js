@@ -153,7 +153,15 @@ async function refreshFallbackToggle() {
   const toggle = $("#fallback-toggle");
   if (!toggle) return;
   const cfg = unwrap(await api("/v2/runtime-config", { skipAuth: true }));
-  toggle.checked = !!(cfg && cfg.upstreamFallbackEnabled);
+  // Only repaint the checkbox when the response actually parsed to the
+  // expected shape. This runs on every periodicRefresh tick (~4s); a
+  // transient failure response (a 500, or any non-JSON body) is neither
+  // thrown (api() never rejects on a non-2xx status) nor a real answer, and
+  // must leave the checkbox showing its last known state rather than
+  // snapping it to a false "fallback is OFF" reading.
+  if (cfg && typeof cfg === "object" && typeof cfg.upstreamFallbackEnabled === "boolean") {
+    toggle.checked = cfg.upstreamFallbackEnabled;
+  }
 }
 
 async function setFallbackEnabled(enabled) {
@@ -321,17 +329,14 @@ function wrapTd(node) {
 // ------------------------------------------------------------------ routing
 
 // The storage URL slug (mirroring the official console) maps to the internal
-// kind token used by showStore. The list order is also the per-type sub-nav order.
+// kind token used by showStore. Used by both this router (below) and
+// storage_tab.js's own detail view; the per-type sub-nav's own list/order
+// (`STORAGE_TYPES`) lives in storage_tab.js, its only consumer.
 const STORAGE_SLUG_TO_KIND = {
   "key-value-stores": "kv",
   datasets: "ds",
   "request-queues": "rq",
 };
-const STORAGE_TYPES = [
-  ["key-value-stores", "Key-value stores"],
-  ["datasets", "Datasets"],
-  ["request-queues", "Request queues"],
-];
 
 // Push a real path and render it. Every clickable element navigates through here
 // (via the History API only, never a full-page load or a hash fragment), so

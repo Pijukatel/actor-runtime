@@ -482,9 +482,9 @@
     sentinel the storage layer applies for a bare request.
   - KV keys and RQ requests gain an **additive** `total` field in their
     envelope (alongside their existing `count`/`limit` echoes) only when
-    `limit`/`offset` are supplied — absent from the bare-request shape, and
-    appended last so it never disturbs each surface's original field order
-    (`items, count, limit, ...`).
+    `limit`/`offset` (or, for KV keys, `exclusiveStartKey`) are supplied —
+    absent from the bare-request shape, and appended last so it never
+    disturbs each surface's original field order (`items, count, limit, ...`).
   - The per-user storage listings already emit `{total, count, items}` (same
     field order as their `my_actors`/`my_builds`/`my_runs` siblings);
     `count`/`items` reflect the requested slice, `total` the full count.
@@ -492,6 +492,41 @@
     `expose_headers` (app/main.py), so a cross-origin browser caller can read
     them — otherwise the browser hides any response header not explicitly
     exposed.
+- **KV keys additionally support cursor pagination**
+  (`GET /v2/key-value-stores/{id}/keys`), matching the real API's own
+  `ListOfKeys` contract closely enough for the pinned `apify-client`'s
+  `iterate_keys()` to page correctly at any store size:
+  - A caller-supplied `exclusiveStartKey` is forwarded straight through to
+    crawlee's own ascending `key > exclusiveStartKey` filter
+    (`iterate_keys(exclusive_start_key=..., limit=...)`) rather than sliced
+    from an already-fetched full list, so this scales with the page size, not
+    the store size.
+  - Whenever a supplied `limit` truncates the result — with or without an
+    `exclusiveStartKey` — the response reports a truthful `isTruncated: true`
+    plus `nextExclusiveStartKey` set to the last key actually returned;
+    passing that value back as the next request's `exclusiveStartKey`
+    continues the listing from exactly where the previous page left off, so
+    repeating the cycle enumerates every key in the store exactly once. A
+    `limit` that does NOT truncate (the store has no more keys beyond the
+    page) reports `isTruncated: false` and omits `nextExclusiveStartKey`
+    entirely, matching the real API.
+  - **Interaction with `offset`:** the real API's own KV-keys endpoint has no
+    `offset` concept at all — `offset` is this runtime's own console-only
+    paging mechanism (still sliced from an already-fetched full list, per
+    `storage.md`). The two are mutually exclusive in effect: a request naming
+    both `exclusiveStartKey` and `offset` treats the cursor as authoritative
+    and **ignores `offset` entirely** (cursor wins), rather than mixing two
+    incompatible notions of "where to start". A request naming `offset`
+    alone (no `exclusiveStartKey`) keeps using the `offset`-sliced path, now
+    with a truthful `isTruncated` there too (`offset + limit < total`), but
+    never a `nextExclusiveStartKey` — offset-based paging has no cursor to
+    hand back.
+  - A bare request (no `limit`, `offset`, or `exclusiveStartKey`) is
+    completely unaffected: every key, `isTruncated: false`, no
+    `exclusiveStartKey`/`nextExclusiveStartKey`/`total` fields at all — the
+    identical shape this surface had before cursor support existed.
+  - RQ requests have no analogous cursor support (`exclusiveStartId`) yet —
+    a documented follow-up; its envelope has no `isTruncated` field at all.
 - `limit`/`offset` must each be a non-negative integer or the request is `400`
   (reusing the `runs.py`-style bounded-int query-param pattern). This reuses
   `app/pagination.py`'s `_parse_int` helper, which raises a bare FastAPI

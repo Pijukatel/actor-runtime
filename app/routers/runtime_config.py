@@ -9,11 +9,14 @@ since both serve the same `Service` instance (see app/server.py).
 reading the runtime-wide switch is not per-user data and must never claim a
 token as a side effect. `PUT` is NOT token-free: like `POST /v2/users`, it
 calls `resolve_user()` and discards the result purely as a token-validity
-check (401 on no/invalid token) -- because this is the one switch that, once
-on, causes the runtime to forward the caller's own real Apify credential to
-the public internet on a local 404, it must require the same valid-token
-proof every other mutating endpoint does, not the console's own bearer-
-carrying `api()` call being merely incidental.
+check, resolving the caller exactly like every other mutating endpoint does:
+an absent token falls back to the default user (never rejected for lacking a
+credential), while a PRESENT token matching no existing user is `401
+invalid-token`. Because this is the one switch that, once on, causes the
+runtime to forward the caller's own real Apify credential to the public
+internet on a local 404, it must require the same valid-token proof every
+other mutating endpoint does, not the console's own bearer-carrying `api()`
+call being merely incidental.
 """
 from __future__ import annotations
 
