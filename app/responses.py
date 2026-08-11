@@ -110,36 +110,30 @@ def paginate(items: list, limit: int | None, offset: int | None) -> list:
     return items[start : start + limit] if limit is not None else items[start:]
 
 
-def paged_envelope(
-    items: list,
-    limit: int | None,
-    offset: int | None,
-    *,
-    echo_limit: bool = True,
-    always_total: bool = False,
-    **extra: Any,
-) -> dict:
-    """Build the ``{items, count, ...}`` envelope shared by every listing
-    surface that supports optional `limit`/`offset` slicing -- the single
-    place that decides "which shape does a bare request return" so three
-    near-identical copies of this branch (KV keys, RQ requests, the per-user
-    aggregate listings) can't quietly drift apart.
+def paged_envelope(items: list, limit: int | None, offset: int | None, **extra: Any) -> dict:
+    """Build the ``{items, count, limit, ...}`` envelope shared by KV keys and
+    RQ requests -- the one place that decides "which shape does a bare
+    request return" so the two copies of this branch can't quietly drift
+    apart. The per-user aggregate listings (`total` always present, no
+    `limit`) build their own envelope directly instead -- their shape never
+    matched this one closely enough to be worth a shared, flag-branching
+    helper.
 
     A bare request (``limit`` and ``offset`` both absent) returns every item
-    unsliced; a `total` field is added only once the caller actually pages,
-    UNLESS ``always_total`` (the per-user aggregate listings already emit it
-    unconditionally, even bare). ``echo_limit=False`` omits the `limit` echo
-    entirely (the per-user listings never had one); otherwise `limit` mirrors
-    the effective limit -- the requested value, or the slice's own length
-    when none was given, matching the real API's own convention. ``extra`` is
-    merged into every envelope (e.g. KV keys' constant ``isTruncated: False``).
+    unsliced, with `limit` echoing the slice's own length -- the SAME key
+    order (`items, count, limit, ...`) each surface's response had before
+    optional pagination existed, so a bare request stays byte-for-byte
+    identical, key order included. Supplying either adds an additive `total`
+    field, appended last so it never disturbs that order. ``extra`` (e.g. KV
+    keys' constant ``isTruncated: False``) is merged in right after `limit`,
+    preserving each surface's own original field order.
     """
     paginated = limit is not None or offset is not None
     page = paginate(items, limit, offset) if paginated else items
-    envelope: dict[str, Any] = {"items": page, "count": len(page), **extra}
-    if echo_limit:
-        envelope["limit"] = limit if limit is not None else len(page)
-    if paginated or always_total:
+    envelope: dict[str, Any] = {"items": page, "count": len(page)}
+    envelope["limit"] = limit if limit is not None else len(page)
+    envelope.update(extra)
+    if paginated:
         envelope["total"] = len(items)
     return envelope
 

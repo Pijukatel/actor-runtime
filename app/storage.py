@@ -28,8 +28,11 @@ warnings.filterwarnings("ignore", message="The SqlStorageClient is experimental.
 
 logger = logging.getLogger(__name__)
 
-# "All items" default for dataset reads - the prototype has no pagination UI/consumer
-# yet, so this is just a large-enough cap rather than a real page size.
+# Effective "no cap" default applied when a dataset-items request omits
+# `limit` -- large enough that no real local dataset exceeds it, so a bare
+# (unpaginated) request keeps returning every item, exactly as it always has.
+# The console's own 100-item paging always sends an explicit `limit`, so it
+# never falls through to this default.
 DEFAULT_ITEM_LIMIT = 999999
 
 # Default number of items a request-queue "head" read returns when the caller

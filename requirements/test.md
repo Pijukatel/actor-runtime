@@ -325,17 +325,23 @@ fixtures) MUST exist and keep passing for the following behaviours:
 
 Automated coverage (Docker-free via the `wired` fixture) MUST exist for each of
 the four listing surfaces — dataset items, KV keys, RQ requests, and the
-per-user storage listings — asserting BOTH:
+per-user storage listings — asserting all of:
  - a **bare request** (neither `limit` nor `offset` supplied) returns every
-   item, uncapped, in today's exact shape: dataset items stays a bare array
-   with no `X-Apify-Pagination-*` headers; KV keys/RQ requests envelopes carry
-   no additive `total` field; per-user listings are unchanged. This is the
-   contract every non-console (CLI/SDK/curl) caller keeps relying on.
+   item, uncapped, in today's exact shape, KEY ORDER INCLUDED: dataset items
+   stays a byte-for-byte-identical bare array with no `X-Apify-Pagination-*`
+   headers; KV keys/RQ requests envelopes carry no additive `total` field and
+   keep their pre-pagination field order (`items, count, limit, ...`); per-user
+   listings are unchanged (`total, count, items`). This is the contract every
+   non-console (CLI/SDK/curl) caller keeps relying on — verified with an
+   ORDER-SENSITIVE comparison (`list(body.keys())` or the raw response text),
+   never a `set(body.keys())` comparison, which cannot detect a reorder.
  - a **`limit`/`offset`-supplied request** returns the corresponding slice
    plus enough total-count information to page: dataset items via
    `X-Apify-Pagination-Offset`/`-Count`/`-Total`/`-Limit` response headers over
-   its still-bare-array body; KV keys/RQ requests via an additive `total`
-   field; per-user listings via their existing `total`/`count` fields.
+   its still-bare-array body — `-Limit` echoes the actual returned count when
+   only `offset` was supplied, never an internal "no cap" sentinel — KV
+   keys/RQ requests via an additive `total` field; per-user listings via their
+   existing `total`/`count` fields.
  - a negative `limit`/`offset` is `400` on at least one surface, and a
    non-integer `limit`/`offset` value (e.g. `?limit=abc`, `?offset=1.5`) is
    likewise `400` on at least one surface, exercising `app/responses.py`'s
@@ -346,6 +352,10 @@ per-user storage listings — asserting BOTH:
    app's `{"error": {"type": "invalid-request", ...}}` envelope — a
    pre-existing quirk of that shared helper, predating and unrelated to this
    pagination feature.
+ - the dataset-items `X-Apify-Pagination-*` headers are reachable by a
+   cross-origin browser caller: `CORSMiddleware` (app/main.py) MUST list them
+   in `expose_headers`, verified with an `Origin` header on the request and an
+   `Access-Control-Expose-Headers` assertion on the response.
 
 A **structural** scan of the served `app.js` (in
 `tests/unit/test_console_pagination_ui.py`) MUST additionally confirm that
@@ -358,12 +368,11 @@ one of these paths (however it names its id) without them.
 
 ## Mandatory upstream-fallback and runtime-config-toggle tests (standing regression checks)
 
-Automated coverage (Docker-free via a wiring that points
-`Settings.apify_upstream_base_url` at a local in-process HTTP stub, built on
-`conftest.py`'s own `FakeStandbyServer` scaffolding — the shared
-`_make_threaded_http_server`/`_start_http_server_thread`/
-`_stop_threaded_http_server` helpers and `_QuietHandlerMixin` it also defines)
-MUST exist for:
+Automated coverage (Docker-free via `conftest.py`'s own `wired_upstream`
+fixture, which points `Settings.apify_upstream_base_url` at a `FakeUpstreamServer`
+— a local in-process HTTP stub built on the same `_start_http_server_thread`/
+`_stop_threaded_http_server` helpers and `_QuietHandlerMixin` `FakeStandbyServer`
+uses, with only the request handler differing) MUST exist for:
  - **The toggle** — `GET /v2/runtime-config` is token-free and defaults `False`
    on a freshly-wired `Service` (no restart-persisted state exists, since it is
    a plain in-memory attribute with no DB table); `PUT /v2/runtime-config`
@@ -417,6 +426,16 @@ MUST exist for:
    users, showing it tracks the caller rather than being constant), never a
    different, shared or hardcoded credential; an unbound caller (no token ever
    claimed) forwards no `Authorization` header at all rather than a placeholder.
+   Identity resolution on this path is a PURE lookup, never `app/auth.py`'s
+   bootstrap-or-reject `resolve_user`: a token matching no existing user MUST
+   NOT bootstrap or bind a user as a side effect — coverage MUST assert this on
+   the one path where a request can reach this function's identity lookup
+   before any registered handler's own `resolve_user` call does (the SPA
+   catch-all on an unmatched allowlisted path): fallback ON, an unknown token,
+   on a completely fresh instance (no user ever created) → local `404` AND the
+   user table left exactly as it was (`GET /v2/users` unchanged); a token that
+   DOES match an existing user's bound credential on that same unmatched-path
+   branch still forwards it exactly as before.
  - **Base URL normalization** — an `apify_upstream_base_url` configured WITH a
    trailing slash (mirroring a misconfigured `APIFY_UPSTREAM_BASE_URL`, e.g.
    `https://api.apify.com/`) MUST still produce a single, correct slash in the
@@ -426,8 +445,11 @@ MUST exist for:
    confirm: the `#fallback-toggle` checkbox exists
    in the header immediately next to the `#user-select` "Switch user" control;
    `app.js` reads its initial state via a token-free `GET /v2/runtime-config`
-   on page load, reflecting the returned `upstreamFallbackEnabled` onto the
-   checkbox; and its `change` handler `PUT`s `{upstreamFallbackEnabled: ...}`
-   to the same endpoint. The backend half of the toggle is already covered
-   above; this is the console-facing wiring's existence and shape, which has
-   no other automated coverage in this Docker-free JS-runtime-free suite.
+   on page load AND on every periodic refresh (this is a shared runtime-global
+   switch, so a flip made from another tab/port must be reflected here without
+   requiring a reload); and its `change` handler `PUT`s
+   `{upstreamFallbackEnabled: ...}` to the same endpoint and then re-reads the
+   resulting state, rather than assuming the PUT succeeded. The backend half of
+   the toggle is already covered above; this is the console-facing wiring's
+   existence and shape, which has no other automated coverage in this
+   Docker-free JS-runtime-free suite.

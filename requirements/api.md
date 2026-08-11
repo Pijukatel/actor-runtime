@@ -164,6 +164,15 @@
   `APIFY_UPSTREAM_BASE_URL` is stripped when `Settings` is built, so a
   misconfigured trailing slash never produces a double slash in the
   outgoing path.
+- The caller's identity for that bearer credential is resolved by a PURE
+  lookup — never the bootstrap-or-reject path (`app/auth.py`'s `resolve_user`)
+  every registered handler uses. A token matching no existing user has nothing
+  to forward, so the attempt collapses to the local 404 like any other
+  failure, WITHOUT creating or binding a user as a side effect. This matters
+  because one path can reach this lookup before any handler's own
+  `resolve_user` call does — the SPA catch-all 404s an unmatched allowlisted
+  path without authenticating first — so a read-through toggle must never let
+  that first attempt silently bootstrap local identity state.
 - On a 2xx upstream reply, the caller receives that response **verbatim**
   (status, headers and body — JSON envelopes, bare arrays and binary KV
   records alike), INCLUDING repeated header names surviving from the upstream
@@ -446,20 +455,31 @@
   (`GET /v2/request-queues/{id}/requests`), and each per-user storage listing
   (`GET /v2/users/me/{key-value-stores,datasets,request-queues}`).
 - **Omitting both params keeps today's response byte-for-byte identical** —
-  every item, uncapped, in today's shape, no new fields, no new headers. This
-  is the contract every non-console (CLI/SDK/curl) caller keeps relying on;
-  there is no server-side cap or clamp on any of these four surfaces.
+  every item, uncapped, in today's shape and KEY ORDER, no new fields, no new
+  headers. This is the contract every non-console (CLI/SDK/curl) caller keeps
+  relying on; there is no server-side cap or clamp on any of these four
+  surfaces.
 - Supplying `limit` and/or `offset` returns the corresponding slice, plus
   enough total-count information to page:
   - Dataset items keep their **bare-array body** (unchanged either way) and
     additionally expose `X-Apify-Pagination-Offset`/`-Count`/`-Total`/`-Limit`
     response headers, mirroring the real API's own `format=json` header
-    convention, only once `limit`/`offset` are actually supplied.
+    convention, only once `limit`/`offset` are actually supplied. `-Limit`
+    mirrors the effective limit — the requested value, or (when only `offset`
+    was given) the slice's own returned length — never the internal "no cap"
+    sentinel the storage layer applies for a bare request.
   - KV keys and RQ requests gain an **additive** `total` field in their
     envelope (alongside their existing `count`/`limit` echoes) only when
-    `limit`/`offset` are supplied — absent from the bare-request shape.
-  - The per-user storage listings already emit `{total, count, items}`;
+    `limit`/`offset` are supplied — absent from the bare-request shape, and
+    appended last so it never disturbs each surface's original field order
+    (`items, count, limit, ...`).
+  - The per-user storage listings already emit `{total, count, items}` (same
+    field order as their `my_actors`/`my_builds`/`my_runs` siblings);
     `count`/`items` reflect the requested slice, `total` the full count.
+  - The four `X-Apify-Pagination-*` headers are listed in `CORSMiddleware`'s
+    `expose_headers` (app/main.py), so a cross-origin browser caller can read
+    them — otherwise the browser hides any response header not explicitly
+    exposed.
 - `limit`/`offset` must each be a non-negative integer or the request is `400`
   (reusing the `runs.py`-style bounded-int query-param pattern). This reuses
   `app/responses.py`'s `_parse_int` helper, which raises a bare FastAPI

@@ -1,6 +1,7 @@
 """Shared test fixtures: an in-process app wired to a Docker-free stub driver."""
 from __future__ import annotations
 
+import dataclasses
 import http.server
 import json
 import threading
@@ -165,6 +166,93 @@ class FakeStandbyServer:
         return self._httpd.request_count
 
     def stop(self) -> None:
+        _stop_threaded_http_server(self._httpd, self._thread)
+
+
+class _FakeUpstreamHandler(_QuietHandlerMixin, http.server.BaseHTTPRequestHandler):
+    """Records every request it receives (method/path/headers/body) and
+    replies with whatever `FakeUpstreamServer.set_response` last configured."""
+
+    def _handle(self) -> None:
+        length = int(self.headers.get("content-length") or 0)
+        body = self.rfile.read(length) if length else b""
+        self.server.requests.append(
+            {
+                "method": self.command,
+                "path": self.path,
+                "headers": dict(self.headers.items()),
+                "body": body,
+            }
+        )
+        status, payload, headers = self.server.next_response
+        self.send_response(status)
+        # `headers` is a list of (name, value) pairs, not a dict, so a test can
+        # configure more than one header with the same name (e.g. two
+        # Set-Cookie headers).
+        for k, v in headers:
+            self.send_header(k, v)
+        self.end_headers()
+        if payload:
+            self.wfile.write(payload)
+
+    def do_GET(self) -> None:
+        self._handle()
+
+    def do_POST(self) -> None:
+        self._handle()
+
+    def do_PUT(self) -> None:
+        self._handle()
+
+    def do_DELETE(self) -> None:
+        self._handle()
+
+
+class FakeUpstreamServer:
+    """Stand-in for api.apify.com, for the upstream-fallback middleware
+    (app/upstream.py) tests: records every request it receives and replies
+    with whatever `set_response` was last configured with (default
+    200/empty). Same ThreadingHTTPServer/start/stop lifecycle as
+    `FakeStandbyServer` above, with only the request handler differing.
+    """
+
+    def __init__(self) -> None:
+        self._httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeUpstreamHandler)
+        self._httpd.requests = []
+        self._httpd.next_response = (200, b"", [])
+        self.port = self._httpd.server_address[1]
+        self._thread = _start_http_server_thread(self._httpd)
+        self._stopped = False
+
+    @property
+    def requests(self) -> list:
+        return self._httpd.requests
+
+    def set_response(
+        self, status: int, body: bytes = b"", headers: dict | list[tuple[str, str]] | None = None
+    ) -> None:
+        """`headers` may be a plain dict (the common case) or a list of
+        `(name, value)` pairs when a test needs more than one header with the
+        same name -- a dict could never represent that."""
+        if headers is None:
+            pairs: list[tuple[str, str]] = []
+        elif isinstance(headers, dict):
+            pairs = list(headers.items())
+        else:
+            pairs = list(headers)
+        self._httpd.next_response = (status, body, pairs)
+
+    @property
+    def base_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    def stop(self) -> None:
+        """Idempotent: also used mid-test to simulate a connect error (nothing
+        listens at the port any more), so the fixture's own teardown must not
+        double-close an already-stopped server."""
+        if self._stopped:
+            return
+        self._stopped = True
         _stop_threaded_http_server(self._httpd, self._thread)
 
 
@@ -398,5 +486,47 @@ async def wired_with_proxy_password(tmp_path):
     asserting ``APIFY_PROXY_PASSWORD`` reaches the Actor container env (see
     ``Service._build_environment``)."""
     settings = make_settings(tmp_path, apify_proxy_password="dummy-proxy-password")
+    async for pair in _wire(tmp_path, StubDriver(), settings=settings):
+        yield pair
+
+
+@pytest_asyncio.fixture
+async def fake_upstream():
+    """A running `FakeUpstreamServer`, for the upstream-fallback middleware
+    tests (tests/unit/test_upstream_fallback.py)."""
+    server = FakeUpstreamServer()
+    yield server
+    server.stop()
+
+
+@pytest_asyncio.fixture
+async def wired_upstream(tmp_path, fake_upstream):
+    """Like ``wired``, but `apify_upstream_base_url` points at `fake_upstream`
+    instead of the real platform."""
+    settings = dataclasses.replace(make_settings(tmp_path), apify_upstream_base_url=fake_upstream.base_url)
+    async for pair in _wire(tmp_path, StubDriver(), settings=settings):
+        yield pair
+
+
+@pytest_asyncio.fixture
+async def wired_upstream_trailing_slash_base_url(tmp_path, fake_upstream):
+    """Like `wired_upstream`, but `apify_upstream_base_url` is configured WITH
+    a trailing slash (e.g. as an operator might set `APIFY_UPSTREAM_BASE_URL`)
+    -- `Settings.__post_init__` (app/config.py) normalizes it away, so the
+    outgoing request path built by `fetch_upstream_fallback` never gets a
+    double slash."""
+    settings = dataclasses.replace(make_settings(tmp_path), apify_upstream_base_url=f"{fake_upstream.base_url}/")
+    async for pair in _wire(tmp_path, StubDriver(), settings=settings):
+        yield pair
+
+
+@pytest_asyncio.fixture
+async def wired_malformed_upstream(tmp_path):
+    """Like `wired`, but `apify_upstream_base_url` is malformed in a way `httpx`
+    rejects while BUILDING the request (`httpx.InvalidURL`, raised before any
+    connection is attempted) -- simulating a misconfigured
+    `APIFY_UPSTREAM_BASE_URL` (e.g. missing scheme, unparsable host). No fake
+    server needed: the failure happens before any network I/O."""
+    settings = dataclasses.replace(make_settings(tmp_path), apify_upstream_base_url="http://[::1")
     async for pair in _wire(tmp_path, StubDriver(), settings=settings):
         yield pair

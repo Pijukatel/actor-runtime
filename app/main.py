@@ -56,20 +56,26 @@ def create_app(settings: Settings | None = None, driver: Driver | None = None) -
             await db.dispose()
 
     app = FastAPI(title="actor-runtime", lifespan=lifespan)
-    # Opt-in, off by default (Service.upstream_fallback_enabled) -- see
-    # app/upstream.py's module docstring for the full contract. Registered
-    # BEFORE CORSMiddleware: Starlette's add_middleware prepends, so the LAST
-    # middleware added ends up OUTERMOST. CORS must be outermost so it still
-    # wraps the brand-new Response the fallback middleware builds from a
-    # relayed upstream reply (that response never passes back through
-    # anything registered *before* it) -- reversing this order would make
-    # every relayed fallback response silently miss its CORS headers.
+    # Registered BEFORE CORSMiddleware so CORS ends up OUTERMOST (Starlette's
+    # add_middleware prepends): it must still wrap the brand-new Response the
+    # fallback middleware (app/upstream.py) builds for a relayed upstream
+    # reply, which never passes back through anything registered before it.
     app.add_middleware(UpstreamFallbackMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
         allow_methods=["*"],
         allow_headers=["*"],
+        # Exposed so a cross-origin browser caller (the shipped console is
+        # same-origin and unaffected) can actually read the pagination
+        # headers dataset-items responses carry -- Starlette/CORS hides any
+        # response header not explicitly listed here.
+        expose_headers=[
+            "X-Apify-Pagination-Offset",
+            "X-Apify-Pagination-Count",
+            "X-Apify-Pagination-Total",
+            "X-Apify-Pagination-Limit",
+        ],
     )
 
     @app.exception_handler(InvalidTokenError)

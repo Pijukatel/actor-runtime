@@ -421,7 +421,12 @@ async def get_items(dataset_id: str, request: Request) -> JSONResponse:
         response.headers["X-Apify-Pagination-Offset"] = str(result["offset"])
         response.headers["X-Apify-Pagination-Count"] = str(result["count"])
         response.headers["X-Apify-Pagination-Total"] = str(result["total"])
-        response.headers["X-Apify-Pagination-Limit"] = str(limit if limit is not None else DEFAULT_ITEM_LIMIT)
+        # Effective limit -- the requested value, or (when only `offset` was
+        # given) the slice's own returned length, never the internal
+        # DEFAULT_ITEM_LIMIT sentinel used to mean "no cap" to the storage
+        # layer -- matching `paged_envelope`'s own convention for the same
+        # "no limit given" case on the other three listing surfaces.
+        response.headers["X-Apify-Pagination-Limit"] = str(limit if limit is not None else result["count"])
     return response
 
 

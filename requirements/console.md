@@ -177,10 +177,13 @@
 - **The header's "API fallback" toggle** sits next to the "Switch user" control,
   visible on every view (it lives in the static header, not a routed view). It
   reads its initial state from `GET /v2/runtime-config` (token-free, like the
-  user list) on page load, and `PUT`s the flipped value on change; the runtime's
-  behavior changes immediately, for every user and both ports, since the toggle
-  is one shared runtime-global switch (see `api.md`'s "Upstream fallback"
-  section) — not a per-console-tab or per-user setting.
+  user list) on page load AND on every periodic refresh — since the toggle is
+  one shared runtime-global switch (see `api.md`'s "Upstream fallback" section),
+  not a per-console-tab or per-user setting, a flip made from another tab or
+  port must show up here too, without a reload. Its `change` handler `PUT`s the
+  flipped value and then re-reads the resulting state from the same endpoint
+  rather than assuming the flip took effect; the runtime's behavior changes
+  immediately, for every user and both ports.
 
 # Out of scope for now
 - Real authentication / passwords (the token is a placeholder credential that

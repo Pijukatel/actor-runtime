@@ -1,11 +1,8 @@
 """Console-frontend structural checks for storage list/detail pagination, the
 per-storage stats line, and the upstream-fallback toggle UI (app/console/
-app.js and index.html).
-
-Split out of test_console_api_extensions.py (scoped to token-free user
-listing, live log streaming, and top-level standalone storage management) so
-that module's stated scope stays accurate and this one's own topic --
-console-side paging/stats/toggle rendering -- is separately scannable.
+app.js and index.html) -- separately scannable from
+test_console_api_extensions.py's own topic (token-free user listing, live log
+streaming, top-level standalone storage management).
 
 All Docker-free via the `wired` fixture. Every test here is a structural scan
 of the served console assets: no JS runtime exists in this suite to execute
@@ -43,6 +40,43 @@ async def test_console_create_and_delete_storage_reset_paging_offset(wired):
     assert "loadStorages(slug);" not in delete_body
 
 
+async def test_console_switch_user_resets_storage_list_offset(wired):
+    """Regression: `switchTo()` called `renderRoute()` without resetting
+    `storageListOffset`, so switching the acting user while on
+    `/storage/{slug}` reused the PREVIOUS user's paging offset -- landing on
+    an empty page (Next disabled) for a user with fewer items than that
+    offset, the same stale-offset hazard `createStorage`/`deleteStorage`
+    (the test above) already reset for on mutation, just triggered by a user
+    switch instead."""
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+    switch_start = js.index("function switchTo(token)")
+    body = js[switch_start : js.index("\n}\n", switch_start)]
+    assert "storageListOffset = 0;" in body
+
+
+async def test_console_fallback_toggle_refreshed_periodically_and_after_put(wired):
+    """Regression: the header's fallback checkbox used to be read once at
+    page load and never again, and `setFallbackEnabled`'s PUT result was
+    discarded outright -- so a flip made from another tab/port (or a
+    rejected PUT) left this checkbox silently wrong. For THIS toggle that
+    risks a developer believing local-only mode is active while writes are
+    actually being relayed upstream. `periodicRefresh` must also refresh the
+    toggle (not just conditionally re-render the route), and
+    `setFallbackEnabled` must re-read the server's actual resulting state
+    after its PUT rather than assume it succeeded."""
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+
+    periodic_start = js.index("function periodicRefresh()")
+    periodic_body = js[periodic_start : js.index("\n}\n", periodic_start)]
+    assert "refreshFallbackToggle();" in periodic_body
+
+    set_start = js.index("async function setFallbackEnabled(enabled)")
+    set_body = js[set_start : js.index("\n}\n", set_start)]
+    assert "refreshFallbackToggle();" in set_body
+
+
 async def test_console_stats_line_shows_boolean_false_fields(wired):
     """`statsLineEl`'s filter must treat a boolean specially -- `false` is a
     present value, not emptiness -- while zero/blank/absent counters are
@@ -74,6 +108,25 @@ async def test_console_stats_line_only_excludes_empty_objects(wired):
     stats_idx = js.index("function statsLineEl(meta)")
     body = js[stats_idx : js.index("\n}", stats_idx)]
     assert "Object.keys(value).length === 0" in body
+
+
+async def test_console_stats_line_renders_nothing_for_a_brand_new_empty_storage(wired):
+    """Regression: a brand-new storage has every counter at 0, so
+    `statsLineEl` had nothing to show yet -- but used to unconditionally
+    return a `<p>` element anyway, rendering as a bare empty line above the
+    content. It must return `null` when there is nothing to show, and its
+    caller (`renderStoreContent`) must guard the append so an empty stats
+    line is never inserted into the DOM at all."""
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+    stats_idx = js.index("function statsLineEl(meta)")
+    body = js[stats_idx : js.index("\n}", stats_idx)]
+    assert "parts.length ? mk(" in body and ": null;" in body
+
+    render_start = js.index("async function renderStoreContent()")
+    render_body = js[render_start : js.index("\n}\n", render_start)]
+    assert "const stats = statsLineEl(meta);" in render_body
+    assert "if (stats) box.appendChild(stats);" in render_body
 
 
 async def test_console_paging_line_clamps_upper_bound_to_total(wired):

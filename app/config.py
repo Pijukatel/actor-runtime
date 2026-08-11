@@ -120,5 +120,5 @@ def load_settings() -> Settings:
         port_console=CONSOLE_PORT,
         standby_idle_override_secs=float(override_raw) if override_raw else None,
         apify_proxy_password=os.environ.get("APIFY_PROXY_PASSWORD", ""),
-        apify_upstream_base_url=os.environ.get("APIFY_UPSTREAM_BASE_URL", "https://api.apify.com"),
+        apify_upstream_base_url=os.environ.get("APIFY_UPSTREAM_BASE_URL", Settings.apify_upstream_base_url),
     )

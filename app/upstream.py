@@ -9,6 +9,16 @@ upstream reply is relayed back verbatim; any failure -- non-2xx, timeout,
 connect error, a malformed upstream base URL, or a caller identity that fails
 to resolve -- falls back to the original local 404, logged for debuggability.
 
+Identity for that bearer credential is resolved by a PURE lookup, never
+``app/auth.py``'s bootstrap-or-reject ``resolve_user``: a token that matches
+no existing user is never bound or used to create one here -- it simply has
+nothing to forward, so the attempt collapses to the local 404 like any other
+failure. This matters because the SPA catch-all (``app/routers/console.py``)
+can 404 an allowlisted path WITHOUT ever calling ``resolve_user`` itself,
+making this function's own lookup the first identity resolution a request
+like that gets -- a read-through toggle must never let that first attempt
+silently bootstrap local identity state.
+
 Registered as a Starlette middleware in app/main.py -- see that module and
 requirements/api.md's "Upstream fallback" section for the full contract.
 Deliberately excludes standby forwarding (``/v2/actor-standby/...``, a
@@ -26,7 +36,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from .auth import resolve_user
+from .auth import token_from_request
+from .config import DEFAULT_USERNAME
 from .responses import get_service
 
 logger = logging.getLogger(__name__)
@@ -79,30 +90,20 @@ def is_fallback_allowlisted(path: str) -> bool:
     return any(pattern.match(path) for pattern in _ALLOWLISTED_PATTERNS)
 
 
-async def fetch_upstream_fallback(request: Request, body: bytes, settings) -> Response | None:
+async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | None:
     """Replay ``request`` against the real API; ``None`` on any failure.
 
     The caller (the middleware below) already confirmed the local response was
     a 404 before calling this -- a ``None`` return means "return that original
     404 unchanged", never an upstream error status/body, and never an
-    exception, of its own. That "any failure" umbrella has to cover more than
-    the upstream HTTP call itself: resolving the caller's own identity
-    (``resolve_user``/``svc.get_user``, below) can fail too -- not only via the
-    *expected* ``InvalidTokenError`` (an unresolvable token), but via anything
-    else that can go wrong looking a caller up (e.g. a transient DB error from
-    ``svc.get_user``). Every registered route handler on the allowlisted
-    prefixes already calls ``resolve_user`` before it can produce a 404, so an
-    unresolvable token there raises inside ``call_next()`` and is caught by
-    FastAPI's own ``InvalidTokenError`` handler (a clean 401) -- this function
-    is never reached with a non-404 response. But the SPA catch-all
-    (``app/routers/console.py``'s ``spa_catch_all``) 404s an unmatched
-    allowlisted-prefix path WITHOUT ever calling ``resolve_user`` itself, so
-    this function's own call is sometimes the FIRST resolution attempt for the
-    request. Either way, ``resolve_user`` is called again here on purpose --
-    this function needs the same caller's identity a second time, and it runs
-    on this opt-in, already-network-bound path, so the redundant DB lookup is
-    a deliberate trade against the added complexity of threading the
-    handler's already-resolved username through instead.
+    exception, of its own. That "any failure" umbrella covers more than the
+    upstream HTTP call itself: identity resolution below is a PURE lookup
+    (``token_from_request`` + ``Service.user_for_token``/``get_user``), never
+    ``app/auth.py``'s bootstrap-or-reject ``resolve_user`` -- see the module
+    docstring for why a token matching no existing user simply returns
+    ``None`` here rather than binding one. Anything else that can go wrong
+    looking a caller up (e.g. a transient DB error from ``svc.get_user``) is
+    covered too.
 
     Everything below -- identity resolution, building the outgoing request,
     the upstream call itself, and building the relayed response -- is
@@ -118,7 +119,7 @@ async def fetch_upstream_fallback(request: Request, body: bytes, settings) -> Re
     svc = get_service(request)
 
     try:
-        url = f"{settings.apify_upstream_base_url}{request.url.path}"
+        url = f"{svc.settings.apify_upstream_base_url}{request.url.path}"
         if request.url.query:
             url += f"?{request.url.query}"
 
@@ -139,16 +140,20 @@ async def fetch_upstream_fallback(request: Request, body: bytes, settings) -> Re
             headers["content-encoding"] = content_encoding
 
         # Never a different, shared or hardcoded credential -- only the token
-        # this same request's own caller is already bound to. An unbound
-        # caller (no token ever claimed) forwards no Authorization header at
-        # all.
-        #
-        # `row` is never `None` here (every `resolve_user` return path leaves
-        # a committed `User` row first); an `AttributeError` if that ever
-        # changes is caught by this function's own broad `except` below.
-        user = await resolve_user(request)
-        row = await svc.get_user(user)
-        if row.token:
+        # this same request's own caller is already bound to, found by a pure
+        # lookup (see the module docstring): no token at all resolves to the
+        # (possibly still-unclaimed) default user, same as everywhere else; a
+        # present token that matches no existing user has nothing to forward,
+        # so the whole attempt is abandoned right here -- never a bind.
+        token = token_from_request(request)
+        if token:
+            username = await svc.user_for_token(token)
+            if username is None:
+                return None
+        else:
+            username = DEFAULT_USERNAME
+        row = await svc.get_user(username)
+        if row is not None and row.token:
             headers["authorization"] = f"Bearer {row.token}"
 
         timeout = httpx.Timeout(_TOTAL_TIMEOUT_SECS, connect=_CONNECT_TIMEOUT_SECS)
@@ -175,13 +180,12 @@ async def fetch_upstream_fallback(request: Request, body: bytes, settings) -> Re
         return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
     except Exception as exc:
         # Deliberately broad -- see the docstring above. Covers (non-
-        # exhaustively): `InvalidTokenError` (unresolvable token), any other
-        # fault raised while resolving the caller's identity (e.g. a DB
-        # error), `httpx.InvalidURL` (e.g. a misconfigured
-        # `APIFY_UPSTREAM_BASE_URL` -- notably NOT a subclass of
-        # `httpx.HTTPError`, so a narrower tuple built from that alone would
-        # miss it), and every `httpx.HTTPError` from the upstream call itself
-        # (timeout, connect error, ...).
+        # exhaustively): any fault raised while looking the caller up (e.g. a
+        # DB error from `svc.user_for_token`/`get_user`), `httpx.InvalidURL`
+        # (e.g. a misconfigured `APIFY_UPSTREAM_BASE_URL` -- notably NOT a
+        # subclass of `httpx.HTTPError`, so a narrower tuple built from that
+        # alone would miss it), and every `httpx.HTTPError` from the upstream
+        # call itself (timeout, connect error, ...).
         logger.info("Upstream fallback %s %s failed: %s", request.method, request.url.path, exc)
         return None
 
@@ -214,5 +218,5 @@ class UpstreamFallbackMiddleware(BaseHTTPMiddleware):
         if response.status_code != 404:
             return response
 
-        fallback = await fetch_upstream_fallback(request, body, svc.settings)
+        fallback = await fetch_upstream_fallback(request, body)
         return fallback if fallback is not None else response

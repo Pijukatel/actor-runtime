@@ -36,6 +36,11 @@ async def test_dataset_items_bare_request_is_unpaginated_bare_array(wired):
     assert body[0] == {"i": 0} and body[-1] == {"i": 149}
     # No new headers at all when the caller never asked to page.
     assert not any(k.lower().startswith("x-apify-pagination") for k in resp.headers)
+    # Byte-for-byte, not just parsed-equal: a bare request must reproduce the
+    # exact wire body (item key order included), the literal thing
+    # requirements/api.md's "byte-for-byte identical" promise -- and success
+    # criterion 15's own "capture, re-run, diff" verification -- means.
+    assert resp.text == json.dumps([{"i": i} for i in range(150)], separators=(",", ":"))
 
 
 async def test_dataset_items_limit_offset_returns_slice_and_headers(wired):
@@ -60,7 +65,10 @@ async def test_dataset_items_limit_offset_returns_slice_and_headers(wired):
 async def test_dataset_items_offset_only_keeps_no_limit_semantics(wired):
     """Supplying only `offset` (no `limit`) still counts as "params given" (the
     paginated branch), but the effective limit stays "no cap" -- matching the
-    real API's own `dataset-items-get` documented default."""
+    real API's own `dataset-items-get` documented default. `-Limit` must
+    therefore echo the actual returned count (5), never the internal
+    `DEFAULT_ITEM_LIMIT` sentinel (999999) the storage layer applies under
+    the hood for "no cap"."""
     client, service = wired
     await _create_user(client, "ann3")
     created = await client.post("/v2/datasets", json={"name": "big3"}, headers=auth("ann3"))
@@ -74,6 +82,8 @@ async def test_dataset_items_offset_only_keeps_no_limit_semantics(wired):
     assert body[0] == {"i": 25} and body[-1] == {"i": 29}
     assert resp.headers["X-Apify-Pagination-Offset"] == "25"
     assert resp.headers["X-Apify-Pagination-Total"] == "30"
+    assert resp.headers["X-Apify-Pagination-Count"] == "5"
+    assert resp.headers["X-Apify-Pagination-Limit"] == "5"
 
 
 async def test_dataset_items_limit_only_slices_from_start(wired):
@@ -96,6 +106,34 @@ async def test_dataset_items_limit_only_slices_from_start(wired):
     assert resp.headers["X-Apify-Pagination-Count"] == "5"
     assert resp.headers["X-Apify-Pagination-Total"] == "30"
     assert resp.headers["X-Apify-Pagination-Limit"] == "5"
+
+
+async def test_dataset_items_pagination_headers_are_cors_exposed(wired):
+    """Regression: CORSMiddleware (app/main.py) shipped with no
+    `expose_headers`, so a cross-origin browser caller could see the four
+    `X-Apify-Pagination-*` headers on the wire but never read them from JS --
+    the browser hides any response header not explicitly exposed -- silently
+    forcing such a caller back onto `items.length` to page. The shipped
+    console itself is same-origin and unaffected; this is about any OTHER
+    browser-based caller of this permissive (`allow_origins=["*"]`) API."""
+    client, _service = wired
+    await _create_user(client, "cors")
+    created = await client.post("/v2/datasets", json={"name": "d"}, headers=auth("cors"))
+    ds_id = created.json()["data"]["id"]
+
+    resp = await client.get(
+        f"/v2/datasets/{ds_id}/items?limit=5",
+        headers={**auth("cors"), "Origin": "https://example.com"},
+    )
+    assert resp.status_code == 200
+    exposed = resp.headers.get("access-control-expose-headers", "").lower()
+    for header in (
+        "x-apify-pagination-offset",
+        "x-apify-pagination-count",
+        "x-apify-pagination-total",
+        "x-apify-pagination-limit",
+    ):
+        assert header in exposed
 
 
 async def test_dataset_items_negative_limit_is_bad_request(wired):
@@ -193,7 +231,10 @@ async def test_kv_keys_bare_request_is_unpaginated_and_unchanged(wired):
     resp = await client.get(f"/v2/key-value-stores/{store_id}/keys", headers=auth("kate"))
     assert resp.status_code == 200
     body = resp.json()["data"]
-    assert set(body.keys()) == {"items", "count", "limit", "isTruncated"}  # no additive `total`
+    # Order-sensitive (not `set(body.keys())`, which is blind to a reorder):
+    # this is the exact key order the surface had before optional pagination
+    # existed, and no additive `total`.
+    assert list(body.keys()) == ["items", "count", "limit", "isTruncated"]
     assert body["count"] == 120
     assert body["limit"] == 120
     assert body["isTruncated"] is False
@@ -234,7 +275,7 @@ async def test_kv_keys_limit_only_slices_from_start(wired):
 async def test_kv_keys_offset_only_keeps_no_limit_semantics(wired):
     """Supplying only `offset` (no `limit`) still counts as "params given" (the
     paginated branch, gains the additive `total`), but the effective limit
-    stays "no cap" -- exercising `_paginate`'s `items[start:]` branch, not just
+    stays "no cap" -- exercising `paginate`'s `items[start:]` branch, not just
     `items[start:start+limit]`."""
     client, _service = wired
     await _create_user(client, "kate4")
@@ -265,7 +306,11 @@ async def test_rq_requests_bare_request_is_unpaginated_and_unchanged(wired):
     resp = await client.get(f"/v2/request-queues/{rq_id}/requests", headers=auth("rick"))
     assert resp.status_code == 200
     body = resp.json()["data"]
-    assert set(body.keys()) == {"items", "count", "limit"}  # no additive `total`
+    # Order-sensitive (not `set(body.keys())`): this surface's bare shape
+    # never had an extra field to reorder, but pin it anyway alongside the
+    # other three surfaces so a future change can't quietly slip one in
+    # ahead of `limit` unnoticed.
+    assert list(body.keys()) == ["items", "count", "limit"]  # no additive `total`
     assert body["count"] == 130
     assert body["limit"] == 130
     assert len(body["items"]) == 130
@@ -309,6 +354,10 @@ async def test_my_key_value_stores_bare_request_is_unpaginated_and_unchanged(wir
     resp = await client.get("/v2/users/me/key-value-stores", headers=auth("stan"))
     assert resp.status_code == 200
     body = resp.json()["data"]
+    # Order-sensitive: this is the same `total, count, items` order its
+    # siblings `my_actors`/`my_builds`/`my_runs` use, unaffected by the
+    # optional `limit`/`offset` this surface additionally accepts.
+    assert list(body.keys()) == ["total", "count", "items"]
     assert body["total"] == 110
     assert body["count"] == 110
     assert len(body["items"]) == 110

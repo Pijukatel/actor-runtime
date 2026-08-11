@@ -152,6 +152,11 @@ async function setFallbackEnabled(enabled) {
     body: JSON.stringify({ upstreamFallbackEnabled: enabled }),
     skipAuth: true,
   });
+  // Re-read the server's actual resulting state rather than assume the PUT
+  // took effect as requested -- this is a shared runtime-global switch, so a
+  // rejected/raced PUT must never leave this checkbox showing a flip that
+  // never happened.
+  await refreshFallbackToggle();
 }
 
 // Switching users is client-side: pick an existing user's stored token and send
@@ -161,6 +166,12 @@ async function setFallbackEnabled(enabled) {
 // switch takes effect in place rather than snapping back to a fixed view.
 function switchTo(token) {
   setToken(token == null ? "" : token);
+  // A different user's storage list starts back at the first page -- the
+  // previous user's offset can otherwise land on an empty page (Next
+  // disabled) the moment renderRoute() re-fetches the SAME storage slug for
+  // someone with fewer items, the same stale-offset hazard createStorage()/
+  // deleteStorage() already reset for below.
+  storageListOffset = 0;
   refreshUser();
   refreshUserSelect();
   renderRoute();
@@ -375,6 +386,12 @@ function shouldAutoRefresh() {
 }
 
 function periodicRefresh() {
+  // The header's fallback toggle lives outside any routed view (visible on
+  // every view, shared across ports/users), so it refreshes unconditionally
+  // -- unlike renderRoute() below, gated to the routes that tolerate a
+  // re-render -- catching a flip made from another tab/port within one
+  // interval instead of only on the next full page load.
+  refreshFallbackToggle();
   if (shouldAutoRefresh()) renderRoute();
 }
 
@@ -488,7 +505,10 @@ function statsLineEl(meta) {
     }
     parts.push(`${key}: ${value && typeof value === "object" ? JSON.stringify(value) : value}`);
   }
-  return mk("p", { class: "muted", text: parts.join(" · ") });
+  // A brand-new/empty storage has every counter at 0 (suppressed above), so
+  // there is nothing to show yet -- `null`, not an empty `<p>` element, so
+  // the call site can skip rendering it entirely.
+  return parts.length ? mk("p", { class: "muted", text: parts.join(" · ") }) : null;
 }
 
 async function loadStorages(slug, offset) {
@@ -873,7 +893,8 @@ async function renderStoreContent() {
     box.appendChild(errorLineEl(meta.error));
     return;
   }
-  box.appendChild(statsLineEl(meta));
+  const stats = statsLineEl(meta);
+  if (stats) box.appendChild(stats);
 
   const onPage = (next) => {
     storeOffset = next;
