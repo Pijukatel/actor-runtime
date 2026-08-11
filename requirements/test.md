@@ -410,6 +410,16 @@ MUST exist for:
    users, showing it tracks the caller rather than being constant), never a
    different, shared or hardcoded credential; an unbound caller (no token ever
    claimed) forwards no `Authorization` header at all rather than a placeholder.
+ - **Base URL normalization** — an `apify_upstream_base_url` configured WITH a
+   trailing slash (mirroring a misconfigured `APIFY_UPSTREAM_BASE_URL`, e.g.
+   `https://api.apify.com/`) MUST still produce a single, correct slash in the
+   path the upstream stub actually receives, never a double slash.
+ - **Caller-resolution dedup** — resolving the caller a second time inside the
+   fallback path (to build the outgoing `Authorization` header), for a request
+   whose route handler already resolved the same caller once to produce its
+   local `404`, MUST NOT repeat the underlying token-lookup DB round-trip —
+   verified by counting calls to `Service.user_for_token` across a single
+   fallback-triggering request.
  - **Console toggle UI (structural)** — a structural scan of the served
    `index.html`/`app.js` MUST confirm: the `#fallback-toggle` checkbox exists
    in the header immediately next to the `#user-select` "Switch user" control;

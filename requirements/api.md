@@ -160,7 +160,10 @@
   `apify_upstream_base_url` (`Settings`, default `https://api.apify.com`,
   overridable via the `APIFY_UPSTREAM_BASE_URL` env var so tests can point it
   at a local stub) is the only new configuration this adds; there is no
-  separate "upstream token" setting.
+  separate "upstream token" setting. Any trailing slash on
+  `APIFY_UPSTREAM_BASE_URL` is stripped when `Settings` is built, so a
+  misconfigured trailing slash never produces a double slash in the
+  outgoing path.
 - On a 2xx upstream reply, the caller receives that response **verbatim**
   (status, headers and body — JSON envelopes, bare arrays and binary KV
   records alike), INCLUDING repeated header names surviving from the upstream

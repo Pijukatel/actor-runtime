@@ -98,7 +98,13 @@ async def fetch_upstream_fallback(request: Request, body: bytes, settings) -> Re
     (``app/routers/console.py``'s ``spa_catch_all``) 404s an unmatched
     allowlisted-prefix path WITHOUT ever calling ``resolve_user`` itself, so
     this function's own call is sometimes the FIRST resolution attempt for the
-    request.
+    request. Either way, this call never repeats the handler's own DB
+    round-trip: ``resolve_user`` (app/auth.py) memoizes its result on
+    ``request.state``, so calling it again here for a request whose handler
+    already resolved the same caller is a cache hit, not a second query.
+    ``svc.get_user``, immediately below, is a separate, un-memoized lookup --
+    it fetches the row for its ``token`` field, which most handlers never
+    need and so never fetch themselves.
 
     Everything below -- identity resolution, building the outgoing request,
     the upstream call itself, and building the relayed response -- is
@@ -139,9 +145,22 @@ async def fetch_upstream_fallback(request: Request, body: bytes, settings) -> Re
         # this same request's own caller is already bound to. An unbound
         # caller (no token ever claimed) forwards no Authorization header at
         # all.
+        #
+        # `row` is never `None` here: every return path of `resolve_user`
+        # above (the default user via `ensure_default_user`, a
+        # `user_for_token` match, or a freshly-`bind_default_token`-ed
+        # default user) leaves a backing `User` row committed before
+        # returning its username, and this codebase has no user-deletion
+        # endpoint that could remove it before the very next line runs. If
+        # that invariant is ever broken by a future change, `row.token` below
+        # raises `AttributeError`, which the broad `except Exception` around
+        # this whole block still catches and collapses to the original local
+        # 404 -- the same safety net every other identity-resolution fault
+        # already relies on -- rather than a defensive `is not None` check
+        # that no test could ever exercise.
         user = await resolve_user(request)
         row = await svc.get_user(user)
-        if row is not None and row.token:
+        if row.token:
             headers["authorization"] = f"Bearer {row.token}"
 
         timeout = httpx.Timeout(_TOTAL_TIMEOUT_SECS, connect=_CONNECT_TIMEOUT_SECS)

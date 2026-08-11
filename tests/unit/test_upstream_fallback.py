@@ -14,6 +14,7 @@ import gzip
 import http.server
 import json
 
+import httpx
 import pytest_asyncio
 from conftest import (
     StubDriver,
@@ -128,6 +129,18 @@ async def wired_upstream(tmp_path, fake_upstream):
     """Like the shared `wired` fixture, but `apify_upstream_base_url` points at
     `fake_upstream` instead of the real platform."""
     settings = dataclasses.replace(make_settings(tmp_path), apify_upstream_base_url=fake_upstream.base_url)
+    async for pair in _wire(tmp_path, StubDriver(), settings=settings):
+        yield pair
+
+
+@pytest_asyncio.fixture
+async def wired_upstream_trailing_slash_base_url(tmp_path, fake_upstream):
+    """Like `wired_upstream`, but `apify_upstream_base_url` is configured WITH
+    a trailing slash (e.g. as an operator might set `APIFY_UPSTREAM_BASE_URL`)
+    -- `Settings.__post_init__` (app/config.py) normalizes it away, so the
+    outgoing request path built by `fetch_upstream_fallback` never gets a
+    double slash."""
+    settings = dataclasses.replace(make_settings(tmp_path), apify_upstream_base_url=f"{fake_upstream.base_url}/")
     async for pair in _wire(tmp_path, StubDriver(), settings=settings):
         yield pair
 
@@ -561,6 +574,79 @@ async def test_fallback_write_forwards_content_encoding_for_compressed_body(wire
     assert seen["body"] == compressed  # replayed byte-for-byte, still compressed
 
 
+# ------------------------------------------------------- base URL normalization
+
+
+async def test_fallback_trailing_slash_base_url_builds_url_without_double_slash(
+    wired_upstream_trailing_slash_base_url, monkeypatch
+):
+    """RED->GREEN for the finding that a trailing slash on
+    `APIFY_UPSTREAM_BASE_URL` (e.g. `https://api.apify.com/`) made
+    `fetch_upstream_fallback` build a double slash (`.../..//v2/...`) when it
+    concatenated `settings.apify_upstream_base_url` with `request.url.path`
+    (which always starts with its own `/`). Asserts directly on the URL
+    STRING `fetch_upstream_fallback` hands to `httpx.AsyncClient.request` --
+    monkeypatched here to capture it and return a canned response instead of
+    making a real call -- which is where the double slash is actually built
+    (or not). This is the genuine RED->GREEN check for `Settings.__post_init__`
+    (app/config.py): a same-request test built on a real socket/HTTP-server
+    double (see the companion end-to-end test below) CANNOT discriminate
+    this specific bug, because Python's own
+    `http.server.BaseHTTPRequestHandler.parse_request()` collapses any
+    request path starting with `//` down to a single `/` before a test's
+    handler ever sees it (a CVE mitigation, gh-87389) -- so it would report
+    the same "correct" single-slash path whether or not this fix is present."""
+    client, service = wired_upstream_trailing_slash_base_url
+    service.upstream_fallback_enabled = True
+
+    # The outer `client` fixture is ITSELF an `httpx.AsyncClient` (wired to the
+    # app via `httpx.ASGITransport`, `base_url="http://test"` -- see
+    # conftest.py's `_wire`), so patching the class method also intercepts its
+    # calls, not just the one made by `fetch_upstream_fallback`'s own fresh
+    # `httpx.AsyncClient(...)`. Distinguish by `base_url`: only the latter has
+    # none set, so only ITS call is captured here; the outer client's own call
+    # is passed through to the real implementation so the app/middleware
+    # actually runs and produces the local 404 that triggers the fallback.
+    seen_urls = []
+    original_request = httpx.AsyncClient.request
+
+    async def _capturing_request(self, method, url, **kwargs):
+        if self.base_url == httpx.URL("http://test"):
+            return await original_request(self, method, url, **kwargs)
+        seen_urls.append(str(url))
+        return httpx.Response(200, content=b"[]", headers={"content-type": "application/json"})
+
+    monkeypatch.setattr(httpx.AsyncClient, "request", _capturing_request)
+
+    resp = await client.get("/v2/datasets/nobody~nothing/items")
+    assert resp.status_code == 200
+    assert len(seen_urls) == 1
+    assert seen_urls[0].endswith("/v2/datasets/nobody~nothing/items")
+    assert "//v2" not in seen_urls[0]
+
+
+async def test_fallback_trailing_slash_base_url_does_not_double_slash_the_path(
+    wired_upstream_trailing_slash_base_url, fake_upstream
+):
+    """Companion end-to-end smoke test for the same fix, against the real fake
+    upstream stub used by every other test in this file: with the fix in
+    place, a request the caller made to an allowlisted path that 404s
+    locally is still correctly relayed upstream (i.e. nothing about the
+    normalization silently breaks the happy path). NOTE: unlike the test
+    above, this one is NOT a red/green discriminator for the trailing-slash
+    fix specifically -- see that test's docstring for why a real
+    `http.server`-based stub can't distinguish a single vs. a leading double
+    slash here."""
+    client, service = wired_upstream_trailing_slash_base_url
+    service.upstream_fallback_enabled = True
+    fake_upstream.set_response(200, b"[]", {"content-type": "application/json"})
+
+    resp = await client.get("/v2/datasets/nobody~nothing/items")
+    assert resp.status_code == 200
+    assert len(fake_upstream.requests) == 1
+    assert fake_upstream.requests[0]["path"] == "/v2/datasets/nobody~nothing/items"
+
+
 # ------------------------------------------------------------- guardrails
 
 
@@ -681,6 +767,42 @@ async def test_fallback_anonymous_caller_forwards_no_token_when_unclaimed(wired_
     assert resp.status_code == 200
     assert len(fake_upstream.requests) == 1
     assert "authorization" not in fake_upstream.requests[0]["headers"]
+
+
+# -------------------------------------------------------- caller-resolution dedup
+
+
+async def test_fallback_resolves_caller_only_once_per_request(wired_upstream, fake_upstream, monkeypatch):
+    """RED->GREEN for the finding that `fetch_upstream_fallback` re-resolved
+    the caller from scratch even though the route handler's own `_guard`
+    (app/routers/storages.py) already called `resolve_user` once to produce
+    the local 404 -- a redundant `Service.user_for_token` DB round-trip on
+    every fallback-triggering request. `resolve_user` (app/auth.py) now
+    memoizes its result on `request.state`, so the SAME request's second
+    `resolve_user` call (made here, to build the outgoing `Authorization`
+    header) is a cache hit. Counting calls to the underlying
+    `Service.user_for_token` -- the method both the handler's and the
+    fallback's `resolve_user` call would otherwise invoke independently --
+    pins that it now runs exactly once rather than twice."""
+    client, service = wired_upstream
+    await _create_user(client, "alice")  # alice.token == "alice"
+    fake_upstream.set_response(200, b"[]", {"content-type": "application/json"})
+    service.upstream_fallback_enabled = True
+
+    calls = 0
+    original = service.user_for_token
+
+    async def _counting(token):
+        nonlocal calls
+        calls += 1
+        return await original(token)
+
+    monkeypatch.setattr(service, "user_for_token", _counting)
+
+    resp = await client.get("/v2/datasets/alice~nonexistent/items", headers=auth("alice"))
+    assert resp.status_code == 200
+    assert fake_upstream.requests[0]["headers"].get("authorization") == "Bearer alice"
+    assert calls == 1
 
 
 # -------------------------------------------------------- toggle + middleware wired together
