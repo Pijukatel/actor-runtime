@@ -153,8 +153,10 @@
   list, rendered dynamically from that storage's own `GET` metadata response:
   every field currently non-empty for the resource being viewed, excluding
   identity/bookkeeping fields (`id`/`name`/`userId`/`createdAt`/`modifiedAt`/
-  `accessedAt`/`consoleUrl`) and object-valued stubs (e.g. a request queue's
-  empty `stats` sub-object) — nothing invented, nothing non-empty omitted. A
+  `accessedAt`/`consoleUrl`) and EMPTY object-valued stubs (e.g. a request
+  queue's currently-empty `stats` sub-object) — nothing invented, nothing
+  non-empty omitted; a non-empty object-valued field is still rendered
+  (JSON-stringified) rather than silently dropped just for being an object. A
   boolean field is always shown regardless of its value — `false` is a
   meaningful, present value, not emptiness — while a numeric/string field is
   only shown once it is non-zero/non-blank. In practice today this renders a

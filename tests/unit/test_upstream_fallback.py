@@ -1,8 +1,11 @@
 """Upstream-API fallback middleware (app/upstream.py) + the runtime-config
-toggle it reads. All Docker-free: a tiny in-process HTTP server (mirroring
-conftest.py's own FakeStandbyServer pattern) stands in for api.apify.com, with
-`Settings.apify_upstream_base_url` pointed at it. See requirements/api.md's
-"Upstream fallback" section.
+toggle it reads. All Docker-free: a tiny in-process HTTP server stands in for
+api.apify.com, with `Settings.apify_upstream_base_url` pointed at it, built on
+conftest.py's own shared `_make_threaded_http_server`/`_start_http_server_thread`/
+`_stop_threaded_http_server` helpers and `_QuietHandlerMixin` -- the same
+ThreadingHTTPServer/start/stop lifecycle `FakeStandbyServer` there uses, with
+only the request handler differing. See requirements/api.md's "Upstream
+fallback" section.
 """
 from __future__ import annotations
 
@@ -10,10 +13,17 @@ import dataclasses
 import gzip
 import http.server
 import json
-import threading
 
 import pytest_asyncio
-from conftest import StubDriver, _wire, make_settings
+from conftest import (
+    StubDriver,
+    _make_threaded_http_server,
+    _QuietHandlerMixin,
+    _start_http_server_thread,
+    _stop_threaded_http_server,
+    _wire,
+    make_settings,
+)
 
 
 def auth(token: str) -> dict:
@@ -24,7 +34,7 @@ async def _create_user(client, name):
     await client.post("/v2/users", json={"name": name})
 
 
-class _FakeUpstreamHandler(http.server.BaseHTTPRequestHandler):
+class _FakeUpstreamHandler(_QuietHandlerMixin, http.server.BaseHTTPRequestHandler):
     def _handle(self) -> None:
         length = int(self.headers.get("content-length") or 0)
         body = self.rfile.read(length) if length else b""
@@ -60,9 +70,6 @@ class _FakeUpstreamHandler(http.server.BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:
         self._handle()
 
-    def log_message(self, format, *args) -> None:  # silence default stderr logging
-        pass
-
 
 class FakeUpstreamServer:
     """Stand-in for api.apify.com: records every request it receives and
@@ -70,12 +77,11 @@ class FakeUpstreamServer:
     200/empty)."""
 
     def __init__(self) -> None:
-        self._httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeUpstreamHandler)
+        self._httpd = _make_threaded_http_server(_FakeUpstreamHandler)
         self._httpd.requests = []
         self._httpd.next_response = (200, b"", [])
         self.port = self._httpd.server_address[1]
-        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
-        self._thread.start()
+        self._thread = _start_http_server_thread(self._httpd)
         self._stopped = False
 
     @property
@@ -107,9 +113,7 @@ class FakeUpstreamServer:
         if self._stopped:
             return
         self._stopped = True
-        self._httpd.shutdown()
-        self._httpd.server_close()
-        self._thread.join(timeout=5)
+        _stop_threaded_http_server(self._httpd, self._thread)
 
 
 @pytest_asyncio.fixture

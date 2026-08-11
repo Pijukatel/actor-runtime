@@ -18,7 +18,51 @@ from app.service import Service
 from app.storage import Storage
 
 
-class _StandbyProbeHandler(http.server.BaseHTTPRequestHandler):
+def _make_threaded_http_server(handler_cls: type) -> http.server.ThreadingHTTPServer:
+    """Construct (but do not yet start serving) a `ThreadingHTTPServer` for
+    `handler_cls` on an ephemeral loopback port.
+
+    Shared by every in-process HTTP stub in this suite -- `FakeStandbyServer`
+    below, and `FakeUpstreamServer` in `test_upstream_fallback.py` -- so only
+    the request handler differs between them. Callers set any handler-specific
+    attributes on the returned server BEFORE starting its thread with
+    `_start_http_server_thread`, matching the ordering each stub already relied
+    on.
+    """
+    return http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+
+
+def _start_http_server_thread(httpd: http.server.ThreadingHTTPServer) -> threading.Thread:
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    return thread
+
+
+def _stop_threaded_http_server(httpd: http.server.ThreadingHTTPServer, thread: threading.Thread) -> None:
+    """Shut down, close and join a server started via the two helpers above.
+
+    Not idempotent by itself -- a caller that may `stop()` more than once
+    (e.g. `FakeUpstreamServer`, stopped mid-test to simulate a connect error
+    and again by its fixture's teardown) guards with its own already-stopped
+    flag before calling this.
+    """
+    httpd.shutdown()
+    httpd.server_close()
+    thread.join(timeout=5)
+
+
+class _QuietHandlerMixin:
+    """Silences `BaseHTTPRequestHandler`'s default per-request stderr logging.
+
+    Shared by every in-process HTTP stub handler in this suite so the
+    silencing override lives in one place.
+    """
+
+    def log_message(self, format, *args) -> None:
+        pass
+
+
+class _StandbyProbeHandler(_QuietHandlerMixin, http.server.BaseHTTPRequestHandler):
     """Serves the readiness probe and echoes everything else back as JSON.
 
     Mirrors apify-core's own standby fixture actors (``shared_actors.js``): any
@@ -112,9 +156,6 @@ class _StandbyProbeHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self._handle()
 
-    def log_message(self, format, *args) -> None:  # silence default stderr logging
-        pass
-
 
 class FakeStandbyServer:
     """In-process stand-in for a standby Actor's ``ACTOR_STANDBY_PORT`` listener.
@@ -126,22 +167,19 @@ class FakeStandbyServer:
     """
 
     def __init__(self, never_ready: bool = False, readiness_hang_secs: float = 0.0) -> None:
-        self._httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _StandbyProbeHandler)
+        self._httpd = _make_threaded_http_server(_StandbyProbeHandler)
         self._httpd.never_ready = never_ready
         self._httpd.readiness_hang_secs = readiness_hang_secs
         self._httpd.request_count = 0
         self.port = self._httpd.server_address[1]
-        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
-        self._thread.start()
+        self._thread = _start_http_server_thread(self._httpd)
 
     @property
     def request_count(self) -> int:
         return self._httpd.request_count
 
     def stop(self) -> None:
-        self._httpd.shutdown()
-        self._httpd.server_close()
-        self._thread.join(timeout=5)
+        _stop_threaded_http_server(self._httpd, self._thread)
 
 
 class StubDriver:

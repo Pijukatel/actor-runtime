@@ -463,22 +463,25 @@ const STORAGE_META_KEYS = new Set([
 ]);
 
 // Every field a storage's own GET-detail response CURRENTLY returns with a
-// non-empty value -- nothing invented, nothing non-empty omitted. Object-valued
-// stubs (e.g. a request queue's empty `stats` sub-object) and plain metadata
-// are excluded. A counter-ish field that is absent/zero/blank for this instance
-// is simply not shown, rather than hardcoding which fields exist per storage
-// type -- but a boolean is a meaningful value either way (e.g. a request
-// queue's `hadMultipleClients`), so `false` is shown just like `true`, never
-// treated as "empty".
+// non-empty value -- nothing invented, nothing non-empty omitted. Plain
+// metadata and EMPTY object-valued stubs (e.g. a request queue's currently-
+// empty `stats` sub-object) are excluded; a non-empty object-valued field, if
+// one is ever added, is still rendered (JSON-stringified) rather than
+// silently dropped just for being an object -- see requirements/console.md's
+// "stats line" section. A counter-ish field that is absent/zero/blank for this
+// instance is simply not shown, rather than hardcoding which fields exist per
+// storage type -- but a boolean is a meaningful value either way (e.g. a
+// request queue's `hadMultipleClients`), so `false` is shown just like `true`,
+// never treated as "empty".
 function statsLineEl(meta) {
   const parts = [];
   for (const [key, value] of Object.entries(meta || {})) {
     if (STORAGE_META_KEYS.has(key)) continue;
-    if (value && typeof value === "object") continue;
+    if (value && typeof value === "object" && Object.keys(value).length === 0) continue;
     if (typeof value !== "boolean" && (value === null || value === undefined || value === "" || value === 0)) {
       continue;
     }
-    parts.push(`${key}: ${value}`);
+    parts.push(`${key}: ${value && typeof value === "object" ? JSON.stringify(value) : value}`);
   }
   return mk("p", { class: "muted", text: parts.join(" · ") });
 }

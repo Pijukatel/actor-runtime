@@ -335,7 +335,12 @@ per-user storage listings — asserting BOTH:
    `X-Apify-Pagination-Offset`/`-Count`/`-Total`/`-Limit` response headers over
    its still-bare-array body; KV keys/RQ requests via an additive `total`
    field; per-user listings via their existing `total`/`count` fields.
- - a negative `limit`/`offset` is `400 invalid-request` on at least one surface.
+ - a negative `limit`/`offset` is `400 invalid-request` on at least one surface,
+   and a non-integer `limit`/`offset` value (e.g. `?limit=abc`, `?offset=1.5`)
+   is likewise `400 invalid-request` on at least one surface, exercising
+   `app/responses.py`'s `_parse_int` `TypeError`/`ValueError` branch as reached
+   from these four listing surfaces specifically (previously only exercised
+   via `runs.py`'s pre-existing `memoryMbytes`/`timeoutSecs` validation).
 
 A **structural** scan of the served `app.js` MUST additionally confirm that
 every one of its own fetch call sites touching these same four surfaces
@@ -347,8 +352,11 @@ of these paths without them (success criterion #19).
 ## Mandatory upstream-fallback and runtime-config-toggle tests (standing regression checks)
 
 Automated coverage (Docker-free via a wiring that points
-`Settings.apify_upstream_base_url` at a local in-process HTTP stub, following
-the same pattern as `test_standby.py`'s `FakeStandbyServer`) MUST exist for:
+`Settings.apify_upstream_base_url` at a local in-process HTTP stub, built on
+`conftest.py`'s own `FakeStandbyServer` scaffolding — the shared
+`_make_threaded_http_server`/`_start_http_server_thread`/
+`_stop_threaded_http_server` helpers and `_QuietHandlerMixin` it also defines)
+MUST exist for:
  - **The toggle** — `GET /v2/runtime-config` is token-free and defaults `False`
    on a freshly-wired `Service` (no restart-persisted state exists, since it is
    a plain in-memory attribute with no DB table); `PUT /v2/runtime-config`
@@ -372,11 +380,18 @@ the same pattern as `test_standby.py`'s `FakeStandbyServer`) MUST exist for:
    `Content-Encoding` header — are replayed unchanged — writes are the
    newly-risky path introduced by extending fallback beyond `GET`.
  - **Excluded-path guardrails** — with the toggle ON, each of the allowlist's
-   deliberate exclusions (`/v2/logs/*`, the bare `POST /v2/acts` collection
-   route, `/v2/actor-standby/...`, an unmatched `/v2/runtime-config/...`
-   sub-path) MUST be verified to never reach the upstream stub even when the
-   local response is a 404 — the path-allowlist guard, not merely the
-   local-status guard exercised by the other guardrail checks below.
+   deliberate exclusions MUST be verified to never reach the upstream stub,
+   regardless of what the local response actually is — the path-allowlist
+   guard, not merely the local-status guard exercised by the other guardrail
+   checks below:
+   - `/v2/logs/*`, `/v2/actor-standby/...`, and an unmatched
+     `/v2/runtime-config/...` sub-path all 404 locally, so each of these three
+     checks doubles as "excluded even though the local response is a 404".
+   - the bare `POST /v2/acts` collection route never 404s locally at all — it
+     always creates (`201`), since a bare collection route has no id to miss —
+     so its check verifies the opposite case: excluded from the allowlist (not
+     a by-id resource route) despite a successful local response, never
+     reaching the upstream stub regardless of status.
  - **Fallback enabled, upstream fails** — a non-2xx upstream response and a
    genuine connect error (nothing listening at the configured upstream URL)
    BOTH collapse to the original local `404`, unchanged, never the upstream's

@@ -85,6 +85,42 @@ async def test_dataset_items_negative_limit_is_bad_request(wired):
     assert resp.status_code == 400
 
 
+async def test_dataset_items_non_integer_limit_is_bad_request(wired):
+    """`_parse_int`'s `except (TypeError, ValueError)` branch, reached via
+    `optional_bounded_int`/`parse_page`, was previously only exercised by
+    `runs.py`'s pre-existing `memoryMbytes`/`timeoutSecs` validation -- never
+    by any of the four new listing surfaces this branch now also guards.
+    `int("abc")` raises `ValueError`, so this must be `400`. Note the actual
+    shipped body here is FastAPI's own default `{"detail": ...}` shape, NOT
+    the `{"error": {"type": ..., "message": ...}}` Apify envelope every other
+    4xx in this app uses -- `_parse_int` raises a bare `HTTPException` with no
+    handler translating it, a pre-existing quirk of this helper (shared with
+    `runs.py`'s `memoryMbytes`/`timeoutSecs`), not something this diff
+    introduced or is asked to fix."""
+    client, _service = wired
+    await _create_user(client, "nonint")
+    created = await client.post("/v2/datasets", json={"name": "d"}, headers=auth("nonint"))
+    ds_id = created.json()["data"]["id"]
+    resp = await client.get(f"/v2/datasets/{ds_id}/items?limit=abc", headers=auth("nonint"))
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Query parameter 'limit' must be an integer."
+
+
+async def test_dataset_items_non_integer_offset_is_bad_request(wired):
+    """Same branch as above, exercised via `offset` instead of `limit`, and
+    with a value that looks numeric but isn't an integer (`int("1.5")` also
+    raises `ValueError` -- Python's `int()` never parses a float from a
+    string) -- a caller passing a float string must get the same `400`, not a
+    silently-truncated/ignored offset."""
+    client, _service = wired
+    await _create_user(client, "nonint2")
+    created = await client.post("/v2/datasets", json={"name": "d"}, headers=auth("nonint2"))
+    ds_id = created.json()["data"]["id"]
+    resp = await client.get(f"/v2/datasets/{ds_id}/items?offset=1.5", headers=auth("nonint2"))
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Query parameter 'offset' must be an integer."
+
+
 # -------------------------------------------------------------------- KV keys
 
 

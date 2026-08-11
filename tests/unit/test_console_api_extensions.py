@@ -734,6 +734,22 @@ async def test_console_stats_line_shows_boolean_false_fields(wired):
     assert "value === false" not in body
 
 
+async def test_console_stats_line_only_excludes_empty_objects(wired):
+    """`statsLineEl`'s object-valued filter must key off emptiness, not a
+    blanket `typeof value === "object"` check -- the latter would silently
+    drop any non-empty object-valued stat field ever added later, at odds
+    with "no currently-non-empty field silently omitted" (criterion 22).
+    Today only a request queue's permanently-empty `stats` sub-object hits
+    this filter, so the gap is latent, not a present bug -- this pins the
+    fix in place. Structural, like the sibling boolean-false check above: no
+    JS runtime exists in this suite to execute `statsLineEl` directly."""
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+    stats_idx = js.index("function statsLineEl(meta)")
+    body = js[stats_idx : js.index("\n}", stats_idx)]
+    assert "Object.keys(value).length === 0" in body
+
+
 async def test_console_render_store_content_guards_against_error_envelopes(wired):
     """`renderStoreContent`'s kv/ds/rq branches must bail out on an error
     response (storage deleted / access revoked mid-view) before computing a
@@ -750,14 +766,36 @@ async def test_console_render_store_content_guards_against_error_envelopes(wired
     body_start = js.index("async function renderStoreContent()")
     body_end = js.index("\n// tableEl already renders", body_start)
     body = js[body_start:body_end]
-    # One guard right after each of the three metadata fetches, and one more
-    # after the ds branch's own raw-Response items fetch (checked via `res.ok`
-    # instead of `isErrorEnvelope`, since a successful dataset-items response
-    # is a bare array, not an envelope).
-    assert body.count("isErrorEnvelope(meta)") == 3
-    assert body.count("isErrorEnvelope(keysResp)") == 1
-    assert body.count("isErrorEnvelope(reqsResp)") == 1
-    assert "if (!res.ok)" in body
+
+    # Each `isErrorEnvelope` guard must be tied to an early `return` INSIDE
+    # its own `if` block, not merely present somewhere in the function -- a
+    # bare substring count on `isErrorEnvelope(...)` (the previous version of
+    # this test) cannot catch a regression that keeps the check but drops the
+    # `return;`, e.g.:
+    #   if (isErrorEnvelope(meta)) { box.appendChild(errorLineEl(meta.error)); }
+    # which falls through into `statsLineEl(meta)`/the paging fetch against an
+    # `{error: ...}`-shaped object -- exactly the bug this test's docstring
+    # says it exists to catch -- while every `isErrorEnvelope(...)` count
+    # stays unchanged.
+    guarded_return = re.compile(
+        r"if \(isErrorEnvelope\((\w+)\)\) \{\s*"
+        r"box\.appendChild\(errorLineEl\(\1\.error\)\);\s*"
+        r"return;\s*\}"
+    )
+    matches = guarded_return.findall(body)
+    assert matches.count("meta") == 3  # kv, ds, rq branches
+    assert matches.count("keysResp") == 1  # kv branch
+    assert matches.count("reqsResp") == 1  # rq branch
+
+    # The ds branch's own items fetch is a bare array, not an envelope, so it
+    # guards via `res.ok` instead of `isErrorEnvelope` -- same tied-to-`return`
+    # contract applies there too.
+    assert re.search(
+        r"if \(!res\.ok\) \{\s*"
+        r"box\.appendChild\(errorLineEl\(items && items\.error\)\);\s*"
+        r"return;\s*\}",
+        body,
+    )
 
 
 async def test_console_four_listing_surfaces_always_send_limit_and_offset(wired):
