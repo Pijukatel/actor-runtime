@@ -40,6 +40,11 @@ async def input_tab_js() -> FileResponse:
     return FileResponse(_CONSOLE_DIR / "input_tab.js", media_type="application/javascript", headers=_NO_CACHE)
 
 
+@router.get("/console/storage_tab.js")
+async def storage_tab_js() -> FileResponse:
+    return FileResponse(_CONSOLE_DIR / "storage_tab.js", media_type="application/javascript", headers=_NO_CACHE)
+
+
 @router.api_route(
     "/{full_path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
@@ -50,8 +55,9 @@ async def spa_catch_all(request: Request, full_path: str) -> Response:
 
     This is registered LAST (both within this router and in main.py, where
     ``console.router`` is included last), so it only sees paths no earlier route
-    — every ``/v2/*`` API route, ``/``, ``/console``, ``/console/app.js`` and
-    ``/console/input_tab.js`` — matched. It serves ``index.html`` ONLY for a GET
+    — every ``/v2/*`` API route, ``/``, ``/console``, ``/console/app.js``,
+    ``/console/input_tab.js`` and ``/console/storage_tab.js`` — matched. It
+    serves ``index.html`` ONLY for a GET
     to the SPA's own top-level prefixes (an allowlist on the first path
     segment); every other unmatched path is a normal API 404 in the Apify
     envelope, so the catch-all never shadows the API surface.

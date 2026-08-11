@@ -151,13 +151,19 @@
   **resets to `False` on every process restart** (no DB table, no
   persistence). `GET` is token-free (no bootstrap side effect, like
   `GET /v2/users`). `PUT` is **NOT** token-free: like `POST /v2/users`, it
-  calls the same `resolve_user()` token-validity check every other mutating
-  endpoint uses (discarding the resolved username — a no/invalid token is
-  `401 invalid-token`, never a silent no-op) — because this is the one
-  switch that, once on, causes the runtime to forward the caller's own real
-  Apify credential to the public internet on a local 404. Once authenticated,
-  `PUT` takes effect immediately, for every user and both ports, since both
-  serve this same `Service` instance.
+  calls the same `resolve_user()` check every other mutating endpoint uses,
+  and resolves the caller exactly the same way — an absent token falls back
+  to the default user (the same placeholder-auth convention every other
+  write already follows; it is never rejected for lacking a credential),
+  while a PRESENT token matching no existing user is `401 invalid-token`,
+  never a silent no-op. This is the one switch that, once on, causes the
+  runtime to forward the caller's own real Apify credential to the public
+  internet on a local 404 — which is precisely why an anonymous local caller
+  CAN flip it today, the same as they can already do to any other endpoint
+  that falls back to the default user; hardening that further (e.g.
+  requiring a real credential specifically for this switch) is a follow-up,
+  not a change made here. Once resolved, `PUT` takes effect immediately, for
+  every user and both ports, since both serve this same `Service` instance.
 - With the toggle on, ANY HTTP method (GET/POST/PUT/DELETE) to an allowlisted
   by-id `/v2` resource route — an Actor, run, build, or one of the three
   storage types, reached by its id — whose LOCAL response is a 404 is
@@ -488,7 +494,7 @@
     exposed.
 - `limit`/`offset` must each be a non-negative integer or the request is `400`
   (reusing the `runs.py`-style bounded-int query-param pattern). This reuses
-  `app/responses.py`'s `_parse_int` helper, which raises a bare FastAPI
+  `app/pagination.py`'s `_parse_int` helper, which raises a bare FastAPI
   `HTTPException` — the body is FastAPI's own default `{"detail": "..."}`
   shape, NOT this app's `{"error": {"type": "invalid-request", ...}}`
   envelope used by every other 4xx in this document. Pre-existing quirk of
@@ -501,7 +507,8 @@
   (`/actors...`, `/storage...`, `/users`). So a deep link or a browser refresh to
   one of those paths renders correctly, the app is served by a **catch-all**
   registered **last** (after every `/v2/*` API route and after the explicit `/`,
-  `/console`, `/console/app.js` and `/console/input_tab.js` routes): `GET
+  `/console`, `/console/app.js`, `/console/input_tab.js` and
+  `/console/storage_tab.js` routes): `GET
   /{full_path}` returns the console's `index.html` (HTTP 200) **only** when the
   first path segment is one the SPA owns — an **allowlist** of `actors`,
   `storage`, `users`. The shell is served even when the addressed resource does
@@ -511,7 +518,7 @@
   unknown `/v2/...` path — returns a normal **404 `record-not-found`** in the Apify
   error envelope, not `index.html`. Because the catch-all is registered last and only
   matches paths no earlier route claimed, every real `/v2/*` endpoint and the
-  literal `/console/app.js` and `/console/input_tab.js` assets keep their
-  existing responses unchanged.
+  literal `/console/app.js`, `/console/input_tab.js` and
+  `/console/storage_tab.js` assets keep their existing responses unchanged.
 - The catch-all is defined once on the shared app instance, so it behaves identically
   on both the API and console ports.

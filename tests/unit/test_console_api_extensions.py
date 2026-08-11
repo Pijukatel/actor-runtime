@@ -639,7 +639,7 @@ async def test_console_has_storages_tab(wired):
     html = (await client.get("/")).text
     # Storage is a single top-level nav entry now (singular), reached at /storage.
     assert 'id="tab-storage"' in html
-    js = (await client.get("/console/app.js")).text
+    js = (await client.get("/console/storage_tab.js")).text
     assert "loadStorages" in js
     assert "createStorage" in js
     assert "deleteStorage" in js
@@ -648,7 +648,7 @@ async def test_console_has_storages_tab(wired):
 
 async def test_console_storages_show_unnamed_checkbox_and_gated_delete(wired):
     client, _service = wired
-    js = (await client.get("/console/app.js")).text
+    js = (await client.get("/console/storage_tab.js")).text
 
     # A checkbox exists for the Storages tab, defaulting to checked (show unnamed),
     # and is wired via addEventListener (no inline handler).
@@ -755,7 +755,7 @@ async def test_console_build_detail_resolves_by_build_number(wired):
 
 async def test_console_storage_marker_is_check_and_cross(wired):
     client, _service = wired
-    js = (await client.get("/console/app.js")).text
+    js = (await client.get("/console/storage_tab.js")).text
     # The named/run-derived marker is a ✅/❌ glyph gated on st.named, not the
     # plain "run-derived" text label used before.
     assert 'st.named ? "✅" : "❌"' in js
@@ -764,7 +764,7 @@ async def test_console_storage_marker_is_check_and_cross(wired):
 
 async def test_console_storage_detail_inspects_via_showstore(wired):
     client, _service = wired
-    js = (await client.get("/console/app.js")).text
+    js = (await client.get("/console/storage_tab.js")).text
     # The /storage/{slug}/{id} detail route renders contents by reusing showStore
     # with a kind derived from the slug, and rows link to that detail path.
     assert "function showStorageDetail(" in js
@@ -844,6 +844,12 @@ async def test_server_spa_catch_all_does_not_shadow_api_or_assets(wired):
     assert input_tab_js.status_code == 200
     assert "application/javascript" in input_tab_js.headers.get("content-type", "")
     assert input_tab_js.text.strip()
+
+    # Likewise the Storage-tab's own script, also split out of app.js.
+    storage_tab_js = await client.get("/console/storage_tab.js")
+    assert storage_tab_js.status_code == 200
+    assert "application/javascript" in storage_tab_js.headers.get("content-type", "")
+    assert storage_tab_js.text.strip()
 
     # / still returns index.html.
     root = await client.get("/")

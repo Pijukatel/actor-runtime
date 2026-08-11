@@ -654,6 +654,30 @@ async def test_fallback_forwards_different_callers_different_tokens(wired_upstre
     assert fake_upstream.requests[1]["headers"].get("authorization") == "Bearer bob"
 
 
+async def test_fallback_forwards_real_token_not_container_token(wired_upstream, fake_upstream):
+    """`resolve_forwardable_token`'s own documented contract (see its
+    docstring in app/auth.py): `user_for_token` matches either a user's bound
+    `token` OR their `container_token` -- so an Actor container's own
+    injected `APIFY_TOKEN` also resolves a caller here -- but the row's own
+    real `token` is what must be forwarded upstream, never the container
+    token that happened to resolve it. Authenticate this fallback-triggering
+    request via alice's `container_token` (exactly as an apify-sdk call made
+    from inside her Actor's own container would present it) and confirm the
+    upstream call carries alice's real bound `token`, never the
+    container_token used to authenticate."""
+    client, service = wired_upstream
+    service.upstream_fallback_enabled = True
+    await _create_user(client, "alice")  # alice.token == "alice"
+    container_token = await service.container_token_for("alice")
+    assert container_token != "alice"
+    fake_upstream.set_response(200, b"[]", {"content-type": "application/json"})
+
+    resp = await client.get("/v2/datasets/alice~nonexistent/items", headers=auth(container_token))
+    assert resp.status_code == 200
+    assert len(fake_upstream.requests) == 1
+    assert fake_upstream.requests[0]["headers"].get("authorization") == "Bearer alice"
+
+
 async def test_fallback_anonymous_caller_forwards_no_token_when_unclaimed(wired_upstream, fake_upstream):
     client, service = wired_upstream
     service.upstream_fallback_enabled = True

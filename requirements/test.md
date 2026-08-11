@@ -12,11 +12,12 @@ Test case must verify full Actor development flow:
 
 ## CLI redirect mechanism (confirmed)
 The test points the stock `apify-cli` at the local runtime by exporting
-`APIFY_CLIENT_BASE_URL=<runtime API URL>` together with an `APIFY_TOKEN` (see
-`cli.md`). The token value selects the acting user; the e2e flow uses
-`APIFY_TOKEN=local-user` so its hard-coded `local-user~<name>` ids resolve.
-`apify push` performs both the push and the build; `apify call` starts and waits
-for the run. No CLI patch is needed.
+`APIFY_CLIENT_BASE_URL=<runtime API URL>` and `APIFY_CONSOLE_URL=<runtime
+console URL>` together with an `APIFY_TOKEN` (see `cli.md`). The token value
+selects the acting user; the e2e flow uses `APIFY_TOKEN=local-user` so its
+hard-coded `local-user~<name>` ids resolve. `apify push` performs both the
+push and the build; `apify call` starts and waits for the run. No CLI patch
+is needed.
 
 ## On-demand Actor discovers and calls a standby Actor
 Test case must verify the standby-actor flow end to end, using two fixture
@@ -263,10 +264,11 @@ console's URL-path-based navigation and restructured information architecture:
    `/actors/no-such~actor`) returns HTTP 200 with the console's `index.html`
    (recognizably the shell, e.g. contains `id="detail"` and the `/console/app.js`
    script), while an unknown `/v2/...` path still returns a **404** in the Apify
-   error envelope (never the shell), `/console/app.js` and `/console/input_tab.js`
-   still return their JS assets, and `/` still returns `index.html`. The catch-all
-   uses an allowlist on the first path segment and must not shadow the API.
- - **Storage detail inspects contents.** The served `app.js` renders
+   error envelope (never the shell), `/console/app.js`, `/console/input_tab.js`
+   and `/console/storage_tab.js` still return their JS assets, and `/` still
+   returns `index.html`. The catch-all uses an allowlist on the first path
+   segment and must not shadow the API.
+ - **Storage detail inspects contents.** The served `storage_tab.js` renders
    `/storage/{slug}/{resourceId}` by reusing the shared content renderer with a kind
    derived from the slug (via the slug→kind map), and storage rows link to that
    detail path; coverage asserts (behaviourally) that both a named and a run-derived
@@ -314,7 +316,7 @@ fixtures) MUST exist and keep passing for the following behaviours:
    is the **empty string** for a run-derived storage (not its id) while a named
    storage keeps its given name, and that the console renders the named/run-derived
    distinction as a **✅ / ❌** glyph gated on the same `named` flag as the delete
-   affordance. A structural check on the served `app.js` (in
+   affordance. A structural check on the served `storage_tab.js` (in
    `tests/unit/test_console_pagination_ui.py`) MUST also confirm
    `createStorage`/`deleteStorage` each reset the storage list's paging offset
    to 0 when re-fetching (`loadStorages(slug, 0)`, never a bare
@@ -344,7 +346,7 @@ per-user storage listings — asserting all of:
    existing `total`/`count` fields.
  - a negative `limit`/`offset` is `400` on at least one surface, and a
    non-integer `limit`/`offset` value (e.g. `?limit=abc`, `?offset=1.5`) is
-   likewise `400` on at least one surface, exercising `app/responses.py`'s
+   likewise `400` on at least one surface, exercising `app/pagination.py`'s
    `_parse_int` `TypeError`/`ValueError` branch as reached from these four
    listing surfaces specifically (previously only exercised via `runs.py`'s
    pre-existing `memoryMbytes`/`timeoutSecs` validation). Both are the bare
@@ -357,7 +359,7 @@ per-user storage listings — asserting all of:
    in `expose_headers`, verified with an `Origin` header on the request and an
    `Access-Control-Expose-Headers` assertion on the response.
 
-A **structural** scan of the served `app.js` (in
+A **structural** scan of the served `storage_tab.js` (in
 `tests/unit/test_console_pagination_ui.py`) MUST additionally confirm that
 every one of its own fetch call sites touching these same four surfaces
 carries an explicit `limit=...&offset=...` — never a bare path with the query

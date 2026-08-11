@@ -14,45 +14,55 @@ from __future__ import annotations
 import re
 
 
-async def test_console_create_and_delete_storage_reset_paging_offset(wired):
-    """`createStorage`/`deleteStorage` must reset the paging offset when
-    re-fetching the storage list, not silently re-fetch whatever offset was
-    already showing: the list is ordered oldest-first
-    (`list_storages_for_user` orders by `created_at`), so a create appended
-    past the end of a full page can otherwise go permanently unseen (the
-    fetch never moves past the stale offset to reveal it), and a delete of
-    the last item on a later page can land on an empty page. Both must call
-    `loadStorages(slug, 0)` explicitly -- a bare `loadStorages(slug)` leaves
-    `storageListOffset` untouched (see `loadStorages`'s own reset logic:
-    `offset != null` is false for an omitted argument), reproducing exactly
-    this regression."""
+async def test_console_storage_list_offset_reset_is_owned_by_load_storages(wired):
+    """Model test replacing two former structural tests that each pinned a
+    separate *poke* of `storageListOffset` (`switchTo`'s direct global
+    assignment, and `createStorage`/`deleteStorage`'s literal `0` argument):
+    the reset rule now lives entirely inside `loadStorages` itself (see
+    storage_tab.js), keyed off BOTH the slug and the acting user's token, so
+    `switchTo` needs no special-cased handling of the offset at all -- a
+    future list-mutating call site inherits the correct reset automatically
+    just by calling `loadStorages(slug)` / `loadStorages(slug, 0)`, without
+    having to remember a separate poke of a global.
+
+    Regression this still catches: the list is ordered oldest-first
+    (`list_storages_for_user` orders by `created_at`), so re-fetching a
+    stale offset after a create/delete (or after switching to a user with
+    fewer items) can leave a just-created item permanently unseen or land on
+    an empty page (Next disabled)."""
     client, _service = wired
-    js = (await client.get("/console/app.js")).text
+    storage_js = (await client.get("/console/storage_tab.js")).text
+    app_js = (await client.get("/console/app.js")).text
 
-    create_start = js.index("async function createStorage(slug, name)")
-    create_body = js[create_start : js.index("\n}\n", create_start)]
-    assert "loadStorages(slug, 0);" in create_body
-    assert "loadStorages(slug);" not in create_body
+    # The model: `loadStorages` resets to page 0 whenever either the slug OR
+    # the acting user's token differs from the last load -- not slug alone --
+    # and is the only function that ever assigns `storageListOffset`.
+    load_start = storage_js.index("async function loadStorages(slug, offset)")
+    load_body = storage_js[load_start : storage_js.index("\n}\n", load_start)]
+    assert "slug === currentStorageSlug && token === storageListToken" in load_body
+    assert "storageListToken = token;" in load_body
+    # Its own declaration aside, every assignment to `storageListOffset` in
+    # the whole file lives inside `loadStorages` -- nothing else pokes it.
+    assert storage_js.count("storageListOffset =") == 3  # `let ... = 0;` + the two assignments above
+    assert load_body.count("storageListOffset =") == 2
 
-    delete_start = js.index("async function deleteStorage(slug, id)")
-    delete_body = js[delete_start : js.index("\n}\n", delete_start)]
-    assert "loadStorages(slug, 0);" in delete_body
-    assert "loadStorages(slug);" not in delete_body
+    # `switchTo()` no longer hand-pokes the offset directly -- the model
+    # above already resets it for a token change, so there is nothing left
+    # to poke.
+    switch_start = app_js.index("function switchTo(token)")
+    switch_body = app_js[switch_start : app_js.index("\n}\n", switch_start)]
+    assert "storageListOffset" not in switch_body
+    assert "storageListOffset" not in app_js  # not even referenced elsewhere in app.js
 
-
-async def test_console_switch_user_resets_storage_list_offset(wired):
-    """Regression: `switchTo()` called `renderRoute()` without resetting
-    `storageListOffset`, so switching the acting user while on
-    `/storage/{slug}` reused the PREVIOUS user's paging offset -- landing on
-    an empty page (Next disabled) for a user with fewer items than that
-    offset, the same stale-offset hazard `createStorage`/`deleteStorage`
-    (the test above) already reset for on mutation, just triggered by a user
-    switch instead."""
-    client, _service = wired
-    js = (await client.get("/console/app.js")).text
-    switch_start = js.index("function switchTo(token)")
-    body = js[switch_start : js.index("\n}\n", switch_start)]
-    assert "storageListOffset = 0;" in body
+    # `createStorage`/`deleteStorage` still force a guaranteed fresh first
+    # page (the list itself just changed under the SAME slug/user, which no
+    # identity check can detect on its own) via the same explicit-offset
+    # argument the paging controls use -- never a bare `loadStorages(slug)`.
+    for fn_sig in ("async function createStorage(slug, name)", "async function deleteStorage(slug, id)"):
+        fn_start = storage_js.index(fn_sig)
+        fn_body = storage_js[fn_start : storage_js.index("\n}\n", fn_start)]
+        assert "loadStorages(slug, 0);" in fn_body
+        assert "loadStorages(slug);" not in fn_body
 
 
 async def test_console_fallback_toggle_refreshed_periodically_and_after_put(wired):
@@ -61,21 +71,14 @@ async def test_console_fallback_toggle_refreshed_periodically_and_after_put(wire
     discarded outright -- so a flip made from another tab/port (or a
     rejected PUT) left this checkbox silently wrong. For THIS toggle that
     risks a developer believing local-only mode is active while writes are
-    actually being relayed upstream. `periodicRefresh` must also refresh the
-    toggle (not just conditionally re-render the route), and
-    `setFallbackEnabled` must re-read the server's actual resulting state
-    after its PUT rather than assume it succeeded."""
+    actually being relayed upstream. `setFallbackEnabled` must re-read the
+    server's actual resulting state after its PUT rather than assume it
+    succeeded. (`periodicRefresh`'s own unconditional-refresh regression is
+    covered by the dedicated race test below, whose exact-literal assertion
+    on `periodic_body` already subsumes checking for these same three
+    substrings individually.)"""
     client, _service = wired
     js = (await client.get("/console/app.js")).text
-
-    periodic_start = js.index("function periodicRefresh()")
-    periodic_body = js[periodic_start : js.index("\n}\n", periodic_start)]
-    assert "refreshFallbackToggle()" in periodic_body
-    # Guarded against, and tolerant of a failed fetch during, an in-flight
-    # user-initiated flip (see the dedicated race test below) -- not a bare,
-    # unconditional, uncaught call.
-    assert "fallbackTogglePutInFlight" in periodic_body
-    assert "refreshFallbackToggle().catch(" in periodic_body
 
     set_start = js.index("async function setFallbackEnabled(enabled)")
     set_body = js[set_start : js.index("\n}\n", set_start)]
@@ -116,7 +119,7 @@ async def test_console_stats_line_shows_boolean_false_fields(wired):
     test_storage_metadata.py); this test's own subject is the JS filter, not
     the backend field."""
     client, _service = wired
-    js = (await client.get("/console/app.js")).text
+    js = (await client.get("/console/storage_tab.js")).text
     stats_idx = js.index("function statsLineEl(meta)")
     body = js[stats_idx : js.index("\n}", stats_idx)]
     assert 'typeof value !== "boolean"' in body
@@ -134,7 +137,7 @@ async def test_console_stats_line_only_excludes_empty_objects(wired):
     check above: no JS runtime exists in this suite to execute `statsLineEl`
     directly."""
     client, _service = wired
-    js = (await client.get("/console/app.js")).text
+    js = (await client.get("/console/storage_tab.js")).text
     stats_idx = js.index("function statsLineEl(meta)")
     body = js[stats_idx : js.index("\n}", stats_idx)]
     assert "Object.keys(value).length === 0" in body
@@ -148,7 +151,7 @@ async def test_console_stats_line_renders_nothing_for_a_brand_new_empty_storage(
     `renderStoreContent`'s three storage-type branches (kv/ds/rq) must guard
     its own append so an empty stats line is never inserted into the DOM."""
     client, _service = wired
-    js = (await client.get("/console/app.js")).text
+    js = (await client.get("/console/storage_tab.js")).text
     stats_idx = js.index("function statsLineEl(meta)")
     body = js[stats_idx : js.index("\n}", stats_idx)]
     assert "parts.length ? mk(" in body and ": null;" in body
@@ -157,6 +160,42 @@ async def test_console_stats_line_renders_nothing_for_a_brand_new_empty_storage(
     render_body = js[render_start : js.index("\n}\n", render_start)]
     assert render_body.count("const stats = statsLineEl(") == 3
     assert render_body.count("if (stats) box.appendChild(stats);") == 3
+
+
+async def test_console_ds_kv_hand_coded_stats_fields_match_get_detail_response(wired):
+    """The ds/kv arms of `renderStoreContent` build their stats-line input
+    from HAND-ENCODED field lists (`statsLineEl({ itemCount: total })` for
+    kv, `statsLineEl({ itemCount: total, cleanItemCount: total })` for ds)
+    rather than from those storages' own `GET`-detail response -- unlike the
+    rq arm, which passes a real `GET`-detail response through unchanged.
+    This is a deliberate optimization (see storage_tab.js's own comments: a
+    second, full-materialization metadata fetch would reintroduce the very
+    unbounded read this pagination feature exists to remove), but it means
+    nothing otherwise ties the hand-coded field NAMES to the actual non-meta
+    fields `get_dataset`/`get_kvs` (app/routers/storages.py) return. If a
+    future field (e.g. the design's own listed `storageBytes` follow-up) is
+    added to either handler, the rq arm picks it up automatically (it
+    forwards the real response) while ds/kv would silently keep omitting it
+    from criterion 22's "nothing non-empty omitted" contract, with no test
+    failing. Pin today's exact non-meta field sets here so adding a field to
+    either handler breaks THIS test as a loud reminder to update the
+    hand-coded lists in storage_tab.js to match."""
+    client, _service = wired
+    js = (await client.get("/console/storage_tab.js")).text
+
+    meta_keys_idx = js.index("const STORAGE_META_KEYS = new Set([")
+    meta_keys_body = js[meta_keys_idx : js.index("]);", meta_keys_idx)]
+    meta_keys = set(re.findall(r'"(\w+)"', meta_keys_body))
+
+    kv = (await client.post("/v2/key-value-stores", json={"name": "statsfields"})).json()["data"]
+    kv_detail = (await client.get(f"/v2/key-value-stores/{kv['id']}")).json()["data"]
+    assert set(kv_detail) - meta_keys == {"itemCount"}
+    assert "statsLineEl({ itemCount: total })" in js
+
+    ds = (await client.post("/v2/datasets", json={"name": "statsfields"})).json()["data"]
+    ds_detail = (await client.get(f"/v2/datasets/{ds['id']}")).json()["data"]
+    assert set(ds_detail) - meta_keys == {"itemCount", "cleanItemCount"}
+    assert "statsLineEl({ itemCount: total, cleanItemCount: total })" in js
 
 
 async def test_console_paging_line_clamps_upper_bound_to_total(wired):
@@ -173,7 +212,7 @@ async def test_console_paging_line_clamps_upper_bound_to_total(wired):
     section). Structural, like this file's other app.js checks: no JS
     runtime exists in this suite to execute `pagingLineEl` directly."""
     client, _service = wired
-    js = (await client.get("/console/app.js")).text
+    js = (await client.get("/console/storage_tab.js")).text
     paging_idx = js.index("function pagingLineEl(offset, count, total)")
     body = js[paging_idx : js.index("\n}", paging_idx)]
     assert "const from = count ? offset + 1 : 0;" in body
@@ -190,7 +229,7 @@ async def test_console_storage_list_drops_position_wording_while_filtered(wired)
     when the filter is hiding rows, and back to the normal `pagingLineEl`
     when it isn't."""
     client, _service = wired
-    js = (await client.get("/console/app.js")).text
+    js = (await client.get("/console/storage_tab.js")).text
 
     filtered_idx = js.index("function filteredPagingLineEl(visibleCount, pageCount, total)")
     filtered_body = js[filtered_idx : js.index("\n}", filtered_idx)]
@@ -211,7 +250,7 @@ async def test_console_paging_controls_disable_boundary_pinned(wired):
     (see requirements/console.md's paging section) -- structural, since no JS
     runtime exists in this suite to execute `pagingControlsEl` directly."""
     client, _service = wired
-    js = (await client.get("/console/app.js")).text
+    js = (await client.get("/console/storage_tab.js")).text
 
     controls_idx = js.index("function pagingControlsEl(offset, count, total, onPage)")
     body = js[controls_idx : js.index("\n}", controls_idx)]
@@ -237,7 +276,7 @@ async def test_console_render_store_content_guards_against_error_envelopes(wired
     plain JS console, so this is a structural check that each guard is
     actually wired in, not just present somewhere in the function."""
     client, _service = wired
-    js = (await client.get("/console/app.js")).text
+    js = (await client.get("/console/storage_tab.js")).text
 
     assert "function isErrorEnvelope(resp)" in js
     assert "function errorLineEl(err)" in js
@@ -286,7 +325,7 @@ async def test_console_load_storages_guards_against_error_envelope(wired):
     way `renderStoreContent` does (one idiom on both paths, not a guard on
     one and a silent `resp.items || []` degrade on the other)."""
     client, _service = wired
-    js = (await client.get("/console/app.js")).text
+    js = (await client.get("/console/storage_tab.js")).text
 
     load_start = js.index("async function loadStorages(slug, offset)")
     body = js[load_start : js.index("\n}\n", load_start)]
@@ -314,7 +353,7 @@ async def test_console_four_listing_surfaces_always_send_limit_and_offset(wired)
     call site added later for one of these paths (however it names its own
     id variable) that forgets them."""
     client, _service = wired
-    js = (await client.get("/console/app.js")).text
+    js = (await client.get("/console/storage_tab.js")).text
 
     surfaces = {
         "per-user storage list": r"/v2/users/me/\$\{[^}]*\}",

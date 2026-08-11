@@ -151,10 +151,12 @@
   is accurate as-is. With it hiding some rows, that N–M range would claim the
   visible rows sit at contiguous positions in the total — false once any row on
   the page is hidden, since the visible rows are then a scattered subset, not a
-  contiguous slice — so the line instead reads **"showing V of 100 on this
-  page · T total"**, where V is the count actually visible after the filter:
-  every number in it stays true regardless of which rows are hidden, at the
-  cost of dropping the position claim while any row is filtered out.
+  contiguous slice — so the line instead reads **"showing V of P on this
+  page · T total"**, where V is the count actually visible after the filter
+  and P is the page's own fetched row count (NOT a hardcoded 100 — a partial
+  last page has fewer than 100 rows to begin with): every number in it stays
+  true regardless of which rows are hidden, at the cost of dropping the
+  position claim while any row is filtered out.
   **Creating or deleting a named storage always returns the
   per-user storage list to its first page** (offset reset to 0), rather than
   re-fetching whatever offset was already showing — a newly created storage is
@@ -177,11 +179,18 @@
     for its content — the dataset items response's `X-Apify-Pagination-Total`
     header, the KV keys response's `total` field — both numerically identical
     to that storage type's own `GET`-detail `itemCount`. This deliberately
-    avoids a second, full-materialization fetch of that storage's own `GET`
-    metadata response purely to re-derive a count the page fetch already
-    reports; issuing one on every page open AND every Prev/Next click would
-    reintroduce, server-side, the same unbounded per-request read this
-    pagination feature exists to remove.
+    avoids a second fetch of that storage's own `GET` metadata response
+    purely to re-derive a count the page fetch already reports. For a
+    **dataset**, whose pagination is pushed all the way down to crawlee (see
+    `storage.md`), that second fetch would otherwise reintroduce, server-side,
+    the exact unbounded per-request read this pagination feature exists to
+    remove; for a **KV store**, `list_keys` already performs an unbounded
+    `kv_keys()` read on every page fetch regardless (`storage.md`'s documented
+    local-only shortcut — KV has no offset/limit-aware crawlee read to push
+    pagination down to), so the second fetch would not be a NEW unbounded
+    read, merely a second, redundant one on top of the unbounded read the
+    listing itself already pays for. Either way, avoiding the second fetch is
+    strictly better, just for a narrower reason on the KV side.
   - For **request queues**, whose extra stats fields
     (`pendingRequestCount`/`handledRequestCount`/`hadMultipleClients`) are not
     present in the requests-listing page response, the stats line is still

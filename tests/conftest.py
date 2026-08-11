@@ -79,6 +79,9 @@ class _StandbyProbeHandler(_QuietHandlerMixin, http.server.BaseHTTPRequestHandle
         if self.path.startswith("/multi-header"):
             self._handle_multi_header()
             return
+        if self.path.startswith("/hop-by-hop-echo"):
+            self._handle_hop_by_hop_echo()
+            return
         length = int(self.headers.get("content-length") or 0)
         body = self.rfile.read(length) if length else b""
         self.server.request_count += 1
@@ -137,11 +140,47 @@ class _StandbyProbeHandler(_QuietHandlerMixin, http.server.BaseHTTPRequestHandle
         self.end_headers()
         self.wfile.write(payload)
 
+    def _handle_hop_by_hop_echo(self) -> None:
+        """Echo received headers (as an ordered pair list, like
+        ``_handle_multi_header``) AND reply with a fixed set of RFC-7230
+        hop-by-hop-ish headers of its own, so a single request can pin
+        standby's forwarding contract on BOTH legs at once: which headers
+        survive the CALLER -> container hop (via ``receivedHeaderPairs``) and
+        which survive the container -> CALLER hop (via this response's own
+        headers). See ``app/http_relay.py``'s ``MINIMAL_HOP_BY_HOP`` -- none
+        of these must be stripped by the standby-forwarding proxy, unlike the
+        upstream-fallback proxy, which uses the fuller RFC 7230 set.
+        """
+        length = int(self.headers.get("content-length") or 0)
+        if length:
+            self.rfile.read(length)
+        payload = json.dumps({"receivedHeaderPairs": list(self.headers.items())}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        for k, v in _HOP_BY_HOP_ECHO_RESPONSE_HEADERS:
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_GET(self) -> None:
         self._handle()
 
     def do_POST(self) -> None:
         self._handle()
+
+
+# Fixed response headers `_handle_hop_by_hop_echo` sends back on every call --
+# a module-level constant so the pinning test in test_standby.py can assert
+# against the exact same values without guessing at them.
+_HOP_BY_HOP_ECHO_RESPONSE_HEADERS = [
+    ("keep-alive", "timeout=5"),
+    ("te", "trailers"),
+    ("trailer", "expires"),
+    ("trailers", "expires"),
+    ("upgrade", "websocket"),
+    ("proxy-authenticate", "Basic"),
+    ("proxy-authorization", "Basic abc123"),
+]
 
 
 class FakeStandbyServer:

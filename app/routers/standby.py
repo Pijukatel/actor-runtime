@@ -15,19 +15,27 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
 from ..auth import resolve_standby_caller
-from ..http_relay import filtered_header_pairs, relay_response_headers
+from ..http_relay import MINIMAL_HOP_BY_HOP, filtered_header_pairs, relay_response_headers
 from ..responses import get_service, not_found, standby_start_failed, standby_unavailable
 from ..standby import StandbyReadinessTimeout, StandbyStartError
 
 router = APIRouter()
 
 # Headers excluded on BOTH the outgoing request to the container and the
-# relayed response, beyond the shared app/http_relay.py's RFC 7230
-# hop-by-hop set: `host` would otherwise name this runtime's own address
-# instead of the container's once httpx builds the request against
-# `target_url`, and `content-length` is recomputed on each leg (by httpx from
-# `content=body` below, by Starlette from the streamed response body).
+# relayed response, beyond `MINIMAL_HOP_BY_HOP` (this proxy's own base, see
+# below): `host` would otherwise name this runtime's own address instead of
+# the container's once httpx builds the request against `target_url`, and
+# `content-length` is recomputed on each leg (by httpx from `content=body`
+# below, by Starlette from the streamed response body).
 _EXTRA_EXCLUDED_HEADERS = frozenset({"host", "content-length"})
+
+# Deliberately NOT `app/http_relay.py`'s fuller `HOP_BY_HOP` (the full RFC
+# 7230 set `app/upstream.py` uses): this proxy's own historical exclusion set
+# predates that module and forwarding-wise this route is a black box to
+# whatever the standby Actor's own HTTP server does with e.g. `Keep-Alive`/
+# `TE`/`Upgrade` -- widening it is a deliberate future call, not a side
+# effect of sharing code with a different proxy. See http_relay.py's own
+# docstring and `MINIMAL_HOP_BY_HOP`'s.
 
 # Connect-only bound on the standby-forwarding proxy's upstream request below.
 # Read/write/pool intentionally stay unbounded so a legitimately long-lived or
@@ -89,7 +97,9 @@ async def forward_to_standby(actor_id: str, path: str, request: Request):
         # Cookie headers), silently breaking the "headers... unchanged"
         # forwarding guarantee. httpx accepts a sequence of pairs directly and
         # preserves duplicates through to the wire.
-        forward_headers = filtered_header_pairs(request.headers.items(), _EXTRA_EXCLUDED_HEADERS)
+        forward_headers = filtered_header_pairs(
+            request.headers.items(), _EXTRA_EXCLUDED_HEADERS, base=MINIMAL_HOP_BY_HOP
+        )
         target_url = f"{endpoint}/{path}"
         if request.url.query:
             target_url += f"?{request.url.query}"
@@ -146,5 +156,7 @@ async def forward_to_standby(actor_id: str, path: str, request: Request):
     # Preserves duplicate header names (e.g. more than one Set-Cookie), so a
     # standby Actor emitting several reaches the original caller intact --
     # see app/http_relay.py's own docstring.
-    response_headers = relay_response_headers(upstream.headers.multi_items(), _EXTRA_EXCLUDED_HEADERS)
+    response_headers = relay_response_headers(
+        upstream.headers.multi_items(), _EXTRA_EXCLUDED_HEADERS, base=MINIMAL_HOP_BY_HOP
+    )
     return StreamingResponse(_body(), status_code=upstream.status_code, headers=response_headers)
