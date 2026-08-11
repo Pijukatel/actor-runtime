@@ -140,10 +140,21 @@ async function refreshUser() {
 // since merely reading it is not per-user state; the PUT is NOT token-free
 // (see requirements/api.md's "Upstream fallback" section) -- it sends the
 // acting user's bearer token, same as every other mutating request.
+
+// Invariant: bumped by every user flip, and captured by refreshFallbackToggle
+// before its own GET; a response whose captured generation no longer matches
+// the live counter was superseded by a later flip while it was in flight, and
+// is discarded instead of repainted. Without this, a periodic 4s-tick GET
+// issued just before a flip can resolve after that flip's own PUT+re-GET and
+// snap the checkbox back to the pre-flip value.
+let fallbackToggleGeneration = 0;
+
 async function refreshFallbackToggle() {
   const toggle = $("#fallback-toggle");
   if (!toggle) return;
+  const generation = fallbackToggleGeneration;
   const cfg = unwrap(await api("/v2/runtime-config", { skipAuth: true }));
+  if (generation !== fallbackToggleGeneration) return; // superseded by a flip while this GET was in flight
   // Only repaint the checkbox when the response actually parsed to the
   // expected shape. This runs on every periodicRefresh tick (~4s); a
   // transient failure response (a 500, or any non-JSON body) is neither
@@ -156,6 +167,7 @@ async function refreshFallbackToggle() {
 }
 
 async function setFallbackEnabled(enabled) {
+  fallbackToggleGeneration++;
   await api("/v2/runtime-config", {
     method: "PUT",
     headers: { "content-type": "application/json" },

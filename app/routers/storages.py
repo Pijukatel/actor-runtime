@@ -302,7 +302,7 @@ async def get_kvs(store_id: str, request: Request) -> object:
 
 
 async def _kv_keys_cursor_envelope(
-    svc, store_id: str, exclusive_start_key: str | None, limit: int | None
+    svc, request: Request, store_id: str, exclusive_start_key: str | None, limit: int | None
 ) -> dict[str, Any]:
     """Cursor-mode envelope for ``GET /v2/key-value-stores/{id}/keys``: pushes
     ``exclusiveStartKey``/``limit`` straight through to crawlee's own
@@ -323,13 +323,22 @@ async def _kv_keys_cursor_envelope(
     free, computing a store-wide count here would force exactly the
     full-store scan the cursor pushdown exists to avoid, turning an O(page)
     read into an O(store) one on every page.
+
+    ``recordPublicUrl`` is built from ``request.base_url`` -- the host/port
+    this same request actually arrived on -- rather than
+    ``Settings.container_api_base_url`` (the fixed Docker-network hostname
+    ``standbyUrl``/``consoleUrl`` use): this route's callers are typically
+    host-side (curl, or apify-client pointed at the published API port), and
+    a Docker-internal hostname would not resolve for them at all. Reusing the
+    request's own origin resolves correctly for both a host-side caller and
+    one reaching this route from inside another Actor container.
     """
     page, is_truncated, next_key = await svc.storage.kv_keys_page(
         store_id, exclusive_start_key=exclusive_start_key, limit=limit
     )
     paginated = limit is not None or exclusive_start_key is not None
     if paginated:
-        base = svc.settings.container_api_base_url
+        base = str(request.base_url).rstrip("/")
         page = [
             {**item, "recordPublicUrl": f"{base}/v2/key-value-stores/{store_id}/records/{item['key']}"}
             for item in page
@@ -368,7 +377,7 @@ async def list_keys(store_id: str, request: Request) -> object:
     limit, offset = parse_page(request)
     exclusive_start_key = request.query_params.get("exclusiveStartKey") or None
     if exclusive_start_key is not None or offset is None:
-        return data(await _kv_keys_cursor_envelope(svc, store_id, exclusive_start_key, limit))
+        return data(await _kv_keys_cursor_envelope(svc, request, store_id, exclusive_start_key, limit))
     keys = await svc.storage.kv_keys(store_id)
     is_truncated = limit is not None and offset + limit < len(keys)
     return data(paged_envelope(keys, limit, offset, isTruncated=is_truncated))

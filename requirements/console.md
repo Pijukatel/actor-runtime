@@ -209,7 +209,10 @@
   port must show up here too, without a reload. Its `change` handler `PUT`s the
   flipped value and then re-reads the resulting state from the same endpoint
   rather than assuming the flip took effect; the runtime's behavior changes
-  immediately, for every user and both ports.
+  immediately, for every user and both ports. A periodic refresh already in
+  flight when the user flips the toggle is superseded and its response
+  discarded, so it can never repaint the checkbox back to the value it held
+  before that flip.
 
 # Out of scope for now
 - Real authentication / passwords (the token is a placeholder credential that

@@ -297,7 +297,13 @@ async def test_kv_keys_limit_only_slices_from_start(wired):
     carry a `recordPublicUrl` (required by that client's response model) and
     the envelope carries no `total` at all (see
     `test_kv_keys_cursor_mode_field_set_has_no_total`, which pins the exact
-    field set)."""
+    field set).
+
+    `recordPublicUrl` must be anchored to THIS request's own host/port (this
+    test's client talks to `http://test`, not the runtime's Docker-internal
+    hostname) -- a host-side caller (curl, or apify-client pointed at the
+    published API port) could never dereference a Docker-internal hostname,
+    so the exact origin, not merely the path suffix, is asserted here."""
     client, _service = wired
     await _create_user(client, "kate3")
     created = await client.post("/v2/key-value-stores", json={"name": "big3"}, headers=auth("kate3"))
@@ -311,8 +317,43 @@ async def test_kv_keys_limit_only_slices_from_start(wired):
     assert body["isTruncated"] is True
     assert body["nextExclusiveStartKey"] == "k0004"
     assert [item["key"] for item in body["items"]] == ["k0000", "k0001", "k0002", "k0003", "k0004"]
+    base = str(client.base_url).rstrip("/")
     for item in body["items"]:
-        assert item["recordPublicUrl"].endswith(f"/v2/key-value-stores/{store_id}/records/{item['key']}")
+        assert item["recordPublicUrl"] == f"{base}/v2/key-value-stores/{store_id}/records/{item['key']}"
+
+
+async def test_kv_keys_exclusive_start_key_alone_takes_the_cursor_path_unpaginated(wired):
+    """`exclusiveStartKey` supplied with no `limit` must ALSO take the
+    cursor-pushdown path (either param alone trips it -- see
+    `_kv_keys_cursor_envelope`'s `paginated` check) rather than only when
+    paired with `limit`: it resumes from the cursor and returns every
+    remaining key, non-truncated (no `limit` was given, so there is nothing
+    to truncate against), with no `total` (cursor mode never computes one)
+    and no `nextExclusiveStartKey` (nothing left to resume from) -- but,
+    being cursor mode, each item still carries a `recordPublicUrl`."""
+    client, _service = wired
+    await _create_user(client, "kate3c")
+    created = await client.post("/v2/key-value-stores", json={"name": "big3c"}, headers=auth("kate3c"))
+    store_id = created.json()["data"]["id"]
+    await _seed_keys(client, store_id, "kate3c", 10)
+
+    resp = await client.get(
+        f"/v2/key-value-stores/{store_id}/keys?exclusiveStartKey=k0004", headers=auth("kate3c")
+    )
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert [item["key"] for item in body["items"]] == [
+        "k0005", "k0006", "k0007", "k0008", "k0009",
+    ]
+    assert body["count"] == 5
+    assert body["limit"] == 5  # no `limit` was given, so it echoes the actual page length
+    assert body["exclusiveStartKey"] == "k0004"
+    assert body["isTruncated"] is False
+    assert "nextExclusiveStartKey" not in body
+    assert "total" not in body
+    base = str(client.base_url).rstrip("/")
+    for item in body["items"]:
+        assert item["recordPublicUrl"] == f"{base}/v2/key-value-stores/{store_id}/records/{item['key']}"
 
 
 async def test_kv_keys_limit_without_truncation_is_not_truncated(wired):

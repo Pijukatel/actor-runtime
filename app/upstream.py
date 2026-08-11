@@ -10,15 +10,8 @@ connect error, a malformed upstream base URL, or a caller identity that fails
 to resolve -- falls back to the original local 404, logged for debuggability.
 
 Identity for that bearer credential is resolved by ``app/auth.py``'s
-``resolve_forwardable_token`` -- a PURE lookup, never ``resolve_user``'s
-bootstrap-or-reject: a token that matches no existing user is never bound or
-used to create one here -- it simply has nothing to forward, so the attempt
-collapses to the local 404 like any other failure. This matters because the
-SPA catch-all (``app/routers/console.py``) can 404 an allowlisted path
-WITHOUT ever calling ``resolve_user`` itself, making that lookup the first
-identity resolution a request like that gets -- a read-through toggle must
-never let that first attempt silently bootstrap local identity state. See
-``resolve_forwardable_token``'s own docstring for the full contract.
+``resolve_forwardable_token`` -- see its own docstring for the full contract
+(why it is a pure lookup, never ``resolve_user``'s bootstrap-or-reject).
 
 Registered as a Starlette middleware in app/main.py -- see that module and
 requirements/api.md's "Upstream fallback" section for the full contract.
@@ -78,13 +71,10 @@ async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | N
     a 404 before calling this -- a ``None`` return means "return that original
     404 unchanged", never an upstream error status/body, and never an
     exception, of its own. That "any failure" umbrella covers more than the
-    upstream HTTP call itself: identity resolution below goes through
-    ``app/auth.py``'s ``resolve_forwardable_token`` -- a PURE lookup, never
-    ``resolve_user``'s bootstrap-or-reject -- see its own docstring for why a
-    token matching no existing user resolves to ``None`` here (abandoning the
-    whole attempt) rather than binding one. Anything else that can go wrong
-    looking a caller up (e.g. a transient DB error from ``svc.get_user``) is
-    covered too.
+    upstream HTTP call itself: it also covers whatever ``app/auth.py``'s
+    ``resolve_forwardable_token`` raises or returns while looking the caller
+    up (see its own docstring for the full contract), including a transient
+    DB error from ``svc.get_user``.
 
     Everything below -- identity resolution, building the outgoing request,
     the upstream call itself, and building the relayed response -- is
@@ -120,15 +110,9 @@ async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | N
         if content_encoding:
             headers["content-encoding"] = content_encoding
 
-        # Never a different, shared or hardcoded credential -- only the token
-        # this same request's own caller is already bound to, resolved by
-        # `auth.resolve_forwardable_token` (a pure lookup -- see its
-        # docstring and the module docstring above): `None` means a present
-        # token matched no existing user, so there is nothing to forward and
-        # the whole attempt is abandoned right here -- never a bind; an empty
-        # string means a resolved caller with no token yet (e.g. the
-        # still-unclaimed default user), forwarded anonymously rather than
-        # aborted.
+        # `None` means nothing to forward -- abandon the attempt; `""` means a
+        # resolved caller with no bound token yet, forwarded anonymously. See
+        # `auth.resolve_forwardable_token`'s docstring for the full contract.
         forward_token = await resolve_forwardable_token(request)
         if forward_token is None:
             return None

@@ -470,7 +470,12 @@ def make_settings(
     )
 
 
-async def _wire(tmp_path, driver, settings=None):
+async def _build_app(tmp_path, driver, settings=None):
+    """Construct the wired ``(settings, db, storage, service, app)`` quintuple
+    shared by every fixture in this module -- the setup ``_wire`` and
+    ``wired_uvicorn`` both need, before they diverge on HOW the app is served
+    (``ASGITransport`` vs. a real uvicorn socket). ``app`` is returned, not
+    yet serving."""
     settings = settings or make_settings(tmp_path)
     settings.runs_dir.mkdir(parents=True, exist_ok=True)
     settings.builds_dir.mkdir(parents=True, exist_ok=True)
@@ -481,15 +486,29 @@ async def _wire(tmp_path, driver, settings=None):
     service = Service(settings, db, storage, driver)
     app = create_app(settings, driver)
     app.state.service = service
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client, service
-    # No-op if a test never started it (create_app's lifespan, which normally
-    # starts it, does not run under ASGITransport) -- harmless safety net so a
-    # standby-watchdog test never leaks a background task past teardown.
+    return settings, db, storage, service, app
+
+
+async def _dispose(service, storage, db) -> None:
+    """Tear down a ``_build_app`` quintuple, shared by ``_wire`` and
+    ``wired_uvicorn``.
+
+    No-op on the standby watchdog if a test never started it (create_app's
+    lifespan, which normally starts it, does not run under ASGITransport) --
+    harmless safety net so a standby-watchdog test never leaks a background
+    task past teardown.
+    """
     await service.stop_standby_watchdog()
     await storage.stop()
     await db.dispose()
+
+
+async def _wire(tmp_path, driver, settings=None):
+    _settings, db, storage, service, app = await _build_app(tmp_path, driver, settings)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client, service
+    await _dispose(service, storage, db)
 
 
 @pytest_asyncio.fixture
@@ -571,20 +590,13 @@ async def wired_uvicorn(tmp_path):
     at all. Yields ``(service, base_url)``; the caller builds whatever real
     HTTP client it needs against ``base_url``.
     """
-    settings = make_settings(tmp_path)
-    settings.runs_dir.mkdir(parents=True, exist_ok=True)
-    settings.builds_dir.mkdir(parents=True, exist_ok=True)
-    db = Database(settings.meta_db_url)
-    await db.create_all()
-    storage = Storage(settings.storage_db_url)
-    await storage.start()
-    driver = StubDriver()
-    service = Service(settings, db, storage, driver)
-    app = create_app(settings, driver)
-    app.state.service = service
+    _settings, db, storage, service, app = await _build_app(tmp_path, StubDriver())
 
     port = _free_port()
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="off")
+    # `ws="none"`: this app serves no websocket routes, so skip uvicorn's
+    # default `ws="auto"` probe, which otherwise imports `websockets.legacy`
+    # and emits its deprecation warning on every collection of this fixture.
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="off", ws="none")
     server = uvicorn.Server(config)
     serve_task = asyncio.create_task(server.serve())
     # `server.started` flips true only once `Server.startup()` has actually
@@ -603,6 +615,4 @@ async def wired_uvicorn(tmp_path):
     finally:
         server.should_exit = True
         await serve_task
-        await service.stop_standby_watchdog()
-        await storage.stop()
-        await db.dispose()
+        await _dispose(service, storage, db)

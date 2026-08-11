@@ -507,12 +507,15 @@
     `KeyValueStoreKey` response model requires `recordPublicUrl` (a valid URL)
     on every item it validates, so cursor-mode items each carry one: this
     runtime's own absolute URL for that key's record
-    (`{apiBaseUrl}/v2/key-value-stores/{id}/records/{key}`, following the same
-    `container_api_base_url`-based construction `standbyUrl`/`consoleUrl`
-    already use elsewhere in this API). A bare request never adds this field
-    — the byte-for-byte contract above holds because "bare" and "cursor-mode"
-    are different branches, not because the field is optional within cursor
-    mode.
+    (`{requestBaseUrl}/v2/key-value-stores/{id}/records/{key}`, built from the
+    handling request's own `base_url` rather than `container_api_base_url` —
+    unlike `standbyUrl`/`consoleUrl`, which are only ever dereferenced from
+    inside an Actor container, this field's callers are typically host-side
+    (curl, or apify-client pointed at the published API port), so it must
+    resolve on whichever host/port the caller actually reached this API on).
+    A bare request never adds this field — the byte-for-byte contract above
+    holds because "bare" and "cursor-mode" are different branches, not
+    because the field is optional within cursor mode.
   - A caller-supplied `exclusiveStartKey` is forwarded straight through to
     crawlee's own ascending `key > exclusiveStartKey` filter
     (`iterate_keys(exclusive_start_key=..., limit=...)`) rather than sliced

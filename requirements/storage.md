@@ -40,8 +40,11 @@
   counting every key in the store on every page, which would turn the
   pushdown above back into an O(store) read and defeat the reason it exists.
   It also adds a `recordPublicUrl` to each cursor-mode item — the pinned
-  `apify-client`'s response model requires the field — built from
-  `Settings.container_api_base_url` the same way `standbyUrl`/`consoleUrl`
-  are (see `api.md`'s "Pagination" section for the exact item shapes). The
+  `apify-client`'s response model requires the field — built from the
+  handling request's own `base_url`, not `Settings.container_api_base_url`
+  (unlike `standbyUrl`/`consoleUrl`): this field's callers are typically
+  host-side, so it must resolve on the host/port the request actually
+  arrived on rather than the Docker-internal hostname those other two fields
+  use (see `api.md`'s "Pagination" section for the exact item shapes). The
   `offset`-sliced path keeps its `total` (it already holds the full list) and
   never adds `recordPublicUrl` (no client compatibility need for it there).

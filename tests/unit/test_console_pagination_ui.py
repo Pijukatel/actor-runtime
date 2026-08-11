@@ -354,6 +354,43 @@ async def test_console_fallback_toggle_present_and_wired_to_runtime_config(wired
     ) in js
 
 
+async def test_console_fallback_toggle_guards_against_a_stale_periodic_repaint(wired):
+    """A periodic 4s-tick GET issued just before the user flips the toggle can
+    resolve AFTER that flip's own PUT+re-GET (response ordering over the
+    network is not guaranteed to match request issue order) and repaint the
+    checkbox back to the pre-flip value -- the dangerous direction, since it
+    shows OFF while the runtime is actually ON. `setFallbackEnabled` must bump
+    a monotonically-increasing generation counter on every flip, and
+    `refreshFallbackToggle` must capture it BEFORE issuing its own GET and
+    skip the repaint if the counter has since moved."""
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+
+    gen_decl = re.search(r"let (\w+) = 0;", js)
+    assert gen_decl, "no generation counter declared"
+    counter = gen_decl.group(1)
+
+    set_start = js.index("async function setFallbackEnabled(enabled)")
+    set_body = js[set_start : js.index("\n}\n", set_start)]
+    # The bump must happen before the PUT is even issued, not after -- an
+    # in-flight periodic GET must be superseded as soon as the flip starts,
+    # not only once it completes.
+    assert re.search(rf"{counter}\+\+;[\s\S]*?await api\(", set_body)
+
+    refresh_start = js.index("async function refreshFallbackToggle()")
+    refresh_body = js[refresh_start : js.index("\n}\n", refresh_start)]
+    capture_match = re.search(rf"const (\w+) = {counter};", refresh_body)
+    assert capture_match, "refreshFallbackToggle must snapshot the generation before its fetch"
+    snapshot = capture_match.group(1)
+
+    # The snapshot must be taken BEFORE the GET and compared against the
+    # live counter AFTER it, bailing out before any repaint if it moved.
+    fetch_idx = refresh_body.index("await api(")
+    assert refresh_body.index(f"const {snapshot} = {counter};") < fetch_idx
+    guard_idx = refresh_body.index(f"if ({snapshot} !== {counter}) return;")
+    assert fetch_idx < guard_idx < refresh_body.index("toggle.checked =")
+
+
 async def test_console_fallback_toggle_ignores_a_failed_or_invalid_response(wired):
     """Regression: `api()` returns whatever a non-JSON response's body parses
     to (raw text) rather than throwing, and an error envelope's `unwrap()`
