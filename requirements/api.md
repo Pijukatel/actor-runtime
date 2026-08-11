@@ -488,12 +488,17 @@
 - Supplying `limit` and/or `offset` returns the corresponding slice, plus
   enough total-count information to page:
   - Dataset items keep their **bare-array body** (unchanged either way) and
-    additionally expose `X-Apify-Pagination-Offset`/`-Count`/`-Total`/`-Limit`
-    response headers, mirroring the real API's own `format=json` header
-    convention, only once `limit`/`offset` are actually supplied. `-Limit`
-    mirrors the effective limit — the requested value, or (when only `offset`
-    was given) the slice's own returned length — never the internal "no cap"
-    sentinel the storage layer applies for a bare request.
+    additionally expose `X-Apify-Pagination-Offset`/`-Count`/`-Total`/`-Limit`/
+    `-Desc` response headers, mirroring the real API's own `format=json`
+    header convention, only once `limit`/`offset` are actually supplied.
+    `-Limit` mirrors the effective limit — the requested value, or (when only
+    `offset` was given) the slice's own returned length — never the internal
+    "no cap" sentinel the storage layer applies for a bare request. `-Desc` is
+    unconditionally `false` — this surface has no `desc` query param, so items
+    are always returned in storage order — but the header is still required:
+    the pinned `apify-client`'s `DatasetItemsPage` indexes all five headers
+    directly (no `.get()`), so a response missing any one of them raises a
+    `KeyError` before returning a single item.
   - RQ requests gain an **additive** `total` field in their envelope
     (alongside their existing `count`/`limit` echoes) whenever `limit`/`offset`
     are supplied — absent from the bare-request shape, and appended last so it
@@ -505,7 +510,7 @@
   - The per-user storage listings already emit `{total, count, items}` (same
     field order as their `my_actors`/`my_builds`/`my_runs` siblings);
     `count`/`items` reflect the requested slice, `total` the full count.
-  - The four `X-Apify-Pagination-*` headers are listed in `CORSMiddleware`'s
+  - The five `X-Apify-Pagination-*` headers are listed in `CORSMiddleware`'s
     `expose_headers` (app/main.py), so a cross-origin browser caller can read
     them — otherwise the browser hides any response header not explicitly
     exposed.

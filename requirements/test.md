@@ -339,11 +339,24 @@ per-user storage listings — asserting all of:
    never a `set(body.keys())` comparison, which cannot detect a reorder.
  - a **`limit`/`offset`-supplied request** returns the corresponding slice
    plus enough total-count information to page: dataset items via
-   `X-Apify-Pagination-Offset`/`-Count`/`-Total`/`-Limit` response headers over
-   its still-bare-array body — `-Limit` echoes the actual returned count when
-   only `offset` was supplied, never an internal "no cap" sentinel — KV
-   keys/RQ requests via an additive `total` field; per-user listings via their
-   existing `total`/`count` fields.
+   `X-Apify-Pagination-Offset`/`-Count`/`-Total`/`-Limit`/`-Desc` response
+   headers over its still-bare-array body — `-Limit` echoes the actual
+   returned count when only `offset` was supplied, never an internal "no cap"
+   sentinel, and `-Desc` is unconditionally `false` (this surface has no
+   `desc` query param) — KV keys/RQ requests via an additive `total` field;
+   per-user listings via their existing `total`/`count` fields.
+ - **The real, pinned `apify-client` succeeds against dataset items.**
+   `apify_client`'s `DatasetClientAsync.list_items()`/`get_data()` (pinned in
+   `requirements-dev.txt`) indexes all five `x-apify-pagination-*` response
+   headers directly (no `.get()`), so a response missing any one of them
+   raises a `KeyError` before returning a single item. That client's HTTP
+   transport (`impit`, not `httpx`) has no ASGI-transport hook, so this
+   coverage boots the app under a real `uvicorn` server on a loopback socket
+   (`tests/conftest.py`'s `wired_uvicorn` fixture, the same one the KV-keys
+   pinned-client check below already uses) and drives an actual
+   `ApifyClientAsync` against it, over a seeded dataset, asserting the
+   returned items and paging metadata (`total`/`offset`/`count`/`limit`/`desc`)
+   parse without error.
  - a negative `limit`/`offset` is `400` on at least one surface, and a
    non-integer `limit`/`offset` value (e.g. `?limit=abc`, `?offset=1.5`) is
    likewise `400` on at least one surface, exercising `app/pagination.py`'s
@@ -506,7 +519,9 @@ uses, with only the request handler differing) MUST exist for:
    switch, so a flip made from another tab/port must be reflected here without
    requiring a reload); and its `change` handler `PUT`s
    `{upstreamFallbackEnabled: ...}` to the same endpoint and then re-reads the
-   resulting state, rather than assuming the PUT succeeded. The backend half of
-   the toggle is already covered above; this is the console-facing wiring's
-   existence and shape, which has no other automated coverage in this
-   Docker-free JS-runtime-free suite.
+   resulting state, rather than assuming the PUT succeeded, guarding that PUT
+   with the same `.catch`-swallows-a-rejected-fetch pattern the periodic
+   refresh already uses so a runtime-unreachable flip never surfaces as an
+   unhandled rejection. The backend half of the toggle is already covered
+   above; this is the console-facing wiring's existence and shape, which has
+   no other automated coverage in this Docker-free JS-runtime-free suite.

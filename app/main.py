@@ -75,6 +75,7 @@ def create_app(settings: Settings | None = None, driver: Driver | None = None) -
             "X-Apify-Pagination-Count",
             "X-Apify-Pagination-Total",
             "X-Apify-Pagination-Limit",
+            "X-Apify-Pagination-Desc",
         ],
     )
 

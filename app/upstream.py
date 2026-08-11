@@ -35,12 +35,7 @@ from .responses import get_service
 
 logger = logging.getLogger(__name__)
 
-# The full RFC 7230 hop-by-hop set: headers whose scope is the single
-# connection they were sent on, never meaningful once copied onto the
-# brand-new response this proxy builds for the original caller. This is the
-# only proxy in this runtime that needs the full set -- app/routers/standby.py
-# keeps its own narrower, historical exclusion set instead (see that module's
-# own comment for why).
+# The full RFC 7230 hop-by-hop set (app/routers/standby.py keeps its own narrower, historical set -- see that module's comment).
 _HOP_BY_HOP = frozenset(
     {
         "connection",
@@ -79,36 +74,30 @@ _ALLOWLISTED = re.compile(
 )
 
 
-def _raw_path(request: Request) -> str:
-    """The request's path exactly as it arrived on the wire, still percent-encoded.
+def _raw_target(request: Request) -> str:
+    """The request's path and query exactly as they arrived on the wire, still
+    percent-encoded, joined as ``path?query`` (or bare ``path`` when there is
+    no query).
 
-    ``request.url.path`` is ASGI's already-decoded ``scope['path']`` -- a key
-    containing an encoded ``%2F`` would decode to a literal ``/`` there, so
-    replaying it upstream would hit a different resource (an extra path
-    segment) than the one the caller actually asked for. ``scope['raw_path']``
-    is the still-encoded bytes Starlette also received, so replaying THAT
-    keeps the byte-for-byte fidelity this proxy's own contract promises.
+    Neither half can be read off ``request.url``: ``request.url.path`` is
+    ASGI's already-decoded ``scope['path']`` -- a key containing an encoded
+    ``%2F`` would decode to a literal ``/`` there, so replaying it upstream
+    would hit a different resource (an extra path segment) than the one the
+    caller actually asked for. ``request.url.query`` fares no better --
+    Starlette builds ``request.url`` by string-concatenating that same
+    decoded path with the query and re-parsing the result as a URL, so once
+    the decoded path contains a ``#`` everything after it parses as a
+    fragment instead (``query`` comes back empty), and a ``?`` in the decoded
+    path splits the string a second time and corrupts the query entirely.
+    ``scope['raw_path']``/``scope['query_string']`` are the exact bytes the
+    ASGI server received, with no decoding or path concatenation involved, so
+    joining THOSE keeps the byte-for-byte fidelity this proxy's own contract
+    promises.
     """
     raw_path = request.scope.get("raw_path")
-    return raw_path.decode("ascii") if raw_path else request.url.path
-
-
-def _raw_query(request: Request) -> str:
-    """The request's query string exactly as it arrived on the wire.
-
-    ``request.url.query`` is NOT read straight off the wire -- Starlette
-    builds ``request.url`` by string-concatenating the already-decoded
-    ``scope['path']`` with the query and re-parsing the result as a URL. Once
-    that decoded path contains a ``#``, everything after it parses as a
-    fragment instead (``query`` comes back empty); a ``?`` in the decoded
-    path splits the string a second time and corrupts the query entirely.
-    ``scope['query_string']`` is the exact bytes the ASGI server received,
-    with no path concatenation involved, so decoding THOSE (plain ASCII, per
-    the ASGI spec -- a query string is already percent-encoded down to a safe
-    character set) keeps the byte-for-byte fidelity this proxy's own contract
-    promises, the same way ``_raw_path`` does for the path above.
-    """
-    return request.scope.get("query_string", b"").decode("ascii")
+    path = raw_path.decode("ascii") if raw_path else request.url.path
+    query = request.scope.get("query_string", b"").decode("ascii")
+    return f"{path}?{query}" if query else path
 
 
 async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | None:
@@ -137,10 +126,7 @@ async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | N
     svc = get_service(request)
 
     try:
-        url = f"{svc.settings.apify_upstream_base_url}{_raw_path(request)}"
-        query = _raw_query(request)
-        if query:
-            url += f"?{query}"
+        url = f"{svc.settings.apify_upstream_base_url}{_raw_target(request)}"
 
         headers = {}
         content_type = request.headers.get("content-type")

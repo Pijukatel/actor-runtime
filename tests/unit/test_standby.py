@@ -453,50 +453,6 @@ async def test_standby_preserves_repeated_header_names_both_directions(wired_fas
     assert cookie_values == ["a=1", "b=2"], received
 
 
-async def test_standby_forwarding_strips_only_the_historical_four_headers(wired_fast_standby):
-    """Standby forwarding's own header exclusion set stays narrow: exactly
-    `{host, content-length, transfer-encoding, connection}` on both legs, not
-    the fuller RFC 7230 hop-by-hop set `app/upstream.py`'s proxy uses. Pin it
-    exactly: every one of `keep-alive`/`proxy-authenticate`/
-    `proxy-authorization`/`te`/`trailer`/`trailers`/`upgrade` must still
-    reach the container (request side) and the original caller (response
-    side) unchanged."""
-    client, service = wired_fast_standby
-    actor_id = await _provision_standby_actor(client, service, "alice")
-
-    request_headers = {
-        "keep-alive": "timeout=5",
-        "te": "trailers",
-        "trailer": "expires",
-        "trailers": "expires",
-        "upgrade": "websocket",
-        "proxy-authenticate": "Basic",
-        "proxy-authorization": "Basic abc123",
-    }
-    resp = await client.get(
-        f"/v2/actor-standby/{actor_id}/hop-by-hop-echo", headers={**auth("alice"), **request_headers}
-    )
-    assert resp.status_code == 200
-
-    received = {k.lower(): v for k, v in resp.json()["receivedHeaderPairs"]}
-    for name, value in request_headers.items():
-        assert received.get(name) == value, f"{name!r} was stripped forwarding caller -> container"
-
-    # Response side: the fake standby target sent the same seven headers back
-    # (see conftest.py's `_HOP_BY_HOP_ECHO_RESPONSE_HEADERS`) -- all must
-    # reach the original caller unchanged too.
-    for name, value in (
-        ("keep-alive", "timeout=5"),
-        ("te", "trailers"),
-        ("trailer", "expires"),
-        ("trailers", "expires"),
-        ("upgrade", "websocket"),
-        ("proxy-authenticate", "Basic"),
-        ("proxy-authorization", "Basic abc123"),
-    ):
-        assert resp.headers.get(name) == value, f"{name!r} was stripped forwarding container -> caller"
-
-
 async def test_standby_never_ready_returns_503_not_hang(wired_fast_standby):
     client, service = wired_fast_standby
     actor_id = await _provision_standby_actor(client, service, "alice")

@@ -324,8 +324,12 @@ async def test_console_fallback_toggle_present_and_wired_to_runtime_config(wired
     assert "refreshFallbackToggle();" in set_body
 
     # Wired via addEventListener (no inline handler) to the checkbox's own
-    # current .checked state.
-    assert 'addEventListener("change", () => setFallbackEnabled(_fallbackToggle.checked))' in js
+    # current .checked state, with a `.catch` guarding against a rejected PUT
+    # (mirroring periodicRefresh's own guard on refreshFallbackToggle()) so a
+    # runtime-unreachable flip never surfaces as an unhandled rejection.
+    assert (
+        'addEventListener("change", () => setFallbackEnabled(_fallbackToggle.checked).catch(() => {}))'
+    ) in js
     # Read once on every initial page load -- the literal page-load init
     # sequence, not just ANY occurrence of `refreshFallbackToggle();`:
     # `periodicRefresh`/`setFallbackEnabled` also call it, so a bare

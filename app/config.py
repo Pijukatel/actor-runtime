@@ -76,8 +76,8 @@ class Settings:
         # through (``load_settings()``'s env var, a plain ``Settings(...)``,
         # or a test's ``dataclasses.replace(...)``) -- so
         # ``fetch_upstream_fallback`` (app/upstream.py) can keep concatenating
-        # ``apify_upstream_base_url`` with ``_raw_path(request)`` (which always
-        # starts with its own ``/``) without ever producing a double slash,
+        # ``apify_upstream_base_url`` with ``_raw_target(request)`` (which
+        # always starts with its own ``/``) without ever producing a double slash,
         # regardless of whether an operator's ``APIFY_UPSTREAM_BASE_URL`` env
         # var happens to end with one.
         object.__setattr__(self, "apify_upstream_base_url", self.apify_upstream_base_url.rstrip("/"))

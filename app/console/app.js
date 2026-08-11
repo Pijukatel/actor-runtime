@@ -631,7 +631,12 @@ const _userSelect = $("#user-select");
 if (_userSelect) _userSelect.addEventListener("change", () => switchTo(_userSelect.value));
 const _fallbackToggle = $("#fallback-toggle");
 if (_fallbackToggle) {
-  _fallbackToggle.addEventListener("change", () => setFallbackEnabled(_fallbackToggle.checked));
+  // `.catch()` swallows a rejected PUT (runtime unreachable, or a non-JSON
+  // response body) instead of an unhandled rejection -- mirrors
+  // `periodicRefresh`'s own guard on `refreshFallbackToggle()` above. The
+  // checkbox keeps the user's optimistic click until the next periodic tick
+  // re-syncs it with the server's actual state.
+  _fallbackToggle.addEventListener("change", () => setFallbackEnabled(_fallbackToggle.checked).catch(() => {}));
 }
 $("#tab-actors").addEventListener("click", () => navigate("/actors"));
 $("#tab-storage").addEventListener("click", () => navigate("/storage/key-value-stores"));

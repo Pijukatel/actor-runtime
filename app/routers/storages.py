@@ -513,6 +513,12 @@ async def get_items(dataset_id: str, request: Request) -> JSONResponse:
         # layer -- matching `paged_envelope`'s own convention for the same
         # "no limit given" case on the other three listing surfaces.
         response.headers["X-Apify-Pagination-Limit"] = str(limit if limit is not None else result["count"])
+        # This surface has no `desc` query param -- items are always returned
+        # in storage (insertion) order, never reversed -- so the header is
+        # unconditionally "false". The pinned apify-client's `DatasetItemsPage`
+        # indexes this header directly (no `.get()`), so its absence raises a
+        # `KeyError` before a single item is returned.
+        response.headers["X-Apify-Pagination-Desc"] = "false"
     return response
 
 

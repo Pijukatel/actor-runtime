@@ -35,19 +35,10 @@
   same endpoint (a request naming both treats the cursor as authoritative
   and ignores `offset`).
 - The router endpoint on top of `kv_keys_page()` (`list_keys` /
-  `_kv_keys_cursor_envelope` in `app/routers/storages.py`) deliberately never
-  computes a `total` for the cursor-pagination path: doing so would require
-  counting every key in the store on every page, which would turn the
-  pushdown above back into an O(store) read and defeat the reason it exists.
-  It also adds a `recordPublicUrl` to each cursor-mode item — the pinned
-  `apify-client`'s response model requires the field — built from the
-  handling request's own `base_url`, not `Settings.container_api_base_url`
-  (unlike `standbyUrl`/`consoleUrl`): this field's callers are typically
-  host-side, so it must resolve on the host/port the request actually
-  arrived on rather than the Docker-internal hostname those other two fields
-  use (see `api.md`'s "Pagination" section for the exact item shapes). The
-  key is percent-encoded in the URL (`urllib.parse.quote(key, safe="")`), so
-  a key containing e.g. a space or `#` still produces a dereferenceable link
-  rather than one where `#` is misread as a fragment separator. The
-  `offset`-sliced path keeps its `total` (it already holds the full list) and
-  never adds `recordPublicUrl` (no client compatibility need for it there).
+  `_kv_keys_cursor_envelope` in `app/routers/storages.py`) implements the
+  cursor-mode item shape and `total`-omission contract described in `api.md`'s
+  "Pagination" section (no `total`, a percent-encoded `recordPublicUrl` built
+  from the handling request's own `base_url`) — see that section for the
+  full rationale. The `offset`-sliced path keeps its `total` (it already
+  holds the full list) and never adds `recordPublicUrl` (no client
+  compatibility need for it there).

@@ -88,9 +88,6 @@ class _StandbyProbeHandler(_QuietHandlerMixin, http.server.BaseHTTPRequestHandle
         if self.path.startswith("/multi-header"):
             self._handle_multi_header()
             return
-        if self.path.startswith("/hop-by-hop-echo"):
-            self._handle_hop_by_hop_echo()
-            return
         length = int(self.headers.get("content-length") or 0)
         body = self.rfile.read(length) if length else b""
         self.server.request_count += 1
@@ -130,20 +127,14 @@ class _StandbyProbeHandler(_QuietHandlerMixin, http.server.BaseHTTPRequestHandle
             self.wfile.flush()
             time.sleep(0.3)
 
-    def _echo_with_headers(self, response_headers: list) -> None:
+    def _handle_multi_header(self) -> None:
         """Echo received headers as an ORDERED list of (name, value) PAIRS
-        (never collapsed into a dict, which would silently drop any repeated
-        header name) and reply with ``response_headers`` -- a fixed set of
-        the caller's own choosing -- so a single request can pin the
-        forwarding contract on BOTH legs at once: which headers survive the
-        CALLER -> container hop (via ``receivedHeaderPairs``) and which
-        survive the container -> CALLER hop (via this response's own
-        headers). Shared by ``_handle_multi_header`` (two ``Set-Cookie``
-        headers, proving multi-value headers survive) and
-        ``_handle_hop_by_hop_echo`` (a fixed RFC-7230 hop-by-hop-ish set --
-        see ``app/routers/standby.py``'s own ``_EXCLUDED_HEADERS``: none of
-        these must be stripped by the standby-forwarding proxy, unlike the
-        upstream-fallback proxy, which uses the fuller RFC 7230 set).
+        (never collapsed into a dict, which would silently drop a repeated
+        header name) and reply with two ``Set-Cookie`` headers, so a single
+        request pins the forwarding contract on BOTH legs at once: multi-value
+        headers survive the CALLER -> container hop (via
+        ``receivedHeaderPairs``) and the container -> CALLER hop (this
+        response's own headers).
         """
         length = int(self.headers.get("content-length") or 0)
         if length:
@@ -151,36 +142,16 @@ class _StandbyProbeHandler(_QuietHandlerMixin, http.server.BaseHTTPRequestHandle
         payload = json.dumps({"receivedHeaderPairs": list(self.headers.items())}).encode("utf-8")
         self.send_response(200)
         self.send_header("content-type", "application/json")
-        for k, v in response_headers:
-            self.send_header(k, v)
+        self.send_header("set-cookie", "a=1")
+        self.send_header("set-cookie", "b=2")
         self.end_headers()
         self.wfile.write(payload)
-
-    def _handle_multi_header(self) -> None:
-        self._echo_with_headers([("set-cookie", "a=1"), ("set-cookie", "b=2")])
-
-    def _handle_hop_by_hop_echo(self) -> None:
-        self._echo_with_headers(_HOP_BY_HOP_ECHO_RESPONSE_HEADERS)
 
     def do_GET(self) -> None:
         self._handle()
 
     def do_POST(self) -> None:
         self._handle()
-
-
-# Fixed response headers `_handle_hop_by_hop_echo` sends back on every call --
-# a module-level constant so the pinning test in test_standby.py can assert
-# against the exact same values without guessing at them.
-_HOP_BY_HOP_ECHO_RESPONSE_HEADERS = [
-    ("keep-alive", "timeout=5"),
-    ("te", "trailers"),
-    ("trailer", "expires"),
-    ("trailers", "expires"),
-    ("upgrade", "websocket"),
-    ("proxy-authenticate", "Basic"),
-    ("proxy-authorization", "Basic abc123"),
-]
 
 
 class FakeStandbyServer:

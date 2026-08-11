@@ -71,6 +71,13 @@ async def test_dataset_items_limit_offset_returns_slice_and_headers(wired):
     assert resp.headers["X-Apify-Pagination-Count"] == "20"
     assert resp.headers["X-Apify-Pagination-Total"] == "150"
     assert resp.headers["X-Apify-Pagination-Limit"] == "20"
+    # No `desc` query param exists on this surface -- items are always
+    # returned in storage order, so this header is unconditionally "false".
+    # The pinned apify-client's `DatasetItemsPage` indexes it directly (no
+    # `.get()`), so its absence raises a `KeyError` before a single item
+    # comes back -- see test_dataset_items_pinned_apify_client_list_items_parses
+    # below for that real-client check.
+    assert resp.headers["X-Apify-Pagination-Desc"] == "false"
 
 
 async def test_dataset_items_offset_only_keeps_no_limit_semantics(wired):
@@ -95,6 +102,7 @@ async def test_dataset_items_offset_only_keeps_no_limit_semantics(wired):
     assert resp.headers["X-Apify-Pagination-Total"] == "30"
     assert resp.headers["X-Apify-Pagination-Count"] == "5"
     assert resp.headers["X-Apify-Pagination-Limit"] == "5"
+    assert resp.headers["X-Apify-Pagination-Desc"] == "false"
 
 
 async def test_dataset_items_limit_only_slices_from_start(wired):
@@ -117,11 +125,12 @@ async def test_dataset_items_limit_only_slices_from_start(wired):
     assert resp.headers["X-Apify-Pagination-Count"] == "5"
     assert resp.headers["X-Apify-Pagination-Total"] == "30"
     assert resp.headers["X-Apify-Pagination-Limit"] == "5"
+    assert resp.headers["X-Apify-Pagination-Desc"] == "false"
 
 
 async def test_dataset_items_pagination_headers_are_cors_exposed(wired):
     """Regression: CORSMiddleware (app/main.py) shipped with no
-    `expose_headers`, so a cross-origin browser caller could see the four
+    `expose_headers`, so a cross-origin browser caller could see the five
     `X-Apify-Pagination-*` headers on the wire but never read them from JS --
     the browser hides any response header not explicitly exposed -- silently
     forcing such a caller back onto `items.length` to page. The shipped
@@ -143,6 +152,7 @@ async def test_dataset_items_pagination_headers_are_cors_exposed(wired):
         "x-apify-pagination-count",
         "x-apify-pagination-total",
         "x-apify-pagination-limit",
+        "x-apify-pagination-desc",
     ):
         assert header in exposed
 
@@ -209,6 +219,54 @@ async def test_dataset_items_empty_string_params_are_treated_as_absent(wired):
     # Empty-string params land on the identical unpaginated branch as no
     # params at all -- no pagination headers appear either.
     assert not any(k.lower().startswith("x-apify-pagination") for k in empty.headers)
+
+
+async def test_dataset_items_pinned_apify_client_list_items_parses(wired_uvicorn):
+    """The REAL, pinned `apify-client` (`requirements-dev.txt` pins 3.1.0, not
+    a hand-rolled reproduction of it) must be able to read dataset items back
+    from this surface end to end via `list_items()`. That client's HTTP
+    transport (`impit`) has no ASGI-transport hook, so this drives it against
+    a real `uvicorn` server on a real loopback socket (`wired_uvicorn`,
+    tests/conftest.py) instead of the in-process `wired` fixture every other
+    test in this module uses -- the same technique the KV-keys equivalent
+    (`test_kv_keys_pinned_apify_client_iterate_keys_pages_a_store_larger_than_
+    its_chunk_size` above) already uses.
+
+    `DatasetItemsPage.list_items()`/`get_data()` indexes all five
+    `x-apify-pagination-*` response headers directly (no `.get()`), so this
+    is the regression check for a response that carries only four of them:
+    it would previously fail with `KeyError: 'x-apify-pagination-desc'`
+    before a single item came back."""
+    from apify_client import ApifyClientAsync
+
+    service, base_url = wired_uvicorn
+    async with httpx.AsyncClient(base_url=base_url) as bootstrap:
+        await bootstrap.post("/v2/users", json={"name": "pinned"})
+        created = await bootstrap.post(
+            "/v2/datasets", json={"name": "pinned"}, headers=auth("pinned")
+        )
+        dataset_id = created.json()["data"]["id"]
+    await service.storage.dataset_push(dataset_id, [{"i": i} for i in range(30)])
+
+    client = ApifyClientAsync(token="pinned", api_url=base_url, api_public_url=base_url)
+    dataset = client.dataset(dataset_id)
+
+    page = await dataset.list_items(limit=10, offset=5)
+    assert [item["i"] for item in page.items] == list(range(5, 15))
+    assert page.total == 30
+    assert page.offset == 5
+    assert page.count == 10
+    assert page.limit == 10
+    assert page.desc is False
+
+    # `Actor.open_dataset().get_data()`/`iterate_items()` (the SDK path, via
+    # `ApifyDatasetClient.get_data()`) always sends this exact
+    # offset=0/limit=999_999_999_999 shape, taking this paginated arm on
+    # every call -- exercised explicitly since it's the shape most likely to
+    # exist against a running runtime in practice.
+    sdk_shaped_page = await dataset.list_items(offset=0, limit=999_999_999_999)
+    assert len(sdk_shaped_page.items) == 30
+    assert sdk_shaped_page.desc is False
 
 
 # -------------------------------------------------------------------- KV keys
