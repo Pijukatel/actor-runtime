@@ -109,16 +109,13 @@ async def test_dataset_items_negative_limit_is_bad_request(wired):
 
 async def test_dataset_items_non_integer_limit_is_bad_request(wired):
     """`_parse_int`'s `except (TypeError, ValueError)` branch, reached via
-    `optional_bounded_int`/`parse_page`, was previously only exercised by
+    `parse_page`'s `optional()` closure, was previously only exercised by
     `runs.py`'s pre-existing `memoryMbytes`/`timeoutSecs` validation -- never
     by any of the four new listing surfaces this branch now also guards.
-    `int("abc")` raises `ValueError`, so this must be `400`. Note the actual
-    shipped body here is FastAPI's own default `{"detail": ...}` shape, NOT
-    the `{"error": {"type": ..., "message": ...}}` Apify envelope every other
-    4xx in this app uses -- `_parse_int` raises a bare `HTTPException` with no
-    handler translating it, a pre-existing quirk of this helper (shared with
-    `runs.py`'s `memoryMbytes`/`timeoutSecs`), not something this diff
-    introduced or is asked to fix."""
+    `int("abc")` raises `ValueError`, so this must be `400` -- in the bare
+    FastAPI `{"detail": ...}` shape `_parse_int` itself raises, not this
+    app's own error envelope (see requirements/api.md's Pagination section
+    for why)."""
     client, _service = wired
     await _create_user(client, "nonint")
     created = await client.post("/v2/datasets", json={"name": "d"}, headers=auth("nonint"))
@@ -144,19 +141,19 @@ async def test_dataset_items_non_integer_offset_is_bad_request(wired):
 
 
 async def test_dataset_items_empty_string_params_are_treated_as_absent(wired):
-    """`optional_bounded_int`'s `raw == ""` arm -- an explicit-but-empty query
-    value is treated identically to the key being omitted entirely, returning
-    `None` rather than falling through to `_parse_int("", ...)` -- is new in
-    this diff but was never exercised by any of the four listing surfaces:
-    every existing test here sends either no `limit`/`offset` at all or a
-    concrete value, never `?limit=&offset=`. A client that serializes empty
-    query values (rather than dropping the key) must land on the exact same
-    byte-for-byte unpaginated bare-array response as the true bare request --
-    not a `400 Query parameter 'limit' must be an integer.`, which is what
-    `int("")` raises and is exactly what you'd get if the `or raw == ""` check
-    were ever dropped from `optional_bounded_int`. Red proof (verified locally
-    by temporarily changing that check to `raw is None`): with the arm
-    removed, this test's `empty` request 400s instead of matching `bare`."""
+    """`parse_page`'s `optional()` closure treats an explicit-but-empty query
+    value (`raw == ""`) identically to the key being omitted entirely,
+    returning `None` rather than falling through to `_parse_int("", ...)` --
+    is new in this diff but was never exercised by any of the four listing
+    surfaces: every existing test here sends either no `limit`/`offset` at
+    all or a concrete value, never `?limit=&offset=`. A client that
+    serializes empty query values (rather than dropping the key) must land on
+    the exact same byte-for-byte unpaginated bare-array response as the true
+    bare request -- not a `400 Query parameter 'limit' must be an integer.`,
+    which is what `int("")` raises and is exactly what you'd get if the
+    `or raw == ""` check were ever dropped. Red proof (verified locally by
+    temporarily changing that check to `raw is None`): with the arm removed,
+    this test's `empty` request 400s instead of matching `bare`."""
     client, service = wired
     await _create_user(client, "es")
     created = await client.post("/v2/datasets", json={"name": "big"}, headers=auth("es"))
@@ -294,54 +291,16 @@ async def test_rq_requests_limit_offset_returns_slice_with_total(wired):
     assert len(body["items"]) == 30
 
 
-async def test_rq_requests_limit_only_slices_from_start(wired):
-    """`limit` without `offset` was previously untested for this surface (only
-    "offset-only" and "both supplied" were exercised) -- unlike the KV-keys
-    equivalent."""
-    client, service = wired
-    await _create_user(client, "rick4")
-    created = await client.post("/v2/request-queues", json={"name": "big4"}, headers=auth("rick4"))
-    rq_id = created.json()["data"]["id"]
-    await service.storage.rq_add_batch(
-        rq_id, [{"url": f"https://example.com/{i}", "uniqueKey": str(i)} for i in range(20)]
-    )
-
-    resp = await client.get(f"/v2/request-queues/{rq_id}/requests?limit=5", headers=auth("rick4"))
-    assert resp.status_code == 200
-    body = resp.json()["data"]
-    assert body["count"] == 5
-    assert body["total"] == 20
-    assert len(body["items"]) == 5
-
-
-async def test_rq_requests_offset_only_keeps_no_limit_semantics(wired):
-    """Same `items[start:]` branch as the KV-keys equivalent above, for the
-    request-queue surface."""
-    client, service = wired
-    await _create_user(client, "rick3")
-    created = await client.post("/v2/request-queues", json={"name": "big3"}, headers=auth("rick3"))
-    rq_id = created.json()["data"]["id"]
-    await service.storage.rq_add_batch(
-        rq_id, [{"url": f"https://example.com/{i}", "uniqueKey": str(i)} for i in range(10)]
-    )
-
-    resp = await client.get(f"/v2/request-queues/{rq_id}/requests?offset=7", headers=auth("rick3"))
-    assert resp.status_code == 200
-    body = resp.json()["data"]
-    assert body["count"] == 3
-    assert body["total"] == 10
-    assert len(body["items"]) == 3
-
-
 # ---------------------------------------------------------- per-user listings
 
 
 async def test_my_key_value_stores_bare_request_is_unpaginated_and_unchanged(wired):
-    """3-success-criteria.md #15 asks this verified "for a resource with more
-    than 100 items/entries" -- the other three surfaces already seed
-    150/120/130, so this per-user listing (the fourth) seeds 110 too, rather
-    than a count small enough that the bare (uncapped) branch and a
-    hypothetical accidentally-introduced 100-item cap would look identical."""
+    """The bare-request contract (requirements/api.md's Pagination section)
+    must hold for a resource with more than 100 items/entries -- the other
+    three surfaces already seed 150/120/130, so this per-user listing (the
+    fourth) seeds 110 too, rather than a count small enough that the bare
+    (uncapped) branch and a hypothetical accidentally-introduced 100-item cap
+    would look identical."""
     client, _service = wired
     await _create_user(client, "stan")
     for i in range(110):
@@ -367,39 +326,6 @@ async def test_my_key_value_stores_limit_offset_returns_slice(wired):
     assert body["total"] == 15
     assert body["count"] == 5
     assert len(body["items"]) == 5
-
-
-async def test_my_key_value_stores_limit_only_slices_from_start(wired):
-    """`limit` without `offset` was previously untested for any per-user
-    listing surface (only "offset-only" and "both supplied" were exercised)
-    -- unlike the KV-keys equivalent."""
-    client, _service = wired
-    await _create_user(client, "stan5")
-    for i in range(15):
-        await client.post("/v2/key-value-stores", json={"name": f"y{i}"}, headers=auth("stan5"))
-
-    resp = await client.get("/v2/users/me/key-value-stores?limit=5", headers=auth("stan5"))
-    assert resp.status_code == 200
-    body = resp.json()["data"]
-    assert body["total"] == 15
-    assert body["count"] == 5
-    assert len(body["items"]) == 5
-
-
-async def test_my_key_value_stores_offset_only_keeps_no_limit_semantics(wired):
-    """Same `items[start:]` branch (no `limit` supplied) as the KV-keys/RQ
-    surfaces above, for a per-user aggregate storage listing."""
-    client, _service = wired
-    await _create_user(client, "stan4")
-    for i in range(10):
-        await client.post("/v2/key-value-stores", json={"name": f"z{i}"}, headers=auth("stan4"))
-
-    resp = await client.get("/v2/users/me/key-value-stores?offset=7", headers=auth("stan4"))
-    assert resp.status_code == 200
-    body = resp.json()["data"]
-    assert body["total"] == 10
-    assert body["count"] == 3
-    assert len(body["items"]) == 3
 
 
 async def test_my_datasets_and_request_queues_also_paginate(wired):

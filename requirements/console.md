@@ -115,7 +115,8 @@
   interpreted as markup.
 - The **Storage section** shows one storage type at a time (at `/storage/{slug}`,
   with a per-type sub-nav between key-value stores, datasets and request queues) and
-  lists **all** of the acting user's owned storages of that type — both the ones they
+  lists the acting user's owned storages of that type, one 100-item page at a time
+  (see "Storage views always page explicitly" below) — both the ones they
   created by name (**named**) and the ones created automatically by their Actor runs
   (**run-derived/unnamed**). Each row is marked with a **✅ (named) / ❌
   (run-derived)** glyph so it's clear which is which. A single checkbox above the
@@ -142,13 +143,19 @@
   API surface — never the bare/unbounded request the API itself still allows for
   other callers. Each of these views shows a **"showing N–M of T"** line, using
   the total the API surface reports, and **Prev/Next** controls that step by 100
-  and disable at either end of the result set. **Creating or deleting a named
-  storage always returns the per-user storage list to its first page** (offset
-  reset to 0), rather than re-fetching whatever offset was already showing — a
-  newly created storage is appended past the end of the list (oldest first), so
-  re-fetching a stale later-page offset could otherwise leave it permanently
-  unseen, and deleting the last item on a later page could otherwise land on an
-  empty page.
+  and disable at either end of the result set. On the per-user storage list, the
+  show/hide-unnamed checkbox filters the already-fetched 100-item page only (it
+  never changes what is fetched); the "showing N–M of T" line counts the rows
+  actually **visible** after that filter, not the raw fetched page, so a page
+  that filters down to a handful of rows (or none) never claims to be showing
+  rows it isn't — while Prev/Next continue to step through the full, unfiltered
+  100-item pages of the result set, since the filter is a display-only,
+  page-local concern. **Creating or deleting a named storage always returns the
+  per-user storage list to its first page** (offset reset to 0), rather than
+  re-fetching whatever offset was already showing — a newly created storage is
+  appended past the end of the list (oldest first), so re-fetching a stale
+  later-page offset could otherwise leave it permanently unseen, and deleting
+  the last item on a later page could otherwise land on an empty page.
 - **Each storage's detail view shows a stats line** above its item/key/request
   list, rendered dynamically from that storage's own `GET` metadata response:
   every field currently non-empty for the resource being viewed, excluding

@@ -33,32 +33,16 @@ async def resolve_user(request: Request) -> str:
     No token -> the default user. A token matching a stored user -> that user. A
     token matching no user -> bootstrap the (still unclaimed) default user with
     it, else reject.
-
-    Memoizes its result on ``request.state`` so a second call for the SAME
-    request is a cache hit rather than a second identical DB round-trip.
-    ``request.state`` lives on the shared ASGI ``scope`` dict, so this is
-    visible across every ``Request`` object built from that scope -- in
-    particular, between a route handler's own call (most handlers resolve the
-    caller before they can produce a 404) and app/upstream.py's
-    ``fetch_upstream_fallback``, which re-resolves the same caller to build
-    the upstream request's ``Authorization`` header when that local 404
-    triggers a fallback attempt.
     """
-    cached = getattr(request.state, "resolved_username", None)
-    if cached is not None:
-        return cached
     token = token_from_request(request)
     service = request.app.state.service
     if not token:
         await service.ensure_default_user()
-        request.state.resolved_username = DEFAULT_USERNAME
         return DEFAULT_USERNAME
     username = await service.user_for_token(token)
     if username is not None:
-        request.state.resolved_username = username
         return username
     if await service.bind_default_token(token):
-        request.state.resolved_username = DEFAULT_USERNAME
         return DEFAULT_USERNAME
     raise InvalidTokenError()
 

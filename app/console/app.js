@@ -500,6 +500,14 @@ async function loadStorages(slug, offset) {
   const resp = unwrap(
     await api(`/v2/users/me/${currentStorageSlug}?limit=${STORAGE_PAGE_SIZE}&offset=${storageListOffset}`),
   );
+  if (isErrorEnvelope(resp)) {
+    const detail = $("#detail");
+    if (detail) {
+      detail.innerHTML = "";
+      detail.appendChild(errorLineEl(resp.error));
+    }
+    return;
+  }
   storageItemsCache[currentStorageSlug] = { items: resp.items || [], total: resp.total || 0 };
   renderStorages();
 }
@@ -548,7 +556,15 @@ function renderStorages() {
   const cache = storageItemsCache[slug] || { items: [], total: 0 };
   const items = cache.items;
   const visible = showUnnamedStorages ? items : items.filter((st) => st.named === true);
-  detail.appendChild(pagingLineEl(storageListOffset, items.length, cache.total));
+  // The "show unnamed" checkbox filters the already-fetched page only (see
+  // its own wiring below): it never changes what was fetched or how far
+  // Prev/Next step. The "showing N-M of T" line must describe what the
+  // table actually renders, so it counts the VISIBLE (filtered) rows, not
+  // the raw fetched page -- otherwise a heavily-filtered page can claim
+  // "showing 1-100 of 253" over an empty table. Prev/Next stay keyed off the
+  // raw fetched page (`items.length`) below, since that -- not the filter --
+  // determines whether there is more of the underlying result set to step to.
+  detail.appendChild(pagingLineEl(storageListOffset, visible.length, cache.total));
   const rows = visible.map((st) => {
     // ✅ for a named/standalone storage, ❌ for a run-derived one - the same
     // st.named flag that gates the delete affordance below.
@@ -824,6 +840,13 @@ window.showStore = async function (tab, kind, id) {
   await renderStoreContent();
 };
 
+// The URL slug each storeContext `kind` is fetched/managed under -- the
+// inverse of STORAGE_SLUG_TO_KIND -- so the shared meta fetch below needs
+// exactly one mapping, not a hardcoded endpoint per branch.
+const KIND_TO_STORAGE_SLUG = Object.fromEntries(
+  Object.entries(STORAGE_SLUG_TO_KIND).map(([slug, kind]) => [kind, slug]),
+);
+
 // Renders the current storeContext/storeOffset into #store. Shared by
 // showStore() (fresh open, offset reset to 0) and the prev/next controls
 // (same context, new offset) -- always requesting an explicit
@@ -835,13 +858,29 @@ async function renderStoreContent() {
   if (!box) return;
   box.innerHTML = "";
 
+  if (kind === "log") {
+    const logPre = mk("pre");
+    box.appendChild(logPre);
+    await streamLogInto(id, logPre);
+    return;
+  }
+
+  // The meta fetch/guard/stats-line is identical across kv/ds/rq -- only the
+  // endpoint's storage-type segment differs -- so it is written once here,
+  // shared by every branch below, rather than copy-pasted per branch.
+  const meta = unwrap(await api(`/v2/${KIND_TO_STORAGE_SLUG[kind]}/${id}`));
+  if (isErrorEnvelope(meta)) {
+    box.appendChild(errorLineEl(meta.error));
+    return;
+  }
+  box.appendChild(statsLineEl(meta));
+
+  const onPage = (next) => {
+    storeOffset = next;
+    renderStoreContent();
+  };
+
   if (kind === "kv") {
-    const meta = unwrap(await api(`/v2/key-value-stores/${id}`));
-    if (isErrorEnvelope(meta)) {
-      box.appendChild(errorLineEl(meta.error));
-      return;
-    }
-    box.appendChild(statsLineEl(meta));
     const keysResp = unwrap(
       await api(`/v2/key-value-stores/${id}/keys?limit=${STORAGE_PAGE_SIZE}&offset=${storeOffset}`),
     );
@@ -861,19 +900,8 @@ async function renderStoreContent() {
       rows.push([mk("td", { text: k.key }), pre]);
     }
     box.appendChild(emptyOr(tableEl(["Key", "Value"], rows), keys.length));
-    box.appendChild(
-      pagingControlsEl(storeOffset, keys.length, keysResp.total, (next) => {
-        storeOffset = next;
-        renderStoreContent();
-      }),
-    );
+    box.appendChild(pagingControlsEl(storeOffset, keys.length, keysResp.total, onPage));
   } else if (kind === "ds") {
-    const meta = unwrap(await api(`/v2/datasets/${id}`));
-    if (isErrorEnvelope(meta)) {
-      box.appendChild(errorLineEl(meta.error));
-      return;
-    }
-    box.appendChild(statsLineEl(meta));
     // Dataset items keep their bare-array body; the pagination info lives in
     // response headers (mirroring the real API's own convention), so this
     // reads the raw Response rather than going through api()/unwrap().
@@ -886,19 +914,8 @@ async function renderStoreContent() {
     const total = Number(res.headers.get("X-Apify-Pagination-Total") || items.length);
     box.appendChild(pagingLineEl(storeOffset, items.length, total));
     box.appendChild(mk("pre", { text: JSON.stringify(items, null, 2) }));
-    box.appendChild(
-      pagingControlsEl(storeOffset, items.length, total, (next) => {
-        storeOffset = next;
-        renderStoreContent();
-      }),
-    );
+    box.appendChild(pagingControlsEl(storeOffset, items.length, total, onPage));
   } else if (kind === "rq") {
-    const meta = unwrap(await api(`/v2/request-queues/${id}`));
-    if (isErrorEnvelope(meta)) {
-      box.appendChild(errorLineEl(meta.error));
-      return;
-    }
-    box.appendChild(statsLineEl(meta));
     const reqsResp = unwrap(
       await api(`/v2/request-queues/${id}/requests?limit=${STORAGE_PAGE_SIZE}&offset=${storeOffset}`),
     );
@@ -914,16 +931,7 @@ async function renderStoreContent() {
       mk("td", { text: String(Boolean(q.handledAt)) }),
     ]);
     box.appendChild(emptyOr(tableEl(["URL", "Method", "Handled"], rows), reqs.length));
-    box.appendChild(
-      pagingControlsEl(storeOffset, reqs.length, reqsResp.total, (next) => {
-        storeOffset = next;
-        renderStoreContent();
-      }),
-    );
-  } else {
-    const logPre = mk("pre");
-    box.appendChild(logPre);
-    await streamLogInto(id, logPre);
+    box.appendChild(pagingControlsEl(storeOffset, reqs.length, reqsResp.total, onPage));
   }
 }
 

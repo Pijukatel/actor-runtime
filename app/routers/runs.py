@@ -8,8 +8,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from ..auth import resolve_user
-from ..responses import bounded_int as _bounded_int
-from ..responses import data, get_service, not_found, read_body
+from ..responses import bounded_int, data, get_service, not_found, read_body
 from ..serializers import build_dict, run_dict
 
 # Start-run lives under the actor prefixes (/v2/acts + /v2/actors).
@@ -38,15 +37,15 @@ async def start_run(actor_id: str, request: Request) -> object:
     # cap); waitForFinish may be 0.
     options = {
         "build": params.get("build", "latest"),
-        "memoryMbytes": _bounded_int(
+        "memoryMbytes": bounded_int(
             params, "memory", 1024, minimum=1, message="Query parameter 'memory' must be positive."
         ),
-        "timeoutSecs": _bounded_int(
+        "timeoutSecs": bounded_int(
             params, "timeout", 300, minimum=1, message="Query parameter 'timeout' must be positive."
         ),
     }
     wait_secs = min(
-        _bounded_int(
+        bounded_int(
             params, "waitForFinish", 0, minimum=0, message="Query parameter 'waitForFinish' must not be negative."
         ),
         60,

@@ -18,20 +18,6 @@ from app.service import Service
 from app.storage import Storage
 
 
-def _make_threaded_http_server(handler_cls: type) -> http.server.ThreadingHTTPServer:
-    """Construct (but do not yet start serving) a `ThreadingHTTPServer` for
-    `handler_cls` on an ephemeral loopback port.
-
-    Shared by every in-process HTTP stub in this suite -- `FakeStandbyServer`
-    below, and `FakeUpstreamServer` in `test_upstream_fallback.py` -- so only
-    the request handler differs between them. Callers set any handler-specific
-    attributes on the returned server BEFORE starting its thread with
-    `_start_http_server_thread`, matching the ordering each stub already relied
-    on.
-    """
-    return http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
-
-
 def _start_http_server_thread(httpd: http.server.ThreadingHTTPServer) -> threading.Thread:
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -167,7 +153,7 @@ class FakeStandbyServer:
     """
 
     def __init__(self, never_ready: bool = False, readiness_hang_secs: float = 0.0) -> None:
-        self._httpd = _make_threaded_http_server(_StandbyProbeHandler)
+        self._httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _StandbyProbeHandler)
         self._httpd.never_ready = never_ready
         self._httpd.readiness_hang_secs = readiness_hang_secs
         self._httpd.request_count = 0

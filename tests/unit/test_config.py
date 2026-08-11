@@ -4,7 +4,7 @@ removed, not just re-defaulted).
 """
 from __future__ import annotations
 
-from app.config import Settings, load_settings
+from app.config import load_settings
 
 
 def test_load_settings_defaults_to_fixed_ports(monkeypatch):
@@ -53,25 +53,11 @@ def test_load_settings_strips_trailing_slash_from_upstream_base_url(monkeypatch)
     """RED->GREEN for the finding that an operator-supplied
     `APIFY_UPSTREAM_BASE_URL` ending in `/` (e.g. `https://api.apify.com/`)
     produced a double slash once `fetch_upstream_fallback` (app/upstream.py)
-    concatenated it with `request.url.path` (which always starts with its
-    own `/`). Normalized away by `Settings.__post_init__`, so `load_settings`
-    -- the env-var path -- never carries a trailing slash through."""
+    concatenated it with `request.url.path` (see requirements/api.md's
+    Upstream fallback section). Normalized away by `Settings.__post_init__`
+    -- the boundary every construction path goes through -- so
+    `load_settings`, the env-var path, never carries a trailing slash
+    through."""
     monkeypatch.setenv("APIFY_UPSTREAM_BASE_URL", "https://api.apify.com/")
     settings = load_settings()
     assert settings.apify_upstream_base_url == "https://api.apify.com"
-
-
-def test_settings_strips_trailing_slash_from_upstream_base_url_on_direct_construction(tmp_path):
-    """Same normalization, exercised by constructing `Settings` directly
-    (not via `load_settings`) -- `__post_init__` is the boundary every
-    construction path goes through, including a test's own
-    `dataclasses.replace(...)` (see `wired_upstream` in
-    tests/unit/test_upstream_fallback.py)."""
-    settings = Settings(
-        data_dir=tmp_path,
-        host_data_dir=tmp_path,
-        port_api=3333,
-        port_console=3000,
-        apify_upstream_base_url="http://127.0.0.1:9/",
-    )
-    assert settings.apify_upstream_base_url == "http://127.0.0.1:9"

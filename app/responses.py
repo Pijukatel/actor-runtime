@@ -80,31 +80,25 @@ def bounded_int(params, key: str, default: int, minimum: int, message: str) -> i
     return _parse_int(raw, key, minimum, message)
 
 
-def optional_bounded_int(params, key: str, minimum: int, message: str) -> int | None:
-    """Like ``bounded_int``, but returns ``None`` (not a default value) when the
-    param is absent -- for optional pagination params where "absent" must stay
-    distinguishable from any concrete integer, including ``0``. Callers use
-    ``None`` to mean "keep today's unpaginated behaviour".
-    """
-    raw = params.get(key)
-    if raw is None or raw == "":
-        return None
-    return _parse_int(raw, key, minimum, message)
-
-
 def parse_page(request: Request) -> tuple[int | None, int | None]:
     """Return ``(limit, offset)`` from the query string, each ``None`` when
-    absent. Shared by every listing surface that supports optional
-    `limit`/`offset` slicing (dataset items, KV keys, RQ requests, per-user
-    storage lists) so "both omitted" -- the byte-for-byte-unchanged contract
-    every non-console caller relies on -- is decided identically everywhere.
+    absent -- "absent" stays distinguishable from any concrete integer,
+    including ``0``, so callers can tell "keep today's unpaginated behaviour"
+    apart from "an explicit zero". Shared by every listing surface that
+    supports optional `limit`/`offset` slicing (dataset items, KV keys, RQ
+    requests, per-user storage lists) so "both omitted" -- the
+    byte-for-byte-unchanged contract every non-console caller relies on -- is
+    decided identically everywhere.
     """
     params = request.query_params
-    limit = optional_bounded_int(params, "limit", minimum=0, message="Query parameter 'limit' must not be negative.")
-    offset = optional_bounded_int(
-        params, "offset", minimum=0, message="Query parameter 'offset' must not be negative."
-    )
-    return limit, offset
+
+    def optional(key: str) -> int | None:
+        raw = params.get(key)
+        if raw is None or raw == "":
+            return None
+        return _parse_int(raw, key, minimum=0, message=f"Query parameter '{key}' must not be negative.")
+
+    return optional("limit"), optional("offset")
 
 
 def paginate(items: list, limit: int | None, offset: int | None) -> list:
@@ -114,6 +108,40 @@ def paginate(items: list, limit: int | None, offset: int | None) -> list:
     """
     start = offset or 0
     return items[start : start + limit] if limit is not None else items[start:]
+
+
+def paged_envelope(
+    items: list,
+    limit: int | None,
+    offset: int | None,
+    *,
+    echo_limit: bool = True,
+    always_total: bool = False,
+    **extra: Any,
+) -> dict:
+    """Build the ``{items, count, ...}`` envelope shared by every listing
+    surface that supports optional `limit`/`offset` slicing -- the single
+    place that decides "which shape does a bare request return" so three
+    near-identical copies of this branch (KV keys, RQ requests, the per-user
+    aggregate listings) can't quietly drift apart.
+
+    A bare request (``limit`` and ``offset`` both absent) returns every item
+    unsliced; a `total` field is added only once the caller actually pages,
+    UNLESS ``always_total`` (the per-user aggregate listings already emit it
+    unconditionally, even bare). ``echo_limit=False`` omits the `limit` echo
+    entirely (the per-user listings never had one); otherwise `limit` mirrors
+    the effective limit -- the requested value, or the slice's own length
+    when none was given, matching the real API's own convention. ``extra`` is
+    merged into every envelope (e.g. KV keys' constant ``isTruncated: False``).
+    """
+    paginated = limit is not None or offset is not None
+    page = paginate(items, limit, offset) if paginated else items
+    envelope: dict[str, Any] = {"items": page, "count": len(page), **extra}
+    if echo_limit:
+        envelope["limit"] = limit if limit is not None else len(page)
+    if paginated or always_total:
+        envelope["total"] = len(items)
+    return envelope
 
 
 def data(payload: Any, status_code: int = 200) -> JSONResponse:

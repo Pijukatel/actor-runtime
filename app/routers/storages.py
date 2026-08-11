@@ -14,7 +14,7 @@ from ..responses import (
     forbidden,
     get_service,
     not_found,
-    paginate,
+    paged_envelope,
     parse_page,
     read_body,
     read_json,
@@ -309,18 +309,7 @@ async def list_keys(store_id: str, request: Request) -> object:
         return denied
     keys = await svc.storage.kv_keys(store_id)
     limit, offset = parse_page(request)
-    if limit is None and offset is None:
-        return data({"items": keys, "count": len(keys), "limit": len(keys), "isTruncated": False})
-    page = paginate(keys, limit, offset)
-    return data(
-        {
-            "items": page,
-            "count": len(page),
-            "limit": limit if limit is not None else len(page),
-            "isTruncated": False,
-            "total": len(keys),
-        }
-    )
+    return data(paged_envelope(keys, limit, offset, isTruncated=False))
 
 
 @router.get("/v2/key-value-stores/{store_id}/records/{key}")
@@ -421,12 +410,9 @@ async def get_items(dataset_id: str, request: Request) -> JSONResponse:
         return denied
     limit, offset = parse_page(request)
     paginated = limit is not None or offset is not None
-    kwargs = {}
-    if offset is not None:
-        kwargs["offset"] = offset
-    if limit is not None:
-        kwargs["limit"] = limit
-    result = await svc.storage.dataset_items(dataset_id, **kwargs)
+    result = await svc.storage.dataset_items(
+        dataset_id, offset=offset or 0, limit=limit if limit is not None else DEFAULT_ITEM_LIMIT
+    )
     response = JSONResponse(result["items"])
     # Bare (no limit/offset) requests stay byte-for-byte identical to today --
     # no new headers -- matching the real API's own `format=json` convention
@@ -503,17 +489,7 @@ async def list_requests(queue_id: str, request: Request) -> object:
         return denied
     items = await svc.storage.rq_requests(queue_id)
     limit, offset = parse_page(request)
-    if limit is None and offset is None:
-        return data({"items": items, "count": len(items), "limit": len(items)})
-    page = paginate(items, limit, offset)
-    return data(
-        {
-            "items": page,
-            "count": len(page),
-            "limit": limit if limit is not None else len(page),
-            "total": len(items),
-        }
-    )
+    return data(paged_envelope(items, limit, offset))
 
 
 @router.post("/v2/request-queues/{queue_id}/requests")

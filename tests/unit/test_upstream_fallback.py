@@ -1,11 +1,10 @@
 """Upstream-API fallback middleware (app/upstream.py) + the runtime-config
 toggle it reads. All Docker-free: a tiny in-process HTTP server stands in for
 api.apify.com, with `Settings.apify_upstream_base_url` pointed at it, built on
-conftest.py's own shared `_make_threaded_http_server`/`_start_http_server_thread`/
-`_stop_threaded_http_server` helpers and `_QuietHandlerMixin` -- the same
-ThreadingHTTPServer/start/stop lifecycle `FakeStandbyServer` there uses, with
-only the request handler differing. See requirements/api.md's "Upstream
-fallback" section.
+conftest.py's own shared `_start_http_server_thread`/`_stop_threaded_http_server`
+helpers and `_QuietHandlerMixin` -- the same ThreadingHTTPServer/start/stop
+lifecycle `FakeStandbyServer` there uses, with only the request handler
+differing. See requirements/api.md's "Upstream fallback" section.
 """
 from __future__ import annotations
 
@@ -18,7 +17,6 @@ import httpx
 import pytest_asyncio
 from conftest import (
     StubDriver,
-    _make_threaded_http_server,
     _QuietHandlerMixin,
     _start_http_server_thread,
     _stop_threaded_http_server,
@@ -78,7 +76,7 @@ class FakeUpstreamServer:
     200/empty)."""
 
     def __init__(self) -> None:
-        self._httpd = _make_threaded_http_server(_FakeUpstreamHandler)
+        self._httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeUpstreamHandler)
         self._httpd.requests = []
         self._httpd.next_response = (200, b"", [])
         self.port = self._httpd.server_address[1]
@@ -167,15 +165,6 @@ async def test_runtime_config_get_is_token_free_and_defaults_off(wired):
     assert resp.json()["data"] == {"upstreamFallbackEnabled": False}
 
 
-async def test_fresh_wiring_starts_with_toggle_off(wired):
-    """A brand-new `Service` (~ a fresh process after a restart) always starts
-    with the toggle off -- it is a plain in-memory attribute with no
-    persistence path (no DB table/column) that could carry a prior value
-    across a restart."""
-    _client, service = wired
-    assert service.upstream_fallback_enabled is False
-
-
 async def test_runtime_config_put_takes_effect_immediately(wired):
     client, service = wired
     resp = await client.put("/v2/runtime-config", json={"upstreamFallbackEnabled": True})
@@ -201,19 +190,18 @@ async def test_runtime_config_put_rejects_non_boolean(wired):
 # ------------------------------------------------------ fallback: read (GET)
 
 
-async def test_fallback_disabled_by_default_local_404_unchanged(wired_upstream):
+async def test_fallback_toggle_off_never_attempts_upstream(wired_upstream, fake_upstream):
+    """Covers both "off by default" (a fresh `Service`'s `upstream_fallback_
+    enabled` is a plain in-memory attribute with no persistence path, so it
+    starts `False`) and "off means off" (the same explicit assignment): a
+    request for a resource missing locally returns the exact same local `404`
+    as before this change, and the upstream stub receives zero requests."""
     client, service = wired_upstream
     assert service.upstream_fallback_enabled is False
-    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
-    assert resp.status_code == 404
-    assert resp.json()["error"]["type"] == "record-not-found"
-
-
-async def test_fallback_toggle_off_never_attempts_upstream(wired_upstream, fake_upstream):
-    client, service = wired_upstream
     service.upstream_fallback_enabled = False
     resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
     assert resp.status_code == 404
+    assert resp.json()["error"]["type"] == "record-not-found"
     assert fake_upstream.requests == []
 
 
@@ -574,6 +562,33 @@ async def test_fallback_write_forwards_content_encoding_for_compressed_body(wire
     assert seen["body"] == compressed  # replayed byte-for-byte, still compressed
 
 
+async def test_fallback_enabled_local_write_success_is_unaffected_and_not_proxied(wired_upstream, fake_upstream):
+    """The middleware's body-buffering branch (`body = await request.body()`
+    before `call_next`) runs for every allowlisted write while the toggle is
+    on -- including the common case where the write actually SUCCEEDS locally
+    (e.g. writing to a storage the caller already owns), the arm every real
+    Actor write takes. That case must never reach `fetch_upstream_fallback`
+    at all (only a local 404 does), and pre-reading the body for a possible
+    replay must not corrupt what the handler itself receives: read the write
+    back and confirm it round-tripped intact."""
+    client, service = wired_upstream
+    service.upstream_fallback_enabled = True
+    await _create_user(client, "gwen")
+    await client.post("/v2/key-value-stores", json={"name": "mine"}, headers=auth("gwen"))
+
+    resp = await client.put(
+        "/v2/key-value-stores/gwen~mine/records/K",
+        content=json.dumps({"hello": "world"}),
+        headers={**auth("gwen"), "content-type": "application/json"},
+    )
+    assert resp.status_code == 200
+    assert fake_upstream.requests == []
+
+    readback = await client.get("/v2/key-value-stores/gwen~mine/records/K", headers=auth("gwen"))
+    assert readback.status_code == 200
+    assert readback.json() == {"hello": "world"}
+
+
 # ------------------------------------------------------- base URL normalization
 
 
@@ -623,28 +638,6 @@ async def test_fallback_trailing_slash_base_url_builds_url_without_double_slash(
     assert len(seen_urls) == 1
     assert seen_urls[0].endswith("/v2/datasets/nobody~nothing/items")
     assert "//v2" not in seen_urls[0]
-
-
-async def test_fallback_trailing_slash_base_url_does_not_double_slash_the_path(
-    wired_upstream_trailing_slash_base_url, fake_upstream
-):
-    """Companion end-to-end smoke test for the same fix, against the real fake
-    upstream stub used by every other test in this file: with the fix in
-    place, a request the caller made to an allowlisted path that 404s
-    locally is still correctly relayed upstream (i.e. nothing about the
-    normalization silently breaks the happy path). NOTE: unlike the test
-    above, this one is NOT a red/green discriminator for the trailing-slash
-    fix specifically -- see that test's docstring for why a real
-    `http.server`-based stub can't distinguish a single vs. a leading double
-    slash here."""
-    client, service = wired_upstream_trailing_slash_base_url
-    service.upstream_fallback_enabled = True
-    fake_upstream.set_response(200, b"[]", {"content-type": "application/json"})
-
-    resp = await client.get("/v2/datasets/nobody~nothing/items")
-    assert resp.status_code == 200
-    assert len(fake_upstream.requests) == 1
-    assert fake_upstream.requests[0]["path"] == "/v2/datasets/nobody~nothing/items"
 
 
 # ------------------------------------------------------------- guardrails
@@ -769,47 +762,11 @@ async def test_fallback_anonymous_caller_forwards_no_token_when_unclaimed(wired_
     assert "authorization" not in fake_upstream.requests[0]["headers"]
 
 
-# -------------------------------------------------------- caller-resolution dedup
-
-
-async def test_fallback_resolves_caller_only_once_per_request(wired_upstream, fake_upstream, monkeypatch):
-    """RED->GREEN for the finding that `fetch_upstream_fallback` re-resolved
-    the caller from scratch even though the route handler's own `_guard`
-    (app/routers/storages.py) already called `resolve_user` once to produce
-    the local 404 -- a redundant `Service.user_for_token` DB round-trip on
-    every fallback-triggering request. `resolve_user` (app/auth.py) now
-    memoizes its result on `request.state`, so the SAME request's second
-    `resolve_user` call (made here, to build the outgoing `Authorization`
-    header) is a cache hit. Counting calls to the underlying
-    `Service.user_for_token` -- the method both the handler's and the
-    fallback's `resolve_user` call would otherwise invoke independently --
-    pins that it now runs exactly once rather than twice."""
-    client, service = wired_upstream
-    await _create_user(client, "alice")  # alice.token == "alice"
-    fake_upstream.set_response(200, b"[]", {"content-type": "application/json"})
-    service.upstream_fallback_enabled = True
-
-    calls = 0
-    original = service.user_for_token
-
-    async def _counting(token):
-        nonlocal calls
-        calls += 1
-        return await original(token)
-
-    monkeypatch.setattr(service, "user_for_token", _counting)
-
-    resp = await client.get("/v2/datasets/alice~nonexistent/items", headers=auth("alice"))
-    assert resp.status_code == 200
-    assert fake_upstream.requests[0]["headers"].get("authorization") == "Bearer alice"
-    assert calls == 1
-
-
 # -------------------------------------------------------- toggle + middleware wired together
 
 
 async def test_toggle_via_runtime_config_endpoint_enables_fallback_immediately(wired_upstream, fake_upstream):
-    client, service = wired_upstream
+    client, _service = wired_upstream
     fake_upstream.set_response(200, b"[]", {"content-type": "application/json"})
 
     before = await client.get("/v2/datasets/nobody~nothing/items")

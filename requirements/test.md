@@ -314,7 +314,8 @@ fixtures) MUST exist and keep passing for the following behaviours:
    is the **empty string** for a run-derived storage (not its id) while a named
    storage keeps its given name, and that the console renders the named/run-derived
    distinction as a **✅ / ❌** glyph gated on the same `named` flag as the delete
-   affordance. A structural check on the served `app.js` MUST also confirm
+   affordance. A structural check on the served `app.js` (in
+   `tests/unit/test_console_pagination_ui.py`) MUST also confirm
    `createStorage`/`deleteStorage` each reset the storage list's paging offset
    to 0 when re-fetching (`loadStorages(slug, 0)`, never a bare
    `loadStorages(slug)`), so a mutation can never leave the view on a stale
@@ -346,12 +347,14 @@ per-user storage listings — asserting BOTH:
    pre-existing quirk of that shared helper, predating and unrelated to this
    pagination feature.
 
-A **structural** scan of the served `app.js` MUST additionally confirm that
+A **structural** scan of the served `app.js` (in
+`tests/unit/test_console_pagination_ui.py`) MUST additionally confirm that
 every one of its own fetch call sites touching these same four surfaces
-carries an explicit `limit=${STORAGE_PAGE_SIZE}&offset=...` — never a bare
-path with the query string stripped — robust enough to fail equally on an
-existing call site losing its params or a new call site being added for one
-of these paths without them (success criterion #19).
+carries an explicit `limit=...&offset=...` — never a bare path with the query
+string stripped — matched on each surface's static path shape independently
+of how the call site names its own id/slug interpolation, so it fails equally
+on an existing call site losing its params or a new call site being added for
+one of these paths (however it names its id) without them.
 
 ## Mandatory upstream-fallback and runtime-config-toggle tests (standing regression checks)
 
@@ -401,10 +404,14 @@ MUST exist for:
    BOTH collapse to the original local `404`, unchanged, never the upstream's
    own error status/body.
  - **Guardrails** — a resource that resolves successfully locally is never
-   proxied (upstream receives zero requests) regardless of toggle state; a
-   local response with a non-404 status (e.g. a `READ`-grantee's `403`) is
-   never proxied even with the toggle on; turning the toggle off immediately
-   stops further upstream attempts, even mid-session.
+   proxied (upstream receives zero requests) regardless of toggle state,
+   including a WRITE that succeeds locally (the arm every real Actor write
+   takes while the toggle is on) — the middleware's request-body pre-read for
+   a possible replay must not corrupt what the handler itself receives,
+   verified by reading the written value back afterward; a local response
+   with a non-404 status (e.g. a `READ`-grantee's `403`) is never proxied even
+   with the toggle on; turning the toggle off immediately stops further
+   upstream attempts, even mid-session.
  - **Token identity** — the upstream request carries the calling user's own
    bound `token` as its bearer credential (verified for at least two different
    users, showing it tracks the caller rather than being constant), never a
@@ -414,14 +421,9 @@ MUST exist for:
    trailing slash (mirroring a misconfigured `APIFY_UPSTREAM_BASE_URL`, e.g.
    `https://api.apify.com/`) MUST still produce a single, correct slash in the
    path the upstream stub actually receives, never a double slash.
- - **Caller-resolution dedup** — resolving the caller a second time inside the
-   fallback path (to build the outgoing `Authorization` header), for a request
-   whose route handler already resolved the same caller once to produce its
-   local `404`, MUST NOT repeat the underlying token-lookup DB round-trip —
-   verified by counting calls to `Service.user_for_token` across a single
-   fallback-triggering request.
  - **Console toggle UI (structural)** — a structural scan of the served
-   `index.html`/`app.js` MUST confirm: the `#fallback-toggle` checkbox exists
+   `index.html`/`app.js` (in `tests/unit/test_console_pagination_ui.py`) MUST
+   confirm: the `#fallback-toggle` checkbox exists
    in the header immediately next to the `#user-select` "Switch user" control;
    `app.js` reads its initial state via a token-free `GET /v2/runtime-config`
    on page load, reflecting the returned `upstreamFallbackEnabled` onto the

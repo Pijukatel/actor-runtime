@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from ..auth import resolve_user
-from ..responses import data, get_service, not_found, paginate, parse_page, read_json
+from ..responses import data, get_service, not_found, paged_envelope, parse_page, read_json
 from ..serializers import actor_dict, build_dict, run_dict, storage_dict, version_dict
 from ..service import STORAGE_DS, STORAGE_KV, STORAGE_RQ
 
@@ -20,10 +20,7 @@ async def _my_storages(request: Request, storage_type: str) -> object:
     storages = await svc.list_storages_for_user(user, type=storage_type)
     items = [storage_dict(st) for st in storages]
     limit, offset = parse_page(request)
-    if limit is None and offset is None:
-        return data({"total": len(items), "count": len(items), "items": items})
-    page = paginate(items, limit, offset)
-    return data({"total": len(items), "count": len(page), "items": page})
+    return data(paged_envelope(items, limit, offset, echo_limit=False, always_total=True))
 
 
 @user_router.get("/v2/users/me")
