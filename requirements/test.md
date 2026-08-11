@@ -489,8 +489,17 @@ uses, with only the request handler differing) MUST exist for:
  - **Token identity** — the upstream request carries the calling user's own
    bound `token` as its bearer credential (verified for at least two different
    users, showing it tracks the caller rather than being constant), never a
-   different, shared or hardcoded credential; an unbound caller (no token ever
-   claimed) forwards no `Authorization` header at all rather than a placeholder.
+   different, shared or hardcoded credential. A request presenting NO token
+   at all has nothing to forward and is never eligible for fallback in the
+   first place: the attempt MUST be abandoned before any upstream call is
+   made — coverage MUST confirm the upstream stub receives zero requests in
+   this case, including when the default user's own credential is already
+   bound to a real-looking secret. A PRESENT token that resolves to a known
+   user who has no bound `token` of their own yet — e.g. the still-unclaimed
+   default user, resolved via its own `container_token` — is a distinct,
+   separately-covered case: the attempt still PROCEEDS, forwarding no
+   `Authorization` header at all rather than a placeholder or abandoning
+   like the no-token case above.
    Identity resolution on this path is a PURE lookup, never `app/auth.py`'s
    bootstrap-or-reject `resolve_user`: a token matching no existing user MUST
    NOT bootstrap or bind a user as a side effect — coverage MUST assert this on

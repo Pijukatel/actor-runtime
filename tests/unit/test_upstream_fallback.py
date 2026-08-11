@@ -342,14 +342,39 @@ async def test_fallback_upstream_failure_logs_at_warning_level(wired_upstream, f
     )
 
 
-async def test_fallback_upstream_connect_error_collapses_to_local_404(wired_upstream, fake_upstream):
+async def test_fallback_upstream_connect_error_collapses_to_local_404(wired_upstream, fake_upstream, monkeypatch):
+    """A resolvable, presented token is required here -- with no token at all
+    `resolve_forwardable_token` returns `None` and `fetch_upstream_fallback`
+    abandons before ever constructing an `httpx.AsyncClient`, so the stopped
+    server would never actually be dialed and this test would pass for the
+    wrong reason. Spying on `httpx.AsyncClient.request` (rather than trusting
+    the collapsed 404 alone) proves the connect attempt genuinely happened."""
+    from app import upstream as upstream_module
+
     client, service = wired_upstream
+    upstream_base = service.settings.apify_upstream_base_url
+    # Filtered by the configured upstream base, not just "any httpx.AsyncClient
+    # call" -- `client` itself (the test's own ASGI-transport httpx client) is
+    # also an `httpx.AsyncClient`, so an unfiltered spy on the class method
+    # would count the test's own requests to the app too.
+    dial_attempts = []
+    real_request = upstream_module.httpx.AsyncClient.request
+
+    async def _spy(self, method, url, **kwargs):
+        if str(url).startswith(upstream_base):
+            dial_attempts.append(url)
+        return await real_request(self, method, url, **kwargs)
+
+    monkeypatch.setattr(upstream_module.httpx.AsyncClient, "request", _spy)
+
     service.upstream_fallback_enabled = True
+    await _create_user(client, "caller")
     fake_upstream.stop()  # nothing listens at this port any more
 
-    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
+    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys", headers=auth("caller"))
     assert resp.status_code == 404
     assert resp.json()["error"]["type"] == "record-not-found"
+    assert len(dial_attempts) == 1  # httpx genuinely tried to connect, not abandoned pre-dial
 
 
 async def test_fallback_upstream_timeout_is_connect_only_bound(wired_upstream, fake_upstream, monkeypatch):
@@ -395,20 +420,47 @@ async def test_fallback_upstream_timeout_is_connect_only_bound(wired_upstream, f
     }
 
 
-async def test_fallback_malformed_upstream_base_url_collapses_to_local_404(wired_malformed_upstream):
+async def test_fallback_malformed_upstream_base_url_collapses_to_local_404(wired_malformed_upstream, monkeypatch):
     """`httpx.InvalidURL` is raised while httpx builds the outgoing request --
     not a subclass of `httpx.HTTPError` -- so a misconfigured
     `APIFY_UPSTREAM_BASE_URL` must still collapse to the original local 404
-    like every other fallback failure, not crash the request."""
+    like every other fallback failure, not crash the request.
+
+    A resolvable, presented token is required to reach that code at all --
+    with no token at all `resolve_forwardable_token` returns `None` and
+    `fetch_upstream_fallback` abandons before the malformed URL is ever
+    handed to httpx, so this would pass for the wrong reason without one.
+    Spying on `httpx.AsyncClient.request` proves the malformed URL genuinely
+    reached httpx instead."""
+    from app import upstream as upstream_module
+
     client, service = wired_malformed_upstream
-    local_only = await client.get("/v2/key-value-stores/nobody~nothing/keys")
+    upstream_base = service.settings.apify_upstream_base_url
+    # Filtered by the configured (malformed) upstream base, not just "any
+    # httpx.AsyncClient call" -- `client` itself (the test's own
+    # ASGI-transport httpx client) is also an `httpx.AsyncClient`, so an
+    # unfiltered spy on the class method would count the test's own requests
+    # to the app too.
+    dial_attempts = []
+    real_request = upstream_module.httpx.AsyncClient.request
+
+    async def _spy(self, method, url, **kwargs):
+        if str(url).startswith(upstream_base):
+            dial_attempts.append(url)
+        return await real_request(self, method, url, **kwargs)
+
+    monkeypatch.setattr(upstream_module.httpx.AsyncClient, "request", _spy)
+
+    await _create_user(client, "caller")
+    local_only = await client.get("/v2/key-value-stores/nobody~nothing/keys", headers=auth("caller"))
     assert local_only.status_code == 404
     local_body = local_only.json()
 
     service.upstream_fallback_enabled = True
-    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
+    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys", headers=auth("caller"))
     assert resp.status_code == 404
     assert resp.json() == local_body
+    assert len(dial_attempts) == 1  # httpx genuinely got the malformed URL, not abandoned pre-dial
 
 
 # ---------------------------------------------- fallback: identity resolution failures
@@ -565,15 +617,17 @@ async def test_fallback_delete_relays_upstream_2xx_verbatim(wired_upstream, fake
 
 async def test_fallback_delete_upstream_failure_collapses_to_local_404(wired_upstream, fake_upstream):
     client, service = wired_upstream
-    local_only = await client.delete("/v2/key-value-stores/nobody~nothing")
+    await _create_user(client, "caller")
+    local_only = await client.delete("/v2/key-value-stores/nobody~nothing", headers=auth("caller"))
     assert local_only.status_code == 404
     local_body = local_only.json()
 
     service.upstream_fallback_enabled = True
     fake_upstream.set_response(401, b'{"error":{"message":"bad token"}}')
-    resp = await client.delete("/v2/key-value-stores/nobody~nothing")
+    resp = await client.delete("/v2/key-value-stores/nobody~nothing", headers=auth("caller"))
     assert resp.status_code == 404
     assert resp.json() == local_body
+    assert len(fake_upstream.requests) == 1  # the attempt was made, and failed
 
 
 async def test_fallback_write_body_and_query_replayed_verbatim(wired_upstream, fake_upstream):
@@ -840,6 +894,29 @@ async def test_fallback_forwards_real_token_not_container_token(wired_upstream, 
     assert resp.status_code == 200
     assert len(fake_upstream.requests) == 1
     assert fake_upstream.requests[0]["headers"].get("authorization") == "Bearer alice"
+
+
+async def test_fallback_resolved_caller_with_no_bound_token_proceeds_headerless(wired_upstream, fake_upstream):
+    """The third, distinct outcome of `resolve_forwardable_token` (see its
+    docstring in app/auth.py): a PRESENT token that resolves to a known user
+    who has no bound `token` of their own yet must PROCEED with the fallback
+    attempt, forwarding no `Authorization` header at all -- unlike a request
+    presenting no token at all, which abandons before any upstream call is
+    made (see the anonymous-caller tests below). The still-unclaimed default
+    user, authenticated via its own `container_token` before any real token
+    has ever been bound to it, is the concrete case that reaches this arm."""
+    client, service = wired_upstream
+    service.upstream_fallback_enabled = True
+    await service.ensure_default_user()
+    container_token = await service.container_token_for("local-user")
+    default_user = await service.get_user("local-user")
+    assert default_user.token is None  # still unclaimed -- this arm's precondition
+    fake_upstream.set_response(200, b"[]", {"content-type": "application/json"})
+
+    resp = await client.get("/v2/datasets/local-user~nonexistent/items", headers=auth(container_token))
+    assert resp.status_code == 200
+    assert len(fake_upstream.requests) == 1
+    assert fake_upstream.requests[0]["headers"].get("authorization") is None
 
 
 async def test_fallback_anonymous_caller_never_forwards_when_unclaimed(wired_upstream, fake_upstream):
