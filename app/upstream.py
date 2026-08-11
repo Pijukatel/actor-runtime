@@ -26,7 +26,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from .auth import InvalidTokenError, resolve_user
+from .auth import resolve_user
 from .responses import get_service
 
 logger = logging.getLogger(__name__)
@@ -87,81 +87,96 @@ async def fetch_upstream_fallback(request: Request, body: bytes, settings) -> Re
     404 unchanged", never an upstream error status/body, and never an
     exception, of its own. That "any failure" umbrella has to cover more than
     the upstream HTTP call itself: resolving the caller's own identity
-    (``resolve_user``, below) can fail too. Every registered route handler on
-    the allowlisted prefixes already calls ``resolve_user`` before it can
-    produce a 404, so an unresolvable token there raises inside
-    ``call_next()`` and is caught by FastAPI's own ``InvalidTokenError``
-    handler (a clean 401) -- this function is never reached with a non-404
-    response. But the SPA catch-all (``app/routers/console.py``'s
-    ``spa_catch_all``) 404s an unmatched allowlisted-prefix path WITHOUT ever
-    calling ``resolve_user`` itself, so this function's own call is sometimes
-    the FIRST resolution attempt for the request -- and its
-    ``InvalidTokenError`` needs to collapse to the local 404 the same as every
-    other failure below, in the same ``try``, rather than escape uncaught
-    (nothing past ``call_next()`` returning is wrapped by that handler).
+    (``resolve_user``/``svc.get_user``, below) can fail too -- not only via the
+    *expected* ``InvalidTokenError`` (an unresolvable token), but via anything
+    else that can go wrong looking a caller up (e.g. a transient DB error from
+    ``svc.get_user``). Every registered route handler on the allowlisted
+    prefixes already calls ``resolve_user`` before it can produce a 404, so an
+    unresolvable token there raises inside ``call_next()`` and is caught by
+    FastAPI's own ``InvalidTokenError`` handler (a clean 401) -- this function
+    is never reached with a non-404 response. But the SPA catch-all
+    (``app/routers/console.py``'s ``spa_catch_all``) 404s an unmatched
+    allowlisted-prefix path WITHOUT ever calling ``resolve_user`` itself, so
+    this function's own call is sometimes the FIRST resolution attempt for the
+    request.
+
+    Everything below -- identity resolution, building the outgoing request,
+    the upstream call itself, and building the relayed response -- is
+    therefore one single, deliberate trust boundary: the whole attempt lives
+    in one ``try`` guarded by one broad ``except Exception``. That breadth is
+    the contract here, not defensive slop -- this function's entire reason to
+    exist is that NOTHING past the point the middleware already decided "this
+    was a local 404" is allowed to surface its own failure mode to the caller.
+    A narrower except tuple would leave exactly the kind of fault this exists
+    to guard against (e.g. that DB error) to escape as an uncaught 500 instead
+    of the promised 404, so don't narrow it back down without re-litigating
+    that contract.
     """
     svc = get_service(request)
 
-    url = f"{settings.apify_upstream_base_url}{request.url.path}"
-    if request.url.query:
-        url += f"?{request.url.query}"
-
-    headers = {}
-    content_type = request.headers.get("content-type")
-    if content_type:
-        headers["content-type"] = content_type
-    # `body` is replayed exactly as captured -- still compressed, if it was.
-    # Every apify-client 3.x storage write (`set_value`/`push_data`/
-    # `add_request`/...) sends `Content-Encoding: br` by default, so a write
-    # replay that drops this header hands the upstream API compressed bytes
-    # under a plain `content-type`, which it cannot parse: the call fails and
-    # collapses to the original local 404 (see the module docstring), silently
-    # turning a should-have-succeeded write into a false "not found".
-    content_encoding = request.headers.get("content-encoding")
-    if content_encoding:
-        headers["content-encoding"] = content_encoding
-
-    timeout = httpx.Timeout(_TOTAL_TIMEOUT_SECS, connect=_CONNECT_TIMEOUT_SECS)
     try:
+        url = f"{settings.apify_upstream_base_url}{request.url.path}"
+        if request.url.query:
+            url += f"?{request.url.query}"
+
+        headers = {}
+        content_type = request.headers.get("content-type")
+        if content_type:
+            headers["content-type"] = content_type
+        # `body` is replayed exactly as captured -- still compressed, if it
+        # was. Every apify-client 3.x storage write (`set_value`/`push_data`/
+        # `add_request`/...) sends `Content-Encoding: br` by default, so a
+        # write replay that drops this header hands the upstream API
+        # compressed bytes under a plain `content-type`, which it cannot
+        # parse: the call fails and collapses to the original local 404 (see
+        # the module docstring), silently turning a should-have-succeeded
+        # write into a false "not found".
+        content_encoding = request.headers.get("content-encoding")
+        if content_encoding:
+            headers["content-encoding"] = content_encoding
+
         # Never a different, shared or hardcoded credential -- only the token
         # this same request's own caller is already bound to. An unbound
         # caller (no token ever claimed) forwards no Authorization header at
-        # all. Resolved inside this `try`, not before it, so a token that
-        # fails to resolve joins every other fallback failure below instead of
-        # raising out of this function.
+        # all.
         user = await resolve_user(request)
         row = await svc.get_user(user)
         if row is not None and row.token:
             headers["authorization"] = f"Bearer {row.token}"
+
+        timeout = httpx.Timeout(_TOTAL_TIMEOUT_SECS, connect=_CONNECT_TIMEOUT_SECS)
         async with httpx.AsyncClient(timeout=timeout) as client:
             upstream = await client.request(request.method, url, headers=headers, content=body or None)
-    except (InvalidTokenError, httpx.HTTPError, httpx.InvalidURL) as exc:
-        # `httpx.InvalidURL` (e.g. a misconfigured `APIFY_UPSTREAM_BASE_URL`)
-        # is not an `httpx.HTTPError` subclass -- it's raised while building
-        # the request, before any connection is attempted -- so it needs its
-        # own name here rather than being (wrongly) assumed covered by
-        # `HTTPError` alone.
+
+        if not (200 <= upstream.status_code < 300):
+            logger.info(
+                "Upstream fallback %s %s got %s; keeping the local 404",
+                request.method, request.url.path, upstream.status_code,
+            )
+            return None
+
+        # Built via MutableHeaders.append() (which explicitly preserves
+        # duplicates, per its own docstring) rather than a dict comprehension,
+        # which would silently keep only the last value for any header name
+        # the upstream repeats (e.g. two Set-Cookie headers) -- following the
+        # same precedent already established by app/routers/standby.py's own
+        # upstream proxy for exactly this reason.
+        response_headers = MutableHeaders()
+        for k, v in upstream.headers.multi_items():
+            if k.lower() not in _HOP_BY_HOP_RESPONSE_HEADERS:
+                response_headers.append(k, v)
+        return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
+    except Exception as exc:
+        # Deliberately broad -- see the docstring above. Covers (non-
+        # exhaustively): `InvalidTokenError` (unresolvable token), any other
+        # fault raised while resolving the caller's identity (e.g. a DB
+        # error), `httpx.InvalidURL` (e.g. a misconfigured
+        # `APIFY_UPSTREAM_BASE_URL` -- notably NOT a subclass of
+        # `httpx.HTTPError`, so a narrower tuple built from that alone would
+        # miss it), and every `httpx.HTTPError` from the upstream call itself
+        # (timeout, connect error, ...).
         logger.info("Upstream fallback %s %s failed: %s", request.method, request.url.path, exc)
         return None
-
-    if not (200 <= upstream.status_code < 300):
-        logger.info(
-            "Upstream fallback %s %s got %s; keeping the local 404",
-            request.method, request.url.path, upstream.status_code,
-        )
-        return None
-
-    # Built via MutableHeaders.append() (which explicitly preserves
-    # duplicates, per its own docstring) rather than a dict comprehension,
-    # which would silently keep only the last value for any header name the
-    # upstream repeats (e.g. two Set-Cookie headers) -- following the same
-    # precedent already established by app/routers/standby.py's own upstream
-    # proxy for exactly this reason.
-    response_headers = MutableHeaders()
-    for k, v in upstream.headers.multi_items():
-        if k.lower() not in _HOP_BY_HOP_RESPONSE_HEADERS:
-            response_headers.append(k, v)
-    return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
 
 
 class UpstreamFallbackMiddleware(BaseHTTPMiddleware):

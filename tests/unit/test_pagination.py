@@ -76,6 +76,28 @@ async def test_dataset_items_offset_only_keeps_no_limit_semantics(wired):
     assert resp.headers["X-Apify-Pagination-Total"] == "30"
 
 
+async def test_dataset_items_limit_only_slices_from_start(wired):
+    """`limit` without `offset` was previously untested for this surface (only
+    "offset-only" and "both supplied" were exercised) -- unlike the KV-keys
+    equivalent, exercises `paginate()`'s `items[start:start+limit]` branch
+    with `start == 0` via the default, not an explicit `offset=0`."""
+    client, service = wired
+    await _create_user(client, "ann4")
+    created = await client.post("/v2/datasets", json={"name": "big4"}, headers=auth("ann4"))
+    ds_id = created.json()["data"]["id"]
+    await service.storage.dataset_push(ds_id, [{"i": i} for i in range(30)])
+
+    resp = await client.get(f"/v2/datasets/{ds_id}/items?limit=5", headers=auth("ann4"))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 5
+    assert body[0] == {"i": 0} and body[-1] == {"i": 4}
+    assert resp.headers["X-Apify-Pagination-Offset"] == "0"
+    assert resp.headers["X-Apify-Pagination-Count"] == "5"
+    assert resp.headers["X-Apify-Pagination-Total"] == "30"
+    assert resp.headers["X-Apify-Pagination-Limit"] == "5"
+
+
 async def test_dataset_items_negative_limit_is_bad_request(wired):
     client, _service = wired
     await _create_user(client, "neg")
@@ -241,6 +263,26 @@ async def test_rq_requests_limit_offset_returns_slice_with_total(wired):
     assert len(body["items"]) == 30
 
 
+async def test_rq_requests_limit_only_slices_from_start(wired):
+    """`limit` without `offset` was previously untested for this surface (only
+    "offset-only" and "both supplied" were exercised) -- unlike the KV-keys
+    equivalent."""
+    client, service = wired
+    await _create_user(client, "rick4")
+    created = await client.post("/v2/request-queues", json={"name": "big4"}, headers=auth("rick4"))
+    rq_id = created.json()["data"]["id"]
+    await service.storage.rq_add_batch(
+        rq_id, [{"url": f"https://example.com/{i}", "uniqueKey": str(i)} for i in range(20)]
+    )
+
+    resp = await client.get(f"/v2/request-queues/{rq_id}/requests?limit=5", headers=auth("rick4"))
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["count"] == 5
+    assert body["total"] == 20
+    assert len(body["items"]) == 5
+
+
 async def test_rq_requests_offset_only_keeps_no_limit_semantics(wired):
     """Same `items[start:]` branch as the KV-keys equivalent above, for the
     request-queue surface."""
@@ -264,17 +306,22 @@ async def test_rq_requests_offset_only_keeps_no_limit_semantics(wired):
 
 
 async def test_my_key_value_stores_bare_request_is_unpaginated_and_unchanged(wired):
+    """3-success-criteria.md #15 asks this verified "for a resource with more
+    than 100 items/entries" -- the other three surfaces already seed
+    150/120/130, so this per-user listing (the fourth) seeds 110 too, rather
+    than a count small enough that the bare (uncapped) branch and a
+    hypothetical accidentally-introduced 100-item cap would look identical."""
     client, _service = wired
     await _create_user(client, "stan")
-    for i in range(15):
-        await client.post("/v2/key-value-stores", json={"name": f"s{i}"}, headers=auth("stan"))
+    for i in range(110):
+        await client.post("/v2/key-value-stores", json={"name": f"s{i:04d}"}, headers=auth("stan"))
 
     resp = await client.get("/v2/users/me/key-value-stores", headers=auth("stan"))
     assert resp.status_code == 200
     body = resp.json()["data"]
-    assert body["total"] == 15
-    assert body["count"] == 15
-    assert len(body["items"]) == 15
+    assert body["total"] == 110
+    assert body["count"] == 110
+    assert len(body["items"]) == 110
 
 
 async def test_my_key_value_stores_limit_offset_returns_slice(wired):
@@ -284,6 +331,23 @@ async def test_my_key_value_stores_limit_offset_returns_slice(wired):
         await client.post("/v2/key-value-stores", json={"name": f"s{i}"}, headers=auth("stan2"))
 
     resp = await client.get("/v2/users/me/key-value-stores?limit=5&offset=10", headers=auth("stan2"))
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["total"] == 15
+    assert body["count"] == 5
+    assert len(body["items"]) == 5
+
+
+async def test_my_key_value_stores_limit_only_slices_from_start(wired):
+    """`limit` without `offset` was previously untested for any per-user
+    listing surface (only "offset-only" and "both supplied" were exercised)
+    -- unlike the KV-keys equivalent."""
+    client, _service = wired
+    await _create_user(client, "stan5")
+    for i in range(15):
+        await client.post("/v2/key-value-stores", json={"name": f"y{i}"}, headers=auth("stan5"))
+
+    resp = await client.get("/v2/users/me/key-value-stores?limit=5", headers=auth("stan5"))
     assert resp.status_code == 200
     body = resp.json()["data"]
     assert body["total"] == 15

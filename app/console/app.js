@@ -421,7 +421,12 @@ const STORAGE_PAGE_SIZE = 100;
 
 function pagingLineEl(offset, count, total) {
   const from = count ? offset + 1 : 0;
-  const to = offset + count;
+  // Clamped to `total`, and pinned to `from` on an empty page, so a raced
+  // page (`count` is 0 because `total` shrank between two page loads, e.g.
+  // another session deleted items while this one sat on a later page) still
+  // renders a sane "showing 0-0 of T" instead of a stale "showing 0-<old
+  // offset> of T".
+  const to = count ? Math.min(offset + count, total) : from;
   return mk("p", { class: "muted", text: `showing ${from}–${to} of ${total}` });
 }
 

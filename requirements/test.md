@@ -335,12 +335,16 @@ per-user storage listings — asserting BOTH:
    `X-Apify-Pagination-Offset`/`-Count`/`-Total`/`-Limit` response headers over
    its still-bare-array body; KV keys/RQ requests via an additive `total`
    field; per-user listings via their existing `total`/`count` fields.
- - a negative `limit`/`offset` is `400 invalid-request` on at least one surface,
-   and a non-integer `limit`/`offset` value (e.g. `?limit=abc`, `?offset=1.5`)
-   is likewise `400 invalid-request` on at least one surface, exercising
-   `app/responses.py`'s `_parse_int` `TypeError`/`ValueError` branch as reached
-   from these four listing surfaces specifically (previously only exercised
-   via `runs.py`'s pre-existing `memoryMbytes`/`timeoutSecs` validation).
+ - a negative `limit`/`offset` is `400` on at least one surface, and a
+   non-integer `limit`/`offset` value (e.g. `?limit=abc`, `?offset=1.5`) is
+   likewise `400` on at least one surface, exercising `app/responses.py`'s
+   `_parse_int` `TypeError`/`ValueError` branch as reached from these four
+   listing surfaces specifically (previously only exercised via `runs.py`'s
+   pre-existing `memoryMbytes`/`timeoutSecs` validation). Both are the bare
+   FastAPI `{"detail": "..."}` shape `_parse_int` itself raises, NOT this
+   app's `{"error": {"type": "invalid-request", ...}}` envelope — a
+   pre-existing quirk of that shared helper, predating and unrelated to this
+   pagination feature.
 
 A **structural** scan of the served `app.js` MUST additionally confirm that
 every one of its own fetch call sites touching these same four surfaces

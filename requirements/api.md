@@ -457,9 +457,14 @@
     `limit`/`offset` are supplied — absent from the bare-request shape.
   - The per-user storage listings already emit `{total, count, items}`;
     `count`/`items` reflect the requested slice, `total` the full count.
-- `limit`/`offset` must each be a non-negative integer or the request is
-  `400 invalid-request` (reusing the `runs.py`-style bounded-int query-param
-  pattern).
+- `limit`/`offset` must each be a non-negative integer or the request is `400`
+  (reusing the `runs.py`-style bounded-int query-param pattern). This reuses
+  `app/responses.py`'s `_parse_int` helper, which raises a bare FastAPI
+  `HTTPException` — the body is FastAPI's own default `{"detail": "..."}`
+  shape, NOT this app's `{"error": {"type": "invalid-request", ...}}`
+  envelope used by every other 4xx in this document. Pre-existing quirk of
+  that shared helper (also used by `runs.py`'s `memoryMbytes`/`timeoutSecs`
+  validation), not something this pagination feature introduces or changes.
 
 ## Console SPA serving (catch-all)
 

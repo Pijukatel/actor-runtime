@@ -269,9 +269,14 @@ async def test_fallback_relay_preserves_duplicate_response_headers(wired_upstrea
 
 async def test_fallback_relay_strips_full_hop_by_hop_response_header_set(wired_upstream, fake_upstream):
     """`_HOP_BY_HOP_RESPONSE_HEADERS` is the full RFC 7230 hop-by-hop set, not
-    just the two members (`content-encoding`/`content-length`/`transfer-
-    encoding`/`connection`) this proxy happened to need before -- none of
-    these ever belongs on a relayed response."""
+    just the two members (`content-encoding`/`content-length`) this proxy
+    added beyond that plain set to handle its own decoded-body/recomputed-
+    framing needs -- none of these ever belongs on a relayed response.
+    `content-encoding`/`content-length` are exercised separately, over an
+    actually-compressed response, in
+    `test_fallback_relay_strips_content_encoding_and_recomputes_content_length_for_compressed_response`
+    below -- a mismatched-but-unused value here wouldn't prove anything about
+    stripping vs. blind forwarding the way a real compressed body does."""
     client, service = wired_upstream
     service.upstream_fallback_enabled = True
     fake_upstream.set_response(
@@ -279,6 +284,13 @@ async def test_fallback_relay_strips_full_hop_by_hop_response_header_set(wired_u
         b"{}",
         [
             ("content-type", "application/json"),
+            # A real `Content-Length` is required alongside `Connection:
+            # keep-alive` here -- httpx treats that combination as "more may
+            # follow on this connection" and blocks waiting for it absent a
+            # length to bound the body by, timing out rather than exercising
+            # the header-stripping this test is actually about.
+            ("content-length", "2"),
+            ("connection", "keep-alive"),
             ("keep-alive", "timeout=5"),
             ("proxy-authenticate", "Basic"),
             ("proxy-authorization", "Basic abc"),
@@ -291,8 +303,58 @@ async def test_fallback_relay_strips_full_hop_by_hop_response_header_set(wired_u
 
     resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
     assert resp.status_code == 200
-    for header in ("keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "trailers", "upgrade"):
+    for header in (
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "trailers",
+        "upgrade",
+    ):
         assert header not in resp.headers
+
+
+async def test_fallback_relay_strips_content_encoding_and_recomputes_content_length_for_compressed_response(
+    wired_upstream, fake_upstream
+):
+    """`content-encoding`/`content-length` are the two members
+    `_HOP_BY_HOP_RESPONSE_HEADERS` adds beyond the plain RFC 7230 set, and --
+    unlike the rest of that set -- neither has a test that actually exercises
+    a real compressed upstream reply. httpx transparently decodes a response
+    whose `Content-Encoding` it recognizes, so `upstream.content` (what this
+    module relays) is already the DEcompressed bytes while `upstream.headers`
+    still carries the ORIGINAL `content-encoding`/`content-length` describing
+    the compressed wire bytes -- forwarding either verbatim would hand the
+    caller a body/header pair that doesn't match (a `content-length` shorter
+    than the actual decompressed body, and a `content-encoding: gzip` label on
+    bytes that are no longer gzipped). Exercising this over a real gzip body
+    is the only way to prove the two headers are actually stripped-and-
+    recomputed rather than coincidentally correct."""
+    client, service = wired_upstream
+    service.upstream_fallback_enabled = True
+    plaintext = json.dumps({"data": {"items": [{"key": "OUTPUT"}], "count": 1, "limit": 1, "isTruncated": False}})
+    compressed = gzip.compress(plaintext.encode())
+    assert len(compressed) != len(plaintext.encode())  # the case this test exists to catch
+    fake_upstream.set_response(
+        200,
+        compressed,
+        [
+            ("content-type", "application/json"),
+            ("content-encoding", "gzip"),
+            ("content-length", str(len(compressed))),
+        ],
+    )
+
+    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
+    assert resp.status_code == 200
+    assert resp.json()["data"]["items"] == [{"key": "OUTPUT"}]  # httpx already decoded it
+    assert "content-encoding" not in resp.headers
+    # Recomputed by Starlette from the actual (decompressed) relayed body --
+    # not the original (compressed, shorter) upstream value -- so the caller
+    # never receives a `content-length` inconsistent with the bytes on the wire.
+    assert resp.headers["content-length"] == str(len(plaintext.encode()))
 
 
 async def test_fallback_upstream_non_2xx_collapses_to_local_404(wired_upstream, fake_upstream):
@@ -387,6 +449,40 @@ async def test_fallback_disabled_unresolvable_token_on_spa_catchall_is_plain_loc
     assert resp.status_code == 404
     assert resp.json()["error"]["type"] == "record-not-found"
     assert fake_upstream.requests == []
+
+
+async def test_fallback_non_invalid_token_fault_during_identity_resolution_collapses_to_local_404(
+    wired_upstream, fake_upstream, monkeypatch
+):
+    """RED->GREEN for the finding that `fetch_upstream_fallback`'s failure
+    boundary only caught `InvalidTokenError` (plus the upstream-call
+    exceptions) -- any OTHER fault raised while resolving the caller's
+    identity, e.g. a transient DB error from `Service.get_user`, used to
+    escape uncaught as a raw 500 (`ServerErrorMiddleware`'s generic "Internal
+    Server Error"), never the original local 404 the module's own contract
+    promises for "any failure" on this path. `svc.get_user` raising a plain
+    `RuntimeError` stands in for that DB fault. With the fix (one broad
+    `except Exception` covering the whole fallback attempt), this must
+    collapse to the exact same local 404 as if fallback were off."""
+    client, service = wired_upstream
+    await _create_user(client, "alice")
+
+    # Ground truth: the plain local 404, captured before any fault is injected.
+    local_only = await client.get("/v2/key-value-stores/alice~nonexistent/keys", headers=auth("alice"))
+    assert local_only.status_code == 404
+    local_body = local_only.json()
+
+    service.upstream_fallback_enabled = True
+
+    async def _boom(_username):
+        raise RuntimeError("simulated transient DB fault")
+
+    monkeypatch.setattr(service, "get_user", _boom)
+
+    resp = await client.get("/v2/key-value-stores/alice~nonexistent/keys", headers=auth("alice"))
+    assert resp.status_code == 404
+    assert resp.json() == local_body
+    assert fake_upstream.requests == []  # never got far enough to attempt the upstream call
 
 
 # --------------------------------------------------- fallback: writes (POST/PUT/DELETE)

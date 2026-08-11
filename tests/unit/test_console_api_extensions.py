@@ -750,6 +750,28 @@ async def test_console_stats_line_only_excludes_empty_objects(wired):
     assert "Object.keys(value).length === 0" in body
 
 
+async def test_console_paging_line_clamps_upper_bound_to_total(wired):
+    """`pagingLineEl`'s upper bound (`to`) must be guarded the same way its
+    lower bound (`from`) already is. `from` was already `count ? offset + 1 :
+    0` -- correct on an empty page -- but `to` used to be a bare
+    `offset + count`, which renders something like "showing 0-100 of 90" for
+    a raced empty page (`count` 0, `offset` > 0, because `total` shrank
+    between two page loads -- e.g. another session deleted items while this
+    one sat on a later page). `to` must both (a) fall back to `from` on an
+    empty page, so the line reads "showing 0-0 of T", and (b) never exceed
+    `total` even on a non-empty page (success criterion #21's "N/M correctly
+    describe the current slice's position"). Structural, like this file's
+    other app.js checks: no JS runtime exists in this suite to execute
+    `pagingLineEl` directly."""
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+    paging_idx = js.index("function pagingLineEl(offset, count, total)")
+    body = js[paging_idx : js.index("\n}", paging_idx)]
+    assert "const from = count ? offset + 1 : 0;" in body
+    assert "Math.min(offset + count, total)" in body
+    assert re.search(r"const to = count \? Math\.min\(offset \+ count, total\) : from;", body)
+
+
 async def test_console_render_store_content_guards_against_error_envelopes(wired):
     """`renderStoreContent`'s kv/ds/rq branches must bail out on an error
     response (storage deleted / access revoked mid-view) before computing a
