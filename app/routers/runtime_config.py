@@ -15,12 +15,9 @@ though, it resolves a PRESENT token via `resolve_user(request, bootstrap=False)`
 (`app/auth.py`) -- a PURE lookup -- rather than the bootstrap-or-reject every
 other handler uses: a token matching no existing user is `401 invalid-token`
 with NO state mutation, never a silent bootstrap of the default user's
-credential. Because this is the one switch that, once on, causes the runtime
-to forward the caller's own real Apify credential to the public internet on
-a local 404, it must never let an unrecognized token presented here get bound
-as that credential -- doing so would both hand whoever presented it control
-over every future anonymous fallback attempt and permanently lock the
-operator's own later, real login out.
+credential. See `resolve_user`'s own docstring (`app/auth.py`) for why this
+one endpoint must never let an unrecognized token get bound as the default
+user's credential.
 """
 from __future__ import annotations
 

@@ -168,14 +168,21 @@
   the same as they can already do to any other endpoint that falls back to
   the default user; hardening that further (e.g.
   requiring a real credential specifically for this switch) is a follow-up,
-  not a change made here. Once resolved, `PUT` takes effect immediately, for
-  every user and both ports, since both serve this same `Service` instance.
+  not a change made here. Flipping it anonymously does not by itself expose
+  any credential, though: the fallback proxy's own identity lookup (below)
+  never forwards a credential for a request that presented no token, so an
+  anonymous caller who flips the switch still cannot make it forward anyone
+  else's token. Once resolved, `PUT` takes effect immediately, for every user
+  and both ports, since both serve this same `Service` instance.
 - With the toggle on, ANY HTTP method (GET/POST/PUT/DELETE) to an allowlisted
   by-id `/v2` resource route — an Actor, run, build, or one of the three
   storage types, reached by its id — whose LOCAL response is a 404 is
   re-attempted against `{apify_upstream_base_url}{path}?{query}` (same method,
-  query string and body) using the calling user's own bound `token` as bearer.
-  `{path}` and `{query}` are both replayed exactly as they arrived on the wire
+  query string and body) using the bound `token` of whichever user the
+  caller's own PRESENTED token resolves to, as bearer — a request presenting
+  no token at all is never eligible for fallback in the first place (see the
+  identity-resolution bullet below). `{path}` and `{query}` are both replayed
+  exactly as they arrived on the wire
   (still percent-encoded), taken from the raw path and raw query-string bytes
   rather than any already-decoded representation, so a resource id, key, or
   query value containing an encoded character (e.g. `%2F`, `%23`, `%3F`)
@@ -192,13 +199,22 @@
   outgoing path.
 - The caller's identity for that bearer credential is resolved by a PURE
   lookup — never the bootstrap-or-reject path (`app/auth.py`'s `resolve_user`)
-  every registered handler uses. A token matching no existing user has nothing
-  to forward, so the attempt collapses to the local 404 like any other
-  failure, WITHOUT creating or binding a user as a side effect. This matters
-  because one path can reach this lookup before any handler's own
-  `resolve_user` call does — the SPA catch-all 404s an unmatched allowlisted
-  path without authenticating first — so a read-through toggle must never let
-  that first attempt silently bootstrap local identity state.
+  every registered handler uses, and never resolving a missing credential to
+  the default user the way `resolve_user` does. A request presenting **no
+  token at all** has nothing to forward and the whole attempt is abandoned
+  before any upstream call is made — the fallback never borrows the default
+  (or any other) user's own bound token on an anonymous caller's behalf,
+  regardless of whether that user's credential happens to be a real Apify
+  secret. A PRESENT token matching no existing user likewise has nothing to
+  forward, so the attempt collapses to the local 404 like any other failure,
+  WITHOUT creating or binding a user as a side effect. Only a PRESENT token
+  that resolves to a known user forwards that user's own bound `token` (or,
+  if that user has no bound token yet, proceeds with no `Authorization`
+  header at all). This matters because one path can reach this lookup before
+  any handler's own `resolve_user` call does — the SPA catch-all 404s an
+  unmatched allowlisted path without authenticating first — so a read-through
+  fallback attempt must never silently bootstrap local identity state OR
+  forward a credential the caller never presented.
 - On a 2xx upstream reply, the caller receives that response **verbatim**
   (status, headers and body — JSON envelopes, bare arrays and binary KV
   records alike), INCLUDING repeated header names surviving from the upstream

@@ -146,11 +146,14 @@
   and disable at either end of the result set. On the per-user storage list, the
   show/hide-unnamed checkbox filters the already-fetched 100-item page only —
   Prev/Next still step by the full fetched page (`items.length`), never the
-  filtered subset. With every row shown, the "N–M of T" line above is accurate
-  as-is; once any row is hidden, that range would misstate the visible rows'
-  positions, so the line instead reads **"showing V of P on this
-  page · T total"** (V = the count actually visible after the filter, P = the
-  page's own fetched row count) — see `filteredPagingLineEl`'s own comment
+  filtered subset. The wording switches on the checkbox's own state, not on
+  whether the filter actually hides anything on the current page: with the
+  checkbox checked (unnamed storages shown), the "N–M of T" line above is
+  accurate as-is; with it unchecked, that range could misstate the visible
+  rows' positions (even on a page where nothing happens to be hidden), so the
+  line instead reads **"showing V of P on this page · T total"** (V = the
+  count actually visible after the filter, P = the page's own fetched row
+  count) — see `filteredPagingLineEl`'s own comment
   (`app/console/storage_tab.js`) for why.
   **Creating or deleting a named storage always returns the
   per-user storage list to its first page** (offset reset to 0), rather than

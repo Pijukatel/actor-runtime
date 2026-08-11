@@ -150,13 +150,14 @@ async def test_fallback_toggle_off_never_attempts_upstream(wired_upstream, fake_
 async def test_fallback_get_relays_upstream_2xx_verbatim(wired_upstream, fake_upstream):
     client, service = wired_upstream
     service.upstream_fallback_enabled = True
+    await _create_user(client, "caller")
     fake_upstream.set_response(
         200,
         json.dumps({"data": {"items": [{"key": "OUTPUT"}], "count": 1, "limit": 1, "isTruncated": False}}).encode(),
         {"content-type": "application/json", "x-test-marker": "hello"},
     )
 
-    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
+    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys", headers=auth("caller"))
     assert resp.status_code == 200
     assert resp.json()["data"]["items"] == [{"key": "OUTPUT"}]
     assert resp.headers.get("x-test-marker") == "hello"
@@ -173,6 +174,7 @@ async def test_fallback_relayed_response_still_carries_cors_headers(wired_upstre
     middleware in app/main.py), exactly like every other response."""
     client, service = wired_upstream
     service.upstream_fallback_enabled = True
+    await _create_user(client, "caller")
     fake_upstream.set_response(
         200,
         json.dumps({"data": {"items": [], "count": 0, "limit": 0, "isTruncated": False}}).encode(),
@@ -180,7 +182,8 @@ async def test_fallback_relayed_response_still_carries_cors_headers(wired_upstre
     )
 
     resp = await client.get(
-        "/v2/key-value-stores/nobody~nothing/keys", headers={"Origin": "https://example.com"}
+        "/v2/key-value-stores/nobody~nothing/keys",
+        headers={**auth("caller"), "Origin": "https://example.com"},
     )
     assert resp.status_code == 200
     assert resp.headers.get("access-control-allow-origin") == "*"
@@ -195,6 +198,7 @@ async def test_fallback_relay_preserves_duplicate_response_headers(wired_upstrea
     duplicate-header-preserving `MutableHeaders.append()` usage."""
     client, service = wired_upstream
     service.upstream_fallback_enabled = True
+    await _create_user(client, "caller")
     fake_upstream.set_response(
         200,
         b"{}",
@@ -205,7 +209,7 @@ async def test_fallback_relay_preserves_duplicate_response_headers(wired_upstrea
         ],
     )
 
-    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
+    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys", headers=auth("caller"))
     assert resp.status_code == 200
     assert resp.headers.get_list("set-cookie") == ["a=1", "b=2"]
 
@@ -224,6 +228,7 @@ async def test_fallback_relay_strips_full_hop_by_hop_response_header_set(wired_u
     stripping vs. blind forwarding the way a real compressed body does."""
     client, service = wired_upstream
     service.upstream_fallback_enabled = True
+    await _create_user(client, "caller")
     fake_upstream.set_response(
         200,
         b"{}",
@@ -246,7 +251,7 @@ async def test_fallback_relay_strips_full_hop_by_hop_response_header_set(wired_u
         ],
     )
 
-    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
+    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys", headers=auth("caller"))
     assert resp.status_code == 200
     for header in (
         "connection",
@@ -275,6 +280,7 @@ async def test_fallback_relay_strips_content_encoding_and_recomputes_content_len
     coincidentally correct."""
     client, service = wired_upstream
     service.upstream_fallback_enabled = True
+    await _create_user(client, "caller")
     plaintext = json.dumps({"data": {"items": [{"key": "OUTPUT"}], "count": 1, "limit": 1, "isTruncated": False}})
     compressed = gzip.compress(plaintext.encode())
     assert len(compressed) != len(plaintext.encode())  # the case this test exists to catch
@@ -288,7 +294,7 @@ async def test_fallback_relay_strips_content_encoding_and_recomputes_content_len
         ],
     )
 
-    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
+    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys", headers=auth("caller"))
     assert resp.status_code == 200
     assert resp.json()["data"]["items"] == [{"key": "OUTPUT"}]  # httpx already decoded it
     assert "content-encoding" not in resp.headers
@@ -300,15 +306,16 @@ async def test_fallback_relay_strips_content_encoding_and_recomputes_content_len
 
 async def test_fallback_upstream_non_2xx_collapses_to_local_404(wired_upstream, fake_upstream):
     client, service = wired_upstream
+    await _create_user(client, "caller")
     # Capture the plain local 404 with fallback OFF, before any upstream
     # attempt could shape it.
-    local_only = await client.get("/v2/key-value-stores/nobody~nothing/keys")
+    local_only = await client.get("/v2/key-value-stores/nobody~nothing/keys", headers=auth("caller"))
     assert local_only.status_code == 404
     local_body = local_only.json()
 
     service.upstream_fallback_enabled = True
     fake_upstream.set_response(500, b"boom")
-    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
+    resp = await client.get("/v2/key-value-stores/nobody~nothing/keys", headers=auth("caller"))
     assert resp.status_code == 404
     assert resp.json() == local_body
     assert len(fake_upstream.requests) == 1  # the attempt was made, and failed
@@ -323,10 +330,11 @@ async def test_fallback_upstream_failure_logs_at_warning_level(wired_upstream, f
     only holds if the collapse-to-404 diagnostic is emitted at `warning`."""
     client, service = wired_upstream
     service.upstream_fallback_enabled = True
+    await _create_user(client, "caller")
     fake_upstream.set_response(500, b"boom")
 
     with caplog.at_level("WARNING", logger="app.upstream"):
-        resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
+        resp = await client.get("/v2/key-value-stores/nobody~nothing/keys", headers=auth("caller"))
     assert resp.status_code == 404
     assert any(
         record.name == "app.upstream" and record.levelname == "WARNING" and "Upstream fallback" in record.getMessage()
@@ -372,9 +380,10 @@ async def test_fallback_upstream_timeout_is_connect_only_bound(wired_upstream, f
 
     client, service = wired_upstream
     service.upstream_fallback_enabled = True
+    await _create_user(client, "caller")
     fake_upstream.set_response(200, b"[]", {"content-type": "application/json"})
 
-    resp = await client.get("/v2/datasets/nobody~nothing/items")
+    resp = await client.get("/v2/datasets/nobody~nothing/items", headers=auth("caller"))
     assert resp.status_code == 200
     assert captured, "fetch_upstream_fallback never constructed an httpx.Timeout"
     assert captured["args"] == ()  # no positional "default for everything" timeout
@@ -542,11 +551,12 @@ async def test_fallback_non_invalid_token_fault_during_identity_resolution_colla
 async def test_fallback_delete_relays_upstream_2xx_verbatim(wired_upstream, fake_upstream):
     client, service = wired_upstream
     service.upstream_fallback_enabled = True
+    await _create_user(client, "caller")
     fake_upstream.set_response(
         200, json.dumps({"data": {"id": "nobody~nothing"}}).encode(), {"content-type": "application/json"}
     )
 
-    resp = await client.delete("/v2/key-value-stores/nobody~nothing")
+    resp = await client.delete("/v2/key-value-stores/nobody~nothing", headers=auth("caller"))
     assert resp.status_code == 200
     assert resp.json()["data"] == {"id": "nobody~nothing"}
     assert len(fake_upstream.requests) == 1
@@ -571,12 +581,13 @@ async def test_fallback_write_body_and_query_replayed_verbatim(wired_upstream, f
     not just the path."""
     client, service = wired_upstream
     service.upstream_fallback_enabled = True
+    await _create_user(client, "caller")
     fake_upstream.set_response(201, b'{"data":{"key":"K"}}', {"content-type": "application/json"})
 
     resp = await client.put(
         "/v2/key-value-stores/otheruser~theirs/records/K?foo=bar",
         content=json.dumps({"hello": "world"}),
-        headers={"content-type": "application/json"},
+        headers={**auth("caller"), "content-type": "application/json"},
     )
     assert resp.status_code == 201
     assert len(fake_upstream.requests) == 1
@@ -600,9 +611,12 @@ async def test_fallback_replays_raw_percent_encoded_path_not_decoded(wired_upstr
     other allowlisted-path miss."""
     client, service = wired_upstream
     service.upstream_fallback_enabled = True
+    await _create_user(client, "caller")
     fake_upstream.set_response(200, b'{"data":{"ok":true}}', {"content-type": "application/json"})
 
-    resp = await client.get("/v2/key-value-stores/nobody~nothing/records/we%2Fird%23key")
+    resp = await client.get(
+        "/v2/key-value-stores/nobody~nothing/records/we%2Fird%23key", headers=auth("caller")
+    )
     assert resp.status_code == 200
     assert len(fake_upstream.requests) == 1
     assert fake_upstream.requests[0]["path"] == "/v2/key-value-stores/nobody~nothing/records/we%2Fird%23key"
@@ -622,15 +636,20 @@ async def test_fallback_encoded_hash_or_question_mark_in_path_still_replays_the_
     to the upstream call byte-for-byte."""
     client, service = wired_upstream
     service.upstream_fallback_enabled = True
+    await _create_user(client, "caller")
     fake_upstream.set_response(200, b'{"data":{"ok":true}}', {"content-type": "application/json"})
 
-    resp = await client.get("/v2/key-value-stores/nobody~nothing/records/we%23ird?foo=bar")
+    resp = await client.get(
+        "/v2/key-value-stores/nobody~nothing/records/we%23ird?foo=bar", headers=auth("caller")
+    )
     assert resp.status_code == 200
     assert len(fake_upstream.requests) == 1
     assert fake_upstream.requests[0]["path"] == "/v2/key-value-stores/nobody~nothing/records/we%23ird?foo=bar"
 
     fake_upstream.requests.clear()
-    resp = await client.get("/v2/key-value-stores/nobody~nothing/records/we%3Ford?foo=bar")
+    resp = await client.get(
+        "/v2/key-value-stores/nobody~nothing/records/we%3Ford?foo=bar", headers=auth("caller")
+    )
     assert resp.status_code == 200
     assert len(fake_upstream.requests) == 1
     assert fake_upstream.requests[0]["path"] == "/v2/key-value-stores/nobody~nothing/records/we%3Ford?foo=bar"
@@ -646,13 +665,14 @@ async def test_fallback_write_forwards_content_encoding_for_compressed_body(wire
     been a successful write."""
     client, service = wired_upstream
     service.upstream_fallback_enabled = True
+    await _create_user(client, "caller")
     fake_upstream.set_response(201, b'{"data":{"key":"K"}}', {"content-type": "application/json"})
 
     compressed = gzip.compress(json.dumps({"hello": "world"}).encode())
     resp = await client.put(
         "/v2/key-value-stores/otheruser~theirs/records/K",
         content=compressed,
-        headers={"content-type": "application/json", "content-encoding": "gzip"},
+        headers={**auth("caller"), "content-type": "application/json", "content-encoding": "gzip"},
     )
     assert resp.status_code == 201
     assert len(fake_upstream.requests) == 1
@@ -822,15 +842,59 @@ async def test_fallback_forwards_real_token_not_container_token(wired_upstream, 
     assert fake_upstream.requests[0]["headers"].get("authorization") == "Bearer alice"
 
 
-async def test_fallback_anonymous_caller_forwards_no_token_when_unclaimed(wired_upstream, fake_upstream):
+async def test_fallback_anonymous_caller_never_forwards_when_unclaimed(wired_upstream, fake_upstream):
+    """A request presenting no `Authorization` header at all has nothing to
+    forward -- the attempt is abandoned before any upstream call is made,
+    even while the default user's own credential is still unclaimed (i.e.
+    there would be nothing sensitive to leak either way). The caller sees the
+    plain local 404, and the upstream stub is never contacted."""
     client, service = wired_upstream
     service.upstream_fallback_enabled = True
     fake_upstream.set_response(200, b"[]", {"content-type": "application/json"})
 
     resp = await client.get("/v2/datasets/local-user~nonexistent/items")  # no Authorization header
-    assert resp.status_code == 200
-    assert len(fake_upstream.requests) == 1
-    assert "authorization" not in fake_upstream.requests[0]["headers"]
+    assert resp.status_code == 404
+    assert fake_upstream.requests == []
+
+
+async def test_fallback_anonymous_caller_never_forwards_operators_real_bound_token(wired_upstream, fake_upstream):
+    """The dangerous case: the default user's credential is ALREADY bound to
+    a real-looking Apify secret (exactly the state after a developer has
+    logged in once via apify-cli). A request presenting no credential at all
+    must still be abandoned before any upstream call is attempted -- it must
+    never borrow that bound token on the anonymous caller's behalf. The stub
+    must receive zero requests and the caller must get the plain local 404,
+    regardless of whose credential the default user happens to hold."""
+    client, service = wired_upstream
+    bootstrap = await client.get("/v2/users/me", headers=auth("apify_api_REALSECRET"))
+    assert bootstrap.status_code == 200
+    assert bootstrap.json()["data"]["token"] == "apify_api_REALSECRET"
+
+    service.upstream_fallback_enabled = True
+    fake_upstream.set_response(200, b"[]", {"content-type": "application/json"})
+
+    resp = await client.get("/v2/datasets/local-user~nonexistent/items")  # no Authorization header
+    assert resp.status_code == 404
+    assert fake_upstream.requests == []  # the operator's real token never left the process
+
+
+async def test_fallback_anonymous_caller_never_forwards_on_spa_catchall(wired_upstream, fake_upstream):
+    """Companion to the unresolvable-token SPA-catch-all tests above: the
+    unauthenticated catch-all path (`app/routers/console.py`'s
+    `spa_catch_all`) must also never forward for a request presenting no
+    credential at all, even with the default user's credential already bound
+    to a real-looking token."""
+    client, service = wired_upstream
+    bootstrap = await client.get("/v2/users/me", headers=auth("apify_api_REALSECRET"))
+    assert bootstrap.status_code == 200
+
+    service.upstream_fallback_enabled = True
+    fake_upstream.set_response(200, b"[]", {"content-type": "application/json"})
+
+    resp = await client.get("/v2/actors/someuser~someactor/no-such-nested-path")  # no Authorization header
+    assert resp.status_code == 404
+    assert resp.json()["error"]["type"] == "record-not-found"
+    assert fake_upstream.requests == []
 
 
 # -------------------------------------------------------- toggle + middleware wired together
@@ -838,16 +902,23 @@ async def test_fallback_anonymous_caller_forwards_no_token_when_unclaimed(wired_
 
 async def test_toggle_via_runtime_config_endpoint_enables_fallback_immediately(wired_upstream, fake_upstream):
     client, _service = wired_upstream
+    await _create_user(client, "caller")
     fake_upstream.set_response(200, b"[]", {"content-type": "application/json"})
 
-    before = await client.get("/v2/datasets/nobody~nothing/items")
+    before = await client.get("/v2/datasets/nobody~nothing/items", headers=auth("caller"))
     assert before.status_code == 404
     assert fake_upstream.requests == []
 
+    # The toggle itself is flipped anonymously here on purpose -- PUT
+    # /v2/runtime-config falls back to the default user for its own
+    # token-validity check, same as every other mutating endpoint (see
+    # requirements/api.md's "Upstream fallback" section); it is the
+    # SUBSEQUENT request's own presented token that decides whether anything
+    # gets forwarded.
     put = await client.put("/v2/runtime-config", json={"upstreamFallbackEnabled": True})
     assert put.status_code == 200
 
-    after = await client.get("/v2/datasets/nobody~nothing/items")
+    after = await client.get("/v2/datasets/nobody~nothing/items", headers=auth("caller"))
     assert after.status_code == 200
     assert len(fake_upstream.requests) == 1
 
@@ -855,15 +926,16 @@ async def test_toggle_via_runtime_config_endpoint_enables_fallback_immediately(w
 async def test_toggle_off_stops_further_fallback_attempts_mid_session(wired_upstream, fake_upstream):
     client, service = wired_upstream
     service.upstream_fallback_enabled = True
+    await _create_user(client, "caller")
     fake_upstream.set_response(200, b"[]", {"content-type": "application/json"})
 
-    first = await client.get("/v2/datasets/nobody~nothing/items")
+    first = await client.get("/v2/datasets/nobody~nothing/items", headers=auth("caller"))
     assert first.status_code == 200
     assert len(fake_upstream.requests) == 1
 
     off = await client.put("/v2/runtime-config", json={"upstreamFallbackEnabled": False})
     assert off.status_code == 200
 
-    second = await client.get("/v2/datasets/nobody~nothing/items")
+    second = await client.get("/v2/datasets/nobody~nothing/items", headers=auth("caller"))
     assert second.status_code == 404
     assert len(fake_upstream.requests) == 1  # no new attempt

@@ -4,10 +4,13 @@ Opt-in (``Service.upstream_fallback_enabled``, default off): when a request to
 an allowlisted by-id ``/v2`` resource route -- an Actor, run, build, or one of
 the three storage types, reached by its id -- resolves locally to a 404, the
 same request (method, query string, body) is replayed against
-``settings.apify_upstream_base_url`` using the caller's own bound token. A 2xx
-upstream reply is relayed back verbatim; any failure -- non-2xx, timeout,
-connect error, a malformed upstream base URL, or a caller identity that fails
-to resolve -- falls back to the original local 404, logged for debuggability.
+``settings.apify_upstream_base_url`` using the caller's own bound token --
+only for a request that itself presented a token resolving to a known user;
+a credential-less request is never eligible and never borrows anyone else's
+token. A 2xx upstream reply is relayed back verbatim; any failure -- non-2xx,
+timeout, connect error, a malformed upstream base URL, or a caller identity
+that fails to resolve -- falls back to the original local 404, logged for
+debuggability.
 
 Identity for that bearer credential is resolved by ``app/auth.py``'s
 ``resolve_forwardable_token`` -- see its own docstring for the full contract
@@ -35,7 +38,8 @@ from .responses import get_service
 
 logger = logging.getLogger(__name__)
 
-# The full RFC 7230 hop-by-hop set (app/routers/standby.py keeps its own narrower, historical set -- see that module's comment).
+# The full RFC 7230 hop-by-hop set (app/routers/standby.py keeps its own
+# narrower, historical set -- see that module's comment).
 _HOP_BY_HOP = frozenset(
     {
         "connection",

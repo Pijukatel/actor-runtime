@@ -131,8 +131,10 @@ async def test_console_ds_kv_hand_coded_stats_fields_match_get_detail_response(w
 
 async def test_console_storage_list_drops_position_wording_while_filtered(wired):
     """`renderStorages` switches to `filteredPagingLineEl` (see that
-    function's own comment for why) exactly when the "show unnamed" filter is
-    hiding rows, and back to the normal `pagingLineEl` when it isn't."""
+    function's own comment for why) based on the "show unnamed" checkbox's
+    own state alone -- unchecked uses it, checked uses the normal
+    `pagingLineEl` -- regardless of whether the current page actually has any
+    row hidden."""
     client, _service = wired
     js = (await client.get("/console/storage_tab.js")).text
 
@@ -355,32 +357,23 @@ async def test_console_fallback_toggle_guards_against_a_stale_periodic_repaint(w
     client, _service = wired
     js = (await client.get("/console/app.js")).text
 
-    gen_decl = re.search(r"let (\w+) = 0;", js)
-    assert gen_decl, "no generation counter declared"
-    counter = gen_decl.group(1)
-
     set_start = js.index("async function setFallbackEnabled(enabled)")
     set_body = js[set_start : js.index("\n}\n", set_start)]
     # Bumped exactly once, after the PUT resolves and before the trailing
     # refresh -- never before the PUT is issued.
-    increments = [m.start() for m in re.finditer(rf"{re.escape(counter)}\+\+;", set_body)]
-    assert len(increments) == 1, "setFallbackEnabled must bump the generation exactly once, after its PUT resolves"
     put_idx = set_body.index("await api(")
+    increment_idx = set_body.index("fallbackToggleGeneration++;")
     refresh_idx = set_body.index("await refreshFallbackToggle();")
-    assert put_idx < increments[0] < refresh_idx
+    assert put_idx < increment_idx < refresh_idx
 
     refresh_start = js.index("async function refreshFallbackToggle()")
     refresh_body = js[refresh_start : js.index("\n}\n", refresh_start)]
-    capture_match = re.search(rf"const (\w+) = {counter};", refresh_body)
-    assert capture_match, "refreshFallbackToggle must snapshot the generation before its fetch"
-    snapshot = capture_match.group(1)
-
     # The snapshot must be taken BEFORE the GET and compared against the
     # live counter AFTER it, bailing out before any repaint if it moved.
+    capture_idx = refresh_body.index("const generation = fallbackToggleGeneration;")
     fetch_idx = refresh_body.index("await api(")
-    assert refresh_body.index(f"const {snapshot} = {counter};") < fetch_idx
-    guard_idx = refresh_body.index(f"if ({snapshot} !== {counter}) return;")
-    assert fetch_idx < guard_idx < refresh_body.index("toggle.checked =")
+    guard_idx = refresh_body.index("if (generation !== fallbackToggleGeneration) return;")
+    assert capture_idx < fetch_idx < guard_idx < refresh_body.index("toggle.checked =")
 
 
 async def test_console_fallback_toggle_ignores_a_failed_or_invalid_response(wired):

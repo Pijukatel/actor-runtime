@@ -28,6 +28,17 @@ async def _create_user(client, name):
     await client.post("/v2/users", json={"name": name})
 
 
+async def _bootstrap_over_socket(base_url: str, path: str, name: str) -> str:
+    """Create a user and one storage for it over a real socket, returning the
+    created storage's id. Shared by the real-`apify-client` tests below, each
+    of which needs its own user/storage before driving the pinned client
+    against a real `uvicorn` server (`wired_uvicorn`, tests/conftest.py)."""
+    async with httpx.AsyncClient(base_url=base_url) as bootstrap:
+        await bootstrap.post("/v2/users", json={"name": name})
+        created = await bootstrap.post(path, json={"name": name}, headers=auth(name))
+        return created.json()["data"]["id"]
+
+
 # -------------------------------------------------------------- dataset items
 
 
@@ -230,7 +241,7 @@ async def test_dataset_items_pinned_apify_client_list_items_parses(wired_uvicorn
     tests/conftest.py) instead of the in-process `wired` fixture every other
     test in this module uses -- the same technique the KV-keys equivalent
     (`test_kv_keys_pinned_apify_client_iterate_keys_pages_a_store_larger_than_
-    its_chunk_size` above) already uses.
+    its_chunk_size`, defined further below in this file) already uses.
 
     `DatasetItemsPage.list_items()`/`get_data()` indexes all five
     `x-apify-pagination-*` response headers directly (no `.get()`), so this
@@ -240,12 +251,7 @@ async def test_dataset_items_pinned_apify_client_list_items_parses(wired_uvicorn
     from apify_client import ApifyClientAsync
 
     service, base_url = wired_uvicorn
-    async with httpx.AsyncClient(base_url=base_url) as bootstrap:
-        await bootstrap.post("/v2/users", json={"name": "pinned"})
-        created = await bootstrap.post(
-            "/v2/datasets", json={"name": "pinned"}, headers=auth("pinned")
-        )
-        dataset_id = created.json()["data"]["id"]
+    dataset_id = await _bootstrap_over_socket(base_url, "/v2/datasets", "pinned")
     await service.storage.dataset_push(dataset_id, [{"i": i} for i in range(30)])
 
     client = ApifyClientAsync(token="pinned", api_url=base_url, api_public_url=base_url)
@@ -674,12 +680,7 @@ async def test_kv_keys_pinned_apify_client_iterate_keys_pages_a_store_larger_tha
     from apify_client import ApifyClientAsync
 
     service, base_url = wired_uvicorn
-    async with httpx.AsyncClient(base_url=base_url) as bootstrap:
-        await bootstrap.post("/v2/users", json={"name": "chunky"})
-        created = await bootstrap.post(
-            "/v2/key-value-stores", json={"name": "chunky"}, headers=auth("chunky")
-        )
-        store_id = created.json()["data"]["id"]
+    store_id = await _bootstrap_over_socket(base_url, "/v2/key-value-stores", "chunky")
 
     total = 1050
     await _seed_keys_fast(service, store_id, total)

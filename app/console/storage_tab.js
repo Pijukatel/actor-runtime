@@ -135,9 +135,7 @@ function statsLineEl(meta) {
   for (const [key, value] of Object.entries(meta || {})) {
     if (STORAGE_META_KEYS.has(key)) continue;
     if (value && typeof value === "object") continue;
-    if (typeof value !== "boolean" && (value === null || value === undefined || value === "" || value === 0)) {
-      continue;
-    }
+    if (typeof value !== "boolean" && !value) continue;
     parts.push(`${key}: ${value}`);
   }
   // A brand-new/empty storage has every counter at 0 (suppressed above), so
@@ -224,9 +222,12 @@ function renderStorages() {
   const cache = storageItemsCache[slug] || { items: [], total: 0 };
   const items = cache.items;
   const visible = showUnnamedStorages ? items : items.filter((st) => st.named === true);
-  // See `filteredPagingLineEl`'s own comment above for why the wording
-  // changes once any row is filtered out. Prev/Next below stay keyed off the
-  // raw fetched page (`items.length`), never the filtered subset.
+  // The wording switches on the checkbox state (`showUnnamedStorages`)
+  // alone, not on whether this particular page happens to have any row
+  // hidden -- see `filteredPagingLineEl`'s own comment above for why the
+  // unchecked wording must drop the range claim regardless. Prev/Next below
+  // stay keyed off the raw fetched page (`items.length`), never the
+  // filtered subset.
   detail.appendChild(
     showUnnamedStorages
       ? pagingLineEl(storageListOffset, visible.length, cache.total)
