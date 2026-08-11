@@ -70,11 +70,41 @@ async def test_console_fallback_toggle_refreshed_periodically_and_after_put(wire
 
     periodic_start = js.index("function periodicRefresh()")
     periodic_body = js[periodic_start : js.index("\n}\n", periodic_start)]
-    assert "refreshFallbackToggle();" in periodic_body
+    assert "refreshFallbackToggle()" in periodic_body
+    # Guarded against, and tolerant of a failed fetch during, an in-flight
+    # user-initiated flip (see the dedicated race test below) -- not a bare,
+    # unconditional, uncaught call.
+    assert "fallbackTogglePutInFlight" in periodic_body
+    assert "refreshFallbackToggle().catch(" in periodic_body
 
     set_start = js.index("async function setFallbackEnabled(enabled)")
     set_body = js[set_start : js.index("\n}\n", set_start)]
     assert "refreshFallbackToggle();" in set_body
+
+
+async def test_console_fallback_toggle_periodic_poll_guarded_against_in_flight_flip(wired):
+    """Regression: `periodicRefresh`'s unconditional, uncaught
+    `refreshFallbackToggle()` call could (a) land between the checkbox's own
+    `change` event and its PUT's completion, re-reading the OLD server state
+    and visually snapping the checkbox back an instant before
+    `setFallbackEnabled`'s own re-read corrected it, and (b) throw an
+    unhandled rejection every 4s with the API unreachable. `setFallbackEnabled`
+    must set (and, in a `finally`, always clear) an in-flight flag around its
+    PUT+re-read, and `periodicRefresh` must both skip its call while that flag
+    is set and `.catch()` a failed one."""
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+
+    set_start = js.index("async function setFallbackEnabled(enabled)")
+    set_body = js[set_start : js.index("\n}\n", set_start)]
+    assert "fallbackTogglePutInFlight = true;" in set_body
+    # Cleared unconditionally, even if the PUT itself throws -- a `finally`,
+    # not a plain trailing assignment that a rejected `api()` call would skip.
+    assert re.search(r"finally \{\s*fallbackTogglePutInFlight = false;\s*\}", set_body)
+
+    periodic_start = js.index("function periodicRefresh()")
+    periodic_body = js[periodic_start : js.index("\n}\n", periodic_start)]
+    assert "if (!fallbackTogglePutInFlight) refreshFallbackToggle().catch(() => {});" in periodic_body
 
 
 async def test_console_stats_line_shows_boolean_false_fields(wired):
@@ -114,19 +144,19 @@ async def test_console_stats_line_renders_nothing_for_a_brand_new_empty_storage(
     """Regression: a brand-new storage has every counter at 0, so
     `statsLineEl` had nothing to show yet -- but used to unconditionally
     return a `<p>` element anyway, rendering as a bare empty line above the
-    content. It must return `null` when there is nothing to show, and its
-    caller (`renderStoreContent`) must guard the append so an empty stats
-    line is never inserted into the DOM at all."""
+    content. It must return `null` when there is nothing to show, and each of
+    `renderStoreContent`'s three storage-type branches (kv/ds/rq) must guard
+    its own append so an empty stats line is never inserted into the DOM."""
     client, _service = wired
     js = (await client.get("/console/app.js")).text
     stats_idx = js.index("function statsLineEl(meta)")
     body = js[stats_idx : js.index("\n}", stats_idx)]
     assert "parts.length ? mk(" in body and ": null;" in body
 
-    render_start = js.index("async function renderStoreContent()")
+    render_start = js.index("async function renderStoreContent(kind, id, offset)")
     render_body = js[render_start : js.index("\n}\n", render_start)]
-    assert "const stats = statsLineEl(meta);" in render_body
-    assert "if (stats) box.appendChild(stats);" in render_body
+    assert render_body.count("const stats = statsLineEl(") == 3
+    assert render_body.count("if (stats) box.appendChild(stats);") == 3
 
 
 async def test_console_paging_line_clamps_upper_bound_to_total(wired):
@@ -150,23 +180,36 @@ async def test_console_paging_line_clamps_upper_bound_to_total(wired):
     assert re.search(r"const to = count \? Math\.min\(offset \+ count, total\) : from;", body)
 
 
+async def test_console_storage_list_drops_position_wording_while_filtered(wired):
+    """`renderStorages`'s "showing N-M of T" line is only accurate when every
+    fetched row is visible: with the "show unnamed" checkbox hiding some
+    rows, the visible rows are a scattered subset of the page, not a
+    contiguous N-M slice of the total, so that range claim would be false.
+    `renderStorages` must switch to `filteredPagingLineEl` (which drops the
+    position claim, keeping only counts that stay true either way) exactly
+    when the filter is hiding rows, and back to the normal `pagingLineEl`
+    when it isn't."""
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+
+    filtered_idx = js.index("function filteredPagingLineEl(visibleCount, pageCount, total)")
+    filtered_body = js[filtered_idx : js.index("\n}", filtered_idx)]
+    assert "showing ${visibleCount} of ${pageCount} on this page" in filtered_body
+    assert "${total} total" in filtered_body
+
+    render_start = js.index("function renderStorages()")
+    render_body = js[render_start : js.index("\n}\n", render_start)]
+    assert re.search(
+        r"showUnnamedStorages\s*\n\s*\? pagingLineEl\(storageListOffset, visible\.length, cache\.total\)\s*\n"
+        r"\s*: filteredPagingLineEl\(visible\.length, items\.length, cache\.total\)",
+        render_body,
+    )
+
+
 async def test_console_paging_controls_disable_boundary_pinned(wired):
-    """`pagingControlsEl` implements the Prev/Next paging controls that must
-    step through the full result set and disable at either end -- Prev
-    disabled on the first page, Next disabled on the last (see
-    requirements/console.md's paging section). Every sibling paging/stats
-    function has a dedicated structural pin -- `pagingLineEl`'s clamping (the
-    test above), `statsLineEl`'s boolean/empty-object filters (the two tests
-    above that) -- so this pins the two boundary expressions for
-    `pagingControlsEl` verbatim too. Structural, like those: no JS runtime
-    exists in this suite to execute `pagingControlsEl` directly. It fails
-    equally if a future edit drops either `disabled` assignment outright or
-    inverts its comparison -- e.g. `offset < 0` instead of `offset <= 0`
-    (Prev would stay enabled with nothing before it), or
-    `offset + count > total` instead of `>= total` (Next would stay
-    clickable one page past the end, requesting an empty slice beyond the
-    total) -- exactly the off-by-one class that would silently mis-page a
-    large storage."""
+    """Prev must disable exactly on the first page, Next exactly on the last
+    (see requirements/console.md's paging section) -- structural, since no JS
+    runtime exists in this suite to execute `pagingControlsEl` directly."""
     client, _service = wired
     js = (await client.get("/console/app.js")).text
 
@@ -187,7 +230,7 @@ async def test_console_paging_controls_disable_boundary_pinned(wired):
 
 
 async def test_console_render_store_content_guards_against_error_envelopes(wired):
-    """`renderStoreContent`'s shared meta fetch and its kv/rq item fetches
+    """`renderStoreContent`'s kv/rq item fetches (and rq's own metadata fetch)
     must bail out on an error response (storage deleted / access revoked
     mid-view) before computing a paging line from a shape that was never a
     paginated payload -- no automated browser test exists for this repo's
@@ -199,7 +242,7 @@ async def test_console_render_store_content_guards_against_error_envelopes(wired
     assert "function isErrorEnvelope(resp)" in js
     assert "function errorLineEl(err)" in js
 
-    body_start = js.index("async function renderStoreContent()")
+    body_start = js.index("async function renderStoreContent(kind, id, offset)")
     body_end = js.index("\n// tableEl already renders", body_start)
     body = js[body_start:body_end]
 
@@ -218,22 +261,22 @@ async def test_console_render_store_content_guards_against_error_envelopes(wired
         r"return;\s*\}"
     )
     matches = guarded_return.findall(body)
-    # The meta fetch/guard is shared by all three branches (kv/ds/rq) --
-    # written, and therefore matched, exactly once, not copy-pasted per
-    # branch.
-    assert matches.count("meta") == 1
     assert matches.count("keysResp") == 1  # kv branch
-    assert matches.count("reqsResp") == 1  # rq branch
+    assert matches.count("meta") == 1  # rq branch's own metadata fetch
+    assert matches.count("reqsResp") == 1  # rq branch's requests fetch
 
     # The ds branch's own items fetch is a bare array, not an envelope, so it
-    # guards via `res.ok` instead of `isErrorEnvelope` -- same tied-to-`return`
-    # contract applies there too.
+    # guards via `res.ok` instead of `isErrorEnvelope` -- and, unlike the
+    # other branches, must check `ok` BEFORE parsing the body at all: a
+    # non-JSON error body (e.g. a plain-text 500) would otherwise throw
+    # trying to parse it as the success shape.
     assert re.search(
-        r"if \(!res\.ok\) \{\s*"
-        r"box\.appendChild\(errorLineEl\(items && items\.error\)\);\s*"
+        r"if \(!res\.ok\) \{[\s\S]*?"
+        r"box\.appendChild\(errorLineEl\(err && err\.error\)\);\s*"
         r"return;\s*\}",
         body,
     )
+    assert body.index("if (!res.ok)") < body.index("const items = await res.json();")
 
 
 async def test_console_load_storages_guards_against_error_envelope(wired):
@@ -320,14 +363,26 @@ async def test_console_fallback_toggle_present_and_wired_to_runtime_config(wired
     assert 'api("/v2/runtime-config", { skipAuth: true })' in refresh_body
     assert "toggle.checked" in refresh_body and "upstreamFallbackEnabled" in refresh_body
 
-    # PUTs the new state to the same endpoint on change.
+    # PUTs the new state to the same endpoint on change -- WITHOUT skipAuth:
+    # unlike GET, PUT requires a valid token (see requirements/api.md's
+    # "Upstream fallback" section), so it sends the acting user's bearer
+    # token like any other mutating request.
     set_start = js.index("async function setFallbackEnabled(enabled)")
     set_body = js[set_start : js.index("\n}\n", set_start)]
     assert 'method: "PUT"' in set_body
     assert '"/v2/runtime-config"' in set_body
     assert "upstreamFallbackEnabled: enabled" in set_body
+    assert "skipAuth" not in set_body
 
     # Wired via addEventListener (no inline handler) to the checkbox's own
-    # current .checked state, and read once on every initial page load.
+    # current .checked state.
     assert 'addEventListener("change", () => setFallbackEnabled(_fallbackToggle.checked))' in js
-    assert "refreshFallbackToggle();" in js
+    # Read once on every initial page load -- the literal page-load init
+    # sequence, not just ANY occurrence of `refreshFallbackToggle();`:
+    # `periodicRefresh`/`setFallbackEnabled` also call it, so a bare
+    # substring count would still pass even if the page-load call itself
+    # were ever dropped.
+    assert (
+        "refreshUserSelect();\nrefreshFallbackToggle();\nrenderRoute();\n"
+        "setInterval(periodicRefresh, 4000);"
+    ) in js

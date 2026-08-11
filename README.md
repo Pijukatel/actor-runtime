@@ -161,6 +161,7 @@ anything this Actor codes around:
 ```bash
 npm install -g apify-cli
 export APIFY_CLIENT_BASE_URL=http://localhost:3333   # redirect the CLI here
+export APIFY_CONSOLE_URL=http://localhost:3000        # ...and its console links here too
 apify login -t alice      # the token selects the acting user (see requirements/cli.md;
                           # push/call use the stored login, not the APIFY_TOKEN env var)
 

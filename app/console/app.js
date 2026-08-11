@@ -135,9 +135,20 @@ async function refreshUser() {
   if (el) el.textContent = (me && me.username) || "local-user";
 }
 
+// Guards the PERIODIC re-read (see periodicRefresh() below) against a race
+// with an in-flight user-initiated flip: a tick landing between the
+// checkbox's own `change` event and its PUT's completion would otherwise
+// re-read the OLD server state and visually snap the checkbox back, an
+// instant before setFallbackEnabled's own re-read below corrects it anyway.
+// setFallbackEnabled's own call to refreshFallbackToggle() is exempt --
+// that IS the authoritative post-PUT read this guard exists to protect.
+let fallbackTogglePutInFlight = false;
+
 // The global "API fallback" toggle: one shared runtime-wide switch, reflected
-// in the header on every view. Token-free (like the user list) since it is
-// not per-user state.
+// in the header on every view. The GET is token-free (like the user list)
+// since merely reading it is not per-user state; the PUT is NOT token-free
+// (see requirements/api.md's "Upstream fallback" section) -- it sends the
+// acting user's bearer token, same as every other mutating request.
 async function refreshFallbackToggle() {
   const toggle = $("#fallback-toggle");
   if (!toggle) return;
@@ -146,17 +157,21 @@ async function refreshFallbackToggle() {
 }
 
 async function setFallbackEnabled(enabled) {
-  await api("/v2/runtime-config", {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ upstreamFallbackEnabled: enabled }),
-    skipAuth: true,
-  });
-  // Re-read the server's actual resulting state rather than assume the PUT
-  // took effect as requested -- this is a shared runtime-global switch, so a
-  // rejected/raced PUT must never leave this checkbox showing a flip that
-  // never happened.
-  await refreshFallbackToggle();
+  fallbackTogglePutInFlight = true;
+  try {
+    await api("/v2/runtime-config", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ upstreamFallbackEnabled: enabled }),
+    });
+    // Re-read the server's actual resulting state rather than assume the PUT
+    // took effect as requested -- this is a shared runtime-global switch, so a
+    // rejected/raced PUT must never leave this checkbox showing a flip that
+    // never happened.
+    await refreshFallbackToggle();
+  } finally {
+    fallbackTogglePutInFlight = false;
+  }
 }
 
 // Switching users is client-side: pick an existing user's stored token and send
@@ -390,8 +405,12 @@ function periodicRefresh() {
   // every view, shared across ports/users), so it refreshes unconditionally
   // -- unlike renderRoute() below, gated to the routes that tolerate a
   // re-render -- catching a flip made from another tab/port within one
-  // interval instead of only on the next full page load.
-  refreshFallbackToggle();
+  // interval instead of only on the next full page load. Skipped while a
+  // user-initiated flip is still in flight (see `fallbackTogglePutInFlight`),
+  // so a tick landing mid-flip can't re-read the stale value and visually
+  // snap the checkbox back; `.catch()` swallows a transient fetch failure
+  // (e.g. the API unreachable) instead of an unhandled rejection every 4s.
+  if (!fallbackTogglePutInFlight) refreshFallbackToggle().catch(() => {});
   if (shouldAutoRefresh()) renderRoute();
 }
 
@@ -445,6 +464,24 @@ function pagingLineEl(offset, count, total) {
   // offset> of T".
   const to = count ? Math.min(offset + count, total) : from;
   return mk("p", { class: "muted", text: `showing ${from}–${to} of ${total}` });
+}
+
+// Companion to `pagingLineEl` for a page-local FILTER (e.g. the storage
+// list's "show unnamed" checkbox) that hides some of an already-fetched
+// page's rows: `pagingLineEl`'s "showing N-M of T" wording claims the
+// VISIBLE rows sit at positions N-M of the underlying result set, which is
+// only true when nothing on the current page is hidden -- once a filter
+// hides any rows, that position claim is simply wrong (the visible rows are
+// a scattered subset of the page, not a contiguous N-M range of the total),
+// even though the isolated COUNT half (how many rows are shown) stays
+// accurate. This drops the range wording entirely in that case, reporting
+// only counts that are genuinely true of what's rendered: how many of the
+// current (unfiltered) page are visible, and the result set's grand total.
+function filteredPagingLineEl(visibleCount, pageCount, total) {
+  return mk("p", {
+    class: "muted",
+    text: `showing ${visibleCount} of ${pageCount} on this page · ${total} total`,
+  });
 }
 
 // True when an already-`unwrap()`ed response is this app's error envelope
@@ -578,13 +615,20 @@ function renderStorages() {
   const visible = showUnnamedStorages ? items : items.filter((st) => st.named === true);
   // The "show unnamed" checkbox filters the already-fetched page only (see
   // its own wiring below): it never changes what was fetched or how far
-  // Prev/Next step. The "showing N-M of T" line must describe what the
-  // table actually renders, so it counts the VISIBLE (filtered) rows, not
-  // the raw fetched page -- otherwise a heavily-filtered page can claim
-  // "showing 1-100 of 253" over an empty table. Prev/Next stay keyed off the
-  // raw fetched page (`items.length`) below, since that -- not the filter --
-  // determines whether there is more of the underlying result set to step to.
-  detail.appendChild(pagingLineEl(storageListOffset, visible.length, cache.total));
+  // Prev/Next step. With the filter OFF, every fetched row is visible, so
+  // the normal "showing N-M of T" range line is accurate; with it ON, the
+  // visible rows are a scattered subset of the page, so N-M would claim
+  // positions in the result set that aren't what's actually on screen --
+  // `filteredPagingLineEl` reports only counts that stay true either way
+  // (how many of this page are shown, and the grand total) instead. Prev/Next
+  // stay keyed off the raw fetched page (`items.length`) below, since that --
+  // not the filter -- determines whether there is more of the underlying
+  // result set to step to.
+  detail.appendChild(
+    showUnnamedStorages
+      ? pagingLineEl(storageListOffset, visible.length, cache.total)
+      : filteredPagingLineEl(visible.length, items.length, cache.total),
+  );
   const rows = visible.map((st) => {
     // ✅ for a named/standalone storage, ❌ for a run-derived one - the same
     // st.named flag that gates the delete affordance below.
@@ -844,36 +888,23 @@ window.openRun = async function (actorId, runId) {
   showStore(kvTab, "kv", r.defaultKeyValueStoreId);
 };
 
-// Per-store paging state: reset to the first page every time a tab/detail
-// view is (re-)opened via showStore(); preserved across a prev/next click,
-// which re-renders via renderStoreContent() directly without going through
-// showStore() again.
-let storeOffset = 0;
-let storeContext = null;
-
 window.showStore = async function (tab, kind, id) {
   abortActiveLogStream();
   document.querySelectorAll(".tabs span").forEach((s) => s.classList.remove("active"));
   if (tab) tab.classList.add("active");
-  storeContext = { kind, id };
-  storeOffset = 0;
-  await renderStoreContent();
+  // Fresh open always starts at the first page; a prev/next click re-renders
+  // the SAME (kind, id) with a new offset by calling this directly (see
+  // `onPage` below) without going through showStore() again.
+  await renderStoreContent(kind, id, 0);
 };
 
-// The URL slug each storeContext `kind` is fetched/managed under -- the
-// inverse of STORAGE_SLUG_TO_KIND -- so the shared meta fetch below needs
-// exactly one mapping, not a hardcoded endpoint per branch.
-const KIND_TO_STORAGE_SLUG = Object.fromEntries(
-  Object.entries(STORAGE_SLUG_TO_KIND).map(([slug, kind]) => [kind, slug]),
-);
-
-// Renders the current storeContext/storeOffset into #store. Shared by
-// showStore() (fresh open, offset reset to 0) and the prev/next controls
-// (same context, new offset) -- always requesting an explicit
-// limit=100&offset=N page, never a bare/unbounded request, and rendering a
-// stats line from that storage's own GET-detail response above its content.
-async function renderStoreContent() {
-  const { kind, id } = storeContext;
+// Renders one storage's contents (plus, for kv/ds, its stats -- rq's stats
+// need a separate metadata fetch, see its own branch below) into #store for
+// the given (kind, id) at the given paging offset. Shared by showStore()
+// (fresh open, offset 0) and the prev/next controls (same kind/id, new
+// offset) -- always requesting an explicit limit=100&offset=N page, never a
+// bare/unbounded request.
+async function renderStoreContent(kind, id, offset) {
   const box = $("#store");
   if (!box) return;
   box.innerHTML = "";
@@ -885,32 +916,25 @@ async function renderStoreContent() {
     return;
   }
 
-  // The meta fetch/guard/stats-line is identical across kv/ds/rq -- only the
-  // endpoint's storage-type segment differs -- so it is written once here,
-  // shared by every branch below, rather than copy-pasted per branch.
-  const meta = unwrap(await api(`/v2/${KIND_TO_STORAGE_SLUG[kind]}/${id}`));
-  if (isErrorEnvelope(meta)) {
-    box.appendChild(errorLineEl(meta.error));
-    return;
-  }
-  const stats = statsLineEl(meta);
-  if (stats) box.appendChild(stats);
-
-  const onPage = (next) => {
-    storeOffset = next;
-    renderStoreContent();
-  };
+  const onPage = (next) => renderStoreContent(kind, id, next);
 
   if (kind === "kv") {
     const keysResp = unwrap(
-      await api(`/v2/key-value-stores/${id}/keys?limit=${STORAGE_PAGE_SIZE}&offset=${storeOffset}`),
+      await api(`/v2/key-value-stores/${id}/keys?limit=${STORAGE_PAGE_SIZE}&offset=${offset}`),
     );
     if (isErrorEnvelope(keysResp)) {
       box.appendChild(errorLineEl(keysResp.error));
       return;
     }
     const keys = keysResp.items || [];
-    box.appendChild(pagingLineEl(storeOffset, keys.length, keysResp.total));
+    // `itemCount` is a KV store's only stats-line field, and this listing's
+    // own `total` already reports it exactly -- no separate metadata fetch
+    // (a full `kv_keys()` re-read server-side, paid again on every page
+    // flip) is needed just to redundantly re-derive the same number.
+    const total = keysResp.total != null ? keysResp.total : keys.length;
+    const stats = statsLineEl({ itemCount: total });
+    if (stats) box.appendChild(stats);
+    box.appendChild(pagingLineEl(offset, keys.length, total));
     const rows = [];
     for (const k of keys) {
       const rec = await api(`/v2/key-value-stores/${id}/records/${k.key}`);
@@ -921,38 +945,69 @@ async function renderStoreContent() {
       rows.push([mk("td", { text: k.key }), pre]);
     }
     box.appendChild(emptyOr(tableEl(["Key", "Value"], rows), keys.length));
-    box.appendChild(pagingControlsEl(storeOffset, keys.length, keysResp.total, onPage));
+    box.appendChild(pagingControlsEl(offset, keys.length, total, onPage));
   } else if (kind === "ds") {
     // Dataset items keep their bare-array body; the pagination info lives in
     // response headers (mirroring the real API's own convention), so this
-    // reads the raw Response rather than going through api()/unwrap().
-    const res = await apiRaw(`/v2/datasets/${id}/items?limit=${STORAGE_PAGE_SIZE}&offset=${storeOffset}`);
-    const items = await res.json();
+    // reads the raw Response rather than going through api()/unwrap(). `ok`
+    // is checked BEFORE parsing the body: a non-JSON error body (e.g. a
+    // plain-text 500) would otherwise throw out of this fire-and-forget
+    // render with no error line shown at all.
+    const res = await apiRaw(`/v2/datasets/${id}/items?limit=${STORAGE_PAGE_SIZE}&offset=${offset}`);
     if (!res.ok) {
-      box.appendChild(errorLineEl(items && items.error));
+      let err = null;
+      try {
+        err = await res.json();
+      } catch (e) {
+        // Non-JSON error body -- fall through to errorLineEl's own generic
+        // message below instead of throwing here.
+      }
+      box.appendChild(errorLineEl(err && err.error));
       return;
     }
+    const items = await res.json();
+    // `itemCount`/`cleanItemCount` are the same number for this runtime (no
+    // separate "clean" count is tracked -- see app/routers/storages.py's
+    // `get_dataset`), and this page's own `X-Apify-Pagination-Total` header
+    // already reports it -- no separate metadata fetch (a full
+    // `dataset_items()` re-read server-side, paid again on every page flip)
+    // is needed just to redundantly re-derive the same number.
     const total = Number(res.headers.get("X-Apify-Pagination-Total") || items.length);
-    box.appendChild(pagingLineEl(storeOffset, items.length, total));
+    const stats = statsLineEl({ itemCount: total, cleanItemCount: total });
+    if (stats) box.appendChild(stats);
+    box.appendChild(pagingLineEl(offset, items.length, total));
     box.appendChild(mk("pre", { text: JSON.stringify(items, null, 2) }));
-    box.appendChild(pagingControlsEl(storeOffset, items.length, total, onPage));
+    box.appendChild(pagingControlsEl(offset, items.length, total, onPage));
   } else if (kind === "rq") {
-    const reqsResp = unwrap(
-      await api(`/v2/request-queues/${id}/requests?limit=${STORAGE_PAGE_SIZE}&offset=${storeOffset}`),
-    );
+    // Unlike kv/ds above, a request queue's stats line needs fields
+    // (`pendingRequestCount`/`handledRequestCount`/`hadMultipleClients`)
+    // that the requests-listing page below does not carry, so this branch
+    // alone still needs its own metadata fetch -- issued concurrently with
+    // the listing fetch (`Promise.all`), since the two calls have no
+    // dependency on each other, rather than serialized one after the other.
+    const [meta, reqsResp] = await Promise.all([
+      api(`/v2/request-queues/${id}`).then(unwrap),
+      api(`/v2/request-queues/${id}/requests?limit=${STORAGE_PAGE_SIZE}&offset=${offset}`).then(unwrap),
+    ]);
+    if (isErrorEnvelope(meta)) {
+      box.appendChild(errorLineEl(meta.error));
+      return;
+    }
+    const stats = statsLineEl(meta);
+    if (stats) box.appendChild(stats);
     if (isErrorEnvelope(reqsResp)) {
       box.appendChild(errorLineEl(reqsResp.error));
       return;
     }
     const reqs = reqsResp.items || [];
-    box.appendChild(pagingLineEl(storeOffset, reqs.length, reqsResp.total));
+    box.appendChild(pagingLineEl(offset, reqs.length, reqsResp.total));
     const rows = reqs.map((q) => [
       mk("td", { text: q.url }),
       mk("td", { text: q.method }),
       mk("td", { text: String(Boolean(q.handledAt)) }),
     ]);
     box.appendChild(emptyOr(tableEl(["URL", "Method", "Handled"], rows), reqs.length));
-    box.appendChild(pagingControlsEl(storeOffset, reqs.length, reqsResp.total, onPage));
+    box.appendChild(pagingControlsEl(offset, reqs.length, reqsResp.total, onPage));
   }
 }
 

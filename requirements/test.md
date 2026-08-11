@@ -373,12 +373,18 @@ fixture, which points `Settings.apify_upstream_base_url` at a `FakeUpstreamServe
 — a local in-process HTTP stub built on the same `_start_http_server_thread`/
 `_stop_threaded_http_server` helpers and `_QuietHandlerMixin` `FakeStandbyServer`
 uses, with only the request handler differing) MUST exist for:
- - **The toggle** — `GET /v2/runtime-config` is token-free and defaults `False`
-   on a freshly-wired `Service` (no restart-persisted state exists, since it is
-   a plain in-memory attribute with no DB table); `PUT /v2/runtime-config`
-   accepts `{"upstreamFallbackEnabled": bool}`, rejects a non-boolean value
-   (`400`), and takes effect **immediately** — the very next request reflects
-   the new state, with no restart or delay needed.
+ - **The toggle** — `GET /v2/runtime-config` is token-free (ignores even a
+   present-but-unresolvable token, never `401`) and defaults `False` on a
+   freshly-wired `Service` (no restart-persisted state exists, since it is a
+   plain in-memory attribute with no DB table). `PUT /v2/runtime-config` is
+   **NOT** token-free — it requires the same valid-token proof every other
+   mutating endpoint does (`POST /v2/users`' `resolve_user()`-as-a-check
+   pattern): no token at all still succeeds (falls back to the default user,
+   never rejected), a present token matching no existing user is `401`, and a
+   token matching an existing user succeeds. Once authenticated, it accepts
+   `{"upstreamFallbackEnabled": bool}`, rejects a non-boolean value (`400`),
+   and takes effect **immediately** — the very next request reflects the new
+   state, with no restart or delay needed.
  - **Fallback disabled (default)** — a request for a resource missing locally
    returns the same local `404` as before this change, for every HTTP method,
    and the upstream stub receives zero requests.
@@ -438,8 +444,13 @@ uses, with only the request handler differing) MUST exist for:
    branch still forwards it exactly as before.
  - **Base URL normalization** — an `apify_upstream_base_url` configured WITH a
    trailing slash (mirroring a misconfigured `APIFY_UPSTREAM_BASE_URL`, e.g.
-   `https://api.apify.com/`) MUST still produce a single, correct slash in the
-   path the upstream stub actually receives, never a double slash.
+   `https://api.apify.com/`) MUST be stripped to a single, correct slash by the
+   time it reaches this middleware, so the URL string handed to httpx is never
+   doubled. Verified at the one boundary every construction path goes through
+   — `Settings.__post_init__` (`tests/unit/test_config.py`) — rather than via
+   a live HTTP capture: `http.server`'s own request parser collapses a
+   doubled `//` before a stub handler ever sees it, so a same-request test
+   built on one cannot discriminate this fix from its absence.
  - **Console toggle UI (structural)** — a structural scan of the served
    `index.html`/`app.js` (in `tests/unit/test_console_pagination_ui.py`) MUST
    confirm: the `#fallback-toggle` checkbox exists

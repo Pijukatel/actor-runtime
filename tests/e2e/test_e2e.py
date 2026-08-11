@@ -91,11 +91,12 @@ def _wait_ready(api_url: str, timeout: int = 60) -> None:
     raise RuntimeError("runtime did not become ready in time")
 
 
-def _apify_env(api_url: str) -> dict:
+def _apify_env(api_url: str, console_url: str) -> dict:
     env = dict(os.environ)
     env.update(
         {
             "APIFY_CLIENT_BASE_URL": api_url,
+            "APIFY_CONSOLE_URL": console_url,
             "APIFY_TOKEN": "local-user",
             "APIFY_CLI_DISABLE_TELEMETRY": "1",
             "APIFY_CLI_SKIP_UPDATE_CHECK": "1",
@@ -124,7 +125,7 @@ def test_console_and_api_reachable_without_auth(runtime):
 
 def test_full_dev_loop(runtime, tmp_path):
     api = runtime["api"]
-    env = _apify_env(api)
+    env = _apify_env(api, runtime["console"])
 
     project = tmp_path / "sample-actor"
     shutil.copytree(REPO / "sample_actor", project)

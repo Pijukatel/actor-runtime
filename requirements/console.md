@@ -145,31 +145,49 @@
   the total the API surface reports, and **Prev/Next** controls that step by 100
   and disable at either end of the result set. On the per-user storage list, the
   show/hide-unnamed checkbox filters the already-fetched 100-item page only (it
-  never changes what is fetched); the "showing N–M of T" line counts the rows
-  actually **visible** after that filter, not the raw fetched page, so a page
-  that filters down to a handful of rows (or none) never claims to be showing
-  rows it isn't — while Prev/Next continue to step through the full, unfiltered
-  100-item pages of the result set, since the filter is a display-only,
-  page-local concern. **Creating or deleting a named storage always returns the
+  never changes what is fetched, or how far Prev/Next step, since the filter is
+  a display-only, page-local concern keyed off the raw fetched page, not the
+  filtered one). With the checkbox showing every row, the "N–M of T" line above
+  is accurate as-is. With it hiding some rows, that N–M range would claim the
+  visible rows sit at contiguous positions in the total — false once any row on
+  the page is hidden, since the visible rows are then a scattered subset, not a
+  contiguous slice — so the line instead reads **"showing V of 100 on this
+  page · T total"**, where V is the count actually visible after the filter:
+  every number in it stays true regardless of which rows are hidden, at the
+  cost of dropping the position claim while any row is filtered out.
+  **Creating or deleting a named storage always returns the
   per-user storage list to its first page** (offset reset to 0), rather than
   re-fetching whatever offset was already showing — a newly created storage is
   appended past the end of the list (oldest first), so re-fetching a stale
   later-page offset could otherwise leave it permanently unseen, and deleting
   the last item on a later page could otherwise land on an empty page.
 - **Each storage's detail view shows a stats line** above its item/key/request
-  list, rendered dynamically from that storage's own `GET` metadata response:
-  every field currently non-empty for the resource being viewed, excluding
-  identity/bookkeeping fields (`id`/`name`/`userId`/`createdAt`/`modifiedAt`/
-  `accessedAt`/`consoleUrl`) and EMPTY object-valued stubs (e.g. a request
-  queue's currently-empty `stats` sub-object) — nothing invented, nothing
-  non-empty omitted; a non-empty object-valued field is still rendered
+  list: every field currently non-empty for the resource being viewed,
+  excluding identity/bookkeeping fields (`id`/`name`/`userId`/`createdAt`/
+  `modifiedAt`/`accessedAt`/`consoleUrl`) and EMPTY object-valued stubs (e.g. a
+  request queue's currently-empty `stats` sub-object) — nothing invented,
+  nothing non-empty omitted; a non-empty object-valued field is still rendered
   (JSON-stringified) rather than silently dropped just for being an object. A
   boolean field is always shown regardless of its value — `false` is a
   meaningful, present value, not emptiness — while a numeric/string field is
-  only shown once it is non-zero/non-blank. In practice today this renders a
-  dataset's `itemCount`/`cleanItemCount`, a key-value store's `itemCount`, and
-  a request queue's `totalRequestCount`/`pendingRequestCount`/
-  `handledRequestCount`/`hadMultipleClients` (shown whether `true` or `false`).
+  only shown once it is non-zero/non-blank.
+  - For **datasets and key-value stores**, the stats line's counters
+    (`itemCount`/`cleanItemCount` for a dataset, `itemCount` for a KV store)
+    are derived from the SAME paged listing response the view already fetches
+    for its content — the dataset items response's `X-Apify-Pagination-Total`
+    header, the KV keys response's `total` field — both numerically identical
+    to that storage type's own `GET`-detail `itemCount`. This deliberately
+    avoids a second, full-materialization fetch of that storage's own `GET`
+    metadata response purely to re-derive a count the page fetch already
+    reports; issuing one on every page open AND every Prev/Next click would
+    reintroduce, server-side, the same unbounded per-request read this
+    pagination feature exists to remove.
+  - For **request queues**, whose extra stats fields
+    (`pendingRequestCount`/`handledRequestCount`/`hadMultipleClients`) are not
+    present in the requests-listing page response, the stats line is still
+    rendered from that storage's own `GET` metadata response — fetched
+    concurrently with (not serialized before) the requests page fetch, since
+    the two calls have no dependency on each other.
 - The **left column** shows the top-level category nav (Actors / Storage / Users)
   in its own bordered box, and directly below it, in a second, separate bordered
   box, the acting user's Actors list (so you can switch actors from any actor route).

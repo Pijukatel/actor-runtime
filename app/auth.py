@@ -5,6 +5,21 @@ are decoupled: the token is only ever used to look up which stored user is actin
 and is never turned into a username. An absent token resolves to the default local
 user; the first token ever presented binds ("bootstraps") the default user's
 credential; a later token that matches no stored user is rejected.
+
+Three variants of that resolution live here side by side, deliberately
+co-located so they can be diffed by eye:
+
+- ``resolve_user`` — the default described above: bootstrap-or-reject. Used
+  by every registered handler that needs identity.
+- ``resolve_standby_caller`` — differs from ``resolve_user`` in exactly one
+  respect: an absent credential is rejected (401) rather than falling back to
+  the default user, since forwarding into (and possibly starting) an Actor
+  container must never happen anonymously. Also accepts a ``?token=`` query
+  credential ``resolve_user`` does not.
+- ``resolve_forwardable_token`` — a PURE lookup for ``app/upstream.py``'s
+  fallback proxy: never binds or bootstraps, so a token matching no existing
+  user simply has nothing to forward (``None``) rather than claiming the
+  default user's credential as a side effect. See its own docstring.
 """
 from __future__ import annotations
 
@@ -66,3 +81,44 @@ async def resolve_standby_caller(request: Request) -> str:
     if await service.bind_default_token(token):
         return DEFAULT_USERNAME
     raise InvalidTokenError()
+
+
+async def resolve_forwardable_token(request: Request) -> str | None:
+    """Return the caller's own bound token to forward upstream, or ``None``.
+
+    Used only by ``app/upstream.py``'s fallback proxy. Differs from
+    ``resolve_user`` in that it is a PURE lookup: it never binds or
+    bootstraps, so a token matching no existing user simply has nothing to
+    forward (returns ``None``, meaning "abandon the whole fallback attempt")
+    rather than claiming the (possibly still-unclaimed) default user's
+    credential as a side effect. This matters because one path -- the SPA
+    catch-all -- can reach this lookup before any handler's own
+    ``resolve_user`` call does (it 404s an unmatched allowlisted path without
+    authenticating first), so a read-through fallback attempt must never
+    silently bootstrap local identity state.
+
+    Two outcomes are NOT the same and callers must not conflate them:
+    - ``None`` — a PRESENT token matched no existing user. There is truly
+      nothing to forward; the caller must abandon the attempt entirely.
+    - ``""`` (empty string) — the caller resolved to a known user (or, with
+      no token at all, the default user) who simply has no bound `token` yet
+      (e.g. the still-unclaimed default user). The attempt must proceed,
+      forwarding no ``Authorization`` header, rather than abort.
+
+    A present token resolves through ``Service.get_user``, NOT the presented
+    token directly: ``user_for_token`` matches either a user's bound
+    ``token`` OR their ``container_token`` (so an Actor container's own
+    injected ``APIFY_TOKEN`` also resolves here), and the row's own ``token``
+    -- the user's real bound credential -- is what must be forwarded, never
+    the container token that happened to resolve it.
+    """
+    token = token_from_request(request)
+    service = request.app.state.service
+    if token:
+        username = await service.user_for_token(token)
+        if username is None:
+            return None
+    else:
+        username = DEFAULT_USERNAME
+    row = await service.get_user(username)
+    return row.token if row is not None and row.token else ""

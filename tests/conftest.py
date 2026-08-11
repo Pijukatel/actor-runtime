@@ -509,18 +509,6 @@ async def wired_upstream(tmp_path, fake_upstream):
 
 
 @pytest_asyncio.fixture
-async def wired_upstream_trailing_slash_base_url(tmp_path, fake_upstream):
-    """Like `wired_upstream`, but `apify_upstream_base_url` is configured WITH
-    a trailing slash (e.g. as an operator might set `APIFY_UPSTREAM_BASE_URL`)
-    -- `Settings.__post_init__` (app/config.py) normalizes it away, so the
-    outgoing request path built by `fetch_upstream_fallback` never gets a
-    double slash."""
-    settings = dataclasses.replace(make_settings(tmp_path), apify_upstream_base_url=f"{fake_upstream.base_url}/")
-    async for pair in _wire(tmp_path, StubDriver(), settings=settings):
-        yield pair
-
-
-@pytest_asyncio.fixture
 async def wired_malformed_upstream(tmp_path):
     """Like `wired`, but `apify_upstream_base_url` is malformed in a way `httpx`
     rejects while BUILDING the request (`httpx.InvalidURL`, raised before any

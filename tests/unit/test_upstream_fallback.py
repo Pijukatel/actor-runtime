@@ -9,8 +9,6 @@ from __future__ import annotations
 import gzip
 import json
 
-import httpx
-
 
 def auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
@@ -28,6 +26,52 @@ async def test_runtime_config_get_is_token_free_and_defaults_off(wired):
     resp = await client.get("/v2/runtime-config")
     assert resp.status_code == 200
     assert resp.json()["data"] == {"upstreamFallbackEnabled": False}
+
+
+async def test_runtime_config_get_ignores_presented_token(wired):
+    """Token-free means GET never validates a presented credential either --
+    a bearer matching no user must not be rejected here (mirrors GET
+    /v2/users' own token-free contract), unlike PUT below."""
+    client, _service = wired
+    resp = await client.get("/v2/runtime-config", headers=auth("stale-unknown-token"))
+    assert resp.status_code == 200
+
+
+async def test_runtime_config_put_with_no_token_works(wired):
+    """No credential at all is never rejected -- the same "absent token ->
+    default user" rule every other endpoint follows, not GET's token-free
+    carve-out -- so a bare PUT with no Authorization header still succeeds."""
+    client, service = wired
+    resp = await client.put("/v2/runtime-config", json={"upstreamFallbackEnabled": True})
+    assert resp.status_code == 200
+    assert service.upstream_fallback_enabled is True
+
+
+async def test_runtime_config_put_rejects_unresolvable_token(wired):
+    """PUT is NOT token-free: a present token matching no existing user is
+    401, the same `resolve_user` check `POST /v2/users` already makes.
+    Bootstrap the default user's credential with a first token via ordinary
+    authenticated work, then present a SECOND, different (now genuinely
+    unresolvable) token to the PUT itself."""
+    client, service = wired
+    await client.get("/v2/users/me", headers=auth("first-token"))  # bootstraps the default user
+
+    resp = await client.put(
+        "/v2/runtime-config", json={"upstreamFallbackEnabled": True}, headers=auth("second-token")
+    )
+    assert resp.status_code == 401
+    assert service.upstream_fallback_enabled is False  # never touched
+
+
+async def test_runtime_config_put_with_valid_token_works(wired):
+    client, service = wired
+    await _create_user(client, "alice")  # alice.token == "alice"
+    resp = await client.put(
+        "/v2/runtime-config", json={"upstreamFallbackEnabled": True}, headers=auth("alice")
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"] == {"upstreamFallbackEnabled": True}
+    assert service.upstream_fallback_enabled is True
 
 
 async def test_runtime_config_put_takes_effect_immediately(wired):
@@ -134,10 +178,12 @@ async def test_fallback_relay_preserves_duplicate_response_headers(wired_upstrea
 
 
 async def test_fallback_relay_strips_full_hop_by_hop_response_header_set(wired_upstream, fake_upstream):
-    """`_HOP_BY_HOP_RESPONSE_HEADERS` is the full RFC 7230 hop-by-hop set, not
-    just the two members (`content-encoding`/`content-length`) this proxy
-    added beyond that plain set to handle its own decoded-body/recomputed-
-    framing needs -- none of these ever belongs on a relayed response.
+    """`app/http_relay.py`'s shared `HOP_BY_HOP` is the full RFC 7230
+    hop-by-hop set, not just the two extra members
+    (`content-encoding`/`content-length`, `_EXTRA_EXCLUDED_RESPONSE_HEADERS`
+    in app/upstream.py) this proxy adds on top to handle its own
+    decoded-body/recomputed-framing needs -- none of these ever belongs on a
+    relayed response.
     `content-encoding`/`content-length` are exercised separately, over an
     actually-compressed response, in
     `test_fallback_relay_strips_content_encoding_and_recomputes_content_length_for_compressed_response`
@@ -186,8 +232,9 @@ async def test_fallback_relay_strips_content_encoding_and_recomputes_content_len
     wired_upstream, fake_upstream
 ):
     """`content-encoding`/`content-length` are the two members
-    `_HOP_BY_HOP_RESPONSE_HEADERS` adds beyond the plain RFC 7230 set: httpx
-    already decodes a response whose `Content-Encoding` it recognizes, so
+    app/upstream.py's `_EXTRA_EXCLUDED_RESPONSE_HEADERS` adds beyond the
+    shared `app/http_relay.py` RFC 7230 set: httpx already decodes a
+    response whose `Content-Encoding` it recognizes, so
     `upstream.content` is the DEcompressed bytes while `upstream.headers`
     still describes the compressed wire -- forwarding either verbatim would
     hand the caller a mismatched body/header pair. A real gzip body is the
@@ -497,55 +544,15 @@ async def test_fallback_enabled_local_write_success_is_unaffected_and_not_proxie
     assert readback.json() == {"hello": "world"}
 
 
-# ------------------------------------------------------- base URL normalization
-
-
-async def test_fallback_trailing_slash_base_url_builds_url_without_double_slash(
-    wired_upstream_trailing_slash_base_url, monkeypatch
-):
-    """Regression: a trailing slash on `APIFY_UPSTREAM_BASE_URL` (e.g.
-    `https://api.apify.com/`) made `fetch_upstream_fallback` build a double
-    slash (`.../..//v2/...`) when it concatenated
-    `settings.apify_upstream_base_url` with `request.url.path` (which always
-    starts with its own `/`). Asserts directly on the URL STRING
-    `fetch_upstream_fallback` hands to `httpx.AsyncClient.request` --
-    monkeypatched here to capture it and return a canned response instead of
-    making a real call -- which is where the double slash is actually built
-    (or not). This is the only way to pin `Settings.__post_init__`
-    (app/config.py) down: a same-request test built on a real socket/HTTP-
-    server double (see the companion end-to-end test below) CANNOT
-    discriminate this specific bug, because Python's own
-    `http.server.BaseHTTPRequestHandler.parse_request()` collapses any
-    request path starting with `//` down to a single `/` before a test's
-    handler ever sees it (a CVE mitigation, gh-87389) -- so it would report
-    the same "correct" single-slash path whether or not this fix is present."""
-    client, service = wired_upstream_trailing_slash_base_url
-    service.upstream_fallback_enabled = True
-
-    # The outer `client` fixture is ITSELF an `httpx.AsyncClient` (wired to the
-    # app via `httpx.ASGITransport`, `base_url="http://test"` -- see
-    # conftest.py's `_wire`), so patching the class method also intercepts its
-    # calls, not just the one made by `fetch_upstream_fallback`'s own fresh
-    # `httpx.AsyncClient(...)`. Distinguish by `base_url`: only the latter has
-    # none set, so only ITS call is captured here; the outer client's own call
-    # is passed through to the real implementation so the app/middleware
-    # actually runs and produces the local 404 that triggers the fallback.
-    seen_urls = []
-    original_request = httpx.AsyncClient.request
-
-    async def _capturing_request(self, method, url, **kwargs):
-        if self.base_url == httpx.URL("http://test"):
-            return await original_request(self, method, url, **kwargs)
-        seen_urls.append(str(url))
-        return httpx.Response(200, content=b"[]", headers={"content-type": "application/json"})
-
-    monkeypatch.setattr(httpx.AsyncClient, "request", _capturing_request)
-
-    resp = await client.get("/v2/datasets/nobody~nothing/items")
-    assert resp.status_code == 200
-    assert len(seen_urls) == 1
-    assert seen_urls[0].endswith("/v2/datasets/nobody~nothing/items")
-    assert "//v2" not in seen_urls[0]
+# Base URL normalization (a trailing slash on `APIFY_UPSTREAM_BASE_URL`
+# producing a double slash in the outgoing path) is pinned at the one
+# boundary every construction path goes through --
+# `test_config.py::test_load_settings_strips_trailing_slash_from_upstream_base_url`
+# -- rather than here: `http.server`'s own request parser collapses a
+# doubled `//` before a stub handler ever sees it (a CVE mitigation,
+# gh-87389), so a same-request test built on one cannot discriminate this
+# fix from its absence, only a real HTTP capture (out of scope for this
+# Docker-free suite) or a `Settings`-construction-boundary pin can.
 
 
 # ------------------------------------------------------------- guardrails
@@ -631,18 +638,6 @@ async def test_fallback_never_proxied_for_non_404_local_status(wired_upstream, f
 
 
 # -------------------------------------------------------------- token identity
-
-
-async def test_fallback_forwards_the_callers_own_bound_token(wired_upstream, fake_upstream):
-    client, service = wired_upstream
-    service.upstream_fallback_enabled = True
-    await _create_user(client, "alice")  # alice.token == "alice"
-    fake_upstream.set_response(200, b"[]", {"content-type": "application/json"})
-
-    resp = await client.get("/v2/datasets/alice~nonexistent/items", headers=auth("alice"))
-    assert resp.status_code == 200
-    assert len(fake_upstream.requests) == 1
-    assert fake_upstream.requests[0]["headers"].get("authorization") == "Bearer alice"
 
 
 async def test_fallback_forwards_different_callers_different_tokens(wired_upstream, fake_upstream):

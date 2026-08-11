@@ -179,19 +179,10 @@ async def test_dataset_items_non_integer_offset_is_bad_request(wired):
 
 
 async def test_dataset_items_empty_string_params_are_treated_as_absent(wired):
-    """`parse_page`'s `optional()` closure treats an explicit-but-empty query
-    value (`raw == ""`) identically to the key being omitted entirely,
-    returning `None` rather than falling through to `_parse_int("", ...)` --
-    is new in this diff but was never exercised by any of the four listing
-    surfaces: every existing test here sends either no `limit`/`offset` at
-    all or a concrete value, never `?limit=&offset=`. A client that
-    serializes empty query values (rather than dropping the key) must land on
-    the exact same byte-for-byte unpaginated bare-array response as the true
-    bare request -- not a `400 Query parameter 'limit' must be an integer.`,
-    which is what `int("")` raises and is exactly what you'd get if the
-    `or raw == ""` check were ever dropped. Red proof (verified locally by
-    temporarily changing that check to `raw is None`): with the arm removed,
-    this test's `empty` request 400s instead of matching `bare`."""
+    """An empty `?limit=&offset=` (an explicit but blank query value) must be
+    treated identically to omitting the params entirely -- the same
+    unpaginated bare-array response, byte-for-byte, not a `400` from trying
+    to parse `""` as an integer."""
     client, service = wired
     await _create_user(client, "es")
     created = await client.post("/v2/datasets", json={"name": "big"}, headers=auth("es"))

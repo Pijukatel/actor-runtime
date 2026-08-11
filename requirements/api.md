@@ -150,8 +150,14 @@
   an in-memory attribute on the shared `Service` instance: default `False`,
   **resets to `False` on every process restart** (no DB table, no
   persistence). `GET` is token-free (no bootstrap side effect, like
-  `GET /v2/users`); `PUT` takes effect immediately, for every user and both
-  ports, since both serve this same `Service` instance.
+  `GET /v2/users`). `PUT` is **NOT** token-free: like `POST /v2/users`, it
+  calls the same `resolve_user()` token-validity check every other mutating
+  endpoint uses (discarding the resolved username — a no/invalid token is
+  `401 invalid-token`, never a silent no-op) — because this is the one
+  switch that, once on, causes the runtime to forward the caller's own real
+  Apify credential to the public internet on a local 404. Once authenticated,
+  `PUT` takes effect immediately, for every user and both ports, since both
+  serve this same `Service` instance.
 - With the toggle on, ANY HTTP method (GET/POST/PUT/DELETE) to an allowlisted
   by-id `/v2` resource route — an Actor, run, build, or one of the three
   storage types, reached by its id — whose LOCAL response is a 404 is

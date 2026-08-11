@@ -13,18 +13,21 @@ from collections.abc import AsyncIterator
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
-from starlette.datastructures import MutableHeaders
 
 from ..auth import resolve_standby_caller
+from ..http_relay import filtered_header_pairs, relay_response_headers
 from ..responses import get_service, not_found, standby_start_failed, standby_unavailable
 from ..standby import StandbyReadinessTimeout, StandbyStartError
 
 router = APIRouter()
 
-# Headers that only make sense for the hop they were sent on and must never be
-# copied onto the other leg, where httpx (request) or Starlette (response)
-# computes its own framing for the new connection.
-_HOP_BY_HOP = {"host", "content-length", "transfer-encoding", "connection"}
+# Headers excluded on BOTH the outgoing request to the container and the
+# relayed response, beyond the shared app/http_relay.py's RFC 7230
+# hop-by-hop set: `host` would otherwise name this runtime's own address
+# instead of the container's once httpx builds the request against
+# `target_url`, and `content-length` is recomputed on each leg (by httpx from
+# `content=body` below, by Starlette from the streamed response body).
+_EXTRA_EXCLUDED_HEADERS = frozenset({"host", "content-length"})
 
 # Connect-only bound on the standby-forwarding proxy's upstream request below.
 # Read/write/pool intentionally stay unbounded so a legitimately long-lived or
@@ -86,9 +89,7 @@ async def forward_to_standby(actor_id: str, path: str, request: Request):
         # Cookie headers), silently breaking the "headers... unchanged"
         # forwarding guarantee. httpx accepts a sequence of pairs directly and
         # preserves duplicates through to the wire.
-        forward_headers = [
-            (k, v) for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP
-        ]
+        forward_headers = filtered_header_pairs(request.headers.items(), _EXTRA_EXCLUDED_HEADERS)
         target_url = f"{endpoint}/{path}"
         if request.url.query:
             target_url += f"?{request.url.query}"
@@ -142,13 +143,8 @@ async def forward_to_standby(actor_id: str, path: str, request: Request):
             await client.aclose()
             svc.mark_standby_request_finished(actor_id)
 
-    # Built via MutableHeaders.append() (which explicitly preserves
-    # duplicates, per its own docstring) rather than a dict, so a standby
-    # Actor emitting multiple headers of the same name (e.g. more than one
-    # Set-Cookie) reaches the original caller intact instead of only the last
-    # one surviving a dict comprehension.
-    response_headers = MutableHeaders()
-    for k, v in upstream.headers.multi_items():
-        if k.lower() not in _HOP_BY_HOP:
-            response_headers.append(k, v)
+    # Preserves duplicate header names (e.g. more than one Set-Cookie), so a
+    # standby Actor emitting several reaches the original caller intact --
+    # see app/http_relay.py's own docstring.
+    response_headers = relay_response_headers(upstream.headers.multi_items(), _EXTRA_EXCLUDED_HEADERS)
     return StreamingResponse(_body(), status_code=upstream.status_code, headers=response_headers)

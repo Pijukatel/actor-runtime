@@ -9,15 +9,16 @@ upstream reply is relayed back verbatim; any failure -- non-2xx, timeout,
 connect error, a malformed upstream base URL, or a caller identity that fails
 to resolve -- falls back to the original local 404, logged for debuggability.
 
-Identity for that bearer credential is resolved by a PURE lookup, never
-``app/auth.py``'s bootstrap-or-reject ``resolve_user``: a token that matches
-no existing user is never bound or used to create one here -- it simply has
-nothing to forward, so the attempt collapses to the local 404 like any other
-failure. This matters because the SPA catch-all (``app/routers/console.py``)
-can 404 an allowlisted path WITHOUT ever calling ``resolve_user`` itself,
-making this function's own lookup the first identity resolution a request
-like that gets -- a read-through toggle must never let that first attempt
-silently bootstrap local identity state.
+Identity for that bearer credential is resolved by ``app/auth.py``'s
+``resolve_forwardable_token`` -- a PURE lookup, never ``resolve_user``'s
+bootstrap-or-reject: a token that matches no existing user is never bound or
+used to create one here -- it simply has nothing to forward, so the attempt
+collapses to the local 404 like any other failure. This matters because the
+SPA catch-all (``app/routers/console.py``) can 404 an allowlisted path
+WITHOUT ever calling ``resolve_user`` itself, making that lookup the first
+identity resolution a request like that gets -- a read-through toggle must
+never let that first attempt silently bootstrap local identity state. See
+``resolve_forwardable_token``'s own docstring for the full contract.
 
 Registered as a Starlette middleware in app/main.py -- see that module and
 requirements/api.md's "Upstream fallback" section for the full contract.
@@ -31,38 +32,22 @@ import logging
 import re
 
 import httpx
-from starlette.datastructures import MutableHeaders
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from .auth import token_from_request
-from .config import DEFAULT_USERNAME
+from .auth import resolve_forwardable_token
+from .http_relay import relay_response_headers
 from .responses import get_service
 
 logger = logging.getLogger(__name__)
 
-# Headers that only make sense for the upstream hop: httpx has already decoded
-# the body (so a forwarded content-encoding would describe bytes that are no
-# longer encoded) or Starlette recomputes its own response framing. The
-# RFC 7230 hop-by-hop set (`connection`, `keep-alive`, `proxy-authenticate`,
-# `proxy-authorization`, `te`, `trailer(s)`, `transfer-encoding`, `upgrade`) is
-# included in full, not just the two members this proxy happened to need so
-# far, so this is genuinely *the* exclusion list for a "verbatim" relay rather
-# than a partial one that merely hasn't bitten yet.
-_HOP_BY_HOP_RESPONSE_HEADERS = {
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailer",
-    "trailers",
-    "transfer-encoding",
-    "upgrade",
-    "content-encoding",
-    "content-length",
-}
+# Headers that only make sense for THIS upstream hop, beyond the shared
+# app/http_relay.py's RFC 7230 hop-by-hop set: httpx has already decoded the
+# body (so a forwarded `content-encoding` would describe bytes that are no
+# longer encoded) and Starlette recomputes its own response framing (so a
+# forwarded `content-length` could describe the wrong body).
+_EXTRA_EXCLUDED_RESPONSE_HEADERS = frozenset({"content-encoding", "content-length"})
 
 # Connect-only bound, mirroring app/routers/standby.py's own upstream proxy:
 # a legitimately slow upstream response is never cut short, only a connect
@@ -97,11 +82,11 @@ async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | N
     a 404 before calling this -- a ``None`` return means "return that original
     404 unchanged", never an upstream error status/body, and never an
     exception, of its own. That "any failure" umbrella covers more than the
-    upstream HTTP call itself: identity resolution below is a PURE lookup
-    (``token_from_request`` + ``Service.user_for_token``/``get_user``), never
-    ``app/auth.py``'s bootstrap-or-reject ``resolve_user`` -- see the module
-    docstring for why a token matching no existing user simply returns
-    ``None`` here rather than binding one. Anything else that can go wrong
+    upstream HTTP call itself: identity resolution below goes through
+    ``app/auth.py``'s ``resolve_forwardable_token`` -- a PURE lookup, never
+    ``resolve_user``'s bootstrap-or-reject -- see its own docstring for why a
+    token matching no existing user resolves to ``None`` here (abandoning the
+    whole attempt) rather than binding one. Anything else that can go wrong
     looking a caller up (e.g. a transient DB error from ``svc.get_user``) is
     covered too.
 
@@ -140,21 +125,19 @@ async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | N
             headers["content-encoding"] = content_encoding
 
         # Never a different, shared or hardcoded credential -- only the token
-        # this same request's own caller is already bound to, found by a pure
-        # lookup (see the module docstring): no token at all resolves to the
-        # (possibly still-unclaimed) default user, same as everywhere else; a
-        # present token that matches no existing user has nothing to forward,
-        # so the whole attempt is abandoned right here -- never a bind.
-        token = token_from_request(request)
-        if token:
-            username = await svc.user_for_token(token)
-            if username is None:
-                return None
-        else:
-            username = DEFAULT_USERNAME
-        row = await svc.get_user(username)
-        if row is not None and row.token:
-            headers["authorization"] = f"Bearer {row.token}"
+        # this same request's own caller is already bound to, resolved by
+        # `auth.resolve_forwardable_token` (a pure lookup -- see its
+        # docstring and the module docstring above): `None` means a present
+        # token matched no existing user, so there is nothing to forward and
+        # the whole attempt is abandoned right here -- never a bind; an empty
+        # string means a resolved caller with no token yet (e.g. the
+        # still-unclaimed default user), forwarded anonymously rather than
+        # aborted.
+        forward_token = await resolve_forwardable_token(request)
+        if forward_token is None:
+            return None
+        if forward_token:
+            headers["authorization"] = f"Bearer {forward_token}"
 
         timeout = httpx.Timeout(_TOTAL_TIMEOUT_SECS, connect=_CONNECT_TIMEOUT_SECS)
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -167,16 +150,13 @@ async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | N
             )
             return None
 
-        # Built via MutableHeaders.append() (which explicitly preserves
-        # duplicates, per its own docstring) rather than a dict comprehension,
-        # which would silently keep only the last value for any header name
-        # the upstream repeats (e.g. two Set-Cookie headers) -- following the
-        # same precedent already established by app/routers/standby.py's own
-        # upstream proxy for exactly this reason.
-        response_headers = MutableHeaders()
-        for k, v in upstream.headers.multi_items():
-            if k.lower() not in _HOP_BY_HOP_RESPONSE_HEADERS:
-                response_headers.append(k, v)
+        # Preserves duplicate header names (e.g. two Set-Cookie headers) --
+        # see app/http_relay.py's own docstring -- following the same
+        # precedent already established by app/routers/standby.py's own
+        # upstream proxy, which shares this same helper.
+        response_headers = relay_response_headers(
+            upstream.headers.multi_items(), _EXTRA_EXCLUDED_RESPONSE_HEADERS
+        )
         return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
     except Exception as exc:
         # Deliberately broad -- see the docstring above. Covers (non-
