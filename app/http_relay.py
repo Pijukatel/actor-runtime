@@ -3,21 +3,14 @@ between the original caller and a second hop: the standby-forwarding proxy
 (``app/routers/standby.py``, caller <-> Actor container) and the
 upstream-fallback proxy (``app/upstream.py``, caller <-> api.apify.com).
 
-Both need the same hop-by-hop exclusion concept on the headers they copy
-across in either direction. Sharing it here means a fix to what "hop-by-hop"
-covers lands in both places at once, not just the one it happened to be
-patched in.
-
-The two proxies do NOT share the same exclusion set, though -- only the
-mechanism. ``app/upstream.py`` is new code introduced by this same feature, so
-it uses the full RFC 7230 set (``HOP_BY_HOP`` below) plus its own hop-specific
-extras. ``app/routers/standby.py`` predates it and already had its own,
-narrower, historical set (``MINIMAL_HOP_BY_HOP``) plus its own extras; reusing
-this module must never silently widen what standby forwards. Each proxy
-builds its OWN single, fixed ``excluded`` frozenset (its base union its own
-extras) and passes that whole set in -- there is nothing to vary
-independently per call, since each proxy only ever forwards with the one set
-that applies to both its outgoing request and its relayed response.
+Both need the same hop-by-hop-exclusion MECHANISM (build one fixed
+``excluded`` frozenset, filter headers by it) -- shared here so a fix to that
+mechanism lands in both places at once. They do NOT share one exclusion SET,
+though: ``app/upstream.py`` (new code introduced by this same feature) uses
+the full RFC 7230 set below (``HOP_BY_HOP``) plus its own hop-specific extras.
+``app/routers/standby.py`` predates this module and keeps its own, narrower,
+historical exclusion set as a literal in that file instead -- reusing this
+module's mechanism must never silently widen what standby forwards.
 """
 from __future__ import annotations
 
@@ -31,9 +24,7 @@ from starlette.datastructures import MutableHeaders
 # built for the original caller). `app/upstream.py` unions this with its own
 # extra excluded headers (e.g. `content-length`/`content-encoding`,
 # describing bytes that no longer apply once the body has been re-framed or
-# decoded) into the one fixed set it passes to every call below; see this
-# module's own docstring for why `app/routers/standby.py` unions
-# `MINIMAL_HOP_BY_HOP` instead.
+# decoded) into the one fixed set it passes to every call below.
 HOP_BY_HOP = frozenset(
     {
         "connection",
@@ -47,16 +38,6 @@ HOP_BY_HOP = frozenset(
         "upgrade",
     }
 )
-
-# `app/routers/standby.py`'s own historical exclusion set, predating this
-# module: before the two proxies shared any code, standby forwarded
-# everything except exactly `{host, content-length, transfer-encoding,
-# connection}` -- keep-alive/proxy-authenticate/proxy-authorization/te/
-# trailer/trailers/upgrade all passed through unchanged. Preserved here,
-# unchanged, as the base `app/routers/standby.py` unions its own extras onto,
-# so sharing this module's mechanism with `app/upstream.py` never widens what
-# standby forwards as a side effect.
-MINIMAL_HOP_BY_HOP = frozenset({"connection", "transfer-encoding"})
 
 
 def filtered_header_pairs(headers: Iterable[tuple[str, str]], excluded: frozenset[str]) -> list[tuple[str, str]]:

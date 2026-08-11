@@ -62,18 +62,13 @@ _TOTAL_TIMEOUT_SECS = 30.0
 # "missing"), and every local-only route (actor-standby forwarding, logs,
 # console, the runtime-config toggle) -- none of those have a real-platform
 # equivalent reachable the same way.
-_ALLOWLISTED_PATTERNS = [
-    re.compile(r"^/v2/(?:acts|actors)/[^/]+"),
-    re.compile(r"^/v2/actor-runs/[^/]+"),
-    re.compile(r"^/v2/actor-builds/[^/]+"),
-    re.compile(r"^/v2/key-value-stores/[^/]+"),
-    re.compile(r"^/v2/datasets/[^/]+"),
-    re.compile(r"^/v2/request-queues/[^/]+"),
-]
+_ALLOWLISTED = re.compile(
+    r"^/v2/(?:acts|actors|actor-runs|actor-builds|key-value-stores|datasets|request-queues)/[^/]+"
+)
 
 
 def is_fallback_allowlisted(path: str) -> bool:
-    return any(pattern.match(path) for pattern in _ALLOWLISTED_PATTERNS)
+    return _ALLOWLISTED.match(path) is not None
 
 
 async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | None:
@@ -145,7 +140,13 @@ async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | N
             upstream = await client.request(request.method, url, headers=headers, content=body or None)
 
         if not (200 <= upstream.status_code < 300):
-            logger.info(
+            # `warning`, not `info`: the shipped uvicorn config (app/server.py)
+            # leaves every app logger at its default (WARNING, no root
+            # handler) -- only `uvicorn.*` loggers get `log_level="info"` --
+            # so `info` here would never actually reach an operator, leaving
+            # the design's one mitigation for this failure mode ("a clear log
+            # line so it's debuggable") inert in practice.
+            logger.warning(
                 "Upstream fallback %s %s got %s; keeping the local 404",
                 request.method, request.url.path, upstream.status_code,
             )
@@ -165,7 +166,7 @@ async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | N
         # subclass of `httpx.HTTPError`, so a narrower tuple built from that
         # alone would miss it), and every `httpx.HTTPError` from the upstream
         # call itself (timeout, connect error, ...).
-        logger.info("Upstream fallback %s %s failed: %s", request.method, request.url.path, exc)
+        logger.warning("Upstream fallback %s %s failed: %s", request.method, request.url.path, exc)
         return None
 
 

@@ -1,15 +1,18 @@
 """Shared test fixtures: an in-process app wired to a Docker-free stub driver."""
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import http.server
 import json
+import socket
 import threading
 import time
 from pathlib import Path
 
 import httpx
 import pytest_asyncio
+import uvicorn
 
 from app.config import Settings
 from app.db import Database
@@ -17,6 +20,12 @@ from app.driver import BuildResult, RunResult
 from app.main import create_app
 from app.service import Service
 from app.storage import Storage
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def _start_http_server_thread(httpd: http.server.ThreadingHTTPServer) -> threading.Thread:
@@ -132,8 +141,8 @@ class _StandbyProbeHandler(_QuietHandlerMixin, http.server.BaseHTTPRequestHandle
         headers). Shared by ``_handle_multi_header`` (two ``Set-Cookie``
         headers, proving multi-value headers survive) and
         ``_handle_hop_by_hop_echo`` (a fixed RFC-7230 hop-by-hop-ish set --
-        see ``app/http_relay.py``'s ``MINIMAL_HOP_BY_HOP``: none of these
-        must be stripped by the standby-forwarding proxy, unlike the
+        see ``app/routers/standby.py``'s own ``_STANDBY_HOP_BY_HOP``: none of
+        these must be stripped by the standby-forwarding proxy, unlike the
         upstream-fallback proxy, which uses the fuller RFC 7230 set).
         """
         length = int(self.headers.get("content-length") or 0)
@@ -548,3 +557,52 @@ async def wired_malformed_upstream(tmp_path):
     settings = dataclasses.replace(make_settings(tmp_path), apify_upstream_base_url="http://[::1")
     async for pair in _wire(tmp_path, StubDriver(), settings=settings):
         yield pair
+
+
+@pytest_asyncio.fixture
+async def wired_uvicorn(tmp_path):
+    """Like ``wired``, but the app is served by a REAL ``uvicorn`` server on a
+    real loopback socket instead of ``httpx.ASGITransport``.
+
+    Needed for a test that drives the actual, pinned ``apify_client`` package
+    against this runtime: that client's HTTP transport (``impit``) has no
+    ASGI-transport hook, so it can only be pointed at a real socket -- the
+    in-process ``wired`` fixture's ``ASGITransport`` client cannot exercise it
+    at all. Yields ``(service, base_url)``; the caller builds whatever real
+    HTTP client it needs against ``base_url``.
+    """
+    settings = make_settings(tmp_path)
+    settings.runs_dir.mkdir(parents=True, exist_ok=True)
+    settings.builds_dir.mkdir(parents=True, exist_ok=True)
+    db = Database(settings.meta_db_url)
+    await db.create_all()
+    storage = Storage(settings.storage_db_url)
+    await storage.start()
+    driver = StubDriver()
+    service = Service(settings, db, storage, driver)
+    app = create_app(settings, driver)
+    app.state.service = service
+
+    port = _free_port()
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="off")
+    server = uvicorn.Server(config)
+    serve_task = asyncio.create_task(server.serve())
+    # `server.started` flips true only once `Server.startup()` has actually
+    # bound the socket -- polled rather than awaited directly since `serve()`
+    # itself does not return until shutdown.
+    for _ in range(500):
+        if server.started:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        serve_task.cancel()
+        raise RuntimeError("uvicorn test server did not start in time")
+
+    try:
+        yield service, f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        await serve_task
+        await service.stop_standby_watchdog()
+        await storage.stop()
+        await db.dispose()

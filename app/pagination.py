@@ -67,13 +67,14 @@ def paginate(items: list, limit: int | None, offset: int | None) -> list:
 
 
 def paged_envelope(items: list, limit: int | None, offset: int | None, **extra: Any) -> dict:
-    """Build the ``{items, count, limit, ...}`` envelope shared by KV keys and
-    RQ requests -- the one place that decides "which shape does a bare
-    request return" so the two copies of this branch can't quietly drift
-    apart. The per-user aggregate listings (`total` always present, no
-    `limit`) build their own envelope directly instead -- their shape never
-    matched this one closely enough to be worth a shared, flag-branching
-    helper.
+    """Build the ``{items, count, limit, ...}`` envelope shared by RQ requests
+    (bare and paginated alike) and KV keys' own ``offset``-sliced path
+    (always paginated -- a bare KV keys request takes a different, cursor-
+    shaped envelope instead; see ``app/routers/storages.py``'s
+    ``_kv_keys_cursor_envelope``). The per-user aggregate listings (`total`
+    always present, no `limit`) build their own envelope directly instead --
+    their shape never matched this one closely enough to be worth a shared,
+    flag-branching helper.
 
     A bare request (``limit`` and ``offset`` both absent) returns every item
     unsliced, with `limit` echoing the slice's own length -- the SAME key

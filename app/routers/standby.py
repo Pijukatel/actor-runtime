@@ -15,24 +15,31 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
 from ..auth import resolve_standby_caller
-from ..http_relay import MINIMAL_HOP_BY_HOP, filtered_header_pairs, relay_response_headers
+from ..http_relay import filtered_header_pairs, relay_response_headers
 from ..responses import get_service, not_found, standby_start_failed, standby_unavailable
 from ..standby import StandbyReadinessTimeout, StandbyStartError
 
 router = APIRouter()
 
+# This proxy's own historical hop-by-hop exclusion set, predating
+# `app/http_relay.py`'s shared `HOP_BY_HOP` (the fuller RFC 7230 set
+# `app/upstream.py` uses instead): before the two proxies shared any code,
+# standby forwarded everything except exactly these two headers plus its own
+# two extras below -- `keep-alive`/`proxy-authenticate`/`proxy-authorization`/
+# `te`/`trailer`/`trailers`/`upgrade` all pass through unchanged. Kept
+# narrow deliberately: forwarding-wise this route is a black box to whatever
+# the standby Actor's own HTTP server does with those headers, so widening it
+# is a deliberate future call, not a side effect of sharing code with a
+# different proxy.
+_STANDBY_HOP_BY_HOP = frozenset({"connection", "transfer-encoding"})
+
 # This proxy's one fixed exclusion set, used on BOTH the outgoing request to
-# the container and the relayed response: `MINIMAL_HOP_BY_HOP` (deliberately
-# NOT `app/http_relay.py`'s fuller `HOP_BY_HOP` -- this proxy's own
-# historical exclusion set predates that module, and forwarding-wise this
-# route is a black box to whatever the standby Actor's own HTTP server does
-# with e.g. `Keep-Alive`/`TE`/`Upgrade`; widening it is a deliberate future
-# call, not a side effect of sharing code with a different proxy) plus two
+# the container and the relayed response: the narrow set above plus two
 # hop-specific extras: `host` would otherwise name this runtime's own address
 # instead of the container's once httpx builds the request against
 # `target_url`, and `content-length` is recomputed on each leg (by httpx from
 # `content=body` below, by Starlette from the streamed response body).
-_EXCLUDED_HEADERS = MINIMAL_HOP_BY_HOP | {"host", "content-length"}
+_EXCLUDED_HEADERS = _STANDBY_HOP_BY_HOP | {"host", "content-length"}
 
 # Connect-only bound on the standby-forwarding proxy's upstream request below.
 # Read/write/pool intentionally stay unbounded so a legitimately long-lived or

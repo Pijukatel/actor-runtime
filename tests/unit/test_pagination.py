@@ -5,11 +5,18 @@ the contract every non-console (CLI/SDK/curl) caller keeps relying on; supplying
 `limit`/`offset` returns the corresponding slice plus enough total-count
 information to page. KV keys additionally accept an `exclusiveStartKey`
 cursor with a truthful `isTruncated`/`nextExclusiveStartKey` (see the
-"KV keys" section below). See requirements/api.md's "Pagination" section.
+"KV keys" section below); its cursor-mode items each additionally carry a
+`recordPublicUrl` (required by the pinned `apify-client`'s response model)
+and its envelope never carries a `total` (computing one would force the
+full-store scan the cursor pushdown exists to avoid) -- both bare and
+`offset`-sliced items keep the plain `{key, size}` shape. See
+requirements/api.md's "Pagination" section.
 """
 from __future__ import annotations
 
 import json
+
+import httpx
 
 
 def auth(token: str) -> dict:
@@ -39,9 +46,10 @@ async def test_dataset_items_bare_request_is_unpaginated_bare_array(wired):
     # No new headers at all when the caller never asked to page.
     assert not any(k.lower().startswith("x-apify-pagination") for k in resp.headers)
     # Byte-for-byte, not just parsed-equal: a bare request must reproduce the
-    # exact wire body (item key order included), the literal thing
-    # requirements/api.md's "byte-for-byte identical" promise -- and success
-    # criterion 15's own "capture, re-run, diff" verification -- means.
+    # exact wire body (item key order included) -- the literal thing
+    # requirements/api.md's "byte-for-byte identical" promise means: capture
+    # today's response, re-run the identical bare request, diff the two --
+    # they must match exactly.
     assert resp.text == json.dumps([{"i": i} for i in range(150)], separators=(",", ":"))
 
 
@@ -246,6 +254,10 @@ async def test_kv_keys_bare_request_is_unpaginated_and_unchanged(wired):
     assert body["limit"] == 120
     assert body["isTruncated"] is False
     assert len(body["items"]) == 120
+    # Bare items keep their exact pre-cursor-support shape too -- no
+    # `recordPublicUrl` (that field only appears on cursor-mode items, which
+    # a bare request never takes the branch for).
+    assert list(body["items"][0].keys()) == ["key", "size"]
 
 
 async def test_kv_keys_limit_offset_returns_slice_with_total(wired):
@@ -270,6 +282,9 @@ async def test_kv_keys_limit_offset_returns_slice_with_total(wired):
     assert len(body["items"]) == 10
     assert body["isTruncated"] is True
     assert "nextExclusiveStartKey" not in body
+    # Offset-mode items keep the plain shape too -- `recordPublicUrl` is a
+    # cursor-mode-only addition.
+    assert list(body["items"][0].keys()) == ["key", "size"]
 
 
 async def test_kv_keys_limit_only_slices_from_start(wired):
@@ -278,7 +293,11 @@ async def test_kv_keys_limit_only_slices_from_start(wired):
     `limit` must report a truthful `isTruncated`/`nextExclusiveStartKey`, not
     the previously-hardcoded `isTruncated: false` -- this is exactly the
     shape the pinned `apify-client`'s `iterate_keys()` sends on its first
-    page of any store larger than its chunk size."""
+    page of any store larger than its chunk size. Cursor-mode items each
+    carry a `recordPublicUrl` (required by that client's response model) and
+    the envelope carries no `total` at all (see
+    `test_kv_keys_cursor_mode_field_set_has_no_total`, which pins the exact
+    field set)."""
     client, _service = wired
     await _create_user(client, "kate3")
     created = await client.post("/v2/key-value-stores", json={"name": "big3"}, headers=auth("kate3"))
@@ -288,10 +307,12 @@ async def test_kv_keys_limit_only_slices_from_start(wired):
     resp = await client.get(f"/v2/key-value-stores/{store_id}/keys?limit=5", headers=auth("kate3"))
     body = resp.json()["data"]
     assert body["count"] == 5
-    assert body["total"] == 30
+    assert "total" not in body
     assert body["isTruncated"] is True
     assert body["nextExclusiveStartKey"] == "k0004"
     assert [item["key"] for item in body["items"]] == ["k0000", "k0001", "k0002", "k0003", "k0004"]
+    for item in body["items"]:
+        assert item["recordPublicUrl"].endswith(f"/v2/key-value-stores/{store_id}/records/{item['key']}")
 
 
 async def test_kv_keys_limit_without_truncation_is_not_truncated(wired):
@@ -307,8 +328,72 @@ async def test_kv_keys_limit_without_truncation_is_not_truncated(wired):
 
     resp = await client.get(f"/v2/key-value-stores/{store_id}/keys?limit=10", headers=auth("kate3b"))
     body = resp.json()["data"]
+    assert list(body.keys()) == ["items", "count", "limit", "isTruncated"]  # no total, no next cursor
     assert body["count"] == 5
-    assert body["total"] == 5
+    assert body["isTruncated"] is False
+    assert "nextExclusiveStartKey" not in body
+
+
+async def test_kv_keys_cursor_mode_field_set_has_no_total(wired):
+    """Pins cursor mode's exact envelope field set: `items, count, limit,
+    isTruncated, nextExclusiveStartKey` when truncated -- never a `total`,
+    unlike every other paginated branch on this and the other three listing
+    surfaces. Computing one would force a full-store count on every page,
+    defeating the point of the cursor pushdown (see
+    `app/routers/storages.py::_kv_keys_cursor_envelope`)."""
+    client, _service = wired
+    await _create_user(client, "notallytal")
+    created = await client.post(
+        "/v2/key-value-stores", json={"name": "notallytal"}, headers=auth("notallytal")
+    )
+    store_id = created.json()["data"]["id"]
+    await _seed_keys(client, store_id, "notallytal", 20)
+
+    resp = await client.get(f"/v2/key-value-stores/{store_id}/keys?limit=5", headers=auth("notallytal"))
+    body = resp.json()["data"]
+    assert list(body.keys()) == ["items", "count", "limit", "isTruncated", "nextExclusiveStartKey"]
+
+
+async def test_kv_keys_limit_zero_is_a_non_truncating_empty_page(wired):
+    """`limit=0` is a zero-width window: it has nothing to truncate, so it
+    must report an empty page with `isTruncated: False` and no
+    `nextExclusiveStartKey` -- never a truncation claim with no real cursor
+    to resume from."""
+    client, _service = wired
+    await _create_user(client, "zed")
+    created = await client.post("/v2/key-value-stores", json={"name": "zed"}, headers=auth("zed"))
+    store_id = created.json()["data"]["id"]
+    await _seed_keys(client, store_id, "zed", 5)
+
+    resp = await client.get(f"/v2/key-value-stores/{store_id}/keys?limit=0", headers=auth("zed"))
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["items"] == []
+    assert body["count"] == 0
+    assert body["limit"] == 0
+    assert body["isTruncated"] is False
+    assert "nextExclusiveStartKey" not in body
+    assert "total" not in body
+
+
+async def test_kv_keys_limit_zero_with_a_cursor_does_not_loop_the_cursor_back(wired):
+    """The self-contradictory case the fix specifically targets: `limit=0`
+    ALONGSIDE an already-supplied `exclusiveStartKey` must not hand that same
+    cursor straight back as `nextExclusiveStartKey` -- a naive "keep
+    following `nextExclusiveStartKey` until it's absent" follower would
+    otherwise loop forever on the identical request."""
+    client, _service = wired
+    await _create_user(client, "zed2")
+    created = await client.post("/v2/key-value-stores", json={"name": "zed2"}, headers=auth("zed2"))
+    store_id = created.json()["data"]["id"]
+    await _seed_keys(client, store_id, "zed2", 5)
+
+    resp = await client.get(
+        f"/v2/key-value-stores/{store_id}/keys?limit=0&exclusiveStartKey=k0001", headers=auth("zed2")
+    )
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["items"] == []
     assert body["isTruncated"] is False
     assert "nextExclusiveStartKey" not in body
 
@@ -334,10 +419,12 @@ async def test_kv_keys_offset_only_keeps_no_limit_semantics(wired):
 
 
 async def test_kv_keys_cursor_cycle_enumerates_every_key_exactly_once(wired):
-    """Criterion 25: a curl-style `limit` + `exclusiveStartKey` cycle over a
-    store bigger than `limit` must visit every key exactly once, reporting
+    """A curl-style `limit` + `exclusiveStartKey` cycle over a store bigger
+    than `limit` must visit every key exactly once, reporting
     `isTruncated`/`nextExclusiveStartKey` correctly at each step (true+cursor
-    on every page but the last, false+no-cursor on the last)."""
+    on every page but the last, false+no-cursor on the last). Fast and
+    hand-rolled -- pins the envelope mechanics without paying for the real
+    socket the pinned-client test below needs."""
     client, _service = wired
     await _create_user(client, "cyclist")
     created = await client.post("/v2/key-value-stores", json={"name": "cyc"}, headers=auth("cyclist"))
@@ -392,48 +479,40 @@ async def test_kv_keys_exclusive_start_key_with_offset_cursor_wins(wired):
     assert [item["key"] for item in body["items"]] == ["k0005", "k0006", "k0007", "k0008", "k0009"]
 
 
-async def test_kv_keys_iterate_keys_apify_client_paging_loop_over_1000_keys(wired):
-    """Criterion 26: the pinned `apify-client`'s `iterate_keys()`
-    (`requirements-dev.txt` pins 3.1.0) pages KV keys via
-    `get_cursor_iterator_async` -- see
-    `.venv/lib/*/site-packages/apify_client/_pagination.py` -- which, with no
-    caller-supplied overall `limit`, requests `limit=1000` (its
-    `DEFAULT_CHUNK_SIZE`) per call and follows each page's
-    `nextExclusiveStartKey` as the next call's `exclusiveStartKey` until one
-    comes back `None`. That version's HTTP transport is `impit`, a
-    non-httpx binding with no ASGI-transport hook, so it cannot be pointed at
-    this suite's in-process `wired` fixture (see requirements/test.md); this
-    test instead reproduces that exact request/loop shape directly against
-    `wired` -- same per-call `limit`, same cursor field, same stop condition
-    -- against a store bigger than the 1000-key chunk, and asserts every key
-    comes back exactly once."""
-    client, service = wired
-    await _create_user(client, "chunky")
-    created = await client.post("/v2/key-value-stores", json={"name": "chunky"}, headers=auth("chunky"))
-    store_id = created.json()["data"]["id"]
+async def test_kv_keys_pinned_apify_client_iterate_keys_pages_a_store_larger_than_its_chunk_size(
+    wired_uvicorn,
+):
+    """The REAL, pinned `apify-client` (`requirements-dev.txt` pins 3.1.0,
+    not a hand-rolled reproduction of its loop) must page a store larger than
+    its internal chunk size end to end via `iterate_keys()`. That client's
+    HTTP transport (`impit`) has no ASGI-transport hook, so this drives it
+    against a real `uvicorn` server on a real loopback socket
+    (`wired_uvicorn`, tests/conftest.py) instead of the in-process `wired`
+    fixture every other test in this module uses. Exercises both the
+    client's default chunk size (1000) and a second, smaller one, over the
+    SAME seeded store, so the fix (cursor-mode items carrying
+    `recordPublicUrl`, which `iterate_keys()` requires to validate a page at
+    all) isn't accidentally tied to one particular page size."""
+    from apify_client import ApifyClientAsync
+
+    service, base_url = wired_uvicorn
+    async with httpx.AsyncClient(base_url=base_url) as bootstrap:
+        await bootstrap.post("/v2/users", json={"name": "chunky"})
+        created = await bootstrap.post(
+            "/v2/key-value-stores", json={"name": "chunky"}, headers=auth("chunky")
+        )
+        store_id = created.json()["data"]["id"]
+
     total = 1050
     await _seed_keys_fast(service, store_id, total)
     expected = {f"k{i:04d}" for i in range(total)}
 
-    seen: list[str] = []
-    cursor = None
-    pages = 0
-    while True:
-        qs = "limit=1000" + (f"&exclusiveStartKey={cursor}" if cursor else "")
-        resp = await client.get(f"/v2/key-value-stores/{store_id}/keys?{qs}", headers=auth("chunky"))
-        assert resp.status_code == 200
-        body = resp.json()["data"]
-        pages += 1
-        items = body["items"]
-        seen.extend(item["key"] for item in items)
-        cursor = body.get("nextExclusiveStartKey")
-        if not items or cursor is None:
-            break
-        assert pages < 20  # sanity bound against an infinite loop on a bug
-
-    assert len(seen) == len(set(seen)) == total  # exactly once, no duplicates
-    assert set(seen) == expected
-    assert pages == 2  # 1050 keys, chunk size 1000 -> one full page + one remainder page
+    client = ApifyClientAsync(token="chunky", api_url=base_url, api_public_url=base_url)
+    kv_store = client.key_value_store(store_id)
+    for chunk_size in (None, 250):  # default chunk size, then a non-default one
+        seen = [key.key async for key in kv_store.iterate_keys(chunk_size=chunk_size)]
+        assert len(seen) == len(set(seen)) == total  # exactly once, no duplicates
+        assert set(seen) == expected
 
 
 # --------------------------------------------------------------- RQ requests

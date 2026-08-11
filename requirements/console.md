@@ -144,19 +144,14 @@
   other callers. Each of these views shows a **"showing N–M of T"** line, using
   the total the API surface reports, and **Prev/Next** controls that step by 100
   and disable at either end of the result set. On the per-user storage list, the
-  show/hide-unnamed checkbox filters the already-fetched 100-item page only (it
-  never changes what is fetched, or how far Prev/Next step, since the filter is
-  a display-only, page-local concern keyed off the raw fetched page, not the
-  filtered one). With the checkbox showing every row, the "N–M of T" line above
-  is accurate as-is. With it hiding some rows, that N–M range would claim the
-  visible rows sit at contiguous positions in the total — false once any row on
-  the page is hidden, since the visible rows are then a scattered subset, not a
-  contiguous slice — so the line instead reads **"showing V of P on this
-  page · T total"**, where V is the count actually visible after the filter
-  and P is the page's own fetched row count (NOT a hardcoded 100 — a partial
-  last page has fewer than 100 rows to begin with): every number in it stays
-  true regardless of which rows are hidden, at the cost of dropping the
-  position claim while any row is filtered out.
+  show/hide-unnamed checkbox filters the already-fetched 100-item page only —
+  Prev/Next still step by the full fetched page (`items.length`), never the
+  filtered subset. With every row shown, the "N–M of T" line above is accurate
+  as-is; once any row is hidden, that range would misstate the visible rows'
+  positions, so the line instead reads **"showing V of P on this
+  page · T total"** (V = the count actually visible after the filter, P = the
+  page's own fetched row count) — see `filteredPagingLineEl`'s own comment
+  (`app/console/storage_tab.js`) for why.
   **Creating or deleting a named storage always returns the
   per-user storage list to its first page** (offset reset to 0), rather than
   re-fetching whatever offset was already showing — a newly created storage is
@@ -184,13 +179,17 @@
     **dataset**, whose pagination is pushed all the way down to crawlee (see
     `storage.md`), that second fetch would otherwise reintroduce, server-side,
     the exact unbounded per-request read this pagination feature exists to
-    remove; for a **KV store**, `list_keys` already performs an unbounded
-    `kv_keys()` read on every page fetch regardless (`storage.md`'s documented
-    local-only shortcut — KV has no offset/limit-aware crawlee read to push
-    pagination down to), so the second fetch would not be a NEW unbounded
-    read, merely a second, redundant one on top of the unbounded read the
-    listing itself already pays for. Either way, avoiding the second fetch is
-    strictly better, just for a narrower reason on the KV side.
+    remove; for a **KV store**, the console always pages via `offset` (see
+    "Storage views always page explicitly" above), and KV's `offset`-based
+    path already performs an unbounded `kv_keys()` read on every page fetch
+    regardless (`storage.md`'s documented local-only shortcut — unlike KV's
+    separate `exclusiveStartKey`-cursor path, which crawlee's own
+    `iterate_keys()` does push down page-sized, `offset` has no equivalent on
+    crawlee's KVS client to push down to), so the second fetch would not be a
+    NEW unbounded read, merely a second, redundant one on top of the
+    unbounded read the listing itself already pays for. Either way, avoiding
+    the second fetch is strictly better, just for a narrower reason on the KV
+    side.
   - For **request queues**, whose extra stats fields
     (`pendingRequestCount`/`handledRequestCount`/`hadMultipleClients`) are not
     present in the requests-listing page response, the stats line is still

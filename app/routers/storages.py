@@ -312,16 +312,28 @@ async def _kv_keys_cursor_envelope(
     to page correctly at any store size.
 
     A bare call (``exclusive_start_key`` and ``limit`` both ``None``) returns
-    every key with ``isTruncated: False`` and no ``exclusiveStartKey``/
-    ``nextExclusiveStartKey``/``total`` fields at all -- byte-for-byte the
-    same shape this surface had before cursor support existed. Either param
-    present adds an additive ``total`` (a full count, appended last so it
-    never disturbs the original field order), matching the other three
-    listing surfaces' own additive-`total` convention.
+    every key as a plain ``{key, size}`` pair, with ``isTruncated: False`` and
+    no ``exclusiveStartKey``/``nextExclusiveStartKey`` fields at all --
+    byte-for-byte the same shape this surface had before cursor support
+    existed. Either param present is real cursor-mode paging: each item
+    additionally carries a ``recordPublicUrl`` (the pinned apify-client's
+    ``KeyValueStoreKey`` model requires it on every item it validates), and
+    the envelope never gains a ``total`` field -- unlike the offset-sliced
+    path below, which already holds the full list and can report one for
+    free, computing a store-wide count here would force exactly the
+    full-store scan the cursor pushdown exists to avoid, turning an O(page)
+    read into an O(store) one on every page.
     """
     page, is_truncated, next_key = await svc.storage.kv_keys_page(
         store_id, exclusive_start_key=exclusive_start_key, limit=limit
     )
+    paginated = limit is not None or exclusive_start_key is not None
+    if paginated:
+        base = svc.settings.container_api_base_url
+        page = [
+            {**item, "recordPublicUrl": f"{base}/v2/key-value-stores/{store_id}/records/{item['key']}"}
+            for item in page
+        ]
     envelope: dict[str, Any] = {"items": page, "count": len(page)}
     envelope["limit"] = limit if limit is not None else len(page)
     if exclusive_start_key is not None:
@@ -329,8 +341,6 @@ async def _kv_keys_cursor_envelope(
     envelope["isTruncated"] = is_truncated
     if next_key is not None:
         envelope["nextExclusiveStartKey"] = next_key
-    if limit is not None or exclusive_start_key is not None:
-        envelope["total"] = len(await svc.storage.kv_keys(store_id))
     return envelope
 
 

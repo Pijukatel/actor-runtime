@@ -281,6 +281,26 @@ async def test_fallback_upstream_non_2xx_collapses_to_local_404(wired_upstream, 
     assert len(fake_upstream.requests) == 1  # the attempt was made, and failed
 
 
+async def test_fallback_upstream_failure_logs_at_warning_level(wired_upstream, fake_upstream, caplog):
+    """The shipped uvicorn config (app/server.py) leaves every app logger at
+    its default effective level (WARNING, no root handler) -- only the
+    `uvicorn.*` loggers get `log_level="info"` -- so a diagnostic logged at
+    `info` here would never actually reach an operator. The design's own
+    mitigation for this failure mode ("a clear log line so it's debuggable")
+    only holds if the collapse-to-404 diagnostic is emitted at `warning`."""
+    client, service = wired_upstream
+    service.upstream_fallback_enabled = True
+    fake_upstream.set_response(500, b"boom")
+
+    with caplog.at_level("WARNING", logger="app.upstream"):
+        resp = await client.get("/v2/key-value-stores/nobody~nothing/keys")
+    assert resp.status_code == 404
+    assert any(
+        record.name == "app.upstream" and record.levelname == "WARNING" and "Upstream fallback" in record.getMessage()
+        for record in caplog.records
+    )
+
+
 async def test_fallback_upstream_connect_error_collapses_to_local_404(wired_upstream, fake_upstream):
     client, service = wired_upstream
     service.upstream_fallback_enabled = True

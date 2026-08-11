@@ -480,11 +480,14 @@
     mirrors the effective limit — the requested value, or (when only `offset`
     was given) the slice's own returned length — never the internal "no cap"
     sentinel the storage layer applies for a bare request.
-  - KV keys and RQ requests gain an **additive** `total` field in their
-    envelope (alongside their existing `count`/`limit` echoes) only when
-    `limit`/`offset` (or, for KV keys, `exclusiveStartKey`) are supplied —
-    absent from the bare-request shape, and appended last so it never
-    disturbs each surface's original field order (`items, count, limit, ...`).
+  - RQ requests gain an **additive** `total` field in their envelope
+    (alongside their existing `count`/`limit` echoes) whenever `limit`/`offset`
+    are supplied — absent from the bare-request shape, and appended last so it
+    never disturbs the surface's original field order (`items, count, limit,
+    ...`). KV keys' own `offset`-sliced path (see below) gains the same
+    additive `total` the same way; KV keys' cursor-mode path never does (see
+    "KV keys additionally support cursor pagination" below — it is not an
+    oversight, it is the whole point of the pushdown).
   - The per-user storage listings already emit `{total, count, items}` (same
     field order as their `my_actors`/`my_builds`/`my_runs` siblings);
     `count`/`items` reflect the requested slice, `total` the full count.
@@ -495,12 +498,30 @@
 - **KV keys additionally support cursor pagination**
   (`GET /v2/key-value-stores/{id}/keys`), matching the real API's own
   `ListOfKeys` contract closely enough for the pinned `apify-client`'s
-  `iterate_keys()` to page correctly at any store size:
+  `iterate_keys()` to page correctly at any store size. This surface has two
+  distinct item shapes, chosen by which paging mechanism a request takes:
+  - **Bare, and `offset`-sliced (console-style), items are `{key, size}`** —
+    byte-for-byte the shape this surface has always returned.
+  - **Cursor-mode items (`limit` and/or `exclusiveStartKey` supplied) are
+    `{key, size, recordPublicUrl}`** — the pinned `apify-client`'s
+    `KeyValueStoreKey` response model requires `recordPublicUrl` (a valid URL)
+    on every item it validates, so cursor-mode items each carry one: this
+    runtime's own absolute URL for that key's record
+    (`{apiBaseUrl}/v2/key-value-stores/{id}/records/{key}`, following the same
+    `container_api_base_url`-based construction `standbyUrl`/`consoleUrl`
+    already use elsewhere in this API). A bare request never adds this field
+    — the byte-for-byte contract above holds because "bare" and "cursor-mode"
+    are different branches, not because the field is optional within cursor
+    mode.
   - A caller-supplied `exclusiveStartKey` is forwarded straight through to
     crawlee's own ascending `key > exclusiveStartKey` filter
     (`iterate_keys(exclusive_start_key=..., limit=...)`) rather than sliced
     from an already-fetched full list, so this scales with the page size, not
-    the store size.
+    the store size. Consequently, **cursor-mode responses never include a
+    `total` field**: computing one would require a full-store count on every
+    page, which would defeat the pushdown this path exists for. A caller that
+    needs a total must use the `offset`-sliced path instead (which already
+    holds the full list and reports `total` for free).
   - Whenever a supplied `limit` truncates the result — with or without an
     `exclusiveStartKey` — the response reports a truthful `isTruncated: true`
     plus `nextExclusiveStartKey` set to the last key actually returned;
@@ -510,6 +531,12 @@
     `limit` that does NOT truncate (the store has no more keys beyond the
     page) reports `isTruncated: false` and omits `nextExclusiveStartKey`
     entirely, matching the real API.
+  - **`limit=0`** is a zero-width window that by definition has nothing to
+    truncate: it reports `items: []`, `count: 0`, `isTruncated: false`, and no
+    `nextExclusiveStartKey` — never a truncation with no real cursor to
+    resume from (or, given an input cursor, the unchanged cursor handed back,
+    which would loop a naive "keep following `nextExclusiveStartKey`"
+    follower forever).
   - **Interaction with `offset`:** the real API's own KV-keys endpoint has no
     `offset` concept at all — `offset` is this runtime's own console-only
     paging mechanism (still sliced from an already-fetched full list, per
@@ -522,9 +549,10 @@
     never a `nextExclusiveStartKey` — offset-based paging has no cursor to
     hand back.
   - A bare request (no `limit`, `offset`, or `exclusiveStartKey`) is
-    completely unaffected: every key, `isTruncated: false`, no
-    `exclusiveStartKey`/`nextExclusiveStartKey`/`total` fields at all — the
-    identical shape this surface had before cursor support existed.
+    completely unaffected: every key as a plain `{key, size}`, `isTruncated:
+    false`, no `exclusiveStartKey`/`nextExclusiveStartKey`/`total`/
+    `recordPublicUrl` fields at all — the identical shape this surface had
+    before cursor support existed.
   - RQ requests have no analogous cursor support (`exclusiveStartId`) yet —
     a documented follow-up; its envelope has no `isTruncated` field at all.
 - `limit`/`offset` must each be a non-negative integer or the request is `400`

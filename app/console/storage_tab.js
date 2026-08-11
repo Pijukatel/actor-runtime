@@ -224,17 +224,9 @@ function renderStorages() {
   const cache = storageItemsCache[slug] || { items: [], total: 0 };
   const items = cache.items;
   const visible = showUnnamedStorages ? items : items.filter((st) => st.named === true);
-  // The "show unnamed" checkbox filters the already-fetched page only (see
-  // its own wiring below): it never changes what was fetched or how far
-  // Prev/Next step. With the filter OFF, every fetched row is visible, so
-  // the normal "showing N-M of T" range line is accurate; with it ON, the
-  // visible rows are a scattered subset of the page, so N-M would claim
-  // positions in the result set that aren't what's actually on screen --
-  // `filteredPagingLineEl` reports only counts that stay true either way
-  // (how many of this page are shown, and the grand total) instead. Prev/Next
-  // stay keyed off the raw fetched page (`items.length`) below, since that --
-  // not the filter -- determines whether there is more of the underlying
-  // result set to step to.
+  // See `filteredPagingLineEl`'s own comment above for why the wording
+  // changes once any row is filtered out. Prev/Next below stay keyed off the
+  // raw fetched page (`items.length`), never the filtered subset.
   detail.appendChild(
     showUnnamedStorages
       ? pagingLineEl(storageListOffset, visible.length, cache.total)

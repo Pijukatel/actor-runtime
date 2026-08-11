@@ -135,15 +135,6 @@ async function refreshUser() {
   if (el) el.textContent = (me && me.username) || "local-user";
 }
 
-// Guards the PERIODIC re-read (see periodicRefresh() below) against a race
-// with an in-flight user-initiated flip: a tick landing between the
-// checkbox's own `change` event and its PUT's completion would otherwise
-// re-read the OLD server state and visually snap the checkbox back, an
-// instant before setFallbackEnabled's own re-read below corrects it anyway.
-// setFallbackEnabled's own call to refreshFallbackToggle() is exempt --
-// that IS the authoritative post-PUT read this guard exists to protect.
-let fallbackTogglePutInFlight = false;
-
 // The global "API fallback" toggle: one shared runtime-wide switch, reflected
 // in the header on every view. The GET is token-free (like the user list)
 // since merely reading it is not per-user state; the PUT is NOT token-free
@@ -165,21 +156,16 @@ async function refreshFallbackToggle() {
 }
 
 async function setFallbackEnabled(enabled) {
-  fallbackTogglePutInFlight = true;
-  try {
-    await api("/v2/runtime-config", {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ upstreamFallbackEnabled: enabled }),
-    });
-    // Re-read the server's actual resulting state rather than assume the PUT
-    // took effect as requested -- this is a shared runtime-global switch, so a
-    // rejected/raced PUT must never leave this checkbox showing a flip that
-    // never happened.
-    await refreshFallbackToggle();
-  } finally {
-    fallbackTogglePutInFlight = false;
-  }
+  await api("/v2/runtime-config", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ upstreamFallbackEnabled: enabled }),
+  });
+  // Re-read the server's actual resulting state rather than assume the PUT
+  // took effect as requested -- this is a shared runtime-global switch, so a
+  // rejected/raced PUT must never leave this checkbox showing a flip that
+  // never happened.
+  await refreshFallbackToggle();
 }
 
 // Switching users is client-side: pick an existing user's stored token and send
@@ -189,12 +175,6 @@ async function setFallbackEnabled(enabled) {
 // switch takes effect in place rather than snapping back to a fixed view.
 function switchTo(token) {
   setToken(token == null ? "" : token);
-  // No explicit storage-list reset needed here: `loadStorages`'s own model
-  // (storage_tab.js) already starts back at the first page whenever the
-  // acting user's token differs from the last load, so a switch to a user
-  // with fewer items than the previous one's offset can never land on a
-  // stale, empty page (Next disabled) the moment renderRoute() re-fetches
-  // the same storage slug.
   refreshUser();
   refreshUserSelect();
   renderRoute();
@@ -410,12 +390,10 @@ function periodicRefresh() {
   // every view, shared across ports/users), so it refreshes unconditionally
   // -- unlike renderRoute() below, gated to the routes that tolerate a
   // re-render -- catching a flip made from another tab/port within one
-  // interval instead of only on the next full page load. Skipped while a
-  // user-initiated flip is still in flight (see `fallbackTogglePutInFlight`),
-  // so a tick landing mid-flip can't re-read the stale value and visually
-  // snap the checkbox back; `.catch()` swallows a transient fetch failure
-  // (e.g. the API unreachable) instead of an unhandled rejection every 4s.
-  if (!fallbackTogglePutInFlight) refreshFallbackToggle().catch(() => {});
+  // interval instead of only on the next full page load. `.catch()` swallows
+  // a transient fetch failure (e.g. the API unreachable) instead of an
+  // unhandled rejection every 4s.
+  refreshFallbackToggle().catch(() => {});
   if (shouldAutoRefresh()) renderRoute();
 }
 

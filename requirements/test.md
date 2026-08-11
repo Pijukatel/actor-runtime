@@ -370,8 +370,9 @@ one of these paths (however it names its id) without them.
 
 ### KV-keys cursor pagination (standing regression checks)
 
-Automated coverage (Docker-free via the `wired` fixture) MUST additionally exist
-for the KV-keys surface's `exclusiveStartKey` cursor contract:
+Automated coverage (Docker-free; mostly via the `wired` fixture, except the
+pinned-client check below, which needs a real socket) MUST additionally
+exist for the KV-keys surface's `exclusiveStartKey` cursor contract:
  - **Curl-style cycle enumerates every key exactly once.** Against a store
    seeded with more keys than a chosen `limit`, repeatedly requesting with
    `limit` and feeding each response's `nextExclusiveStartKey` back as the
@@ -388,18 +389,23 @@ for the KV-keys surface's `exclusiveStartKey` cursor contract:
    both MUST behave identically to the same request with `offset` omitted
    (i.e. `offset` is silently ignored once a cursor is present), never a
    combination of the two.
- - **The pinned `apify-client`'s own paging algorithm succeeds against a
-   store larger than its internal chunk size.** `apify_client`'s
+ - **The real, pinned `apify-client` succeeds against a store larger than its
+   internal chunk size.** `apify_client`'s
    `KeyValueStoreClientAsync.iterate_keys()` (pinned in
-   `requirements-dev.txt`) pages via `limit=1000` (its `DEFAULT_CHUNK_SIZE`)
-   and follows `nextExclusiveStartKey` until it comes back `None` — the
-   pinned version's HTTP transport (`impit`, not `httpx`) cannot be pointed
-   at this suite's ASGI-transport `wired` fixture without a real socket, so
-   coverage reproduces that exact request/loop shape directly against `wired`
-   (first call bare `limit=1000`, each subsequent call's `exclusiveStartKey`
-   taken from the previous response's `nextExclusiveStartKey`, stopping when
-   `items` is empty or `nextExclusiveStartKey` is absent) against a store
-   seeded with over 1000 keys, and asserts every key comes back exactly once.
+   `requirements-dev.txt`) pages via `limit=1000` (its `DEFAULT_CHUNK_SIZE`
+   by default) and follows `nextExclusiveStartKey` until it comes back
+   `None`. That client's HTTP transport (`impit`, not `httpx`) has no
+   ASGI-transport hook, so it cannot be driven against the in-process
+   `wired` fixture at all — coverage instead boots the app under a real
+   `uvicorn` server on a loopback socket (see `tests/conftest.py`'s
+   `wired_uvicorn` fixture) and drives an actual `ApifyClientAsync` against
+   it, over a store seeded with more than 1000 keys, asserting every key
+   comes back exactly once for both the client's default chunk size and at
+   least one other, non-default chunk size. A separate, fast hand-rolled
+   test reproduces the same request/loop shape directly against `wired`
+   (first call bare `limit`, each subsequent call's `exclusiveStartKey` taken
+   from the previous response's `nextExclusiveStartKey`) purely to pin the
+   envelope mechanics without paying for a real socket on every run.
  - **The bare-request shape is unaffected by cursor support existing** — the
    existing bare-request KV-keys test (key order `items, count, limit,
    isTruncated`, no additive fields) MUST keep passing unchanged; it is the

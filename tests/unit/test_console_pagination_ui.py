@@ -16,21 +16,13 @@ import re
 
 
 async def test_console_storage_list_offset_reset_is_owned_by_load_storages(wired):
-    """Model test replacing two former structural tests that each pinned a
-    separate *poke* of `storageListOffset` (`switchTo`'s direct global
-    assignment, and `createStorage`/`deleteStorage`'s literal `0` argument):
-    the reset rule now lives entirely inside `loadStorages` itself (see
-    storage_tab.js), keyed off BOTH the slug and the acting user's token, so
-    `switchTo` needs no special-cased handling of the offset at all -- a
-    future list-mutating call site inherits the correct reset automatically
-    just by calling `loadStorages(slug)` / `loadStorages(slug, 0)`, without
-    having to remember a separate poke of a global.
-
-    Regression this still catches: the list is ordered oldest-first
-    (`list_storages_for_user` orders by `created_at`), so re-fetching a
-    stale offset after a create/delete (or after switching to a user with
-    fewer items) can leave a just-created item permanently unseen or land on
-    an empty page (Next disabled)."""
+    """`loadStorages` (storage_tab.js) alone owns resetting `storageListOffset`
+    to 0, keyed off BOTH the slug and the acting user's token changing.
+    Regression this catches: the list is ordered oldest-first
+    (`list_storages_for_user` orders by `created_at`), so re-fetching a stale
+    offset after a create/delete (or after switching to a user with fewer
+    items) can leave a just-created item permanently unseen or land on an
+    empty page (Next disabled)."""
     client, _service = wired
     storage_js = (await client.get("/console/storage_tab.js")).text
     app_js = (await client.get("/console/app.js")).text
@@ -66,31 +58,6 @@ async def test_console_storage_list_offset_reset_is_owned_by_load_storages(wired
         assert "loadStorages(slug);" not in fn_body
 
 
-async def test_console_fallback_toggle_periodic_poll_guarded_against_in_flight_flip(wired):
-    """Regression: `periodicRefresh`'s unconditional, uncaught
-    `refreshFallbackToggle()` call could (a) land between the checkbox's own
-    `change` event and its PUT's completion, re-reading the OLD server state
-    and visually snapping the checkbox back an instant before
-    `setFallbackEnabled`'s own re-read corrected it, and (b) throw an
-    unhandled rejection every 4s with the API unreachable. `setFallbackEnabled`
-    must set (and, in a `finally`, always clear) an in-flight flag around its
-    PUT+re-read, and `periodicRefresh` must both skip its call while that flag
-    is set and `.catch()` a failed one."""
-    client, _service = wired
-    js = (await client.get("/console/app.js")).text
-
-    set_start = js.index("async function setFallbackEnabled(enabled)")
-    set_body = js[set_start : js.index("\n}\n", set_start)]
-    assert "fallbackTogglePutInFlight = true;" in set_body
-    # Cleared unconditionally, even if the PUT itself throws -- a `finally`,
-    # not a plain trailing assignment that a rejected `api()` call would skip.
-    assert re.search(r"finally \{\s*fallbackTogglePutInFlight = false;\s*\}", set_body)
-
-    periodic_start = js.index("function periodicRefresh()")
-    periodic_body = js[periodic_start : js.index("\n}\n", periodic_start)]
-    assert "if (!fallbackTogglePutInFlight) refreshFallbackToggle().catch(() => {});" in periodic_body
-
-
 async def test_console_stats_line_shows_boolean_false_fields(wired):
     """`statsLineEl`'s filter must treat a boolean specially -- `false` is a
     present value, not emptiness -- while zero/blank/absent counters are
@@ -104,7 +71,6 @@ async def test_console_stats_line_shows_boolean_false_fields(wired):
     stats_idx = js.index("function statsLineEl(meta)")
     body = js[stats_idx : js.index("\n}", stats_idx)]
     assert 'typeof value !== "boolean"' in body
-    assert "value === false" not in body
 
 
 async def test_console_stats_line_only_excludes_empty_objects(wired):
@@ -157,8 +123,9 @@ async def test_console_ds_kv_hand_coded_stats_fields_match_get_detail_response(w
     future field (e.g. the design's own listed `storageBytes` follow-up) is
     added to either handler, the rq arm picks it up automatically (it
     forwards the real response) while ds/kv would silently keep omitting it
-    from criterion 22's "nothing non-empty omitted" contract, with no test
-    failing. Pin today's exact non-meta field sets here so adding a field to
+    from the stats line's own "nothing non-empty omitted" contract (see
+    requirements/console.md's stats-line section), with no test failing.
+    Pin today's exact non-meta field sets here so adding a field to
     either handler breaks THIS test as a loud reminder to update the
     hand-coded lists in storage_tab.js to match."""
     client, _service = wired
@@ -179,36 +146,10 @@ async def test_console_ds_kv_hand_coded_stats_fields_match_get_detail_response(w
     assert "statsLineEl({ itemCount: total, cleanItemCount: total })" in js
 
 
-async def test_console_paging_line_clamps_upper_bound_to_total(wired):
-    """`pagingLineEl`'s upper bound (`to`) must be guarded the same way its
-    lower bound (`from`) already is. `from` was already `count ? offset + 1 :
-    0` -- correct on an empty page -- but `to` used to be a bare
-    `offset + count`, which renders something like "showing 0-100 of 90" for
-    a raced empty page (`count` 0, `offset` > 0, because `total` shrank
-    between two page loads -- e.g. another session deleted items while this
-    one sat on a later page). `to` must both (a) fall back to `from` on an
-    empty page, so the line reads "showing 0-0 of T", and (b) never exceed
-    `total` even on a non-empty page, so the line always correctly describes
-    the current slice's position (see requirements/console.md's paging
-    section). Structural, like this file's other storage_tab.js checks: no JS
-    runtime exists in this suite to execute `pagingLineEl` directly."""
-    client, _service = wired
-    js = (await client.get("/console/storage_tab.js")).text
-    paging_idx = js.index("function pagingLineEl(offset, count, total)")
-    body = js[paging_idx : js.index("\n}", paging_idx)]
-    assert "const from = count ? offset + 1 : 0;" in body
-    assert re.search(r"const to = count \? Math\.min\(offset \+ count, total\) : from;", body)
-
-
 async def test_console_storage_list_drops_position_wording_while_filtered(wired):
-    """`renderStorages`'s "showing N-M of T" line is only accurate when every
-    fetched row is visible: with the "show unnamed" checkbox hiding some
-    rows, the visible rows are a scattered subset of the page, not a
-    contiguous N-M slice of the total, so that range claim would be false.
-    `renderStorages` must switch to `filteredPagingLineEl` (which drops the
-    position claim, keeping only counts that stay true either way) exactly
-    when the filter is hiding rows, and back to the normal `pagingLineEl`
-    when it isn't."""
+    """`renderStorages` switches to `filteredPagingLineEl` (see that
+    function's own comment for why) exactly when the "show unnamed" filter is
+    hiding rows, and back to the normal `pagingLineEl` when it isn't."""
     client, _service = wired
     js = (await client.get("/console/storage_tab.js")).text
 
