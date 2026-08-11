@@ -8,7 +8,7 @@ reverse-proxies the request with a streamed response.
 """
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator
 
 import httpx
 from fastapi import APIRouter, Request
@@ -46,25 +46,6 @@ _EXCLUDED_HEADERS = frozenset({"connection", "transfer-encoding", "host", "conte
 # var, no test -- has ever needed to override this value; if that changes, it
 # can be promoted to a `Settings` field again at that point.
 _STANDBY_FORWARD_CONNECT_TIMEOUT_SECS = 10.0
-
-
-def _filtered_header_pairs(headers: Iterable[tuple[str, str]], excluded: frozenset[str]) -> list[tuple[str, str]]:
-    """Every ``(name, value)`` pair from ``headers`` except ``excluded``, in
-    order, duplicates included -- a dict comprehension would silently keep
-    only the last value for a repeated header name (e.g. two Cookie headers).
-    """
-    return [(k, v) for k, v in headers if k.lower() not in excluded]
-
-
-def _relay_response_headers(headers: Iterable[tuple[str, str]], excluded: frozenset[str]) -> MutableHeaders:
-    """``_filtered_header_pairs`` built into a ``MutableHeaders`` via
-    ``.append()`` (which explicitly preserves duplicates) rather than a dict
-    comprehension, so e.g. two ``Set-Cookie`` headers both reach the caller.
-    """
-    result = MutableHeaders()
-    for k, v in _filtered_header_pairs(headers, excluded):
-        result.append(k, v)
-    return result
 
 
 @router.api_route(
@@ -112,7 +93,7 @@ async def forward_to_standby(actor_id: str, path: str, request: Request):
         # Cookie headers), silently breaking the "headers... unchanged"
         # forwarding guarantee. httpx accepts a sequence of pairs directly and
         # preserves duplicates through to the wire.
-        forward_headers = _filtered_header_pairs(request.headers.items(), _EXCLUDED_HEADERS)
+        forward_headers = [(k, v) for k, v in request.headers.items() if k.lower() not in _EXCLUDED_HEADERS]
         target_url = f"{endpoint}/{path}"
         if request.url.query:
             target_url += f"?{request.url.query}"
@@ -166,7 +147,11 @@ async def forward_to_standby(actor_id: str, path: str, request: Request):
             await client.aclose()
             svc.mark_standby_request_finished(actor_id)
 
-    # Preserves duplicate header names (e.g. more than one Set-Cookie), so a
-    # standby Actor emitting several reaches the original caller intact.
-    response_headers = _relay_response_headers(upstream.headers.multi_items(), _EXCLUDED_HEADERS)
+    # Built via `.append()` (which explicitly preserves duplicates) rather
+    # than a dict comprehension, so e.g. two Set-Cookie headers from a
+    # standby Actor both reach the original caller intact.
+    response_headers = MutableHeaders()
+    for k, v in upstream.headers.multi_items():
+        if k.lower() not in _EXCLUDED_HEADERS:
+            response_headers.append(k, v)
     return StreamingResponse(_body(), status_code=upstream.status_code, headers=response_headers)

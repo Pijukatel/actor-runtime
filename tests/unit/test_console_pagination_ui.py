@@ -338,19 +338,16 @@ async def test_console_fallback_toggle_present_and_wired_to_runtime_config(wired
 
 
 async def test_console_fallback_toggle_guards_against_a_stale_periodic_repaint(wired):
-    """A periodic 4s-tick GET issued just before the user flips the toggle can
+    """A periodic 4s-tick GET issued before the user flips the toggle can
     resolve AFTER that flip's own PUT+re-GET (response ordering over the
     network is not guaranteed to match request issue order) and repaint the
     checkbox back to the pre-flip value -- the dangerous direction, since it
-    shows OFF while the runtime is actually ON. `setFallbackEnabled` must bump
-    a monotonically-increasing generation counter on every flip, and
-    `refreshFallbackToggle` must capture it BEFORE issuing its own GET and
-    skip the repaint if the counter has since moved. `setFallbackEnabled` must
-    also bump the counter a SECOND time once its own PUT resolves, before its
-    trailing refresh: a periodic tick that fires between the first bump and
-    the PUT's resolution shares that same (already-bumped) generation, so
-    without the second bump it could still land after the flip's own trailing
-    refresh below."""
+    shows OFF while the runtime is actually ON, no matter how far into the
+    flip that earlier GET was still in flight. `setFallbackEnabled` must bump
+    a monotonically-increasing generation counter exactly once, after its own
+    PUT resolves and before its own trailing refresh, and
+    `refreshFallbackToggle` must capture the counter BEFORE issuing its own
+    GET and skip the repaint if the counter has since moved."""
     client, _service = wired
     js = (await client.get("/console/app.js")).text
 
@@ -360,19 +357,13 @@ async def test_console_fallback_toggle_guards_against_a_stale_periodic_repaint(w
 
     set_start = js.index("async function setFallbackEnabled(enabled)")
     set_body = js[set_start : js.index("\n}\n", set_start)]
-    # The first bump must happen before the PUT is even issued, not after --
-    # an in-flight periodic GET must be superseded as soon as the flip
-    # starts, not only once it completes.
-    assert re.search(rf"{counter}\+\+;[\s\S]*?await api\(", set_body)
-
-    # A second bump must happen AFTER the PUT resolves and BEFORE the
-    # trailing refresh -- exactly two increments in this function, the second
-    # one sitting between the PUT and the refresh.
+    # Bumped exactly once, after the PUT resolves and before the trailing
+    # refresh -- never before the PUT is issued.
     increments = [m.start() for m in re.finditer(rf"{re.escape(counter)}\+\+;", set_body)]
-    assert len(increments) == 2, "setFallbackEnabled must bump the generation twice (before AND after its PUT)"
+    assert len(increments) == 1, "setFallbackEnabled must bump the generation exactly once, after its PUT resolves"
     put_idx = set_body.index("await api(")
     refresh_idx = set_body.index("await refreshFallbackToggle();")
-    assert increments[0] < put_idx < increments[1] < refresh_idx
+    assert put_idx < increments[0] < refresh_idx
 
     refresh_start = js.index("async function refreshFallbackToggle()")
     refresh_body = js[refresh_start : js.index("\n}\n", refresh_start)]

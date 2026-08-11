@@ -11,21 +11,22 @@ token as a side effect. `PUT` is NOT token-free: it validates the presented
 credential and discards the result purely as a token-validity check, resolving
 an absent token to the default user (never rejected for lacking a credential),
 same as every other mutating endpoint. Unlike every other mutating endpoint,
-though, it resolves a PRESENT token via `resolve_known_user` (`app/auth.py`) --
-a PURE lookup -- rather than `resolve_user`'s bootstrap-or-reject: a token
-matching no existing user is `401 invalid-token` with NO state mutation, never
-a silent bootstrap of the default user's credential. Because this is the one
-switch that, once on, causes the runtime to forward the caller's own real
-Apify credential to the public internet on a local 404, it must never let an
-unrecognized token presented here get bound as that credential -- doing so
-would both hand whoever presented it control over every future anonymous
-fallback attempt and permanently lock the operator's own later, real login out.
+though, it resolves a PRESENT token via `resolve_user(request, bootstrap=False)`
+(`app/auth.py`) -- a PURE lookup -- rather than the bootstrap-or-reject every
+other handler uses: a token matching no existing user is `401 invalid-token`
+with NO state mutation, never a silent bootstrap of the default user's
+credential. Because this is the one switch that, once on, causes the runtime
+to forward the caller's own real Apify credential to the public internet on
+a local 404, it must never let an unrecognized token presented here get bound
+as that credential -- doing so would both hand whoever presented it control
+over every future anonymous fallback attempt and permanently lock the
+operator's own later, real login out.
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
-from ..auth import resolve_known_user
+from ..auth import resolve_user
 from ..responses import bad_request, data, get_service, read_json
 
 router = APIRouter()
@@ -43,7 +44,7 @@ async def get_runtime_config(request: Request) -> object:
 @router.put("/v2/runtime-config")
 async def put_runtime_config(request: Request) -> object:
     svc = get_service(request)
-    await resolve_known_user(request)  # token-validity check only, never a bootstrap; see module docstring
+    await resolve_user(request, bootstrap=False)  # token-validity check only, never a bootstrap; see module docstring
     body = await read_json(request)
     enabled = body.get("upstreamFallbackEnabled") if isinstance(body, dict) else None
     if not isinstance(enabled, bool):

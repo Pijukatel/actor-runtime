@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # only proxy in this runtime that needs the full set -- app/routers/standby.py
 # keeps its own narrower, historical exclusion set instead (see that module's
 # own comment for why).
-HOP_BY_HOP = frozenset(
+_HOP_BY_HOP = frozenset(
     {
         "connection",
         "keep-alive",
@@ -61,7 +61,7 @@ HOP_BY_HOP = frozenset(
 # `content-encoding` would describe bytes that are no longer encoded) and
 # Starlette recomputes its own response framing (so a forwarded
 # `content-length` could describe the wrong body).
-_EXCLUDED_RESPONSE_HEADERS = HOP_BY_HOP | {"content-encoding", "content-length"}
+_EXCLUDED_RESPONSE_HEADERS = _HOP_BY_HOP | {"content-encoding", "content-length"}
 
 # Connect-only bound, mirroring app/routers/standby.py's own upstream proxy:
 # a legitimately slow upstream response is never cut short, only a connect
@@ -79,10 +79,6 @@ _ALLOWLISTED = re.compile(
 )
 
 
-def is_fallback_allowlisted(path: str) -> bool:
-    return _ALLOWLISTED.match(path) is not None
-
-
 def _raw_path(request: Request) -> str:
     """The request's path exactly as it arrived on the wire, still percent-encoded.
 
@@ -95,6 +91,24 @@ def _raw_path(request: Request) -> str:
     """
     raw_path = request.scope.get("raw_path")
     return raw_path.decode("ascii") if raw_path else request.url.path
+
+
+def _raw_query(request: Request) -> str:
+    """The request's query string exactly as it arrived on the wire.
+
+    ``request.url.query`` is NOT read straight off the wire -- Starlette
+    builds ``request.url`` by string-concatenating the already-decoded
+    ``scope['path']`` with the query and re-parsing the result as a URL. Once
+    that decoded path contains a ``#``, everything after it parses as a
+    fragment instead (``query`` comes back empty); a ``?`` in the decoded
+    path splits the string a second time and corrupts the query entirely.
+    ``scope['query_string']`` is the exact bytes the ASGI server received,
+    with no path concatenation involved, so decoding THOSE (plain ASCII, per
+    the ASGI spec -- a query string is already percent-encoded down to a safe
+    character set) keeps the byte-for-byte fidelity this proxy's own contract
+    promises, the same way ``_raw_path`` does for the path above.
+    """
+    return request.scope.get("query_string", b"").decode("ascii")
 
 
 async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | None:
@@ -124,8 +138,9 @@ async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | N
 
     try:
         url = f"{svc.settings.apify_upstream_base_url}{_raw_path(request)}"
-        if request.url.query:
-            url += f"?{request.url.query}"
+        query = _raw_query(request)
+        if query:
+            url += f"?{query}"
 
         headers = {}
         content_type = request.headers.get("content-type")
@@ -179,7 +194,7 @@ async def fetch_upstream_fallback(request: Request, body: bytes) -> Response | N
             if k.lower() not in _EXCLUDED_RESPONSE_HEADERS:
                 response_headers.append(k, v)
         return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - deliberately broad, see the docstring above
         # Deliberately broad -- see the docstring above. Covers (non-
         # exhaustively): any fault raised while looking the caller up (e.g. a
         # DB error from `svc.user_for_token`/`get_user`), `httpx.InvalidURL`
@@ -200,7 +215,7 @@ class UpstreamFallbackMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         svc = get_service(request)
-        if not (svc.upstream_fallback_enabled and is_fallback_allowlisted(request.url.path)):
+        if not (svc.upstream_fallback_enabled and _ALLOWLISTED.match(request.url.path)):
             return await call_next(request)
 
         # Read (and thereby cache) the body here, scoped to this

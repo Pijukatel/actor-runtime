@@ -154,10 +154,11 @@
   to the default user (the same placeholder-auth convention every other
   write already follows; it is never rejected for lacking a credential),
   same as every other mutating endpoint — but a PRESENT token is resolved
-  through a PURE lookup (`app/auth.py`'s `resolve_known_user`), never
-  `resolve_user`'s bootstrap-or-reject: a token matching no existing user is
-  `401 invalid-token` with **no state mutation**, never bound to the default
-  user's credential as a side effect. This is the one switch that, once on,
+  through a PURE lookup (`app/auth.py`'s `resolve_user(request,
+  bootstrap=False)`), never the bootstrap-or-reject every other handler uses:
+  a token matching no existing user is `401 invalid-token` with **no state
+  mutation**, never bound to the default user's credential as a side effect.
+  This is the one switch that, once on,
   causes the runtime to forward the caller's own real Apify credential to
   the public internet on a local 404, so an unrecognized token presented
   here must never be silently claimed as that credential — doing so would
@@ -174,10 +175,14 @@
   storage types, reached by its id — whose LOCAL response is a 404 is
   re-attempted against `{apify_upstream_base_url}{path}?{query}` (same method,
   query string and body) using the calling user's own bound `token` as bearer.
-  `{path}` is replayed exactly as it arrived on the wire (still
-  percent-encoded), never the ASGI-decoded path, so a resource id or key
-  containing an encoded character (e.g. `%2F`) reaches the upstream API
-  byte-for-byte rather than as a decoded, differently-structured path.
+  `{path}` and `{query}` are both replayed exactly as they arrived on the wire
+  (still percent-encoded), taken from the raw path and raw query-string bytes
+  rather than any already-decoded representation, so a resource id, key, or
+  query value containing an encoded character (e.g. `%2F`, `%23`, `%3F`)
+  reaches the upstream API byte-for-byte rather than as a decoded,
+  differently-structured request — an encoded `#` or `?` inside the id/key
+  segment can otherwise corrupt or drop the query entirely once the path is
+  decoded.
   `apify_upstream_base_url` (`Settings`, default `https://api.apify.com`,
   overridable via the `APIFY_UPSTREAM_BASE_URL` env var so tests can point it
   at a local stub) is the only new configuration this adds; there is no

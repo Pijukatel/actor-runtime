@@ -7,10 +7,15 @@ user; the first token ever presented binds ("bootstraps") the default user's
 credential; a later token that matches no stored user is rejected.
 
 Three variants of that resolution live here side by side, deliberately
-co-located so they can be diffed by eye:
+co-located so they can be diffed by eye, in definition order:
 
 - ``resolve_user`` — the default described above: bootstrap-or-reject. Used
-  by every registered handler that needs identity.
+  by every registered handler that needs identity. Takes a keyword-only
+  ``bootstrap`` (default ``True``); ``app/routers/runtime_config.py``'s
+  ``PUT`` handler is the one caller that passes ``bootstrap=False``, turning
+  an unresolvable token into a plain rejection with NO state mutation instead
+  of binding it to the default user. See its own docstring for why that one
+  endpoint must never bootstrap.
 - ``resolve_standby_caller`` — differs from ``resolve_user`` in exactly one
   respect: an absent credential is rejected (401) rather than falling back to
   the default user, since forwarding into (and possibly starting) an Actor
@@ -20,11 +25,6 @@ co-located so they can be diffed by eye:
   fallback proxy: never binds or bootstraps, so a token matching no existing
   user simply has nothing to forward (``None``) rather than claiming the
   default user's credential as a side effect. See its own docstring.
-- ``resolve_known_user`` — a PURE variant of ``resolve_user`` for
-  ``app/routers/runtime_config.py``'s ``PUT`` handler: validates a presented
-  token exactly like ``resolve_user`` does on a match, but a token matching no
-  existing user is rejected outright rather than bootstrapped. See its own
-  docstring for why this one endpoint must never bootstrap.
 """
 from __future__ import annotations
 
@@ -47,12 +47,25 @@ def token_from_request(request: Request) -> str:
     return header.strip()
 
 
-async def resolve_user(request: Request) -> str:
+async def resolve_user(request: Request, *, bootstrap: bool = True) -> str:
     """Return the acting username for the request's credential.
 
-    No token -> the default user. A token matching a stored user -> that user. A
-    token matching no user -> bootstrap the (still unclaimed) default user with
-    it, else reject.
+    No token -> the default user. A token matching a stored user -> that
+    user. A token matching no user, with ``bootstrap`` True (the default,
+    used by every registered handler that needs identity) -> bootstrap the
+    (still unclaimed) default user with it, else reject.
+
+    ``bootstrap=False`` is used only by ``app/routers/runtime_config.py``'s
+    ``PUT`` handler: a token matching no user is rejected outright, with NO
+    state mutation -- ``bind_default_token`` is never called. That distinction
+    matters specifically there because that switch, once on, causes the
+    runtime to forward the caller's own real Apify credential to the public
+    internet on a local 404: binding an unrecognized token to the default
+    user's credential on that one endpoint would both hand whoever presented
+    it control over every future anonymous fallback attempt AND permanently
+    lock out the operator's own later, real login (a bound default user can
+    never again satisfy this function's own ``token IS NULL`` bootstrap
+    condition below).
     """
     token = token_from_request(request)
     service = request.app.state.service
@@ -62,39 +75,8 @@ async def resolve_user(request: Request) -> str:
     username = await service.user_for_token(token)
     if username is not None:
         return username
-    if await service.bind_default_token(token):
+    if bootstrap and await service.bind_default_token(token):
         return DEFAULT_USERNAME
-    raise InvalidTokenError()
-
-
-async def resolve_known_user(request: Request) -> str:
-    """Validate the request's credential like ``resolve_user``, but never bootstrap.
-
-    Used only by ``app/routers/runtime_config.py``'s ``PUT`` handler. No token
-    -> the default user, exactly like ``resolve_user`` (ensures the row
-    exists; binds no credential). A token matching a stored user (via
-    ``user_for_token``, the same PURE lookup ``resolve_forwardable_token``
-    uses) -> that user. A token matching no user -> rejected, with NO state
-    mutation -- unlike ``resolve_user``, this NEVER calls
-    ``bind_default_token``.
-
-    This distinction matters specifically here because this switch, once on,
-    causes the runtime to forward the caller's own real Apify credential to
-    the public internet on a local 404: binding an unrecognized token to the
-    default user's credential on this one endpoint would both hand whoever
-    presented it control over every future anonymous fallback attempt AND
-    permanently lock out the operator's own later, real login (a bound
-    default user can never again satisfy ``resolve_user``'s own
-    ``token IS NULL`` bootstrap condition).
-    """
-    token = token_from_request(request)
-    service = request.app.state.service
-    if not token:
-        await service.ensure_default_user()
-        return DEFAULT_USERNAME
-    username = await service.user_for_token(token)
-    if username is not None:
-        return username
     raise InvalidTokenError()
 
 

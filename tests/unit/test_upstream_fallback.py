@@ -211,7 +211,7 @@ async def test_fallback_relay_preserves_duplicate_response_headers(wired_upstrea
 
 
 async def test_fallback_relay_strips_full_hop_by_hop_response_header_set(wired_upstream, fake_upstream):
-    """`app/upstream.py`'s own `HOP_BY_HOP` is the full RFC 7230
+    """`app/upstream.py`'s own `_HOP_BY_HOP` is the full RFC 7230
     hop-by-hop set, not just the two extra members
     (`content-encoding`/`content-length`, unioned into
     `_EXCLUDED_RESPONSE_HEADERS` in app/upstream.py) this proxy adds on top to
@@ -266,7 +266,7 @@ async def test_fallback_relay_strips_content_encoding_and_recomputes_content_len
 ):
     """`content-encoding`/`content-length` are the two members
     app/upstream.py's `_EXCLUDED_RESPONSE_HEADERS` adds beyond its own
-    `HOP_BY_HOP` RFC 7230 set: httpx already decodes a
+    `_HOP_BY_HOP` RFC 7230 set: httpx already decodes a
     response whose `Content-Encoding` it recognizes, so
     `upstream.content` is the DEcompressed bytes while `upstream.headers`
     still describes the compressed wire -- forwarding either verbatim would
@@ -606,6 +606,34 @@ async def test_fallback_replays_raw_percent_encoded_path_not_decoded(wired_upstr
     assert resp.status_code == 200
     assert len(fake_upstream.requests) == 1
     assert fake_upstream.requests[0]["path"] == "/v2/key-value-stores/nobody~nothing/records/we%2Fird%23key"
+
+
+async def test_fallback_encoded_hash_or_question_mark_in_path_still_replays_the_query(wired_upstream, fake_upstream):
+    """Regression: the replay used to build its query string from
+    `request.url.query` -- derived by Starlette re-parsing the ASGI-decoded
+    path concatenated with the query -- rather than the raw wire bytes. Once
+    the decoded path segment contained a `#`, everything after it parsed as a
+    URL fragment instead, so the query was silently dropped; a `?` in the
+    decoded segment split the string a second time and corrupted it. Both
+    cases are exercised here WITH a real query parameter present, the exact
+    combination that previously broke: an encoded `#` or `?` in the id/key
+    segment (which the route pattern still matches, so this reaches the
+    fallback attempt) plus `?foo=bar` on the same request must both survive
+    to the upstream call byte-for-byte."""
+    client, service = wired_upstream
+    service.upstream_fallback_enabled = True
+    fake_upstream.set_response(200, b'{"data":{"ok":true}}', {"content-type": "application/json"})
+
+    resp = await client.get("/v2/key-value-stores/nobody~nothing/records/we%23ird?foo=bar")
+    assert resp.status_code == 200
+    assert len(fake_upstream.requests) == 1
+    assert fake_upstream.requests[0]["path"] == "/v2/key-value-stores/nobody~nothing/records/we%23ird?foo=bar"
+
+    fake_upstream.requests.clear()
+    resp = await client.get("/v2/key-value-stores/nobody~nothing/records/we%3Ford?foo=bar")
+    assert resp.status_code == 200
+    assert len(fake_upstream.requests) == 1
+    assert fake_upstream.requests[0]["path"] == "/v2/key-value-stores/nobody~nothing/records/we%3Ford?foo=bar"
 
 
 async def test_fallback_write_forwards_content_encoding_for_compressed_body(wired_upstream, fake_upstream):
