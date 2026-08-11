@@ -772,6 +772,41 @@ async def test_console_paging_line_clamps_upper_bound_to_total(wired):
     assert re.search(r"const to = count \? Math\.min\(offset \+ count, total\) : from;", body)
 
 
+async def test_console_paging_controls_disable_boundary_pinned(wired):
+    """`pagingControlsEl` backs success criterion #20 (Prev/Next controls that
+    page through the full result set and disable at either end: Prev disabled
+    on the first page, Next disabled on the last). Every sibling paging/stats
+    function introduced in this diff already has a dedicated structural pin --
+    `pagingLineEl`'s clamping (the test above), `statsLineEl`'s boolean/empty-
+    object filters (the two tests above that) -- but nothing pinned this one.
+    Structural, like those: no JS runtime exists in this suite to execute
+    `pagingControlsEl` directly, so this pins the two boundary expressions
+    verbatim. It fails equally if a future edit drops either `disabled`
+    assignment outright or inverts its comparison -- e.g. `offset < 0`
+    instead of `offset <= 0` (Prev would stay enabled with nothing before it),
+    or `offset + count > total` instead of `>= total` (Next would stay
+    clickable one page past the end, requesting an empty slice beyond the
+    total) -- exactly the off-by-one class the design's own Risks section
+    calls out by name for this feature."""
+    client, _service = wired
+    js = (await client.get("/console/app.js")).text
+
+    controls_idx = js.index("function pagingControlsEl(offset, count, total, onPage)")
+    body = js[controls_idx : js.index("\n}", controls_idx)]
+
+    # Prev disabled exactly on the first page -- not "< 0" (never true, since
+    # offset never goes negative) and not "== 0" (would stay enabled after a
+    # raced page that clamps offset back to 0 via Math.max(0, ...) below).
+    assert re.search(r"prev\.disabled = offset <= 0;", body)
+    # Next disabled exactly when the current slice reaches the total -- not
+    # "> total" (an off-by-one leaving Next clickable one page past the end).
+    assert re.search(r"next\.disabled = offset \+ count >= total;", body)
+
+    # Both booleans are set on the actual buttons this function returns (not
+    # dead/unused locals): `prev`/`next` are appended to the returned row.
+    assert "row.append(prev, next);" in body
+
+
 async def test_console_render_store_content_guards_against_error_envelopes(wired):
     """`renderStoreContent`'s kv/ds/rq branches must bail out on an error
     response (storage deleted / access revoked mid-view) before computing a

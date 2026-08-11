@@ -143,6 +143,37 @@ async def test_dataset_items_non_integer_offset_is_bad_request(wired):
     assert resp.json()["detail"] == "Query parameter 'offset' must be an integer."
 
 
+async def test_dataset_items_empty_string_params_are_treated_as_absent(wired):
+    """`optional_bounded_int`'s `raw == ""` arm -- an explicit-but-empty query
+    value is treated identically to the key being omitted entirely, returning
+    `None` rather than falling through to `_parse_int("", ...)` -- is new in
+    this diff but was never exercised by any of the four listing surfaces:
+    every existing test here sends either no `limit`/`offset` at all or a
+    concrete value, never `?limit=&offset=`. A client that serializes empty
+    query values (rather than dropping the key) must land on the exact same
+    byte-for-byte unpaginated bare-array response as the true bare request --
+    not a `400 Query parameter 'limit' must be an integer.`, which is what
+    `int("")` raises and is exactly what you'd get if the `or raw == ""` check
+    were ever dropped from `optional_bounded_int`. Red proof (verified locally
+    by temporarily changing that check to `raw is None`): with the arm
+    removed, this test's `empty` request 400s instead of matching `bare`."""
+    client, service = wired
+    await _create_user(client, "es")
+    created = await client.post("/v2/datasets", json={"name": "big"}, headers=auth("es"))
+    ds_id = created.json()["data"]["id"]
+    await service.storage.dataset_push(ds_id, [{"i": i} for i in range(150)])
+
+    bare = await client.get(f"/v2/datasets/{ds_id}/items", headers=auth("es"))
+    empty = await client.get(f"/v2/datasets/{ds_id}/items?limit=&offset=", headers=auth("es"))
+
+    assert empty.status_code == 200
+    assert empty.json() == bare.json()
+    assert len(empty.json()) == 150
+    # Empty-string params land on the identical unpaginated branch as no
+    # params at all -- no pagination headers appear either.
+    assert not any(k.lower().startswith("x-apify-pagination") for k in empty.headers)
+
+
 # -------------------------------------------------------------------- KV keys
 
 
