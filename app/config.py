@@ -53,6 +53,11 @@ class Settings:
     # readiness probe before giving up. A Settings field (not a constant) so
     # tests can shrink it instead of waiting out the production default.
     standby_ready_timeout_secs: float = 30.0
+    # Base URL the upstream-fallback middleware (app/upstream.py) replays an
+    # allowlisted local-404 request against. A `Settings` field (not a plain
+    # constant) purely so tests can point it at a local stub server instead of
+    # the real platform.
+    apify_upstream_base_url: str = "https://api.apify.com"
     # NOTE: the standby-forwarding proxy's upstream connect timeout is a
     # plain module constant in app/routers/standby.py
     # (`_STANDBY_FORWARD_CONNECT_TIMEOUT_SECS`), not a `Settings` field --
@@ -65,6 +70,17 @@ class Settings:
     # no APIFY_PROXY_PASSWORD is injected into Actor containers at all (see
     # README.md's Apify Proxy section).
     apify_proxy_password: str = ""
+
+    def __post_init__(self) -> None:
+        # Normalized here -- the one boundary every construction path goes
+        # through (``load_settings()``'s env var, a plain ``Settings(...)``,
+        # or a test's ``dataclasses.replace(...)``) -- so
+        # ``fetch_upstream_fallback`` (app/upstream.py) can keep concatenating
+        # ``apify_upstream_base_url`` with ``_raw_target(request)`` (which
+        # always starts with its own ``/``) without ever producing a double slash,
+        # regardless of whether an operator's ``APIFY_UPSTREAM_BASE_URL`` env
+        # var happens to end with one.
+        object.__setattr__(self, "apify_upstream_base_url", self.apify_upstream_base_url.rstrip("/"))
 
     @property
     def meta_db_url(self) -> str:
@@ -104,4 +120,5 @@ def load_settings() -> Settings:
         port_console=CONSOLE_PORT,
         standby_idle_override_secs=float(override_raw) if override_raw else None,
         apify_proxy_password=os.environ.get("APIFY_PROXY_PASSWORD", ""),
+        apify_upstream_base_url=os.environ.get("APIFY_UPSTREAM_BASE_URL", Settings.apify_upstream_base_url),
     )

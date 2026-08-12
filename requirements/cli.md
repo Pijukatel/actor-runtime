@@ -16,6 +16,14 @@
   `APIFY_CLIENT_API_URL` / `APIFY_API_PUBLIC_BASE_URL` are not the variable the
   push/call HTTP calls use.)
 - The client issues requests against `<APIFY_CLIENT_BASE_URL>/v2/...`.
+- Every local example/script that sets `APIFY_CLIENT_BASE_URL` also exports
+  **`APIFY_CONSOLE_URL`**, set to this same runtime's own console URL (for
+  example `http://localhost:3000`) — the updated `apify-cli` reads this
+  separately to open/print console links; it has no bearing on the API base
+  URL or on any API call itself. README.md's CLI snippet, `scripts/demo.sh`
+  (derived from its own `CONSOLE_PORT`, left unexported in `--remote` mode
+  exactly like `APIFY_CLIENT_BASE_URL`), and the `tests/e2e/` fixtures all
+  follow this pairing.
 
 ## Authentication / token bootstrap
 

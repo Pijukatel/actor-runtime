@@ -1,14 +1,18 @@
 """Shared test fixtures: an in-process app wired to a Docker-free stub driver."""
 from __future__ import annotations
 
+import asyncio
+import dataclasses
 import http.server
 import json
+import socket
 import threading
 import time
 from pathlib import Path
 
 import httpx
 import pytest_asyncio
+import uvicorn
 
 from app.config import Settings
 from app.db import Database
@@ -18,7 +22,43 @@ from app.service import Service
 from app.storage import Storage
 
 
-class _StandbyProbeHandler(http.server.BaseHTTPRequestHandler):
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _start_http_server_thread(httpd: http.server.ThreadingHTTPServer) -> threading.Thread:
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    return thread
+
+
+def _stop_threaded_http_server(httpd: http.server.ThreadingHTTPServer, thread: threading.Thread) -> None:
+    """Shut down, close and join a server started via the two helpers above.
+
+    Not idempotent by itself -- a caller that may `stop()` more than once
+    (e.g. `FakeUpstreamServer`, stopped mid-test to simulate a connect error
+    and again by its fixture's teardown) guards with its own already-stopped
+    flag before calling this.
+    """
+    httpd.shutdown()
+    httpd.server_close()
+    thread.join(timeout=5)
+
+
+class _QuietHandlerMixin:
+    """Silences `BaseHTTPRequestHandler`'s default per-request stderr logging.
+
+    Shared by every in-process HTTP stub handler in this suite so the
+    silencing override lives in one place.
+    """
+
+    def log_message(self, format, *args) -> None:
+        pass
+
+
+class _StandbyProbeHandler(_QuietHandlerMixin, http.server.BaseHTTPRequestHandler):
     """Serves the readiness probe and echoes everything else back as JSON.
 
     Mirrors apify-core's own standby fixture actors (``shared_actors.js``): any
@@ -89,11 +129,12 @@ class _StandbyProbeHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle_multi_header(self) -> None:
         """Echo received headers as an ORDERED list of (name, value) PAIRS
-        (never collapsed into a dict, which would silently drop any repeated
-        header name) and reply with two ``Set-Cookie`` headers of its own, so
-        a test can assert repeated header names survive the round trip in
-        BOTH directions -- the forwarding proxy must preserve multi-value
-        headers, not just single-value ones.
+        (never collapsed into a dict, which would silently drop a repeated
+        header name) and reply with two ``Set-Cookie`` headers, so a single
+        request pins the forwarding contract on BOTH legs at once: multi-value
+        headers survive the CALLER -> container hop (via
+        ``receivedHeaderPairs``) and the container -> CALLER hop (this
+        response's own headers).
         """
         length = int(self.headers.get("content-length") or 0)
         if length:
@@ -112,9 +153,6 @@ class _StandbyProbeHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self._handle()
 
-    def log_message(self, format, *args) -> None:  # silence default stderr logging
-        pass
-
 
 class FakeStandbyServer:
     """In-process stand-in for a standby Actor's ``ACTOR_STANDBY_PORT`` listener.
@@ -131,17 +169,101 @@ class FakeStandbyServer:
         self._httpd.readiness_hang_secs = readiness_hang_secs
         self._httpd.request_count = 0
         self.port = self._httpd.server_address[1]
-        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
-        self._thread.start()
+        self._thread = _start_http_server_thread(self._httpd)
 
     @property
     def request_count(self) -> int:
         return self._httpd.request_count
 
     def stop(self) -> None:
-        self._httpd.shutdown()
-        self._httpd.server_close()
-        self._thread.join(timeout=5)
+        _stop_threaded_http_server(self._httpd, self._thread)
+
+
+class _FakeUpstreamHandler(_QuietHandlerMixin, http.server.BaseHTTPRequestHandler):
+    """Records every request it receives (method/path/headers/body) and
+    replies with whatever `FakeUpstreamServer.set_response` last configured."""
+
+    def _handle(self) -> None:
+        length = int(self.headers.get("content-length") or 0)
+        body = self.rfile.read(length) if length else b""
+        self.server.requests.append(
+            {
+                "method": self.command,
+                "path": self.path,
+                "headers": dict(self.headers.items()),
+                "body": body,
+            }
+        )
+        status, payload, headers = self.server.next_response
+        self.send_response(status)
+        # `headers` is a list of (name, value) pairs, not a dict, so a test can
+        # configure more than one header with the same name (e.g. two
+        # Set-Cookie headers).
+        for k, v in headers:
+            self.send_header(k, v)
+        self.end_headers()
+        if payload:
+            self.wfile.write(payload)
+
+    def do_GET(self) -> None:
+        self._handle()
+
+    def do_POST(self) -> None:
+        self._handle()
+
+    def do_PUT(self) -> None:
+        self._handle()
+
+    def do_DELETE(self) -> None:
+        self._handle()
+
+
+class FakeUpstreamServer:
+    """Stand-in for api.apify.com, for the upstream-fallback middleware
+    (app/upstream.py) tests: records every request it receives and replies
+    with whatever `set_response` was last configured with (default
+    200/empty). Same ThreadingHTTPServer/start/stop lifecycle as
+    `FakeStandbyServer` above, with only the request handler differing.
+    """
+
+    def __init__(self) -> None:
+        self._httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeUpstreamHandler)
+        self._httpd.requests = []
+        self._httpd.next_response = (200, b"", [])
+        self.port = self._httpd.server_address[1]
+        self._thread = _start_http_server_thread(self._httpd)
+        self._stopped = False
+
+    @property
+    def requests(self) -> list:
+        return self._httpd.requests
+
+    def set_response(
+        self, status: int, body: bytes = b"", headers: dict | list[tuple[str, str]] | None = None
+    ) -> None:
+        """`headers` may be a plain dict (the common case) or a list of
+        `(name, value)` pairs when a test needs more than one header with the
+        same name -- a dict could never represent that."""
+        if headers is None:
+            pairs: list[tuple[str, str]] = []
+        elif isinstance(headers, dict):
+            pairs = list(headers.items())
+        else:
+            pairs = list(headers)
+        self._httpd.next_response = (status, body, pairs)
+
+    @property
+    def base_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    def stop(self) -> None:
+        """Idempotent: also used mid-test to simulate a connect error (nothing
+        listens at the port any more), so the fixture's own teardown must not
+        double-close an already-stopped server."""
+        if self._stopped:
+            return
+        self._stopped = True
+        _stop_threaded_http_server(self._httpd, self._thread)
 
 
 class StubDriver:
@@ -319,7 +441,11 @@ def make_settings(
     )
 
 
-async def _wire(tmp_path, driver, settings=None):
+async def _build_app(tmp_path, driver, settings=None):
+    """Construct the wired ``(db, storage, service, app)`` quadruple shared by
+    every fixture in this module -- the setup ``_wire`` and ``wired_uvicorn``
+    both need, before they diverge on HOW the app is served (``ASGITransport``
+    vs. a real uvicorn socket). ``app`` is returned, not yet serving."""
     settings = settings or make_settings(tmp_path)
     settings.runs_dir.mkdir(parents=True, exist_ok=True)
     settings.builds_dir.mkdir(parents=True, exist_ok=True)
@@ -330,15 +456,29 @@ async def _wire(tmp_path, driver, settings=None):
     service = Service(settings, db, storage, driver)
     app = create_app(settings, driver)
     app.state.service = service
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client, service
-    # No-op if a test never started it (create_app's lifespan, which normally
-    # starts it, does not run under ASGITransport) -- harmless safety net so a
-    # standby-watchdog test never leaks a background task past teardown.
+    return db, storage, service, app
+
+
+async def _dispose(service, storage, db) -> None:
+    """Tear down a ``_build_app`` quadruple, shared by ``_wire`` and
+    ``wired_uvicorn``.
+
+    No-op on the standby watchdog if a test never started it (create_app's
+    lifespan, which normally starts it, does not run under ASGITransport) --
+    harmless safety net so a standby-watchdog test never leaks a background
+    task past teardown.
+    """
     await service.stop_standby_watchdog()
     await storage.stop()
     await db.dispose()
+
+
+async def _wire(tmp_path, driver, settings=None):
+    db, storage, service, app = await _build_app(tmp_path, driver, settings)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client, service
+    await _dispose(service, storage, db)
 
 
 @pytest_asyncio.fixture
@@ -376,3 +516,73 @@ async def wired_with_proxy_password(tmp_path):
     settings = make_settings(tmp_path, apify_proxy_password="dummy-proxy-password")
     async for pair in _wire(tmp_path, StubDriver(), settings=settings):
         yield pair
+
+
+@pytest_asyncio.fixture
+async def fake_upstream():
+    """A running `FakeUpstreamServer`, for the upstream-fallback middleware
+    tests (tests/unit/test_upstream_fallback.py)."""
+    server = FakeUpstreamServer()
+    yield server
+    server.stop()
+
+
+@pytest_asyncio.fixture
+async def wired_upstream(tmp_path, fake_upstream):
+    """Like ``wired``, but `apify_upstream_base_url` points at `fake_upstream`
+    instead of the real platform."""
+    settings = dataclasses.replace(make_settings(tmp_path), apify_upstream_base_url=fake_upstream.base_url)
+    async for pair in _wire(tmp_path, StubDriver(), settings=settings):
+        yield pair
+
+
+@pytest_asyncio.fixture
+async def wired_malformed_upstream(tmp_path):
+    """Like `wired`, but `apify_upstream_base_url` is malformed in a way `httpx`
+    rejects while BUILDING the request (`httpx.InvalidURL`, raised before any
+    connection is attempted) -- simulating a misconfigured
+    `APIFY_UPSTREAM_BASE_URL` (e.g. missing scheme, unparsable host). No fake
+    server needed: the failure happens before any network I/O."""
+    settings = dataclasses.replace(make_settings(tmp_path), apify_upstream_base_url="http://[::1")
+    async for pair in _wire(tmp_path, StubDriver(), settings=settings):
+        yield pair
+
+
+@pytest_asyncio.fixture
+async def wired_uvicorn(tmp_path):
+    """Like ``wired``, but the app is served by a REAL ``uvicorn`` server on a
+    real loopback socket instead of ``httpx.ASGITransport``.
+
+    Needed for a test that drives the actual, pinned ``apify_client`` package
+    against this runtime: that client's HTTP transport (``impit``) has no
+    ASGI-transport hook, so it can only be pointed at a real socket -- the
+    in-process ``wired`` fixture's ``ASGITransport`` client cannot exercise it
+    at all. Yields ``(service, base_url)``; the caller builds whatever real
+    HTTP client it needs against ``base_url``.
+    """
+    db, storage, service, app = await _build_app(tmp_path, StubDriver())
+
+    port = _free_port()
+    # `ws="none"`: this app serves no websocket routes, so skip uvicorn's
+    # default `ws="auto"` probe, which otherwise imports `websockets.legacy`
+    # and emits its deprecation warning on every collection of this fixture.
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="off", ws="none")
+    server = uvicorn.Server(config)
+    serve_task = asyncio.create_task(server.serve())
+    # `server.started` flips true only once `Server.startup()` has actually
+    # bound the socket -- polled rather than awaited directly since `serve()`
+    # itself does not return until shutdown.
+    for _ in range(500):
+        if server.started:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        serve_task.cancel()
+        raise RuntimeError("uvicorn test server did not start in time")
+
+    try:
+        yield service, f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        await serve_task
+        await _dispose(service, storage, db)

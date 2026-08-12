@@ -71,9 +71,10 @@ def runtime(tmp_path_factory):
         capture_output=True,
     )
     api_url = f"http://localhost:{api_port}"
+    console_url = f"http://localhost:{console_port}"
     try:
         _wait_ready(api_url)
-        yield {"api": api_url, "name": name, "data_dir": data_dir}
+        yield {"api": api_url, "console": console_url, "name": name, "data_dir": data_dir}
     finally:
         subprocess.run(["docker", "logs", name], capture_output=False)
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
@@ -91,11 +92,12 @@ def _wait_ready(api_url: str, timeout: int = 60) -> None:
     raise RuntimeError("runtime did not become ready in time")
 
 
-def _apify_env(api_url: str) -> dict:
+def _apify_env(api_url: str, console_url: str) -> dict:
     env = dict(os.environ)
     env.update(
         {
             "APIFY_CLIENT_BASE_URL": api_url,
+            "APIFY_CONSOLE_URL": console_url,
             "APIFY_TOKEN": "local-user",
             "APIFY_CLI_DISABLE_TELEMETRY": "1",
             "APIFY_CLI_SKIP_UPDATE_CHECK": "1",
@@ -125,7 +127,7 @@ def _wait_run_terminal(api: str, run_id: str, timeout: int = 120) -> dict:
 
 def test_on_demand_actor_discovers_and_calls_standby_actor(runtime, tmp_path):
     api = runtime["api"]
-    env = _apify_env(api)
+    env = _apify_env(api, runtime["console"])
 
     standby_project = tmp_path / "standby-actor"
     shutil.copytree(REPO / "sample_actor_standby", standby_project)

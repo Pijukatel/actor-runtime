@@ -322,6 +322,64 @@ async def test_standby_forwards_method_headers_query_and_body_exactly(wired_fast
     assert body["headers"].get("x-custom-header") == "abc123"
 
 
+async def test_standby_forwarding_preserves_encoded_hash_and_question_mark_in_subpath(wired_fast_standby):
+    """Regression: the forwarded target used to be built from
+    ``request.url.path``/``request.url.query`` -- Starlette's own
+    reconstruction from ASGI's already-percent-decoded ``scope['path']`` --
+    so a caller's sub-path segment containing a percent-encoded ``#``/``?``
+    decoded to a literal character there before this fix: the decoded ``#``
+    truncated everything after it as a URL fragment (dropping the real query
+    string entirely) and the decoded ``?`` split the string a second time,
+    corrupting it further. Confirmed by temporarily reproducing the old
+    logic (``f"{endpoint}/{path}"`` + ``request.url.query``) against this
+    exact request: it forwarded ``/weird#name?more`` with no query at all,
+    silently discarding ``real=value``. The fix (``_raw_forward_target``,
+    using ``scope['raw_path']``/``scope['query_string']``) must forward the
+    sub-path and query byte-for-byte instead, matching the same class of fix
+    already applied to the upstream-fallback proxy (app/upstream.py).
+    """
+    client, service = wired_fast_standby
+    actor_id = await _provision_standby_actor(client, service, "alice")
+    resp = await client.get(
+        f"/v2/actor-standby/{actor_id}/weird%23name%3Fmore?real=value", headers=auth("alice")
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["path"] == "/weird%23name%3Fmore?real=value"
+
+
+async def test_standby_forwarding_raw_path_absent_fallback_still_forwards(wired_fast_standby):
+    """When ``scope['raw_path']`` is absent entirely (a hand-built ASGI scope,
+    never a real ASGI server, which always supplies it), ``_raw_forward_target``
+    must still build a usable target by re-quoting the decoded ``path`` param
+    instead of raising or silently dropping the sub-path -- exercised directly
+    via the router function, like the streaming/multi-header tests above,
+    since this scope shape cannot be produced through the real httpx/ASGI
+    client path.
+    """
+    client, service = wired_fast_standby
+    app = client._transport.app
+    actor_id = await _provision_standby_actor(client, service, "alice")
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": f"/v2/actor-standby/{actor_id}/weird#name",
+        "query_string": b"real=value",
+        "headers": [(b"authorization", b"Bearer alice")],
+        "app": app,
+    }
+    request = Request(scope, receive=receive)
+
+    response = await forward_to_standby(actor_id, "weird#name", request)
+    assert response.status_code == 200
+    body = b"".join([part async for part in response.body_iterator])
+    assert json.loads(body)["path"] == "/weird%23name?real=value"
+
+
 async def test_standby_unset_memory_config_caps_container_at_the_same_1024_default(wired_fast_standby):
     """Regression: an unset ``memoryMbytes`` in the Actor's standby config must
     resolve to the SAME 1024 MB default in both the persisted

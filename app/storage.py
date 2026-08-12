@@ -28,8 +28,11 @@ warnings.filterwarnings("ignore", message="The SqlStorageClient is experimental.
 
 logger = logging.getLogger(__name__)
 
-# "All items" default for dataset reads - the prototype has no pagination UI/consumer
-# yet, so this is just a large-enough cap rather than a real page size.
+# Effective "no cap" default applied when a dataset-items request omits
+# `limit` -- large enough that no real local dataset exceeds it, so a bare
+# (unpaginated) request keeps returning every item, exactly as it always has.
+# The console's own 100-item paging always sends an explicit `limit`, so it
+# never falls through to this default.
 DEFAULT_ITEM_LIMIT = 999999
 
 # Default number of items a request-queue "head" read returns when the caller
@@ -238,11 +241,47 @@ class Storage:
         await kv.set_value(key=key, value=value, content_type=content_type)
 
     async def kv_keys(self, store_id: str) -> list[dict[str, Any]]:
+        """Every key in the store, unpaginated -- exactly `kv_keys_page`'s own
+        ``limit=None, exclusive_start_key=None`` case, so this delegates to it
+        instead of re-implementing the same open+iterate+map loop."""
+        return (await self.kv_keys_page(store_id))[0]
+
+    async def kv_keys_page(
+        self, store_id: str, exclusive_start_key: str | None = None, limit: int | None = None
+    ) -> tuple[list[dict[str, Any]], bool, str | None]:
+        """Cursor-aware page of KV keys, pushed straight through to crawlee's
+        own ascending ``key > exclusive_start_key`` filter and ``limit``
+        clause (``iterate_keys``) rather than slicing an already-fetched full
+        list -- so this scales with the page size, not the store size.
+
+        Fetches one key beyond ``limit`` (when ``limit`` is given and
+        positive) to detect whether more keys remain: if so, that extra key
+        is dropped from the returned page and the call reports
+        ``is_truncated=True`` with the last kept key as the next cursor;
+        otherwise ``is_truncated=False`` and there is no next cursor.
+        ``limit=None`` returns every remaining key (from
+        ``exclusive_start_key`` onward, or from the start) with
+        ``is_truncated=False``, matching a bare request's own no-cap
+        behaviour. ``limit=0`` is a zero-width window that by definition has
+        nothing to truncate -- it short-circuits to an empty,
+        non-truncated page without probing at all, rather than reporting a
+        truncation with no real key to resume from (or, given a cursor,
+        handing back the unchanged input cursor, which would loop a naive
+        "keep following the next cursor" caller forever).
+
+        Returns ``(page, is_truncated, next_exclusive_start_key)``.
+        """
+        if limit == 0:
+            return [], False, None
         kv = await self._client.create_kvs_client(name=store_id)
-        items = []
-        async for meta in kv.iterate_keys():
-            items.append({"key": meta.key, "size": meta.size})
-        return items
+        probe_limit = limit + 1 if limit is not None else None
+        fetched = []
+        async for meta in kv.iterate_keys(exclusive_start_key=exclusive_start_key, limit=probe_limit):
+            fetched.append({"key": meta.key, "size": meta.size})
+        if limit is not None and len(fetched) > limit:
+            page = fetched[:limit]
+            return page, True, page[-1]["key"]
+        return fetched, False, None
 
     async def kv_record(self, store_id: str, key: str) -> tuple[Any, str] | None:
         kv = await self._client.create_kvs_client(name=store_id)

@@ -36,17 +36,25 @@ const setToken = (t) => {
   }
 };
 
-async function api(path, opts) {
+// The raw fetch, with the bearer-token header logic `api()` wraps. Exposed
+// separately so callers that need the raw Response (e.g. dataset items'
+// X-Apify-Pagination-* headers, which live outside the JSON body) can read it
+// without duplicating the auth-header logic.
+async function apiRaw(path, opts) {
   const options = Object.assign({}, opts);
   const headers = Object.assign({}, options.headers);
   const token = getToken();
   // Send the token as a bearer credential on every request so the runtime
   // resolves the acting user consistently across the whole console. `skipAuth`
   // opts a single call out of this (used for the public, side-effect-free user
-  // list) so merely loading the console can never claim/bootstrap a token.
+  // list, and the token-free runtime-config fallback toggle) so merely loading
+  // the console can never claim/bootstrap a token.
   if (token && !options.skipAuth) headers["Authorization"] = "Bearer " + token;
   options.headers = headers;
-  const res = await fetch(path, options);
+  return fetch(path, options);
+}
+async function api(path, opts) {
+  const res = await apiRaw(path, opts);
   const ct = res.headers.get("content-type") || "";
   if (ct.includes("application/json")) return res.json();
   return res.text();
@@ -125,6 +133,55 @@ async function refreshUser() {
   const me = unwrap(await api("/v2/users/me"));
   const el = $("#current-user");
   if (el) el.textContent = (me && me.username) || "local-user";
+}
+
+// The global "API fallback" toggle: one shared runtime-wide switch, reflected
+// in the header on every view. The GET is token-free (like the user list)
+// since merely reading it is not per-user state; the PUT is NOT token-free
+// (see requirements/api.md's "Upstream fallback" section) -- it sends the
+// acting user's bearer token, same as every other mutating request.
+
+// Invariant: bumped once per flip, right after that flip's own PUT resolves
+// and before its own trailing re-GET (see setFallbackEnabled), and captured
+// by refreshFallbackToggle before ITS GET; a response whose captured
+// generation no longer matches the live counter was superseded by a later
+// flip and is discarded instead of repainted. This is what stops a periodic
+// 4s-tick GET -- issued at any point before or during an in-flight flip --
+// from resolving after that flip's own trailing refresh and snapping the
+// checkbox back to a stale value.
+let fallbackToggleGeneration = 0;
+
+async function refreshFallbackToggle() {
+  const toggle = $("#fallback-toggle");
+  if (!toggle) return;
+  const generation = fallbackToggleGeneration;
+  const cfg = unwrap(await api("/v2/runtime-config", { skipAuth: true }));
+  if (generation !== fallbackToggleGeneration) return; // superseded by a flip while this GET was in flight
+  // Only repaint the checkbox when the response actually parsed to the
+  // expected shape. This runs on every periodicRefresh tick (~4s); a
+  // transient failure response (a 500, or any non-JSON body) is neither
+  // thrown (api() never rejects on a non-2xx status) nor a real answer, and
+  // must leave the checkbox showing its last known state rather than
+  // snapping it to a false "fallback is OFF" reading.
+  if (cfg && typeof cfg === "object" && typeof cfg.upstreamFallbackEnabled === "boolean") {
+    toggle.checked = cfg.upstreamFallbackEnabled;
+  }
+}
+
+async function setFallbackEnabled(enabled) {
+  await api("/v2/runtime-config", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ upstreamFallbackEnabled: enabled }),
+  });
+  // Bump now that the PUT itself has resolved, before the trailing refresh
+  // below -- see the generation counter's own declaration comment.
+  fallbackToggleGeneration++;
+  // Re-read the server's actual resulting state rather than assume the PUT
+  // took effect as requested -- this is a shared runtime-global switch, so a
+  // rejected/raced PUT must never leave this checkbox showing a flip that
+  // never happened.
+  await refreshFallbackToggle();
 }
 
 // Switching users is client-side: pick an existing user's stored token and send
@@ -268,17 +325,14 @@ function wrapTd(node) {
 // ------------------------------------------------------------------ routing
 
 // The storage URL slug (mirroring the official console) maps to the internal
-// kind token used by showStore. The list order is also the per-type sub-nav order.
+// kind token used by showStore. Used by both this router (below) and
+// storage_tab.js's own detail view; the per-type sub-nav's own list/order
+// (`STORAGE_TYPES`) lives in storage_tab.js, its only consumer.
 const STORAGE_SLUG_TO_KIND = {
   "key-value-stores": "kv",
   datasets: "ds",
   "request-queues": "rq",
 };
-const STORAGE_TYPES = [
-  ["key-value-stores", "Key-value stores"],
-  ["datasets", "Datasets"],
-  ["request-queues", "Request queues"],
-];
 
 // Push a real path and render it. Every clickable element navigates through here
 // (via the History API only, never a full-page load or a hash fragment), so
@@ -348,6 +402,14 @@ function shouldAutoRefresh() {
 }
 
 function periodicRefresh() {
+  // The header's fallback toggle lives outside any routed view (visible on
+  // every view, shared across ports/users), so it refreshes unconditionally
+  // -- unlike renderRoute() below, gated to the routes that tolerate a
+  // re-render -- catching a flip made from another tab/port within one
+  // interval instead of only on the next full page load. `.catch()` swallows
+  // a transient fetch failure (e.g. the API unreachable) instead of an
+  // unhandled rejection every 4s.
+  refreshFallbackToggle().catch(() => {});
   if (shouldAutoRefresh()) renderRoute();
 }
 
@@ -374,127 +436,6 @@ function showActorsPlaceholder() {
   detail.appendChild(
     mk("p", { class: "muted", text: "Select an Actor to inspect its runs, builds and storages." }),
   );
-}
-
-// ------------------------------------------------------------------ storages
-
-// Cache of the last-fetched items per storage type, keyed by slug, so toggling
-// the show/hide-unnamed checkbox can re-render from already-fetched data instead
-// of issuing a new fetch(). `currentStorageSlug` is the type the page is showing.
-let showUnnamedStorages = true;
-let storageItemsCache = {};
-let currentStorageSlug = "key-value-stores";
-
-async function loadStorages(slug) {
-  currentStorageSlug = slug || currentStorageSlug;
-  const list = $("#actor-list");
-  if (list) list.innerHTML = "";
-  storageItemsCache[currentStorageSlug] =
-    (unwrap(await api(`/v2/users/me/${currentStorageSlug}`)).items) || [];
-  renderStorages();
-}
-
-function renderStorages() {
-  const slug = currentStorageSlug;
-  const detail = $("#detail");
-  if (!detail) return;
-  detail.innerHTML = "";
-
-  // Per-type sub-nav: one deep-linkable path per storage type.
-  const subnav = mk("div", { class: "tabs" });
-  for (const [s, lbl] of STORAGE_TYPES) {
-    subnav.appendChild(
-      mk("span", { class: s === slug ? "active" : "", text: lbl, onClick: () => navigate(`/storage/${s}`) }),
-    );
-  }
-  detail.appendChild(subnav);
-
-  const label = (STORAGE_TYPES.find(([s]) => s === slug) || [slug, slug])[1];
-  detail.appendChild(mk("h2", { text: label }));
-
-  const form = mk("div", { class: "row" });
-  const input = mk("input");
-  input.placeholder = "New name";
-  const createBtn = mk("button", { text: "Create", onClick: () => createStorage(slug, input.value) });
-  form.append(input, createBtn);
-  detail.appendChild(form);
-
-  const toggleRow = mk("div", { class: "row" });
-  const toggleLabel = document.createElement("label");
-  toggleLabel.className = "muted";
-  const toggle = document.createElement("input");
-  toggle.type = "checkbox";
-  toggle.id = "show-unnamed-storages";
-  toggle.checked = showUnnamedStorages;
-  toggle.addEventListener("change", () => {
-    showUnnamedStorages = toggle.checked;
-    renderStorages();
-  });
-  toggleLabel.appendChild(toggle);
-  toggleLabel.appendChild(document.createTextNode(" Show run-derived (unnamed) storages"));
-  toggleRow.appendChild(toggleLabel);
-  detail.appendChild(toggleRow);
-
-  const items = storageItemsCache[slug] || [];
-  const visible = showUnnamedStorages ? items : items.filter((st) => st.named === true);
-  const rows = visible.map((st) => {
-    // ✅ for a named/standalone storage, ❌ for a run-derived one - the same
-    // st.named flag that gates the delete affordance below.
-    const marker = mk("td", { class: "muted", text: st.named ? "✅" : "❌" });
-    const del = st.named
-      ? mk("button", {
-          class: "secondary",
-          text: "Delete",
-          onClick: () => deleteStorage(slug, st.id),
-        })
-      : mk("td", { class: "muted", text: "" });
-    const idCell = mk("td", {
-      class: "clickable",
-      text: st.id,
-      onClick: () => navigate(`/storage/${slug}/${st.id}`),
-    });
-    return [mk("td", { text: st.name }), idCell, marker, del];
-  });
-  detail.appendChild(tableEl(["Name", "Id", "Named", ""], rows));
-}
-
-async function createStorage(slug, name) {
-  const trimmed = (name || "").trim();
-  if (!trimmed) return;
-  await api(`/v2/${slug}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name: trimmed }),
-  });
-  loadStorages(slug);
-}
-
-async function deleteStorage(slug, id) {
-  if (!confirm(`Delete storage "${id}"? This permanently removes its data and cannot be undone.`)) return;
-  await api(`/v2/${slug}/${id}`, { method: "DELETE" });
-  loadStorages(slug);
-}
-
-// Storage detail: inspect any storage's contents (keys+records / items /
-// requests) at /storage/{slug}/{id}, reusing showStore via the slug→kind map.
-async function showStorageDetail(slug, resourceId) {
-  const kind = STORAGE_SLUG_TO_KIND[slug];
-  const list = $("#actor-list");
-  if (list) list.innerHTML = "";
-  const detail = $("#detail");
-  if (!detail) return;
-  detail.innerHTML = "";
-
-  const head = mk("div", { class: "row" });
-  head.appendChild(mk("h2", { text: resourceId, style: { margin: "0" } }));
-  detail.appendChild(head);
-  const store = mk("div");
-  store.id = "store";
-  detail.append(
-    store,
-    mk("button", { class: "secondary", text: "Back", onClick: () => navigate(`/storage/${slug}`) }),
-  );
-  await showStore(null, kind, resourceId);
 }
 
 // ------------------------------------------------------------------ actors
@@ -683,65 +624,20 @@ window.openRun = async function (actorId, runId) {
   showStore(kvTab, "kv", r.defaultKeyValueStoreId);
 };
 
-window.showStore = async function (tab, kind, id) {
-  abortActiveLogStream();
-  document.querySelectorAll(".tabs span").forEach((s) => s.classList.remove("active"));
-  if (tab) tab.classList.add("active");
-  const box = $("#store");
-  box.innerHTML = "";
-
-  if (kind === "kv") {
-    const keys = (unwrap(await api(`/v2/key-value-stores/${id}/keys`)).items) || [];
-    const rows = [];
-    for (const k of keys) {
-      const rec = await api(`/v2/key-value-stores/${id}/records/${k.key}`);
-      const pre = mk("pre", {
-        text: typeof rec === "string" ? rec : JSON.stringify(rec, null, 2),
-        style: { maxHeight: "120px" },
-      });
-      rows.push([mk("td", { text: k.key }), pre]);
-    }
-    box.appendChild(emptyOr(tableEl(["Key", "Value"], rows), keys.length));
-  } else if (kind === "ds") {
-    const items = await api(`/v2/datasets/${id}/items`);
-    box.appendChild(mk("pre", { text: JSON.stringify(items, null, 2) }));
-  } else if (kind === "rq") {
-    const meta = unwrap(await api(`/v2/request-queues/${id}`));
-    const reqs = (unwrap(await api(`/v2/request-queues/${id}/requests`)).items) || [];
-    box.appendChild(
-      mk("p", {
-        class: "muted",
-        text: `total ${meta.totalRequestCount} · pending ${meta.pendingRequestCount} · handled ${meta.handledRequestCount}`,
-      }),
-    );
-    const rows = reqs.map((q) => [
-      mk("td", { text: q.url }),
-      mk("td", { text: q.method }),
-      mk("td", { text: String(Boolean(q.handledAt)) }),
-    ]);
-    box.appendChild(emptyOr(tableEl(["URL", "Method", "Handled"], rows), reqs.length));
-  } else {
-    const logPre = mk("pre");
-    box.appendChild(logPre);
-    await streamLogInto(id, logPre);
-  }
-};
-
-// tableEl already renders a "none" row when empty; keep the previous "empty"
-// wording for storage views by relabelling that row when there are zero rows.
-function emptyOr(table, count) {
-  if (!count) {
-    const cell = table.querySelector("td.muted");
-    if (cell) cell.textContent = "empty";
-  }
-  return table;
-}
-
 // Wire the header controls and top-level nav with addEventListener (no inline
 // handlers). The three top-level entries navigate to real paths; popstate
 // re-renders on Back/Forward. Then render the initial route from the URL.
 const _userSelect = $("#user-select");
 if (_userSelect) _userSelect.addEventListener("change", () => switchTo(_userSelect.value));
+const _fallbackToggle = $("#fallback-toggle");
+if (_fallbackToggle) {
+  // `.catch()` swallows a rejected PUT (runtime unreachable, or a non-JSON
+  // response body) instead of an unhandled rejection -- mirrors
+  // `periodicRefresh`'s own guard on `refreshFallbackToggle()` above. The
+  // checkbox keeps the user's optimistic click until the next periodic tick
+  // re-syncs it with the server's actual state.
+  _fallbackToggle.addEventListener("change", () => setFallbackEnabled(_fallbackToggle.checked).catch(() => {}));
+}
 $("#tab-actors").addEventListener("click", () => navigate("/actors"));
 $("#tab-storage").addEventListener("click", () => navigate("/storage/key-value-stores"));
 $("#tab-users").addEventListener("click", () => navigate("/users"));
@@ -749,5 +645,6 @@ window.addEventListener("popstate", renderRoute);
 
 refreshUser();
 refreshUserSelect();
+refreshFallbackToggle();
 renderRoute();
 setInterval(periodicRefresh, 4000);

@@ -1,10 +1,20 @@
 """Resolve the acting user from the request's ``Authorization: Bearer`` token.
 
-There is no real authentication. Identity (a username) and credential (a token)
-are decoupled: the token is only ever used to look up which stored user is acting
-and is never turned into a username. An absent token resolves to the default local
-user; the first token ever presented binds ("bootstraps") the default user's
-credential; a later token that matches no stored user is rejected.
+There is no real authentication. Identity (a username) and credential (a
+token) are decoupled: the token is only ever used to look up which stored
+user is acting and is never turned into a username.
+
+Three variants of that resolution live here side by side, deliberately
+co-located so they can be diffed by eye, in definition order -- each carries
+its own full contract in its own docstring below:
+
+- ``resolve_user`` — the default bootstrap-or-reject resolution, used by
+  every registered handler that needs identity.
+- ``resolve_standby_caller`` — the standby-forwarding variant, which never
+  falls back to the default user for a missing credential.
+- ``resolve_forwardable_token`` — the pure lookup used by the upstream
+  fallback proxy, which never binds, bootstraps, or forwards a credential
+  the caller didn't themselves present.
 """
 from __future__ import annotations
 
@@ -27,12 +37,25 @@ def token_from_request(request: Request) -> str:
     return header.strip()
 
 
-async def resolve_user(request: Request) -> str:
+async def resolve_user(request: Request, *, bootstrap: bool = True) -> str:
     """Return the acting username for the request's credential.
 
-    No token -> the default user. A token matching a stored user -> that user. A
-    token matching no user -> bootstrap the (still unclaimed) default user with
-    it, else reject.
+    No token -> the default user. A token matching a stored user -> that
+    user. A token matching no user, with ``bootstrap`` True (the default,
+    used by every registered handler that needs identity) -> bootstrap the
+    (still unclaimed) default user with it, else reject.
+
+    ``bootstrap=False`` is used only by ``app/routers/runtime_config.py``'s
+    ``PUT`` handler: a token matching no user is rejected outright, with NO
+    state mutation -- ``bind_default_token`` is never called. That distinction
+    matters specifically there because that switch, once on, causes the
+    runtime to forward the caller's own real Apify credential to the public
+    internet on a local 404: binding an unrecognized token to the default
+    user's credential on that one endpoint would both hand whoever presented
+    it control over every future anonymous fallback attempt AND permanently
+    lock out the operator's own later, real login (a bound default user can
+    never again satisfy this function's own ``token IS NULL`` bootstrap
+    condition below).
     """
     token = token_from_request(request)
     service = request.app.state.service
@@ -42,7 +65,7 @@ async def resolve_user(request: Request) -> str:
     username = await service.user_for_token(token)
     if username is not None:
         return username
-    if await service.bind_default_token(token):
+    if bootstrap and await service.bind_default_token(token):
         return DEFAULT_USERNAME
     raise InvalidTokenError()
 
@@ -66,3 +89,41 @@ async def resolve_standby_caller(request: Request) -> str:
     if await service.bind_default_token(token):
         return DEFAULT_USERNAME
     raise InvalidTokenError()
+
+
+async def resolve_forwardable_token(request: Request) -> str | None:
+    """Return the caller's own bound token to forward upstream, or ``None``.
+
+    Used only by ``app/upstream.py``'s fallback proxy. Differs from
+    ``resolve_user`` in two respects: it is a PURE lookup (never binds or
+    bootstraps), and a request presenting NO credential at all is never
+    resolved to the default user -- it returns ``None`` outright. Forwarding
+    a credential the caller never presented would mean any anonymous,
+    cross-origin request could spend the operator's own real Apify token;
+    the fallback attempt must instead be abandoned before it ever considers
+    forwarding anything, exactly the same as if identity resolution failed.
+
+    Three outcomes are NOT the same and callers must not conflate them:
+    - ``None`` from NO presented token, OR a PRESENT token matching no
+      existing user. Either way there is nothing to forward; the caller must
+      abandon the attempt entirely.
+    - ``""`` (empty string) — a PRESENT token resolved to a known user who
+      simply has no bound `token` yet. The attempt must proceed, forwarding
+      no ``Authorization`` header, rather than abort.
+
+    A present token resolves through ``Service.get_user``, NOT the presented
+    token directly: ``user_for_token`` matches either a user's bound
+    ``token`` OR their ``container_token`` (so an Actor container's own
+    injected ``APIFY_TOKEN`` also resolves here), and the row's own ``token``
+    -- the user's real bound credential -- is what must be forwarded, never
+    the container token that happened to resolve it.
+    """
+    token = token_from_request(request)
+    if not token:
+        return None
+    service = request.app.state.service
+    username = await service.user_for_token(token)
+    if username is None:
+        return None
+    row = await service.get_user(username)
+    return row.token if row is not None and row.token else ""

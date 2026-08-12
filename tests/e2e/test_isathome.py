@@ -79,9 +79,10 @@ def runtime(tmp_path_factory):
         capture_output=True,
     )
     api_url = f"http://localhost:{api_port}"
+    console_url = f"http://localhost:{console_port}"
     try:
         _wait_ready(api_url)
-        yield {"api": api_url, "name": name, "data_dir": data_dir}
+        yield {"api": api_url, "console": console_url, "name": name, "data_dir": data_dir}
     finally:
         subprocess.run(["docker", "logs", name], capture_output=False)
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
@@ -99,11 +100,12 @@ def _wait_ready(api_url: str, timeout: int = 60) -> None:
     raise RuntimeError("runtime did not become ready in time")
 
 
-def _apify_env(api_url: str) -> dict:
+def _apify_env(api_url: str, console_url: str) -> dict:
     env = dict(os.environ)
     env.update(
         {
             "APIFY_CLIENT_BASE_URL": api_url,
+            "APIFY_CONSOLE_URL": console_url,
             "APIFY_TOKEN": "local-user",
             "APIFY_CLI_DISABLE_TELEMETRY": "1",
             "APIFY_CLI_SKIP_UPDATE_CHECK": "1",
@@ -130,7 +132,7 @@ def test_real_apify_client_reports_is_at_home_and_writes_via_api(runtime, tmp_pa
     owner, and a ``dataset_id`` matching the run's real ``defaultDatasetId``.
     """
     api = runtime["api"]
-    env = _apify_env(api)
+    env = _apify_env(api, runtime["console"])
 
     project = tmp_path / "isathome-actor"
     shutil.copytree(REPO / "sample_actor_isathome", project)

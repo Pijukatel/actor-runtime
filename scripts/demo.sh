@@ -81,6 +81,7 @@ if [ "$REMOTE" -eq 0 ]; then
   IMAGE_TAG="${IMAGE_TAG:-actor-runtime:demo}"
   CONTAINER_NAME="${CONTAINER_NAME:-actor-runtime-demo}"
   API_URL="http://localhost:${API_PORT}"
+  CONSOLE_URL="http://localhost:${CONSOLE_PORT}"
 fi
 
 step() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
@@ -89,15 +90,17 @@ step "0. Checking prerequisites"
 command -v apify  >/dev/null || { echo "apify-cli is required (npm i -g apify-cli)"; exit 1; }
 command -v python3 >/dev/null || { echo "python3 is required"; exit 1; }
 if [ "$REMOTE" -eq 1 ]; then
-  # A leftover APIFY_CLIENT_BASE_URL in the invoking shell (e.g. from a prior
-  # local-mode run, or manual testing per requirements/cli.md) would silently
-  # redirect every apify-cli call below away from api.apify.com while the
-  # REMOTE banner keeps claiming the real platform -- clear it so remote mode
-  # always talks to the real platform regardless of ambient env. (APIFY_TOKEN
-  # is deliberately not touched here: per requirements/cli.md, apify push/call/
+  # A leftover APIFY_CLIENT_BASE_URL/APIFY_CONSOLE_URL in the invoking shell
+  # (e.g. from a prior local-mode run, or manual testing per
+  # requirements/cli.md) would silently redirect every apify-cli call below
+  # (or its printed console links) away from the real platform while the
+  # REMOTE banner keeps claiming it -- clear both so remote mode always talks
+  # to the real platform regardless of ambient env. (APIFY_TOKEN is
+  # deliberately not touched here: per requirements/cli.md, apify push/call/
   # info use only the CLI's stored login, never the APIFY_TOKEN env var, so a
   # stale value there can't redirect or otherwise poison this path.)
   unset APIFY_CLIENT_BASE_URL
+  unset APIFY_CONSOLE_URL
   # Cheap, local check (no more of a network call than step 7 already makes):
   # every command below authenticates with apify-cli's own stored login (see
   # requirements/cli.md), so fail fast here with a clear message instead of a
@@ -144,17 +147,21 @@ if [ "$REMOTE" -eq 0 ]; then
   curl -fsS "$API_URL/v2/users" >/dev/null || { echo "runtime API never came up"; exit 1; }
 
   step "4. Pointing apify-cli at the local runtime"
-  # Redirects apify-cli's underlying apify-client at the runtime; no token is
+  # Redirects apify-cli's underlying apify-client at the runtime, and its
+  # console-link output at this runtime's own console; no token is
   # configured here (see "Authentication / token bootstrap" in requirements/cli.md).
   export APIFY_CLIENT_BASE_URL="$API_URL"
+  export APIFY_CONSOLE_URL="$CONSOLE_URL"
   export APIFY_CLI_DISABLE_TELEMETRY=1
   export APIFY_CLI_SKIP_UPDATE_CHECK=1
   echo "APIFY_CLIENT_BASE_URL = $APIFY_CLIENT_BASE_URL"
+  echo "APIFY_CONSOLE_URL = $APIFY_CONSOLE_URL"
 else
   step "1-4. Skipped in --remote mode"
-  # No image to build, no container to start, and no APIFY_CLIENT_BASE_URL to
-  # point anywhere: apify-cli already talks to the real platform by default,
-  # using whichever account is logged in (checked above).
+  # No image to build, no container to start, and no
+  # APIFY_CLIENT_BASE_URL/APIFY_CONSOLE_URL to point anywhere: apify-cli
+  # already talks to the real platform by default, using whichever account is
+  # logged in (checked above).
 fi
 
 if [ "$REMOTE" -eq 1 ]; then

@@ -2,12 +2,24 @@
 from __future__ import annotations
 
 import json
+from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from ..auth import resolve_user
-from ..responses import bad_request, conflict, data, forbidden, get_service, not_found, read_body, read_json
+from ..pagination import paged_envelope, parse_page
+from ..responses import (
+    bad_request,
+    conflict,
+    data,
+    forbidden,
+    get_service,
+    not_found,
+    read_body,
+    read_json,
+)
 from ..service import (
     _RUN_STORAGE_PREFIXES,
     ACCESS_ABSENT,
@@ -23,7 +35,7 @@ from ..service import (
     storage_name_from_id,
     validate_storage_name,
 )
-from ..storage import DEFAULT_HEAD_LIMIT
+from ..storage import DEFAULT_HEAD_LIMIT, DEFAULT_ITEM_LIMIT
 
 router = APIRouter()
 
@@ -290,14 +302,114 @@ async def get_kvs(store_id: str, request: Request) -> object:
     return data(meta)
 
 
+def _with_record_public_url(items: list[dict[str, Any]], request: Request, store_id: str) -> list[dict[str, Any]]:
+    """Attach ``recordPublicUrl`` to each ``{key, size}`` item, on EVERY
+    KV-keys response path alike (bare, cursor-mode, and the ``offset``-sliced
+    console path) -- matching the real Apify API's ``ListOfKeys``, which
+    always returns this field regardless of how the request was paged. One
+    shared implementation so all three call sites in this module build the
+    exact same URL the exact same way.
+
+    Built from ``request.base_url`` -- the host/port this same request
+    actually arrived on -- rather than ``Settings.container_api_base_url``
+    (the fixed Docker-network hostname ``standbyUrl``/``consoleUrl`` use):
+    this route's callers are typically host-side (curl, or apify-client
+    pointed at the published API port), and a Docker-internal hostname would
+    not resolve for them at all. Reusing the request's own origin resolves
+    correctly for both a host-side caller and one reaching this route from
+    inside another Actor container.
+    """
+    base = str(request.base_url).rstrip("/")
+    return [
+        {
+            **item,
+            # `quote(..., safe="")` percent-encodes every reserved character
+            # (including `/`) -- a key containing e.g. a space or `#` would
+            # otherwise land in the URL unescaped, so a client following the
+            # link would either mis-split it (`#` starts a fragment, `?` a
+            # query string) or fetch a different record than the one this
+            # envelope describes.
+            "recordPublicUrl": f"{base}/v2/key-value-stores/{store_id}/records/{quote(item['key'], safe='')}",
+        }
+        for item in items
+    ]
+
+
+async def _kv_keys_cursor_envelope(
+    svc, request: Request, store_id: str, exclusive_start_key: str | None, limit: int | None
+) -> dict[str, Any]:
+    """Cursor-mode envelope for ``GET /v2/key-value-stores/{id}/keys``: pushes
+    ``exclusiveStartKey``/``limit`` straight through to crawlee's own
+    ascending ``iterate_keys(exclusive_start_key=, limit=)`` (see
+    ``Storage.kv_keys_page``), matching the real API's ``ListOfKeys`` cursor
+    contract closely enough for the pinned apify-client's ``iterate_keys()``
+    to page correctly at any store size.
+
+    A bare call (``exclusive_start_key`` and ``limit`` both ``None``) returns
+    every key with ``isTruncated: False`` and no ``exclusiveStartKey``/
+    ``nextExclusiveStartKey`` fields at all -- the same shape this surface had
+    before cursor support existed, except that every item (bare included) now
+    carries a ``recordPublicUrl`` (see ``_with_record_public_url`` -- Decision
+    9's real-API-parity change: the real API's ``ListOfKeys`` always returns
+    it, and the pinned apify-client's ``KeyValueStoreKey`` model requires it
+    on every item it validates). The envelope itself never gains a ``total``
+    field, cursor mode or bare -- unlike the offset-sliced path below, which
+    already holds the full list and can report one for free, computing a
+    store-wide count here would force exactly the full-store scan the cursor
+    pushdown exists to avoid, turning an O(page) read into an O(store) one on
+    every page.
+    """
+    page, is_truncated, next_key = await svc.storage.kv_keys_page(
+        store_id, exclusive_start_key=exclusive_start_key, limit=limit
+    )
+    page = _with_record_public_url(page, request, store_id)
+    envelope: dict[str, Any] = {"items": page, "count": len(page)}
+    envelope["limit"] = limit if limit is not None else len(page)
+    if exclusive_start_key is not None:
+        envelope["exclusiveStartKey"] = exclusive_start_key
+    envelope["isTruncated"] = is_truncated
+    if next_key is not None:
+        envelope["nextExclusiveStartKey"] = next_key
+    return envelope
+
+
 @router.get("/v2/key-value-stores/{store_id}/keys")
 async def list_keys(store_id: str, request: Request) -> object:
+    """List a KV store's keys.
+
+    Two independent, mutually-exclusive-in-practice paging mechanisms share
+    this one endpoint: a caller-supplied ``exclusiveStartKey`` cursor (pushed
+    down to crawlee, ascending, real-API-shaped ``isTruncated``/
+    ``nextExclusiveStartKey`` -- see ``_kv_keys_cursor_envelope``) and the
+    console's own ``offset``-based paging (an already-fetched full list
+    sliced in Python, unaffected by cursor support). ``offset`` has no
+    equivalent in the real API's own KV-keys contract, so a request naming
+    BOTH ``exclusiveStartKey`` and ``offset`` treats the cursor as
+    authoritative and ignores ``offset`` entirely, rather than mixing two
+    incompatible notions of "where to start". A bare request (neither param,
+    nor ``limit``) takes the cursor path with everything ``None``, which
+    reproduces today's unpaginated shape exactly except for the additive
+    ``recordPublicUrl`` on each item every path on this endpoint now carries
+    (see ``_with_record_public_url``).
+    """
     svc = get_service(request)
     _user, _storage, denied = await _guard(request, store_id, LEVEL_READ, STORAGE_KV)
     if denied:
         return denied
+    limit, offset = parse_page(request)
+    exclusive_start_key = request.query_params.get("exclusiveStartKey") or None
+    if exclusive_start_key is not None or offset is None:
+        return data(await _kv_keys_cursor_envelope(svc, request, store_id, exclusive_start_key, limit))
     keys = await svc.storage.kv_keys(store_id)
-    return data({"items": keys, "count": len(keys), "limit": len(keys), "isTruncated": False})
+    # `limit == 0` is a zero-width window with nothing to truncate, exactly
+    # like the cursor path's own short-circuit (`Storage.kv_keys_page`) --
+    # without this, `offset + limit < len(keys)` reports `isTruncated: true`
+    # for a page that is always empty, a loop hazard for a naive "keep paging
+    # until isTruncated is false" caller.
+    is_truncated = limit is not None and limit > 0 and offset + limit < len(keys)
+    envelope = paged_envelope(keys, limit, offset, isTruncated=is_truncated)
+    envelope["items"] = _with_record_public_url(envelope["items"], request, store_id)
+    return data(envelope)
 
 
 @router.get("/v2/key-value-stores/{store_id}/records/{key}")
@@ -392,12 +504,46 @@ async def get_dataset(dataset_id: str, request: Request) -> object:
 
 @router.get("/v2/datasets/{dataset_id}/items")
 async def get_items(dataset_id: str, request: Request) -> JSONResponse:
+    """List a dataset's items.
+
+    The response BODY stays a bare JSON array either way -- bare or paged --
+    matching today's shape exactly. The `X-Apify-Pagination-*`
+    headers, however, are now emitted on EVERY response, bare calls included:
+    the pinned apify-client's `DatasetItemsPage` (`list_items()`/
+    `iterate_items()`) indexes all five directly (no `.get()`), so a genuinely
+    bare call (no `limit`/`offset` at all) would otherwise raise a `KeyError`
+    before a single item came back. For a bare request this reports
+    `offset=0`, `count`/`total` equal to the dataset's full size, and
+    `limit` equal to that same count -- the same values a caller would get by
+    explicitly passing `offset=0` with no `limit`, which is exactly what
+    `dataset_items()` is called with below when `limit`/`offset` are both
+    absent.
+    """
     svc = get_service(request)
     _user, _storage, denied = await _guard(request, dataset_id, LEVEL_READ, STORAGE_DS)
     if denied:
         return denied
-    result = await svc.storage.dataset_items(dataset_id)
-    return JSONResponse(result["items"])
+    limit, offset = parse_page(request)
+    result = await svc.storage.dataset_items(
+        dataset_id, offset=offset or 0, limit=limit if limit is not None else DEFAULT_ITEM_LIMIT
+    )
+    response = JSONResponse(result["items"])
+    response.headers["X-Apify-Pagination-Offset"] = str(result["offset"])
+    response.headers["X-Apify-Pagination-Count"] = str(result["count"])
+    response.headers["X-Apify-Pagination-Total"] = str(result["total"])
+    # Effective limit -- the requested value, or (when `limit` was omitted,
+    # bare or offset-only) the slice's own returned length, never the internal
+    # DEFAULT_ITEM_LIMIT sentinel used to mean "no cap" to the storage layer --
+    # matching `paged_envelope`'s own convention for the same "no limit given"
+    # case on the other three listing surfaces.
+    response.headers["X-Apify-Pagination-Limit"] = str(limit if limit is not None else result["count"])
+    # This surface has no `desc` query param -- items are always returned in
+    # storage (insertion) order, never reversed -- so the header is
+    # unconditionally "false", bare calls included: the pinned apify-client's
+    # `DatasetItemsPage` indexes this header directly (no `.get()`), so its
+    # absence raises a `KeyError` before a single item is returned.
+    response.headers["X-Apify-Pagination-Desc"] = "false"
+    return response
 
 
 @router.post("/v2/datasets/{dataset_id}/items")
@@ -463,7 +609,8 @@ async def list_requests(queue_id: str, request: Request) -> object:
     if denied:
         return denied
     items = await svc.storage.rq_requests(queue_id)
-    return data({"items": items, "count": len(items), "limit": len(items)})
+    limit, offset = parse_page(request)
+    return data(paged_envelope(items, limit, offset))
 
 
 @router.post("/v2/request-queues/{queue_id}/requests")

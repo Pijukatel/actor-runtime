@@ -115,7 +115,8 @@
   interpreted as markup.
 - The **Storage section** shows one storage type at a time (at `/storage/{slug}`,
   with a per-type sub-nav between key-value stores, datasets and request queues) and
-  lists **all** of the acting user's owned storages of that type — both the ones they
+  lists the acting user's owned storages of that type, one 100-item page at a time
+  (see "Storage views always page explicitly" below) — both the ones they
   created by name (**named**) and the ones created automatically by their Actor runs
   (**run-derived/unnamed**). Each row is marked with a **✅ (named) / ❌
   (run-derived)** glyph so it's clear which is which. A single checkbox above the
@@ -133,11 +134,95 @@
   with a link back to the list — for named **and** run-derived storages alike. This
   reuses the same content renderer as a run's default-storage sub-tabs. All controls
   reuse the DOM-safe builders (`mk`/`tableEl`/`api`) — no `innerHTML`, no inline
-  handlers; navigation is wired with `addEventListener` + `history.pushState`.
+  handlers; navigation is wired with `addEventListener` + `history.pushState`. A
+  key-value store's per-key record fetches are issued concurrently
+  (`Promise.all`), not one key at a time, while still rendering rows in the
+  same order as the fetched key page; each key is percent-encoded
+  (`encodeURIComponent`) before it reaches the record-fetch URL, so a key
+  containing `/`, `#`, `?` or other reserved characters still addresses the
+  right record instead of being mis-split by the browser's own URL parsing.
+- **Storage views always page explicitly, never a bare request.** The per-user
+  storage list (`/storage/{slug}`) and a storage's detail content (dataset items,
+  KV keys, RQ requests, reached via the shared content renderer from either
+  `/storage/{slug}/{resourceId}` or a run's own default-storage sub-tabs) each
+  always request an explicit `limit=100&offset=N` slice from the corresponding
+  API surface — never the bare/unbounded request the API itself still allows for
+  other callers. Each of these views shows a **"showing N–M of T"** line, using
+  the total the API surface reports, and **Prev/Next** controls that step by 100
+  and disable at either end of the result set. On the per-user storage list, the
+  show/hide-unnamed checkbox filters the already-fetched 100-item page only —
+  Prev/Next still step by the full fetched page (`items.length`), never the
+  filtered subset. The wording switches on the checkbox's own state, not on
+  whether the filter actually hides anything on the current page: with the
+  checkbox checked (unnamed storages shown), the "N–M of T" line above is
+  accurate as-is; with it unchecked, that range could misstate the visible
+  rows' positions (even on a page where nothing happens to be hidden), so the
+  line instead reads **"showing V of P on this page · T total"** (V = the
+  count actually visible after the filter, P = the page's own fetched row
+  count) — see `filteredPagingLineEl`'s own comment
+  (`app/console/storage_tab.js`) for why.
+  **Creating or deleting a named storage always returns the
+  per-user storage list to its first page** (offset reset to 0), rather than
+  re-fetching whatever offset was already showing — a newly created storage is
+  appended past the end of the list (oldest first), so re-fetching a stale
+  later-page offset could otherwise leave it permanently unseen, and deleting
+  the last item on a later page could otherwise land on an empty page.
+- **Each storage's detail view shows a stats line** above its item/key/request
+  list: every scalar field currently non-empty for the resource being viewed,
+  excluding identity/bookkeeping fields (`id`/`name`/`userId`/`createdAt`/
+  `modifiedAt`/`accessedAt`/`consoleUrl`) and any object-valued field (no
+  storage type's own GET-detail response currently returns a non-empty one —
+  a request queue's `stats` sub-object stays an empty stub, so it is simply
+  hidden along with every other object-valued field) — nothing invented,
+  nothing non-empty omitted among the remaining fields. A boolean field is
+  always shown regardless of its value — `false` is a meaningful, present
+  value, not emptiness — while a numeric/string field is only shown once it
+  is non-zero/non-blank.
+  - For **datasets and key-value stores**, the stats line's counters
+    (`itemCount`/`cleanItemCount` for a dataset, `itemCount` for a KV store)
+    are derived from the SAME paged listing response the view already fetches
+    for its content — the dataset items response's `X-Apify-Pagination-Total`
+    header, the KV keys response's `total` field — both numerically identical
+    to that storage type's own `GET`-detail `itemCount`. This deliberately
+    avoids a second fetch of that storage's own `GET` metadata response
+    purely to re-derive a count the page fetch already reports. For a
+    **dataset**, whose pagination is pushed all the way down to crawlee (see
+    `storage.md`), that second fetch would otherwise reintroduce, server-side,
+    the exact unbounded per-request read this pagination feature exists to
+    remove; for a **KV store**, the console always pages via `offset` (see
+    "Storage views always page explicitly" above), and KV's `offset`-based
+    path already performs an unbounded `kv_keys()` read on every page fetch
+    regardless (`storage.md`'s documented local-only shortcut — unlike KV's
+    separate `exclusiveStartKey`-cursor path, which crawlee's own
+    `iterate_keys()` does push down page-sized, `offset` has no equivalent on
+    crawlee's KVS client to push down to), so the second fetch would not be a
+    NEW unbounded read, merely a second, redundant one on top of the
+    unbounded read the listing itself already pays for. Either way, avoiding
+    the second fetch is strictly better, just for a narrower reason on the KV
+    side.
+  - For **request queues**, whose extra stats fields
+    (`pendingRequestCount`/`handledRequestCount`/`hadMultipleClients`) are not
+    present in the requests-listing page response, the stats line is still
+    rendered from that storage's own `GET` metadata response — fetched
+    concurrently with (not serialized before) the requests page fetch, since
+    the two calls have no dependency on each other.
 - The **left column** shows the top-level category nav (Actors / Storage / Users)
   in its own bordered box, and directly below it, in a second, separate bordered
   box, the acting user's Actors list (so you can switch actors from any actor route).
   The detail panel to the right renders whichever view the URL addresses.
+- **The header's "API fallback" toggle** sits next to the "Switch user" control,
+  visible on every view (it lives in the static header, not a routed view). It
+  reads its initial state from `GET /v2/runtime-config` (token-free, like the
+  user list) on page load AND on every periodic refresh — since the toggle is
+  one shared runtime-global switch (see `api.md`'s "Upstream fallback" section),
+  not a per-console-tab or per-user setting, a flip made from another tab or
+  port must show up here too, without a reload. Its `change` handler `PUT`s the
+  flipped value and then re-reads the resulting state from the same endpoint
+  rather than assuming the flip took effect; the runtime's behavior changes
+  immediately, for every user and both ports. A periodic refresh already in
+  flight when the user flips the toggle is superseded and its response
+  discarded, so it can never repaint the checkbox back to the value it held
+  before that flip.
 
 # Out of scope for now
 - Real authentication / passwords (the token is a placeholder credential that

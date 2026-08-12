@@ -36,6 +36,15 @@ the run's default storages (key-value store, dataset, request queue).
   storages. No token falls back to the default `local-user`. A storage's owner can
   optionally share an individual key-value store, dataset or request queue with
   another user at READ or WRITE level via the API. See `requirements/api.md`.
+- **Optional upstream API fallback.** A single runtime-global toggle (the
+  console header's "API fallback" switch, or `GET|PUT /v2/runtime-config`)
+  makes any request that 404s locally on an Actor/run/build/storage id retry
+  against the real `api.apify.com`, using the caller's own bound token, and
+  relay a successful reply back verbatim. Off by default and resets to off on
+  every restart; since it forwards the caller's real credential, turning it
+  on can turn a locally-missing write into a live, billed change on that
+  user's real Apify account. See `requirements/api.md`'s "Upstream fallback"
+  section.
 
 The API and the console are served on two ports; the container prints both URLs,
 clearly labelled, on startup.
@@ -152,6 +161,7 @@ anything this Actor codes around:
 ```bash
 npm install -g apify-cli
 export APIFY_CLIENT_BASE_URL=http://localhost:3333   # redirect the CLI here
+export APIFY_CONSOLE_URL=http://localhost:3000        # ...and its console links here too
 apify login -t alice      # the token selects the acting user (see requirements/cli.md;
                           # push/call use the stored login, not the APIFY_TOKEN env var)
 
