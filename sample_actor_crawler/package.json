@@ -1,0 +1,10 @@
+{
+  "name": "sample-actor-crawler",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "apify": "3.7.2",
+    "crawlee": "3.18.0"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "actor-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A minimal, self-contained local Apify platform in a single Docker image.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "vitest run tests/unit",
+    "test:e2e": "vitest run tests/e2e"
+  },
+  "dependencies": {
+    "@crawlee/fs-storage": "4.0.0-beta.118",
+    "adm-zip": "0.6.0",
+    "dockerode": "5.0.1",
+    "undici": "8.10.0"
+  },
+  "devDependencies": {
+    "apify": "^3.7.2",
+    "apify-client": "2.25.0",
+    "vitest": "4.1.10"
+  }
+}

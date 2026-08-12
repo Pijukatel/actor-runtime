@@ -1,0 +1,9 @@
+{
+  "name": "sample-actor-isathome",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "apify": "3.7.2"
+  }
+}
