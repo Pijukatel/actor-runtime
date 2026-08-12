@@ -49,31 +49,41 @@ const STANDBY_PATH_PREFIX = '/v2/actor-standby/';
  * itself the product of percent-decoding, so this is the same boundary the
  * router's own (decoded-path) matching already agreed on.
  */
-export function rawForwardTarget(endpoint, ctx) {
+export function rawForwardTarget(endpoint, ctx, decodedPath = '') {
     const rawUrl = ctx.rawUrl;
-    let rest = '';
     if (rawUrl.startsWith(STANDBY_PATH_PREFIX)) {
         const remainder = rawUrl.slice(STANDBY_PATH_PREFIX.length);
         const queryIndex = remainder.indexOf('?');
         const searchEnd = queryIndex === -1 ? remainder.length : queryIndex;
         const slashIndex = remainder.slice(0, searchEnd).indexOf('/');
+        let rest = '';
         if (slashIndex !== -1) {
             rest = remainder.slice(slashIndex + 1);
         } else if (queryIndex !== -1) {
             rest = remainder.slice(queryIndex);
         }
-    }
-    if (rest.startsWith('?')) {
         return `${endpoint}/${rest}`;
     }
-    return `${endpoint}/${rest}`;
+    // Fallback, mirroring the Python predecessor's `_raw_forward_target`: the
+    // raw request target does not literally start with the fixed prefix (a
+    // caller percent-encoded some of the prefix's own bytes -- the router's
+    // DECODED match still agreed this is a standby request, but the raw
+    // byte-offset extraction above no longer applies). Re-quote the router's
+    // decoded `*path` param instead of silently forwarding to the endpoint
+    // root. Unavoidably lossy (a literal `#`/`?` and its percent-encoded form
+    // decode to the same string) but still a usable, correctly-encoded target,
+    // with the raw query string kept intact alongside it.
+    const queryIndex = rawUrl.indexOf('?');
+    const query = queryIndex === -1 ? '' : rawUrl.slice(queryIndex);
+    const requoted = decodedPath.split('/').map(encodeURIComponent).join('/');
+    return `${endpoint}/${requoted}${query}`;
 }
 
 export function registerStandbyRoutes(router) {
     router.add(
         ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'],
         '/v2/actor-standby/:actorId/*path',
-        async (ctx, { actorId }) => {
+        async (ctx, { actorId, path }) => {
             const svc = ctx.service;
             const user = await resolveStandbyCaller(ctx);
             // `getActor(..., user)` is the SAME ownership check every other
@@ -131,7 +141,7 @@ export function registerStandbyRoutes(router) {
                         forwardHeaders.push(name, ctx.req.rawHeaders[i + 1]);
                     }
                 }
-                const targetUrl = rawForwardTarget(endpoint, ctx);
+                const targetUrl = rawForwardTarget(endpoint, ctx, path);
 
                 // Only the initial connect is bounded (headersTimeout also
                 // caps the wait for response headers; body reads stay
