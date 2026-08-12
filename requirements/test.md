@@ -29,7 +29,7 @@ Actors driven by the full Apify SDK `Actor` lifecycle
  - Run the on-demand Actor with the standby Actor's NAME as input (never a
    username-qualified id): from inside its own container it uses
    `APIFY_API_BASE_URL` + its own `APIFY_TOKEN` (no hardcoded URL/port) to
-   resolve the acting user's own username (`client.user(Actor.configuration.user_id).get()`), builds
+   resolve the acting user's own username (`client.user(Actor.getEnv().userId).get()`), builds
    the standby Actor's id itself as `{username}~{name}` (the platform's own id
    convention -- `username~standby-actor` on the real platform,
    `local-user~standby-actor` here, from the exact same code), looks up that
@@ -41,24 +41,25 @@ Actors driven by the full Apify SDK `Actor` lifecycle
    run's dataset (both written through the runtime API). The standby Actor's
    run is warm and inspectable, then reaches a terminal state on its own after
    its (test-shortened) idle timeout, without any further request.
- - Runs in `tests/e2e/test_standby.py`, following the same Docker/`apify-cli`
-   skip pattern as `tests/e2e/test_e2e.py`.
+ - Runs in `tests/e2e/standby.test.js`, following the same Docker/`apify-cli`
+   skip pattern as `tests/e2e/e2e.test.js`.
 
-## Real apify SDK is_at_home + API round-trip
-Test case must verify that the real `apify`/`apify-client` SDK -- pip-installed
+## Real apify SDK isAtHome + API round-trip
+Test case must verify that the real `apify`/`apify-client` SDK -- npm-installed
 at image build time, like every `sample_actor*` fixture -- running inside a
-real Actor container reports `is_at_home` the way `Actor.is_at_home()` itself
+real Actor container reports `isAtHome` the way `Actor.isAtHome()` itself
 computes it, calls back into the runtime's own API through
-`Actor.new_client()` using its injected `APIFY_TOKEN`, and pushes its result
-into its own default dataset through `Actor.push_data()` (not local disk):
+`Actor.newClient()` using its injected `APIFY_TOKEN`, and pushes its result
+into its own default dataset through `Actor.pushData()` (not local disk):
 pushed/run via `apify-cli` like the other e2e cases, then the run's dataset is
-read back over the API to assert `is_at_home is True`, the resolved user
+read back over the API to assert `isAtHome === true`, the resolved user
 matches the run's owner, and the dataset id matches the run's real
-`defaultDatasetId`. Runs in `tests/e2e/test_isathome.py`, following the same
-Docker/`apify-cli` skip pattern as `tests/e2e/test_e2e.py`.
+`defaultDatasetId`. Runs in `tests/e2e/isathome.test.js`, following the same
+Docker/`apify-cli` skip pattern as `tests/e2e/e2e.test.js`.
 
 ## Mandatory multi-user, isolation and storage-sharing tests
-Automated coverage (runnable Docker-free via the in-process `wired` fixture, with
+Automated coverage (runnable Docker-free via `tests/helpers.js`'s `wire()` —
+the in-process app served on a real loopback socket — with
 the acting user set per request through `Authorization: Bearer <token>`) MUST
 exist for:
  - **Decoupled identity & credential** — a user is `{ username, token }`: the
@@ -89,7 +90,7 @@ exist for:
    `APIFY_TOKEN` itself**; each identity field MUST equal the (bootstrapped)
    default username. This guarantee is deliberately narrower than "no token-like
    value may ever appear in container env": every OTHER token the runtime hands
-   out — every user's fabricated `container_token`, which is exactly what
+   out — every user's fabricated `containerToken`, which is exactly what
    `APIFY_TOKEN` holds for every run (see "Environment-variable alignment"
    below) — is a runtime-generated credential, not the bound secret, and is
    safe (and required) to appear there. Coverage MUST also assert the positive
@@ -97,7 +98,8 @@ exist for:
    owner (including for `local-user`'s own runs), so the guarantee's narrower
    scope is never mistaken for "`APIFY_TOKEN` doesn't work" or "no exception for
    `APIFY_TOKEN` is needed" — both halves are checked side by side in
-   `tests/unit/test_multi_user.py::test_secret_token_never_leaks_into_ids_responses_or_env`.
+   `tests/unit/multi-user.test.js`'s "secret token never leaks into ids,
+   responses or env" test.
  - **Per-user ownership** — Actors, Builds and Runs are owned by the acting user
    and serialized as such; two users may hold identically named Actors without
    collision.
@@ -121,9 +123,10 @@ exist for:
 
 ## Mandatory standby-actor tests (standing regression checks)
 
-Automated coverage (Docker-free via the in-process `wired` / `wired_fast_standby`
-fixtures, backed by `StubDriver`'s in-process fake standby target — see
-`tests/unit/test_standby.py`) MUST exist for:
+Automated coverage (Docker-free via `tests/helpers.js`'s `wire()` — plain,
+and with test-shortened standby timings passed through its settings
+overrides — backed by `StubDriver`'s in-process fake standby target — see
+`tests/unit/standby.test.js`) MUST exist for:
  - **Opt-in parsing** — `usesStandbyMode: true` in a pushed `.actor/actor.json`
    enables standby and a `standbyUrl` field appears on the serialized Actor; an
    Actor pushed without it has no `standbyUrl` (absent, not null); an explicit
@@ -132,7 +135,7 @@ fixtures, backed by `StubDriver`'s in-process fake standby target — see
    run behaves exactly as before (regression).
  - **Environment-variable alignment (every run, on-demand and standby)** —
    `APIFY_IS_AT_HOME=1`; `APIFY_API_BASE_URL` is a well-formed URL naming the
-   runtime's own API host; `APIFY_TOKEN` is the run owner's `container_token` —
+   runtime's own API host; `APIFY_TOKEN` is the run owner's `containerToken` —
    a WORKING bearer credential for that owner (verified for at least two
    different users, showing it tracks the owner rather than being constant),
    and never equal to that owner's bound `token`; the default storage id env
@@ -148,17 +151,17 @@ fixtures, backed by `StubDriver`'s in-process fake standby target — see
    to only the last value) AND a percent-encoded `#`/`?` inside the caller's
    own sub-path segment, which must reach the Actor exactly as sent, still
    encoded, with the real query string intact alongside it — built from the
-   request's raw wire bytes rather than Starlette's own decoded path/query,
+   request's raw wire bytes (node's raw `req.url`) rather than any
+   already-decoded path/query,
    which would otherwise decode an encoded `#` into a URL-fragment-starting
    character and an encoded `?` into a second, corrupting query separator;
    the response is genuinely **streamed** back to
    the caller, not buffered in full before the first byte (proven with a fake
    standby target that writes its body in several flushed chunks with a real
    delay between them and closes the connection instead of declaring
-   `Content-Length`, driving the router function directly so the test can
-   observe the timing of individual chunks — httpx's `ASGITransport` itself
-   fully drains a `StreamingResponse` before returning anything, so it cannot
-   be used to observe this); a second request while still warm reuses the
+   `Content-Length` — every test runs against the app on a real loopback
+   socket, so the test observes the timing of individual chunks directly
+   over the wire); a second request while still warm reuses the
    same container (no second run, e.g. an in-memory counter on the fixture
    Actor increments); concurrent first callers for the same actor start
    exactly one container; a missing or unknown token is `401` and starts
@@ -188,8 +191,8 @@ fixtures, backed by `StubDriver`'s in-process fake standby target — see
    imports whatever the Actor had written to its default key-value
    store/dataset/request queue up to that point (exactly like an idle-timeout
    teardown does — an explicit abort must not discard a standby run's output),
-   taking the same per-actor lock `ensure_standby_run()`/
-   `reap_idle_standby_runs()` use so an abort can never race a concurrent cold
+   taking the same per-actor lock `ensureStandbyRun()`/
+   `reapIdleStandbyRuns()` use so an abort can never race a concurrent cold
    start into two live containers for one actor; the reap pass and a
    concurrent request for the same actor serialize on that same per-actor
    lock, so a request arriving right at the idle boundary always resolves
@@ -217,7 +220,7 @@ fixtures, backed by `StubDriver`'s in-process fake standby target — see
 
 ## Mandatory Actor-source build tests (standing regression checks)
 
-Automated, Docker-free coverage (via the in-process `wired` fixture, with the
+Automated, Docker-free coverage (via `tests/helpers.js`'s `wire()`, with the
 StubDriver capturing the materialized build directory before cleanup) MUST exist
 and keep passing for the runtime's two source-upload shapes and the no-stale-source
 guarantee:
@@ -243,7 +246,7 @@ guarantee:
 
 ## Mandatory console routing / IA tests (standing regression checks)
 
-Automated, Docker-free coverage (via the in-process `wired` fixture and structural
+Automated, Docker-free coverage (via `tests/helpers.js`'s `wire()` and structural
 scans of the served `index.html` / `app.js`) MUST exist and keep passing for the
 console's URL-path-based navigation and restructured information architecture:
  - **History-API routing (no hash).** The served `app.js` drives its view from
@@ -283,8 +286,9 @@ console's URL-path-based navigation and restructured information architecture:
 
 ## Mandatory console/API behaviour tests (standing regression checks)
 
-Automated, Docker-free coverage (via the in-process `wired` / `wired_streaming`
-fixtures) MUST exist and keep passing for the following behaviours:
+Automated, Docker-free coverage (via `tests/helpers.js`'s `wire()` — plain,
+and wired to the `StreamingStubDriver`) MUST exist and keep passing for the
+following behaviours:
  - **Token-free user listing with no bootstrap** — `GET /v2/users` returns `200`
    and a well-formed user list with **no** `Authorization` header, and has **no
    bootstrap side effect**: presenting a bearer token to it (unknown, stale or
@@ -305,7 +309,7 @@ fixtures) MUST exist and keep passing for the following behaviours:
    and works for both runs and builds. The one-shot `GET /v2/logs/{jobId}` MUST keep
    returning the full stored log for finished jobs. A structural check on the served
    console JS MUST confirm the Log view consumes the streaming endpoint. (The real
-   docker-py live-streaming path is verified on a Docker-enabled host/CI, not in
+   dockerode live-streaming path is verified on a Docker-enabled host/CI, not in
    this environment — no daemon here; all streaming criteria are satisfiable purely
    via the stub driver.)
  - **Top-level storage list / create / delete with isolation** — coverage MUST
@@ -323,7 +327,7 @@ fixtures) MUST exist and keep passing for the following behaviours:
    storage keeps its given name, and that the console renders the named/run-derived
    distinction as a **✅ / ❌** glyph gated on the same `named` flag as the delete
    affordance. A structural check on the served `storage_tab.js` (in
-   `tests/unit/test_console_pagination_ui.py`) MUST also confirm
+   `tests/unit/console-pagination-ui.test.js`) MUST also confirm
    `createStorage`/`deleteStorage` each reset the storage list's paging offset
    to 0 when re-fetching (`loadStorages(slug, 0)`, never a bare
    `loadStorages(slug)`), so a mutation can never leave the view on a stale
@@ -331,9 +335,9 @@ fixtures) MUST exist and keep passing for the following behaviours:
 
 ## Mandatory pagination tests (standing regression checks)
 
-Automated coverage (Docker-free via the `wired` fixture) MUST exist for each of
-the four listing surfaces — dataset items, KV keys, RQ requests, and the
-per-user storage listings — asserting all of:
+Automated coverage (Docker-free via `tests/helpers.js`'s `wire()`) MUST exist
+for each of the four listing surfaces — dataset items, KV keys, RQ requests,
+and the per-user storage listings — asserting all of:
  - a **bare request** (neither `limit` nor `offset` supplied) returns every
    item, uncapped, in today's exact item order, KEY ORDER INCLUDED, with
    exactly two deliberate, additive exceptions (both existing solely so the
@@ -349,8 +353,8 @@ per-user storage listings — asserting all of:
    RQ requests and per-user listings have no such exception: RQ requests keep
    their pre-pagination field order with no additive `total`; per-user
    listings are unchanged (`total, count, items`). Verified with an
-   ORDER-SENSITIVE comparison (`list(body.keys())` or the raw response text),
-   never a `set(body.keys())` comparison, which cannot detect a reorder.
+   ORDER-SENSITIVE comparison (`Object.keys(body)` or the raw response text),
+   never a sorted/set-based key comparison, which cannot detect a reorder.
  - a **`limit`/`offset`-supplied request** returns the corresponding slice
    plus enough total-count information to page: dataset items via
    `X-Apify-Pagination-Offset`/`-Count`/`-Total`/`-Limit`/`-Desc` response
@@ -360,42 +364,44 @@ per-user storage listings — asserting all of:
    `desc` query param) — KV keys/RQ requests via an additive `total` field;
    per-user listings via their existing `total`/`count` fields.
  - **The real, pinned `apify-client` succeeds against dataset items and KV
-   keys, bare calls included** (`tests/unit/test_sdk_compat.py`).
-   `apify_client`'s `DatasetClientAsync.list_items()` indexes all
-   five `x-apify-pagination-*` response headers directly (no `.get()`), so a
-   genuinely bare call (zero arguments — `iterate_items()` always sends an
-   explicit `offset`/`limit` internally and so never exercises this branch,
-   but a bare `list_items()` call does) would otherwise raise a `KeyError`
-   before returning a single item; `iterate_items()` itself, and
-   `list_items()` called with explicit `limit`/`offset`, must also parse and
-   return the seeded items. `KeyValueStoreClientAsync.iterate_keys()`
-   called with no explicit `limit` — the SDK's own default in-Actor idiom —
-   must yield every seeded key with no `ValidationError`; that client's
-   `KeyValueStoreKey` response model requires `recordPublicUrl` on every item,
-   which a genuinely bare `list_keys()` call (no cursor, no limit at all) only
-   gets since the KV-keys bare-recordPublicUrl fix above. Both of these
-   clients' HTTP transport (`impit`, not `httpx`) has no ASGI-transport hook,
-   so this coverage boots the app under a real `uvicorn` server on a loopback
-   socket (`tests/conftest.py`'s `wired_uvicorn` fixture, also used by the
-   KV-keys chunk-size pinned-client check below) and drives an actual
-   `ApifyClientAsync` against it over seeded storages, asserting the returned
-   items/keys and paging metadata parse without error.
+   keys, bare calls included** (`tests/unit/sdk-compat.test.js`, using the
+   npm `apify-client` pinned as a devDependency).
+   That client's `DatasetClient.listItems()` builds its returned paging
+   metadata straight from the `x-apify-pagination-*` response headers
+   (`Number(...)`/`JSON.parse(...)` on the raw header values, no fallback),
+   so a genuinely bare call (zero arguments) against a response missing
+   those headers would return garbage paging metadata — or throw outright on
+   the missing `-desc` header — before a caller sees a single item; a bare
+   `listItems()` call, and `listItems()` called with explicit
+   `limit`/`offset`, must both parse and return the seeded items with
+   numeric paging metadata. `KeyValueStoreClient.listKeys()`
+   called bare (no cursor, no limit at all) — the SDK's own default in-Actor
+   idiom — must return every seeded key, each item carrying the
+   `recordPublicUrl` the real API's own `ListOfKeys` always returns, which a
+   genuinely bare call only gets since the KV-keys bare-recordPublicUrl fix
+   above. This coverage drives an actual `ApifyClient` over the same real
+   loopback socket every test already uses (`tests/helpers.js`'s `wire()`,
+   also used by the KV-keys chunk-size pinned-client check below) against
+   seeded storages, asserting the returned items/keys and paging metadata
+   parse without error.
  - a negative `limit`/`offset` is `400` on at least one surface, and a
    non-integer `limit`/`offset` value (e.g. `?limit=abc`, `?offset=1.5`) is
-   likewise `400` on at least one surface, exercising `app/pagination.py`'s
-   `_parse_int` `TypeError`/`ValueError` branch as reached from these four
-   listing surfaces specifically (previously only exercised via `runs.py`'s
-   pre-existing `memoryMbytes`/`timeoutSecs` validation). Both MUST assert
+   likewise `400` on at least one surface, exercising `src/pagination.js`'s
+   integer-parsing rejection branch as reached from these four
+   listing surfaces specifically (previously only exercised via
+   `src/routes/runs.js`'s pre-existing `memoryMbytes`/`timeoutSecs`
+   validation). Both MUST assert
    this app's own `{"error": {"type": "invalid-request", ...}}` envelope (the
-   registered `HTTPException`->400 handler in `app/main.py`), never FastAPI's
-   bare default `{"detail": "..."}` shape.
+   `HttpError`->400 reshaping in `src/app.js`'s dispatch layer), never the
+   framework-default `{"detail": "..."}` shape.
  - the dataset-items `X-Apify-Pagination-*` headers are reachable by a
-   cross-origin browser caller: `CORSMiddleware` (app/main.py) MUST list them
-   in `expose_headers`, verified with an `Origin` header on the request and an
+   cross-origin browser caller: the CORS layer (src/app.js) MUST list them
+   in `Access-Control-Expose-Headers`, verified with an `Origin` header on the
+   request and an
    `Access-Control-Expose-Headers` assertion on the response.
 
 A **structural** scan of the served `storage_tab.js` (in
-`tests/unit/test_console_pagination_ui.py`) MUST additionally confirm that
+`tests/unit/console-pagination-ui.test.js`) MUST additionally confirm that
 every one of its own fetch call sites touching these same four surfaces
 carries an explicit `limit=...&offset=...` — never a bare path with the query
 string stripped — matched on each surface's static path shape independently
@@ -405,9 +411,9 @@ one of these paths (however it names its id) without them.
 
 ### KV-keys cursor pagination (standing regression checks)
 
-Automated coverage (Docker-free; mostly via the `wired` fixture, except the
-pinned-client check below, which needs a real socket) MUST additionally
-exist for the KV-keys surface's `exclusiveStartKey` cursor contract:
+Automated coverage (Docker-free via `tests/helpers.js`'s `wire()`) MUST
+additionally exist for the KV-keys surface's `exclusiveStartKey` cursor
+contract:
  - **Curl-style cycle enumerates every key exactly once.** Against a store
    seeded with more keys than a chosen `limit`, repeatedly requesting with
    `limit` and feeding each response's `nextExclusiveStartKey` back as the
@@ -424,23 +430,22 @@ exist for the KV-keys surface's `exclusiveStartKey` cursor contract:
    both MUST behave identically to the same request with `offset` omitted
    (i.e. `offset` is silently ignored once a cursor is present), never a
    combination of the two.
- - **The real, pinned `apify-client` succeeds against a store larger than its
-   internal chunk size.** `apify_client`'s
-   `KeyValueStoreClientAsync.iterate_keys()` (pinned in
-   `requirements-dev.txt`) pages via `limit=1000` (its `DEFAULT_CHUNK_SIZE`
-   by default) and follows `nextExclusiveStartKey` until it comes back
-   `None`. That client's HTTP transport (`impit`, not `httpx`) has no
-   ASGI-transport hook, so it cannot be driven against the in-process
-   `wired` fixture at all — coverage instead boots the app under a real
-   `uvicorn` server on a loopback socket (see `tests/conftest.py`'s
-   `wired_uvicorn` fixture) and drives an actual `ApifyClientAsync` against
-   it, over a store seeded with more than 1000 keys, asserting every key
-   comes back exactly once for both the client's default chunk size and at
-   least one other, non-default chunk size. A separate, fast hand-rolled
-   test reproduces the same request/loop shape directly against `wired`
+ - **The real, pinned `apify-client` succeeds against a store larger than one
+   page.** The npm `apify-client`'s
+   `KeyValueStoreClient.listKeys()` (pinned in `package.json` as a
+   devDependency) is paged by supplying a `limit` and feeding each
+   response's `nextExclusiveStartKey` back as the next call's
+   `exclusiveStartKey` until `isTruncated` comes back `false` — the client's
+   own documented paging idiom. Coverage drives an actual
+   `ApifyClient` against the `wire()`d app on its real loopback socket,
+   over a store seeded with more keys than the chosen page size, asserting
+   every key comes back exactly once for at least two different page
+   (chunk) sizes. A separate, fast hand-rolled
+   test reproduces the same request/loop shape with plain HTTP requests
+   against the same `wire()`d app
    (first call bare `limit`, each subsequent call's `exclusiveStartKey` taken
    from the previous response's `nextExclusiveStartKey`) purely to pin the
-   envelope mechanics without paying for a real socket on every run.
+   envelope mechanics independently of the pinned client's own parsing.
  - **The bare-request shape is unaffected by cursor support existing** — the
    existing bare-request KV-keys test (envelope key order `items, count,
    limit, isTruncated`, no additive envelope fields) MUST keep passing
@@ -452,17 +457,18 @@ exist for the KV-keys surface's `exclusiveStartKey` cursor contract:
 
 ## Mandatory upstream-fallback and runtime-config-toggle tests (standing regression checks)
 
-Automated coverage (Docker-free via `conftest.py`'s own `wired_upstream`
-fixture, which points `Settings.apify_upstream_base_url` at a `FakeUpstreamServer`
-— a local in-process HTTP stub built on the same `_start_http_server_thread`/
-`_stop_threaded_http_server` helpers and `_QuietHandlerMixin` `FakeStandbyServer`
-uses, with only the request handler differing) MUST exist for:
+Automated coverage (Docker-free via `tests/helpers.js`'s `wire()` with
+`Settings.apifyUpstreamBaseUrl` pointed at a `FakeUpstreamServer`
+— a local in-process HTTP stub sharing its server plumbing with the
+`FakeStandbyServer` the standby suite drives, with only the request handling
+differing) MUST exist for:
  - **The toggle** — `GET /v2/runtime-config` is token-free (ignores even a
    present-but-unresolvable token, never `401`) and defaults `False` on a
    freshly-wired `Service` (no restart-persisted state exists, since it is a
-   plain in-memory attribute with no DB table). `PUT /v2/runtime-config` is
+   plain in-memory attribute never written to the metadata store).
+   `PUT /v2/runtime-config` is
    **NOT** token-free — it requires the same valid-token proof every other
-   mutating endpoint does (`POST /v2/users`' `resolve_user()`-as-a-check
+   mutating endpoint does (`POST /v2/users`' `resolveUser()`-as-a-check
    pattern): no token at all still succeeds (falls back to the default user,
    never rejected), a present token matching no existing user is `401`, and a
    token matching an existing user succeeds. Once authenticated, it accepts
@@ -478,9 +484,9 @@ uses, with only the request handler differing) MUST exist for:
    **verbatim** (status, headers and body), INCLUDING repeated header names
    surviving from the upstream reply (e.g. more than one `Set-Cookie` — never
    collapsed to only the last value) and INCLUDING the response still passing
-   through `CORSMiddleware` (relaying builds a brand-new `Response`, not the
-   one `call_next()` produced, so it must still traverse every middleware
-   registered outer to the fallback middleware). Coverage MUST also exercise at
+   through the CORS layer (relaying builds a brand-new response, so the CORS
+   response headers must still be applied to it exactly like any
+   locally-produced response). Coverage MUST also exercise at
    least one WRITE method (`POST`/`PUT`/`DELETE`) end to end, including that
    its body and query string — and, for a compressed write, its
    `Content-Encoding` header — are replayed unchanged — writes are the
@@ -505,8 +511,8 @@ uses, with only the request handler differing) MUST exist for:
  - **Guardrails** — a resource that resolves successfully locally is never
    proxied (upstream receives zero requests) regardless of toggle state,
    including a WRITE that succeeds locally (the arm every real Actor write
-   takes while the toggle is on) — the middleware's request-body pre-read for
-   a possible replay must not corrupt what the handler itself receives,
+   takes while the toggle is on) — the fallback layer's request-body pre-read
+   for a possible replay must not corrupt what the handler itself receives,
    verified by reading the written value back afterward; a local response
    with a non-404 status (e.g. a `READ`-grantee's `403`) is never proxied even
    with the toggle on; turning the toggle off immediately stops further
@@ -521,31 +527,31 @@ uses, with only the request handler differing) MUST exist for:
    this case, including when the default user's own credential is already
    bound to a real-looking secret. A PRESENT token that resolves to a known
    user who has no bound `token` of their own yet — e.g. the still-unclaimed
-   default user, resolved via its own `container_token` — is a distinct,
+   default user, resolved via its own `containerToken` — is a distinct,
    separately-covered case: the attempt still PROCEEDS, forwarding no
    `Authorization` header at all rather than a placeholder or abandoning
    like the no-token case above.
-   Identity resolution on this path is a PURE lookup, never `app/auth.py`'s
-   bootstrap-or-reject `resolve_user`: a token matching no existing user MUST
+   Identity resolution on this path is a PURE lookup, never `src/auth.js`'s
+   bootstrap-or-reject `resolveUser`: a token matching no existing user MUST
    NOT bootstrap or bind a user as a side effect — coverage MUST assert this on
    the one path where a request can reach this function's identity lookup
-   before any registered handler's own `resolve_user` call does (the SPA
+   before any registered handler's own `resolveUser` call does (the SPA
    catch-all on an unmatched allowlisted path): fallback ON, an unknown token,
    on a completely fresh instance (no user ever created) → local `404` AND the
    user table left exactly as it was (`GET /v2/users` unchanged); a token that
    DOES match an existing user's bound credential on that same unmatched-path
    branch still forwards it exactly as before.
- - **Base URL normalization** — an `apify_upstream_base_url` configured WITH a
+ - **Base URL normalization** — an `apifyUpstreamBaseUrl` configured WITH a
    trailing slash (mirroring a misconfigured `APIFY_UPSTREAM_BASE_URL`, e.g.
    `https://api.apify.com/`) MUST be stripped to a single, correct slash by the
-   time it reaches this middleware, so the URL string handed to httpx is never
+   time it reaches the fallback layer, so the URL string handed to the
+   upstream HTTP client is never
    doubled. Verified at the one boundary every construction path goes through
-   — `Settings.__post_init__` (`tests/unit/test_config.py`) — rather than via
-   a live HTTP capture: `http.server`'s own request parser collapses a
-   doubled `//` before a stub handler ever sees it, so a same-request test
-   built on one cannot discriminate this fix from its absence.
+   — the `Settings` constructor (`tests/unit/config.test.js`) — which covers
+   the env-var and direct-construction paths alike in one place, instead of
+   relying on a live HTTP capture of the outgoing request line.
  - **Console toggle UI (structural)** — a structural scan of the served
-   `index.html`/`app.js` (in `tests/unit/test_console_pagination_ui.py`) MUST
+   `index.html`/`app.js` (in `tests/unit/console-pagination-ui.test.js`) MUST
    confirm: the `#fallback-toggle` checkbox exists
    in the header immediately next to the `#user-select` "Switch user" control;
    `app.js` reads its initial state via a token-free `GET /v2/runtime-config`
@@ -558,4 +564,4 @@ uses, with only the request handler differing) MUST exist for:
    refresh already uses so a runtime-unreachable flip never surfaces as an
    unhandled rejection. The backend half of the toggle is already covered
    above; this is the console-facing wiring's existence and shape, which has
-   no other automated coverage in this Docker-free JS-runtime-free suite.
+   no other automated coverage in this Docker-free, browser-free suite.

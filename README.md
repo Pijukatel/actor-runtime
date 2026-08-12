@@ -7,11 +7,16 @@ the run's default storages (key-value store, dataset, request queue).
 
 ## Architecture
 
-- **API server** (FastAPI, Python) - a subset of the public Apify API under `/v2`
+- **API server** (Node.js) - a subset of the public Apify API under `/v2`
   large enough that unmodified `apify-cli` works against it. See
   `requirements/api.md` for the endpoint list.
-- **Storage** - crawlee-python's SQL storage client on a single SQLite file,
-  providing dataset, key-value store and request queue.
+- **Storage** - crawlee v4's default file-system storage backend
+  (`@crawlee/fs-storage`) rooted under `$DATA_DIR/storage/`, providing dataset
+  and key-value store; the request-queue store is implemented by the runtime
+  itself over the same on-disk layout (see `requirements/storage.md`).
+  Metadata (users, Actors, versions, builds, runs, storages, access rights)
+  lives in a single JSON file, `$DATA_DIR/meta.json` — no SQL engine, no
+  migrations.
 - **Actor driver** - builds Actor images with `docker build` and runs them as
   containers via the mounted host Docker socket, wiring in the run input and the
   run's default storages (Apify container conventions). Every Actor container
@@ -75,14 +80,11 @@ On startup the container prints:
 Data (Actors, versions, builds, runs and their storages) lives under `$DATA` and
 persists across `docker stop` / `docker start`.
 
-> Upgrade caveat: the runtime has no schema migrations (`create_all()` only
-> creates missing tables, not new columns on existing ones). **Any release that
-> adds columns to an existing table requires a fresh `DATA_DIR`** — new columns
-> are never added to an existing database in place, only entirely new tables
-> are. This has applied to every such release so far: the `username` columns
-> added for per-user ownership, and this release's `users.container_token`,
-> `actors.actor_standby` and `runs.is_standby` columns (added for standby-actor
-> support).
+> Upgrade note: the metadata store is a plain JSON file (`$DATA_DIR/meta.json`),
+> so there are no schema migrations — a field a new release adds simply
+> defaults when absent from an existing file, and upgrading in place normally
+> just works. Start from a fresh `DATA_DIR` only if a release's notes
+> explicitly say so.
 
 > Platform note: the host Docker-socket mount is validated on Linux. macOS and
 > Windows are best-effort for this first draft (see `requirements/system.md`).
@@ -127,25 +129,25 @@ docker run -d --name actor-runtime \
 
 The password flows host -> runtime container -> every Actor container the
 runtime launches: the runtime reads `APIFY_PROXY_PASSWORD` from its own
-environment at startup (`load_settings()`) and, whenever it is set,
-`Service._build_environment` adds the same variable/value to every Actor
+environment at startup (`loadSettings()`) and, whenever it is set,
+`Service.buildEnvironment` adds the same variable/value to every Actor
 container's environment (on-demand and standby runs alike). Inside the Actor,
-the `apify` SDK's `Configuration.proxy_password` picks it up automatically, so
-`Actor.create_proxy_configuration(...)` builds a real
+the `apify` SDK's own configuration picks `APIFY_PROXY_PASSWORD` up
+automatically, so `Actor.createProxyConfiguration(...)` builds a real
 `proxy.apify.com:8000` connection with no other setup. If
 `APIFY_PROXY_PASSWORD` is never set on the runtime container, no Actor
 container ever gets the variable — there is no placeholder/fake value.
 
-`sample_actor_crawler/` is a `ParselCrawler`-based Actor that demonstrates
+`sample_actor_crawler/` is a `CheerioCrawler`-based Actor that demonstrates
 this end to end: its `proxyConfiguration` input (default `{"useApifyProxy":
 true, "apifyProxyGroups": ["RESIDENTIAL"]}`) is passed straight to
-`Actor.create_proxy_configuration(actor_proxy_input=...)`, no fallback of any
+`Actor.createProxyConfiguration(...)`, no fallback of any
 kind. Two outcomes follow directly from the SDK's own behaviour, not from
 anything this Actor codes around:
 
 - An explicit `{"useApifyProxy": false}` (with no `proxyUrls`) is the *only*
   way to crawl direct with no proxy and no credentials — the SDK returns
-  `None` and the crawler runs without a proxy.
+  `undefined` and the crawler runs without a proxy.
 - `useApifyProxy: true` — whether given explicitly, or via **omitting
   `proxyConfiguration` entirely**, which falls through to the SDK's own
   default `ProxyConfiguration` and behaves identically (omitting the field is
@@ -173,10 +175,11 @@ apify call -i '{"greeting":"hi"}'   # runs it and waits for completion
 Then open the console URL, or fetch the run's storages over the API. See
 `requirements/cli.md` for details.
 
-All five `sample_actor*/` fixtures are real `apify` SDK Actors (`async with
-Actor:`, `Actor.get_input()`/`set_value()`/`push_data()`/
-`open_request_queue()`), so their `.actor/Dockerfile` pip-installs `apify` and
-`apify-client` at image **build** time -- `apify push`/`docker build` needs
+All five `sample_actor*/` fixtures are real `apify` SDK Actors
+(`Actor.main()`, `Actor.getInput()`/`setValue()`/`pushData()`/
+`openRequestQueue()`), so their `.actor/Dockerfile` npm-installs the `apify`
+SDK (version-pinned in each fixture's `package.json`) at image **build**
+time -- `apify push`/`docker build` needs
 normal internet egress for that step. At **run** time, the four original
 fixtures only talk to this runtime and other local containers (e.g. the
 caller fixture's container-to-container call to the standby Actor's own HTTP
@@ -196,7 +199,7 @@ loop including standby actors: it builds the image, starts the runtime,
 points apify-cli at it, pushes the standby + caller sample Actors, runs the
 caller (which discovers and calls the standby Actor container-to-container),
 and prints the results read back over the API. Requires docker, apify-cli,
-python3 and curl:
+node and curl:
 
 ```bash
 bash scripts/demo.sh
@@ -211,9 +214,10 @@ bash scripts/demo.sh --remote
 
 ## Run the tests
 
-The oracle sets up the venv, installs dependencies and `apify-cli`, builds the
-image, and runs the unit/integration suite plus the mandatory end-to-end test
-(real `apify-cli` driving a real container). It exits non-zero on any failure:
+The oracle installs the npm dependencies and `apify-cli`, builds the
+image, and runs the unit/integration suite (vitest) plus the mandatory
+end-to-end test (real `apify-cli` driving a real container). It exits
+non-zero on any failure:
 
 ```bash
 bash scripts/run-tests.sh

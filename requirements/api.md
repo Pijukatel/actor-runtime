@@ -51,7 +51,7 @@
     `GET|PUT|DELETE /v2/request-queues/{queueId}/requests/{requestId}` plus
     `PUT|DELETE .../requests/{requestId}/lock` (prolong / release a lock).
     Request ids are a deterministic hash of `uniqueKey` (matching the
-    `apify` SDK's own client-side `unique_key_to_request_id`), not a raw
+    `apify` SDK's own client-side `uniqueKeyToRequestId`), not a raw
     row id, so a request resolves to the same id whichever side computed it.
   - Key-value stores also support per-record `DELETE /v2/key-value-stores/{storeId}/records/{key}`
     and `HEAD /v2/key-value-stores/{storeId}/records/{key}` (existence check,
@@ -148,14 +148,14 @@
   request 404s locally. Governed by one runtime-global boolean,
   `GET|PUT /v2/runtime-config` (`{"data": {"upstreamFallbackEnabled": bool}}`),
   an in-memory attribute on the shared `Service` instance: default `False`,
-  **resets to `False` on every process restart** (no DB table, no
-  persistence). `GET` is token-free (no bootstrap side effect, like
+  **resets to `False` on every process restart** (never written to the
+  metadata store, no persistence). `GET` is token-free (no bootstrap side effect, like
   `GET /v2/users`). `PUT` is **NOT** token-free: an absent token falls back
   to the default user (the same placeholder-auth convention every other
   write already follows; it is never rejected for lacking a credential),
   same as every other mutating endpoint — but a PRESENT token is resolved
-  through a PURE lookup (`app/auth.py`'s `resolve_user(request,
-  bootstrap=False)`), never the bootstrap-or-reject every other handler uses:
+  through a PURE lookup (`src/auth.js`'s `resolveUser(ctx,
+  {bootstrap: false})`), never the bootstrap-or-reject every other handler uses:
   a token matching no existing user is `401 invalid-token` with **no state
   mutation**, never bound to the default user's credential as a side effect.
   This is the one switch that, once on,
@@ -177,7 +177,7 @@
 - With the toggle on, ANY HTTP method (GET/POST/PUT/DELETE) to an allowlisted
   by-id `/v2` resource route — an Actor, run, build, or one of the three
   storage types, reached by its id — whose LOCAL response is a 404 is
-  re-attempted against `{apify_upstream_base_url}{path}?{query}` (same method,
+  re-attempted against `{apifyUpstreamBaseUrl}{path}?{query}` (same method,
   query string and body) using the bound `token` of whichever user the
   caller's own PRESENTED token resolves to, as bearer — a request presenting
   no token at all is never eligible for fallback in the first place (see the
@@ -190,7 +190,7 @@
   differently-structured request — an encoded `#` or `?` inside the id/key
   segment can otherwise corrupt or drop the query entirely once the path is
   decoded.
-  `apify_upstream_base_url` (`Settings`, default `https://api.apify.com`,
+  `apifyUpstreamBaseUrl` (`Settings`, default `https://api.apify.com`,
   overridable via the `APIFY_UPSTREAM_BASE_URL` env var so tests can point it
   at a local stub) is the only new configuration this adds; there is no
   separate "upstream token" setting. Any trailing slash on
@@ -198,9 +198,9 @@
   misconfigured trailing slash never produces a double slash in the
   outgoing path.
 - The caller's identity for that bearer credential is resolved by a PURE
-  lookup — never the bootstrap-or-reject path (`app/auth.py`'s `resolve_user`)
+  lookup — never the bootstrap-or-reject path (`src/auth.js`'s `resolveUser`)
   every registered handler uses, and never resolving a missing credential to
-  the default user the way `resolve_user` does. A request presenting **no
+  the default user the way `resolveUser` does. A request presenting **no
   token at all** has nothing to forward and the whole attempt is abandoned
   before any upstream call is made — the fallback never borrows the default
   (or any other) user's own bound token on an anonymous caller's behalf,
@@ -211,7 +211,7 @@
   that resolves to a known user forwards that user's own bound `token` (or,
   if that user has no bound token yet, proceeds with no `Authorization`
   header at all). This matters because one path can reach this lookup before
-  any handler's own `resolve_user` call does — the SPA catch-all 404s an
+  any handler's own `resolveUser` call does — the SPA catch-all 404s an
   unmatched allowlisted path without authenticating first — so a read-through
   fallback attempt must never silently bootstrap local identity state OR
   forward a credential the caller never presented.
@@ -224,8 +224,8 @@
   relay (the full RFC 7230 set — `Connection`, `Keep-Alive`,
   `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`/`Trailers`,
   `Transfer-Encoding`, `Upgrade` — plus `Content-Encoding`/`Content-Length`,
-  since httpx has already decoded the body and Starlette recomputes its own
-  response framing). On any upstream failure (non-2xx, timeout, unreachable
+  since the upstream HTTP client has already decoded the body and the runtime
+  recomputes its own response framing). On any upstream failure (non-2xx, timeout, unreachable
   host), the caller receives the **original local 404 unchanged**, never the
   upstream error's status or body; the failure is logged for debuggability.
 - The local-404-only trigger means a resource that resolves successfully
@@ -255,10 +255,10 @@
 - `APIFY_API_BASE_URL` — the runtime's own API, reachable by name from any
   Actor container on the shared Docker network (see "Networking" in
   `actor-driver.md`).
-- `APIFY_TOKEN` — the run owner's **`container_token`**: a second,
+- `APIFY_TOKEN` — the run owner's **`containerToken`**: a second,
   runtime-fabricated credential distinct from the owner's bound `token` (the
   credential presented to authenticate inbound requests, which for
-  `local-user` may be a real externally-issued secret). `container_token` is
+  `local-user` may be a real externally-issued secret). `containerToken` is
   minted once per user at creation (including the default user, at bootstrap)
   and resolves through the same token→user lookup as the bound `token`, so a
   container's own `APIFY_TOKEN` is itself a working bearer credential against
@@ -405,7 +405,7 @@
 ## Live-streamed logs
 
 - `GET /v2/logs/{jobId}/stream` returns the same log as the one-shot
-  `GET /v2/logs/{jobId}`, but as a **chunked `text/plain` `StreamingResponse`** that
+  `GET /v2/logs/{jobId}`, but as a **chunked `text/plain` streaming response** that
   tails the job (build or run) live. While the job is in a non-terminal state it
   emits newly-produced output incrementally as the container/build produces it, in
   order; the stream closes once the job reaches a terminal state and its buffered
@@ -415,7 +415,7 @@
   after a restart), the stream falls back to yielding the **complete stored log**
   once, so opening it for a finished job returns the full log exactly like the
   one-shot endpoint.
-- The one-shot `GET /v2/logs/{jobId}` returns a single `PlainTextResponse` of
+- The one-shot `GET /v2/logs/{jobId}` returns a single plain-text response of
   the stored log, still valid for finished jobs and any non-streaming consumer
   — except a warm standby run, whose log both endpoints fetch live from its
   container (see the standby section).
@@ -472,9 +472,10 @@
   `totalRequestCount`/`pendingRequestCount`/`handledRequestCount`/
   `hadMultipleClients`/`stats`. This isn't cosmetic: the `apify` SDK's own
   storage-client metadata models (crawlee's `DatasetMetadata`/
-  `KeyValueStoreMetadata`/`RequestQueueMetadata`) re-validate this response on
-  every `Actor.open_dataset()`/`Actor.get_input()`/`Actor.open_request_queue()`
-  call, so a response missing any of these fields makes that call itself fail.
+  `KeyValueStoreMetadata`/`RequestQueueMetadata`) validate this response on
+  every `Actor.openDataset()`/`Actor.getInput()`/`Actor.openRequestQueue()`
+  call, so a response missing any of these fields can make that call itself
+  fail.
 - `name` is the same value the "Top-level storages" section above describes
   (the part after `~` for a standalone storage, with any `{type}~` prefix
   stripped for a type-qualified one, empty for a run-derived one) — **never
@@ -499,7 +500,7 @@
 - **Omitting both params keeps today's response the same shape and KEY
   ORDER** — every item, uncapped, in today's item order. There is no
   server-side cap or clamp on any of these four surfaces: a bare dataset-items
-  request, for instance, is answered by `Storage.dataset_items()` with an
+  request, for instance, is answered by `Storage.datasetItems()` with an
   internal `DEFAULT_ITEM_LIMIT` sentinel (`999999`) standing in for "no limit
   given" — large enough that no real local dataset exceeds it — never a real
   cap a large local dataset could hit. This is the contract every non-console
@@ -529,9 +530,11 @@
     underneath. `-Desc` is unconditionally `false` — this surface has no
     `desc` query param, so items are always returned in storage order — but
     the header is still required, bare calls included: the pinned
-    `apify-client`'s `DatasetItemsPage` (`list_items()`/`iterate_items()`)
-    indexes all five headers directly (no `.get()`), so a truly bare call
-    (no `limit`/`offset` at all) would otherwise raise a `KeyError` before
+    `apify-client`'s `DatasetClient.listItems()` builds its returned paging
+    metadata straight from these headers' raw values
+    (`Number(...)`/`JSON.parse(...)`, no fallback), so a truly bare call
+    (no `limit`/`offset` at all) would otherwise return garbage paging
+    metadata — or throw outright on the missing `-Desc` header — before
     returning a single item.
   - RQ requests gain an **additive** `total` field in their envelope
     (alongside their existing `count`/`limit` echoes) whenever `limit`/`offset`
@@ -542,26 +545,27 @@
     "KV keys additionally support cursor pagination" below — it is not an
     oversight, it is the whole point of the pushdown).
   - The per-user storage listings already emit `{total, count, items}` (same
-    field order as their `my_actors`/`my_builds`/`my_runs` siblings);
+    field order as their `/v2/users/me/actors|builds|runs` sibling listings);
     `count`/`items` reflect the requested slice, `total` the full count.
-  - The five `X-Apify-Pagination-*` headers are listed in `CORSMiddleware`'s
-    `expose_headers` (app/main.py), so a cross-origin browser caller can read
-    them — otherwise the browser hides any response header not explicitly
-    exposed.
+  - The five `X-Apify-Pagination-*` headers are listed in the CORS layer's
+    `Access-Control-Expose-Headers` (src/app.js), so a cross-origin browser
+    caller can read them — otherwise the browser hides any response header
+    not explicitly exposed.
 - **KV keys additionally support cursor pagination**
   (`GET /v2/key-value-stores/{id}/keys`), matching the real API's own
   `ListOfKeys` contract closely enough for the pinned `apify-client`'s
-  `iterate_keys()` to page correctly at any store size. Every item on every
+  key listing (`listKeys()`, following `nextExclusiveStartKey` from page to
+  page) to page correctly at any store size. Every item on every
   path this surface can take — bare, `offset`-sliced (console-style), and
   cursor-mode alike — is `{key, size, recordPublicUrl}` (see
-  `app/routers/storages.py`'s shared `_with_record_public_url` helper, used by
-  all three): the pinned `apify-client`'s `KeyValueStoreKey` response model
-  requires `recordPublicUrl` (a valid URL) on every item it validates, and the
+  `src/routes/storages.js`'s shared `withRecordPublicUrl` helper, used by
+  all three): the pinned `apify-client`'s key-listing response shape
+  includes `recordPublicUrl` (a valid URL) on every item, and the
   real API itself always returns it regardless of how a request was paged.
   `recordPublicUrl` is this runtime's own absolute URL for that
   key's record (`{requestBaseUrl}/v2/key-value-stores/{id}/records/{key}`,
-  built from the handling request's own `base_url` rather than
-  `container_api_base_url` — unlike `standbyUrl`/`consoleUrl`, which are only
+  built from the handling request's own origin rather than
+  `containerApiBaseUrl` — unlike `standbyUrl`/`consoleUrl`, which are only
   ever dereferenced from inside an Actor container, this field's callers are
   typically host-side (curl, or apify-client pointed at the published API
   port), so it must resolve on whichever host/port the caller actually
@@ -569,10 +573,10 @@
   — `key`/`size` themselves, the envelope's other fields, `isTruncated`, the
   absence of `total` in cursor mode — is unaffected by this field's presence.
   - A caller-supplied `exclusiveStartKey` is forwarded straight through to
-    crawlee's own ascending `key > exclusiveStartKey` filter
-    (`iterate_keys(exclusive_start_key=..., limit=...)`) rather than sliced
-    from an already-fetched full list, so this scales with the page size, not
-    the store size. Consequently, **cursor-mode responses never include a
+    the fs backend's own ascending `key > exclusiveStartKey` filter
+    (its cursor-paged `listKeys({exclusiveStartKey, limit})`) rather than
+    sliced from an already-fetched full list, so this scales with the page
+    size, not the store size. Consequently, **cursor-mode responses never include a
     `total` field**: computing one would require a full-store count on every
     page, which would defeat the pushdown this path exists for. A caller that
     needs a total must use the `offset`-sliced path instead (which already
@@ -611,21 +615,22 @@
   - RQ requests have no analogous cursor support (`exclusiveStartId`) yet —
     a documented follow-up; its envelope has no `isTruncated` field at all.
 - `limit`/`offset` must each be a non-negative integer or the request is `400`
-  (reusing the `runs.py`-style bounded-int query-param pattern). This reuses
-  `app/pagination.py`'s `_parse_int` helper, which raises a plain
-  `HTTPException(status_code=400, ...)`; a registered `HTTPException`
-  handler (`app/main.py`, alongside the existing `InvalidTokenError`->401
-  handler) reshapes any such 400 into this app's own
+  (reusing the `src/routes/runs.js`-style bounded-int query-param pattern).
+  This reuses `src/pagination.js`'s shared integer-parsing helper, which
+  raises a plain `HttpError(400, ...)`; the dispatch layer
+  (`src/app.js`, alongside the existing `InvalidTokenError`->401 mapping)
+  reshapes any such 400 into this app's own
   `{"error": {"type": "invalid-request", ...}}` envelope, matching every
-  other 4xx in this document — the same handler also covers every other
-  plain `HTTPException(400, ...)` raised anywhere in this codebase (a
-  malformed compressed/JSON request body in `app/responses.py`, a malformed
+  other 4xx in this document — the same dispatch layer also covers every other
+  plain `HttpError(400, ...)` raised anywhere in this codebase (a
+  malformed compressed/JSON request body in `src/http.js`, a malformed
   KV record body or an invalid access-rights grant in
-  `app/routers/storages.py`, `runs.py`'s own `memoryMbytes`/`timeoutSecs`
-  validation), so all of them get the same envelope, not just this
-  pagination feature's own params. Any status code other than 400 raised via
-  `HTTPException` — none exist in this codebase today — would fall through
-  to FastAPI's own default handler unchanged.
+  `src/routes/storages.js`, `src/routes/runs.js`'s own
+  `memoryMbytes`/`timeoutSecs` validation), so all of them get the same
+  envelope, not just this pagination feature's own params. Any status code
+  other than 400 raised via `HttpError` — none exist in this codebase today —
+  would fall through as a plain JSON `{"detail": ...}` response with its own
+  status, unchanged.
 
 ## Console SPA serving (catch-all)
 

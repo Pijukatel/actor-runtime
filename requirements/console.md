@@ -160,7 +160,7 @@
   line instead reads **"showing V of P on this page · T total"** (V = the
   count actually visible after the filter, P = the page's own fetched row
   count) — see `filteredPagingLineEl`'s own comment
-  (`app/console/storage_tab.js`) for why.
+  (`src/console/storage_tab.js`) for why.
   **Creating or deleting a named storage always returns the
   per-user storage list to its first page** (offset reset to 0), rather than
   re-fetching whatever offset was already showing — a newly created storage is
@@ -186,17 +186,18 @@
     to that storage type's own `GET`-detail `itemCount`. This deliberately
     avoids a second fetch of that storage's own `GET` metadata response
     purely to re-derive a count the page fetch already reports. For a
-    **dataset**, whose pagination is pushed all the way down to crawlee (see
-    `storage.md`), that second fetch would otherwise reintroduce, server-side,
+    **dataset**, whose pagination is pushed all the way down to the crawlee
+    backend (see `storage.md`), that second fetch would otherwise
+    reintroduce, server-side,
     the exact unbounded per-request read this pagination feature exists to
     remove; for a **KV store**, the console always pages via `offset` (see
     "Storage views always page explicitly" above), and KV's `offset`-based
-    path already performs an unbounded `kv_keys()` read on every page fetch
+    path already performs an unbounded `kvKeys()` read on every page fetch
     regardless (`storage.md`'s documented local-only shortcut — unlike KV's
-    separate `exclusiveStartKey`-cursor path, which crawlee's own
-    `iterate_keys()` does push down page-sized, `offset` has no equivalent on
-    crawlee's KVS client to push down to), so the second fetch would not be a
-    NEW unbounded read, merely a second, redundant one on top of the
+    separate `exclusiveStartKey`-cursor path, which the fs backend's own
+    cursor-paged `listKeys()` does push down page-sized, `offset` has no
+    equivalent on the fs backend to push down to), so the second fetch would
+    not be a NEW unbounded read, merely a second, redundant one on top of the
     unbounded read the listing itself already pays for. Either way, avoiding
     the second fetch is strictly better, just for a narrower reason on the KV
     side.
