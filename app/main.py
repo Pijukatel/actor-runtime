@@ -4,14 +4,15 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import InvalidTokenError
 from .config import Settings, load_settings
 from .db import Database
 from .driver import Driver
-from .responses import unauthorized
+from .responses import bad_request, unauthorized
 from .routers import actors, console, runs, runtime_config, standby, storages, users
 from .service import Service
 from .storage import Storage
@@ -82,6 +83,26 @@ def create_app(settings: Settings | None = None, driver: Driver | None = None) -
     @app.exception_handler(InvalidTokenError)
     async def _invalid_token_handler(request, exc):
         return unauthorized()
+
+    @app.exception_handler(HTTPException)
+    async def _bad_request_envelope_handler(request, exc: HTTPException):
+        """Reshape a plain ``400 HTTPException`` into this app's own
+        ``{"error": {...}}`` envelope, matching every other 4xx this API
+        returns. Every ``raise HTTPException(...)`` in this codebase today is
+        a 400 -- invalid/non-integer/negative ``limit``/``offset``
+        (``app/pagination.py``), a malformed compressed/JSON request body
+        (``app/responses.py``), a malformed KV record body or an invalid
+        access-rights grant (``app/routers/storages.py``) -- so without this
+        handler FastAPI's own default renders its bare ``{"detail": ...}``
+        shape instead. Any OTHER status code -- none raised via
+        ``HTTPException`` today, but a future one might be -- falls through to
+        FastAPI's own default handler unchanged, exactly like the
+        ``InvalidTokenError``->401 handler above leaves every non-token error
+        alone.
+        """
+        if exc.status_code == 400:
+            return bad_request(str(exc.detail))
+        return await http_exception_handler(request, exc)
 
     # /v2/users/me
     app.include_router(actors.user_router)

@@ -225,6 +225,26 @@ async def test_console_render_store_content_guards_against_error_envelopes(wired
     assert body.index("if (!res.ok)") < body.index("const items = await res.json();")
 
 
+async def test_console_kv_record_fetches_are_encoded_and_parallelized(wired):
+    """Regression: the KV detail view's per-key record fetch must
+    percent-encode the key (`encodeURIComponent`) before it reaches the URL --
+    an unencoded key containing `/`, `#` or `?` would either address a
+    different record (an extra path segment) or get mis-split by the
+    browser's own URL parsing (`#` starts a fragment, `?` a query string) --
+    and must issue all of a page's record fetches concurrently
+    (`Promise.all`), not one key at a time, since `Promise.all` still
+    resolves its results in the same order as the input array regardless of
+    which individual fetch finishes first."""
+    client, _service = wired
+    js = (await client.get("/console/storage_tab.js")).text
+
+    render_start = js.index("async function renderStoreContent(kind, id, offset)")
+    render_body = js[render_start : js.index("\n}\n", render_start)]
+
+    assert "records/${encodeURIComponent(k.key)}" in render_body
+    assert re.search(r"await Promise\.all\(\s*keys\.map\(", render_body)
+
+
 async def test_console_load_storages_guards_against_error_envelope(wired):
     """`loadStorages` fetches `/v2/users/me/{slug}` with the acting user's
     own (possibly stale/revoked) token, so it can fail just like any other

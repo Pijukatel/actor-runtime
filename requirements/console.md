@@ -134,7 +134,13 @@
   with a link back to the list — for named **and** run-derived storages alike. This
   reuses the same content renderer as a run's default-storage sub-tabs. All controls
   reuse the DOM-safe builders (`mk`/`tableEl`/`api`) — no `innerHTML`, no inline
-  handlers; navigation is wired with `addEventListener` + `history.pushState`.
+  handlers; navigation is wired with `addEventListener` + `history.pushState`. A
+  key-value store's per-key record fetches are issued concurrently
+  (`Promise.all`), not one key at a time, while still rendering rows in the
+  same order as the fetched key page; each key is percent-encoded
+  (`encodeURIComponent`) before it reaches the record-fetch URL, so a key
+  containing `/`, `#`, `?` or other reserved characters still addresses the
+  right record instead of being mis-split by the browser's own URL parsing.
 - **Storage views always page explicitly, never a bare request.** The per-user
   storage list (`/storage/{slug}`) and a storage's detail content (dataset items,
   KV keys, RQ requests, reached via the shared content renderer from either

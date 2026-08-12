@@ -145,7 +145,13 @@ fixtures, backed by `StubDriver`'s in-process fake standby target — see
    headers and body reach the Actor unchanged, INCLUDING repeated header
    names surviving in either direction (e.g. multiple `Cookie` headers from
    the caller, multiple `Set-Cookie` headers from the Actor — never collapsed
-   to only the last value); the response is genuinely **streamed** back to
+   to only the last value) AND a percent-encoded `#`/`?` inside the caller's
+   own sub-path segment, which must reach the Actor exactly as sent, still
+   encoded, with the real query string intact alongside it — built from the
+   request's raw wire bytes rather than Starlette's own decoded path/query,
+   which would otherwise decode an encoded `#` into a URL-fragment-starting
+   character and an encoded `?` into a second, corrupting query separator;
+   the response is genuinely **streamed** back to
    the caller, not buffered in full before the first byte (proven with a fake
    standby target that writes its body in several flushed chunks with a real
    delay between them and closes the connection instead of declaring
@@ -329,12 +335,20 @@ Automated coverage (Docker-free via the `wired` fixture) MUST exist for each of
 the four listing surfaces — dataset items, KV keys, RQ requests, and the
 per-user storage listings — asserting all of:
  - a **bare request** (neither `limit` nor `offset` supplied) returns every
-   item, uncapped, in today's exact shape, KEY ORDER INCLUDED: dataset items
-   stays a byte-for-byte-identical bare array with no `X-Apify-Pagination-*`
-   headers; KV keys/RQ requests envelopes carry no additive `total` field and
-   keep their pre-pagination field order (`items, count, limit, ...`); per-user
-   listings are unchanged (`total, count, items`). This is the contract every
-   non-console (CLI/SDK/curl) caller keeps relying on — verified with an
+   item, uncapped, in today's exact item order, KEY ORDER INCLUDED, with
+   exactly two deliberate, additive exceptions (both existing solely so the
+   pinned `apify-client`'s own bare-call idioms validate — see the
+   pinned-client checks below): dataset items stays a
+   byte-for-byte-identical bare-array **body**, but now additionally carries
+   the `X-Apify-Pagination-*` response headers (bare calls included, not only
+   the `limit`/`offset`-supplied arm); KV keys' envelope carries no additive
+   `total` field and keeps its pre-pagination field order (`items, count,
+   limit, ...`), but each item now additionally carries `recordPublicUrl`
+   (bare calls included — a real-API-parity change, per Decision 9, not just
+   a compat shim, since the real API's own `ListOfKeys` always returns it).
+   RQ requests and per-user listings have no such exception: RQ requests keep
+   their pre-pagination field order with no additive `total`; per-user
+   listings are unchanged (`total, count, items`). Verified with an
    ORDER-SENSITIVE comparison (`list(body.keys())` or the raw response text),
    never a `set(body.keys())` comparison, which cannot detect a reorder.
  - a **`limit`/`offset`-supplied request** returns the corresponding slice
@@ -345,28 +359,36 @@ per-user storage listings — asserting all of:
    sentinel, and `-Desc` is unconditionally `false` (this surface has no
    `desc` query param) — KV keys/RQ requests via an additive `total` field;
    per-user listings via their existing `total`/`count` fields.
- - **The real, pinned `apify-client` succeeds against dataset items.**
-   `apify_client`'s `DatasetClientAsync.list_items()`/`get_data()` (pinned in
-   `requirements-dev.txt`) indexes all five `x-apify-pagination-*` response
-   headers directly (no `.get()`), so a response missing any one of them
-   raises a `KeyError` before returning a single item. That client's HTTP
-   transport (`impit`, not `httpx`) has no ASGI-transport hook, so this
-   coverage boots the app under a real `uvicorn` server on a loopback socket
-   (`tests/conftest.py`'s `wired_uvicorn` fixture, the same one the KV-keys
-   pinned-client check below already uses) and drives an actual
-   `ApifyClientAsync` against it, over a seeded dataset, asserting the
-   returned items and paging metadata (`total`/`offset`/`count`/`limit`/`desc`)
-   parse without error.
+ - **The real, pinned `apify-client` succeeds against dataset items and KV
+   keys, bare calls included** (`tests/unit/test_sdk_compat.py`).
+   `apify_client`'s `DatasetClientAsync.list_items()` indexes all
+   five `x-apify-pagination-*` response headers directly (no `.get()`), so a
+   genuinely bare call (zero arguments — `iterate_items()` always sends an
+   explicit `offset`/`limit` internally and so never exercises this branch,
+   but a bare `list_items()` call does) would otherwise raise a `KeyError`
+   before returning a single item; `iterate_items()` itself, and
+   `list_items()` called with explicit `limit`/`offset`, must also parse and
+   return the seeded items. `KeyValueStoreClientAsync.iterate_keys()`
+   called with no explicit `limit` — the SDK's own default in-Actor idiom —
+   must yield every seeded key with no `ValidationError`; that client's
+   `KeyValueStoreKey` response model requires `recordPublicUrl` on every item,
+   which a genuinely bare `list_keys()` call (no cursor, no limit at all) only
+   gets since the KV-keys bare-recordPublicUrl fix above. Both of these
+   clients' HTTP transport (`impit`, not `httpx`) has no ASGI-transport hook,
+   so this coverage boots the app under a real `uvicorn` server on a loopback
+   socket (`tests/conftest.py`'s `wired_uvicorn` fixture, also used by the
+   KV-keys chunk-size pinned-client check below) and drives an actual
+   `ApifyClientAsync` against it over seeded storages, asserting the returned
+   items/keys and paging metadata parse without error.
  - a negative `limit`/`offset` is `400` on at least one surface, and a
    non-integer `limit`/`offset` value (e.g. `?limit=abc`, `?offset=1.5`) is
    likewise `400` on at least one surface, exercising `app/pagination.py`'s
    `_parse_int` `TypeError`/`ValueError` branch as reached from these four
    listing surfaces specifically (previously only exercised via `runs.py`'s
-   pre-existing `memoryMbytes`/`timeoutSecs` validation). Both are the bare
-   FastAPI `{"detail": "..."}` shape `_parse_int` itself raises, NOT this
-   app's `{"error": {"type": "invalid-request", ...}}` envelope — a
-   pre-existing quirk of that shared helper, predating and unrelated to this
-   pagination feature.
+   pre-existing `memoryMbytes`/`timeoutSecs` validation). Both MUST assert
+   this app's own `{"error": {"type": "invalid-request", ...}}` envelope (the
+   registered `HTTPException`->400 handler in `app/main.py`), never FastAPI's
+   bare default `{"detail": "..."}` shape.
  - the dataset-items `X-Apify-Pagination-*` headers are reachable by a
    cross-origin browser caller: `CORSMiddleware` (app/main.py) MUST list them
    in `expose_headers`, verified with an `Origin` header on the request and an
@@ -420,10 +442,13 @@ exist for the KV-keys surface's `exclusiveStartKey` cursor contract:
    from the previous response's `nextExclusiveStartKey`) purely to pin the
    envelope mechanics without paying for a real socket on every run.
  - **The bare-request shape is unaffected by cursor support existing** — the
-   existing bare-request KV-keys test (key order `items, count, limit,
-   isTruncated`, no additive fields) MUST keep passing unchanged; it is the
-   direct verification that adding `exclusiveStartKey` support does not
-   narrow the surface's byte-for-byte no-params contract.
+   existing bare-request KV-keys test (envelope key order `items, count,
+   limit, isTruncated`, no additive envelope fields) MUST keep passing
+   unchanged; it is the direct verification that adding `exclusiveStartKey`
+   support does not narrow the surface's byte-for-byte no-params contract on
+   the envelope itself. Per-item shape is the one deliberate exception: this
+   same bare-request test MUST also assert each item's exact `recordPublicUrl`
+   value (never merely that `key`/`size` are present) — see Decision 9.
 
 ## Mandatory upstream-fallback and runtime-config-toggle tests (standing regression checks)
 

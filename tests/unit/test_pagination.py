@@ -1,16 +1,18 @@
 """Optional `limit`/`offset` pagination for the four listing surfaces (dataset
 items, KV keys, RQ requests, per-user storage lists): a bare request (neither
 param supplied) stays byte-for-byte identical to today's unpaginated shape --
-the contract every non-console (CLI/SDK/curl) caller keeps relying on; supplying
-`limit`/`offset` returns the corresponding slice plus enough total-count
+the contract every non-console (CLI/SDK/curl) caller keeps relying on -- with
+two deliberate, additive exceptions (Decision 9): dataset items now carry the
+`X-Apify-Pagination-*` response headers even bare, and every KV-keys item
+(bare, `offset`-sliced, and cursor-mode alike) now carries a `recordPublicUrl`
+(required by the pinned `apify-client`'s response model, and matching the
+real API's own `ListOfKeys`, which always returns it). Supplying `limit`/
+`offset` otherwise returns the corresponding slice plus enough total-count
 information to page. KV keys additionally accept an `exclusiveStartKey`
 cursor with a truthful `isTruncated`/`nextExclusiveStartKey` (see the
-"KV keys" section below); its cursor-mode items each additionally carry a
-`recordPublicUrl` (required by the pinned `apify-client`'s response model)
-and its envelope never carries a `total` (computing one would force the
-full-store scan the cursor pushdown exists to avoid) -- both bare and
-`offset`-sliced items keep the plain `{key, size}` shape. See
-requirements/api.md's "Pagination" section.
+"KV keys" section below); its cursor-mode envelope never carries a `total`
+(computing one would force the full-store scan the cursor pushdown exists to
+avoid). See requirements/api.md's "Pagination" section.
 """
 from __future__ import annotations
 
@@ -55,14 +57,26 @@ async def test_dataset_items_bare_request_is_unpaginated_bare_array(wired):
     assert isinstance(body, list)
     assert len(body) == 150
     assert body[0] == {"i": 0} and body[-1] == {"i": 149}
-    # No new headers at all when the caller never asked to page.
-    assert not any(k.lower().startswith("x-apify-pagination") for k in resp.headers)
-    # Byte-for-byte, not just parsed-equal: a bare request must reproduce the
-    # exact wire body (item key order included) -- the literal thing
-    # requirements/api.md's "byte-for-byte identical" promise means: capture
-    # today's response, re-run the identical bare request, diff the two --
-    # they must match exactly.
+    # The BODY stays byte-for-byte identical to today, not just parsed-equal:
+    # a bare request must reproduce the exact wire body (item key order
+    # included) -- the literal thing requirements/api.md's "byte-for-byte
+    # identical" promise means for this surface's body: capture today's
+    # response, re-run the identical bare request, diff the two -- the body
+    # must match exactly.
     assert resp.text == json.dumps([{"i": i} for i in range(150)], separators=(",", ":"))
+    # The one deliberate, additive exception (Decision 9): the
+    # five `X-Apify-Pagination-*` headers are now present even on a bare
+    # call -- the pinned apify-client's `DatasetItemsPage` indexes them
+    # directly (no `.get()`), so a genuinely bare `list_items()` call would
+    # otherwise raise a `KeyError` before returning a single item (see
+    # test_sdk_compat.py). A bare request reports `offset=0`, `count`/
+    # `total` equal to the full item count, `limit` echoing that same count
+    # (never the internal `DEFAULT_ITEM_LIMIT` sentinel), and `desc=false`.
+    assert resp.headers["X-Apify-Pagination-Offset"] == "0"
+    assert resp.headers["X-Apify-Pagination-Count"] == "150"
+    assert resp.headers["X-Apify-Pagination-Total"] == "150"
+    assert resp.headers["X-Apify-Pagination-Limit"] == "150"
+    assert resp.headers["X-Apify-Pagination-Desc"] == "false"
 
 
 async def test_dataset_items_limit_offset_returns_slice_and_headers(wired):
@@ -182,17 +196,21 @@ async def test_dataset_items_non_integer_limit_is_bad_request(wired):
     `parse_page`'s `optional()` closure, was previously only exercised by
     `runs.py`'s pre-existing `memoryMbytes`/`timeoutSecs` validation -- never
     by any of the four new listing surfaces this branch now also guards.
-    `int("abc")` raises `ValueError`, so this must be `400` -- in the bare
-    FastAPI `{"detail": ...}` shape `_parse_int` itself raises, not this
-    app's own error envelope (see requirements/api.md's Pagination section
-    for why)."""
+    `int("abc")` raises `ValueError`, so this must be `400` -- reshaped by the
+    registered `HTTPException`->400 handler (`app/main.py`) into this app's
+    own `{"error": {...}}` envelope, not FastAPI's bare `{"detail": ...}`
+    shape `_parse_int` itself raises (see requirements/api.md's Pagination
+    section)."""
     client, _service = wired
     await _create_user(client, "nonint")
     created = await client.post("/v2/datasets", json={"name": "d"}, headers=auth("nonint"))
     ds_id = created.json()["data"]["id"]
     resp = await client.get(f"/v2/datasets/{ds_id}/items?limit=abc", headers=auth("nonint"))
     assert resp.status_code == 400
-    assert resp.json()["detail"] == "Query parameter 'limit' must be an integer."
+    assert resp.json()["error"] == {
+        "type": "invalid-request",
+        "message": "Query parameter 'limit' must be an integer.",
+    }
 
 
 async def test_dataset_items_non_integer_offset_is_bad_request(wired):
@@ -207,7 +225,10 @@ async def test_dataset_items_non_integer_offset_is_bad_request(wired):
     ds_id = created.json()["data"]["id"]
     resp = await client.get(f"/v2/datasets/{ds_id}/items?offset=1.5", headers=auth("nonint2"))
     assert resp.status_code == 400
-    assert resp.json()["detail"] == "Query parameter 'offset' must be an integer."
+    assert resp.json()["error"] == {
+        "type": "invalid-request",
+        "message": "Query parameter 'offset' must be an integer.",
+    }
 
 
 async def test_dataset_items_empty_string_params_are_treated_as_absent(wired):
@@ -228,8 +249,9 @@ async def test_dataset_items_empty_string_params_are_treated_as_absent(wired):
     assert empty.json() == bare.json()
     assert len(empty.json()) == 150
     # Empty-string params land on the identical unpaginated branch as no
-    # params at all -- no pagination headers appear either.
-    assert not any(k.lower().startswith("x-apify-pagination") for k in empty.headers)
+    # params at all -- including the same bare-call pagination headers
+    # (see test_dataset_items_bare_request_is_unpaginated_bare_array).
+    assert empty.headers["X-Apify-Pagination-Total"] == bare.headers["X-Apify-Pagination-Total"] == "150"
 
 
 async def test_dataset_items_pinned_apify_client_list_items_parses(wired_uvicorn):
@@ -319,10 +341,17 @@ async def test_kv_keys_bare_request_is_unpaginated_and_unchanged(wired):
     assert body["limit"] == 120
     assert body["isTruncated"] is False
     assert len(body["items"]) == 120
-    # Bare items keep their exact pre-cursor-support shape too -- no
-    # `recordPublicUrl` (that field only appears on cursor-mode items, which
-    # a bare request never takes the branch for).
-    assert list(body["items"][0].keys()) == ["key", "size"]
+    # Decision 9's deliberate exception: every item -- bare calls included --
+    # now carries `recordPublicUrl`, matching the real API's own `ListOfKeys`
+    # (which always returns it) so the pinned apify-client's default bare
+    # `iterate_keys()`/`list_keys()` validates. `key`/`size` stay present and
+    # in their original order; `recordPublicUrl` is appended, with its exact
+    # value asserted (not merely "is present") so this can't silently regress
+    # to an empty string or the wrong path.
+    base = str(client.base_url).rstrip("/")
+    for item in body["items"]:
+        assert list(item.keys()) == ["key", "size", "recordPublicUrl"]
+        assert item["recordPublicUrl"] == f"{base}/v2/key-value-stores/{store_id}/records/{item['key']}"
 
 
 async def test_kv_keys_limit_offset_returns_slice_with_total(wired):
@@ -347,9 +376,12 @@ async def test_kv_keys_limit_offset_returns_slice_with_total(wired):
     assert len(body["items"]) == 10
     assert body["isTruncated"] is True
     assert "nextExclusiveStartKey" not in body
-    # Offset-mode items keep the plain shape too -- `recordPublicUrl` is a
-    # cursor-mode-only addition.
-    assert list(body["items"][0].keys()) == ["key", "size"]
+    # Offset-mode items now carry `recordPublicUrl` too (Decision 9 -- every
+    # path through this endpoint does, not only cursor mode).
+    base = str(client.base_url).rstrip("/")
+    for item in body["items"]:
+        assert list(item.keys()) == ["key", "size", "recordPublicUrl"]
+        assert item["recordPublicUrl"] == f"{base}/v2/key-value-stores/{store_id}/records/{item['key']}"
 
 
 async def test_kv_keys_offset_mode_limit_zero_is_a_non_truncating_empty_page(wired):

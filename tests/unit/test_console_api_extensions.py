@@ -246,7 +246,7 @@ def test_docker_run_enforces_timeout_while_streaming_logs():
             self._killed = threading.Event()
             self.kill_calls = 0
 
-        def logs(self, stream=False, follow=False):
+        def logs(self, stream=False, follow=False, timestamps=False):
             if not stream:
                 return b""
 
@@ -315,7 +315,7 @@ def _fake_network_unavailable_client():
         def wait(self, timeout=None):
             return {"StatusCode": 0}
 
-        def logs(self):
+        def logs(self, timestamps=False):
             return b""
 
         def kill(self):
@@ -379,7 +379,7 @@ def test_docker_run_uses_named_network_when_available():
         def wait(self, timeout=None):
             return {"StatusCode": 0}
 
-        def logs(self):
+        def logs(self, timestamps=False):
             return b""
 
         def kill(self):

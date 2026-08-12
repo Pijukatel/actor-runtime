@@ -356,15 +356,26 @@ async function renderStoreContent(kind, id, offset) {
     const stats = statsLineEl({ itemCount: total });
     if (stats) box.appendChild(stats);
     box.appendChild(pagingLineEl(offset, keys.length, total));
-    const rows = [];
-    for (const k of keys) {
-      const rec = await api(`/v2/key-value-stores/${id}/records/${k.key}`);
-      const pre = mk("pre", {
-        text: typeof rec === "string" ? rec : JSON.stringify(rec, null, 2),
-        style: { maxHeight: "120px" },
-      });
-      rows.push([mk("td", { text: k.key }), pre]);
-    }
+    // Fetched concurrently (`Promise.all`), not one record at a time -- the RQ
+    // branch below already fetches its own two independent calls this way.
+    // `Promise.all` resolves its results array in the same order as the input
+    // array regardless of which individual fetch finishes first, so the
+    // rendered row order still matches `keys` exactly. The key is
+    // percent-encoded (`encodeURIComponent`) before it reaches the URL: an
+    // un-encoded key containing e.g. `/`, `#` or `?` would otherwise either
+    // address a different record (an extra path segment) or get mis-split by
+    // the browser's own URL parsing (`#` starts a fragment, `?` a query
+    // string) before the request is even sent.
+    const rows = await Promise.all(
+      keys.map(async (k) => {
+        const rec = await api(`/v2/key-value-stores/${id}/records/${encodeURIComponent(k.key)}`);
+        const pre = mk("pre", {
+          text: typeof rec === "string" ? rec : JSON.stringify(rec, null, 2),
+          style: { maxHeight: "120px" },
+        });
+        return [mk("td", { text: k.key }), pre];
+      }),
+    );
     box.appendChild(emptyOr(tableEl(["Key", "Value"], rows), keys.length));
     box.appendChild(pagingControlsEl(offset, keys.length, total, onPage));
   } else if (kind === "ds") {

@@ -496,25 +496,43 @@
   (`GET /v2/key-value-stores/{id}/keys`), request-queue requests
   (`GET /v2/request-queues/{id}/requests`), and each per-user storage listing
   (`GET /v2/users/me/{key-value-stores,datasets,request-queues}`).
-- **Omitting both params keeps today's response byte-for-byte identical** —
-  every item, uncapped, in today's shape and KEY ORDER, no new fields, no new
-  headers. This is the contract every non-console (CLI/SDK/curl) caller keeps
-  relying on; there is no server-side cap or clamp on any of these four
-  surfaces.
+- **Omitting both params keeps today's response the same shape and KEY
+  ORDER** — every item, uncapped, in today's item order. There is no
+  server-side cap or clamp on any of these four surfaces: a bare dataset-items
+  request, for instance, is answered by `Storage.dataset_items()` with an
+  internal `DEFAULT_ITEM_LIMIT` sentinel (`999999`) standing in for "no limit
+  given" — large enough that no real local dataset exceeds it — never a real
+  cap a large local dataset could hit. This is the contract every non-console
+  (CLI/SDK/curl) caller keeps relying on for the response **body**, with
+  exactly two deliberate, additive exceptions, both existing solely so the
+  pinned `apify-client`'s own default bare-call idioms validate against this
+  runtime (see Decision 9):
+  - **Dataset items** additionally carry the five `X-Apify-Pagination-*`
+    response headers on a bare request too (see below) — the body itself
+    stays the exact same bare array.
+  - **KV keys** additionally carry a `recordPublicUrl` on every item, bare
+    calls included (see "KV keys additionally support cursor pagination"
+    below) — a real-API-parity change, not merely a compat shim: the real
+    API's own `ListOfKeys` always returns this field regardless of how a
+    request was paged.
+  RQ requests and the per-user storage listings have no such exception: their
+  bare shape is untouched, headers included.
 - Supplying `limit` and/or `offset` returns the corresponding slice, plus
   enough total-count information to page:
   - Dataset items keep their **bare-array body** (unchanged either way) and
-    additionally expose `X-Apify-Pagination-Offset`/`-Count`/`-Total`/`-Limit`/
-    `-Desc` response headers, mirroring the real API's own `format=json`
-    header convention, only once `limit`/`offset` are actually supplied.
-    `-Limit` mirrors the effective limit — the requested value, or (when only
-    `offset` was given) the slice's own returned length — never the internal
-    "no cap" sentinel the storage layer applies for a bare request. `-Desc` is
-    unconditionally `false` — this surface has no `desc` query param, so items
-    are always returned in storage order — but the header is still required:
-    the pinned `apify-client`'s `DatasetItemsPage` indexes all five headers
-    directly (no `.get()`), so a response missing any one of them raises a
-    `KeyError` before returning a single item.
+    expose `X-Apify-Pagination-Offset`/`-Count`/`-Total`/`-Limit`/`-Desc`
+    response headers on **every** response, bare calls included, mirroring
+    the real API's own `format=json` header convention. `-Limit` mirrors the
+    effective limit — the requested value, or (when `limit` was omitted,
+    bare or offset-only) the slice's own returned length — never the internal
+    `DEFAULT_ITEM_LIMIT` "no cap" sentinel the storage layer applies
+    underneath. `-Desc` is unconditionally `false` — this surface has no
+    `desc` query param, so items are always returned in storage order — but
+    the header is still required, bare calls included: the pinned
+    `apify-client`'s `DatasetItemsPage` (`list_items()`/`iterate_items()`)
+    indexes all five headers directly (no `.get()`), so a truly bare call
+    (no `limit`/`offset` at all) would otherwise raise a `KeyError` before
+    returning a single item.
   - RQ requests gain an **additive** `total` field in their envelope
     (alongside their existing `count`/`limit` echoes) whenever `limit`/`offset`
     are supplied — absent from the bare-request shape, and appended last so it
@@ -533,24 +551,23 @@
 - **KV keys additionally support cursor pagination**
   (`GET /v2/key-value-stores/{id}/keys`), matching the real API's own
   `ListOfKeys` contract closely enough for the pinned `apify-client`'s
-  `iterate_keys()` to page correctly at any store size. This surface has two
-  distinct item shapes, chosen by which paging mechanism a request takes:
-  - **Bare, and `offset`-sliced (console-style), items are `{key, size}`** —
-    byte-for-byte the shape this surface has always returned.
-  - **Cursor-mode items (`limit` and/or `exclusiveStartKey` supplied) are
-    `{key, size, recordPublicUrl}`** — the pinned `apify-client`'s
-    `KeyValueStoreKey` response model requires `recordPublicUrl` (a valid URL)
-    on every item it validates, so cursor-mode items each carry one: this
-    runtime's own absolute URL for that key's record
-    (`{requestBaseUrl}/v2/key-value-stores/{id}/records/{key}`, built from the
-    handling request's own `base_url` rather than `container_api_base_url` —
-    unlike `standbyUrl`/`consoleUrl`, which are only ever dereferenced from
-    inside an Actor container, this field's callers are typically host-side
-    (curl, or apify-client pointed at the published API port), so it must
-    resolve on whichever host/port the caller actually reached this API on).
-    A bare request never adds this field — the byte-for-byte contract above
-    holds because "bare" and "cursor-mode" are different branches, not
-    because the field is optional within cursor mode.
+  `iterate_keys()` to page correctly at any store size. Every item on every
+  path this surface can take — bare, `offset`-sliced (console-style), and
+  cursor-mode alike — is `{key, size, recordPublicUrl}` (see
+  `app/routers/storages.py`'s shared `_with_record_public_url` helper, used by
+  all three): the pinned `apify-client`'s `KeyValueStoreKey` response model
+  requires `recordPublicUrl` (a valid URL) on every item it validates, and the
+  real API itself always returns it regardless of how a request was paged
+  (Decision 9). `recordPublicUrl` is this runtime's own absolute URL for that
+  key's record (`{requestBaseUrl}/v2/key-value-stores/{id}/records/{key}`,
+  built from the handling request's own `base_url` rather than
+  `container_api_base_url` — unlike `standbyUrl`/`consoleUrl`, which are only
+  ever dereferenced from inside an Actor container, this field's callers are
+  typically host-side (curl, or apify-client pointed at the published API
+  port), so it must resolve on whichever host/port the caller actually
+  reached this API on). Everything else about the bare/`offset`-sliced shape
+  — `key`/`size` themselves, the envelope's other fields, `isTruncated`, the
+  absence of `total` in cursor mode — is unaffected by this field's presence.
   - A caller-supplied `exclusiveStartKey` is forwarded straight through to
     crawlee's own ascending `key > exclusiveStartKey` filter
     (`iterate_keys(exclusive_start_key=..., limit=...)`) rather than sliced
@@ -586,21 +603,29 @@
     with a truthful `isTruncated` there too (`offset + limit < total`), but
     never a `nextExclusiveStartKey` — offset-based paging has no cursor to
     hand back.
-  - A bare request (no `limit`, `offset`, or `exclusiveStartKey`) is
-    completely unaffected: every key as a plain `{key, size}`, `isTruncated:
-    false`, no `exclusiveStartKey`/`nextExclusiveStartKey`/`total`/
-    `recordPublicUrl` fields at all — the identical shape this surface had
-    before cursor support existed.
+  - A bare request (no `limit`, `offset`, or `exclusiveStartKey`) keeps every
+    other aspect of the shape this surface had before cursor support existed
+    — `isTruncated: false`, no `exclusiveStartKey`/`nextExclusiveStartKey`/
+    `total` fields at all — except that each item now additionally carries
+    `recordPublicUrl` (Decision 9, see above).
   - RQ requests have no analogous cursor support (`exclusiveStartId`) yet —
     a documented follow-up; its envelope has no `isTruncated` field at all.
 - `limit`/`offset` must each be a non-negative integer or the request is `400`
   (reusing the `runs.py`-style bounded-int query-param pattern). This reuses
-  `app/pagination.py`'s `_parse_int` helper, which raises a bare FastAPI
-  `HTTPException` — the body is FastAPI's own default `{"detail": "..."}`
-  shape, NOT this app's `{"error": {"type": "invalid-request", ...}}`
-  envelope used by every other 4xx in this document. Pre-existing quirk of
-  that shared helper (also used by `runs.py`'s `memoryMbytes`/`timeoutSecs`
-  validation), not something this pagination feature introduces or changes.
+  `app/pagination.py`'s `_parse_int` helper, which raises a plain
+  `HTTPException(status_code=400, ...)`; a registered `HTTPException`
+  handler (`app/main.py`, alongside the existing `InvalidTokenError`->401
+  handler) reshapes any such 400 into this app's own
+  `{"error": {"type": "invalid-request", ...}}` envelope, matching every
+  other 4xx in this document — the same handler also covers every other
+  plain `HTTPException(400, ...)` raised anywhere in this codebase (a
+  malformed compressed/JSON request body in `app/responses.py`, a malformed
+  KV record body or an invalid access-rights grant in
+  `app/routers/storages.py`, `runs.py`'s own `memoryMbytes`/`timeoutSecs`
+  validation), so all of them get the same envelope, not just this
+  pagination feature's own params. Any status code other than 400 raised via
+  `HTTPException` — none exist in this codebase today — would fall through
+  to FastAPI's own default handler unchanged.
 
 ## Console SPA serving (catch-all)
 

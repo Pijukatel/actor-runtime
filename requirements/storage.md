@@ -40,5 +40,8 @@
   "Pagination" section (no `total`, a percent-encoded `recordPublicUrl` built
   from the handling request's own `base_url`) — see that section for the
   full rationale. The `offset`-sliced path keeps its `total` (it already
-  holds the full list) and never adds `recordPublicUrl` (no client
-  compatibility need for it there).
+  holds the full list). `recordPublicUrl` itself is attached on EVERY path
+  through this endpoint — bare, cursor-mode, and `offset`-sliced alike — via
+  one shared helper (`_with_record_public_url`), matching the real API's own
+  `ListOfKeys`, which always returns it (Decision 9); it is not a
+  cursor-mode-only or client-compatibility-only addition.

@@ -1,4 +1,13 @@
-"""Helpers for the public-Apify-style response envelope and error shapes."""
+"""Helpers for the public-Apify-style response envelope and error shapes:
+``data()`` wraps a successful payload; ``bad_request``/``not_found``/
+``forbidden``/``conflict``/``unauthorized``/``standby_unavailable``/
+``standby_start_failed`` build the ``{"error": {"type": ..., "message":
+...}}`` shape at each status this API returns it for; ``get_service()``,
+``read_body()``/``read_json()`` round out the request-handling side. Optional
+`limit`/`offset` query-param parsing/slicing lives in ``app/pagination.py``
+instead -- a response-shape module has no reason to also own query-string
+parsing.
+"""
 from __future__ import annotations
 
 import gzip
