@@ -21,6 +21,8 @@
  * local-only route with no equivalent reachable the same way), logs, the
  * console and the runtime-config toggle itself.
  */
+import zlib from 'node:zlib';
+
 import { request as undiciRequest } from 'undici';
 
 import { resolveForwardableToken } from './auth.js';
@@ -117,13 +119,23 @@ export async function fetchUpstreamFallback(ctx, body) {
             bodyTimeout: 0,
         });
 
-        const responseBody = Buffer.from(await upstream.body.arrayBuffer());
+        let responseBody = Buffer.from(await upstream.body.arrayBuffer());
         if (upstream.statusCode < 200 || upstream.statusCode >= 300) {
             console.warn(
                 `Upstream fallback ${ctx.method} ${ctx.path} got ${upstream.statusCode}; keeping the local 404`,
             );
             return null;
         }
+
+        // undici's `request` -- unlike the httpx client in the Python
+        // predecessor -- does NOT decode a compressed response body, while
+        // the relay strips `content-encoding` below (see
+        // EXCLUDED_RESPONSE_HEADERS): decode here, so the caller never
+        // receives still-compressed bytes described as plain. An encoding we
+        // cannot decode throws, collapsing to the local 404 like any other
+        // fallback failure, rather than relaying a mismatched body/header
+        // pair.
+        responseBody = decodeResponseBody(responseBody, upstream.headers['content-encoding']);
 
         // Built as a LIST of pairs (which preserves duplicates) rather than
         // an object, so a header name the upstream repeats (e.g. two
@@ -143,4 +155,14 @@ export async function fetchUpstreamFallback(ctx, body) {
         console.warn(`Upstream fallback ${ctx.method} ${ctx.path} failed: ${err?.message ?? err}`);
         return null;
     }
+}
+
+/** Decode an upstream response body per its `Content-Encoding`, if any. */
+function decodeResponseBody(body, contentEncoding) {
+    const encoding = String(contentEncoding ?? '').trim().toLowerCase();
+    if (!body.length || !encoding || encoding === 'identity') return body;
+    if (encoding === 'gzip' || encoding === 'x-gzip') return zlib.gunzipSync(body);
+    if (encoding === 'br') return zlib.brotliDecompressSync(body);
+    if (encoding === 'deflate') return zlib.inflateSync(body);
+    throw new Error(`Unsupported upstream content-encoding: ${encoding}`);
 }
