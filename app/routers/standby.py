@@ -54,7 +54,7 @@ _STANDBY_FORWARD_CONNECT_TIMEOUT_SECS = 10.0
 _STANDBY_PATH_PREFIX = b"/v2/actor-standby/"
 
 
-def _raw_forward_target(endpoint: str, actor_id: str, path: str, request: Request) -> str:
+def _raw_forward_target(endpoint: str, path: str, request: Request) -> str:
     """Build ``{endpoint}/{path}?{query}`` from the request's raw wire bytes,
     never from Starlette's own decoded ``path`` param or ``request.url.query``
     -- the same class of bug, and the same fix shape, ``app/upstream.py``'s
@@ -150,7 +150,7 @@ async def forward_to_standby(actor_id: str, path: str, request: Request):
         # forwarding guarantee. httpx accepts a sequence of pairs directly and
         # preserves duplicates through to the wire.
         forward_headers = [(k, v) for k, v in request.headers.items() if k.lower() not in _EXCLUDED_HEADERS]
-        target_url = _raw_forward_target(endpoint, actor_id, path, request)
+        target_url = _raw_forward_target(endpoint, path, request)
 
         # Only the initial connect is bounded (see the constant's docstring
         # above): the container just answered its readiness probe moments

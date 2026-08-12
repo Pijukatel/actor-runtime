@@ -2,7 +2,7 @@
 items, KV keys, RQ requests, per-user storage lists): a bare request (neither
 param supplied) stays byte-for-byte identical to today's unpaginated shape --
 the contract every non-console (CLI/SDK/curl) caller keeps relying on -- with
-two deliberate, additive exceptions (Decision 9): dataset items now carry the
+two deliberate, additive exceptions: dataset items now carry the
 `X-Apify-Pagination-*` response headers even bare, and every KV-keys item
 (bare, `offset`-sliced, and cursor-mode alike) now carries a `recordPublicUrl`
 (required by the pinned `apify-client`'s response model, and matching the
@@ -64,7 +64,7 @@ async def test_dataset_items_bare_request_is_unpaginated_bare_array(wired):
     # response, re-run the identical bare request, diff the two -- the body
     # must match exactly.
     assert resp.text == json.dumps([{"i": i} for i in range(150)], separators=(",", ":"))
-    # The one deliberate, additive exception (Decision 9): the
+    # The one deliberate, additive exception: the
     # five `X-Apify-Pagination-*` headers are now present even on a bare
     # call -- the pinned apify-client's `DatasetItemsPage` indexes them
     # directly (no `.get()`), so a genuinely bare `list_items()` call would
@@ -341,7 +341,7 @@ async def test_kv_keys_bare_request_is_unpaginated_and_unchanged(wired):
     assert body["limit"] == 120
     assert body["isTruncated"] is False
     assert len(body["items"]) == 120
-    # Decision 9's deliberate exception: every item -- bare calls included --
+    # The deliberate exception: every item -- bare calls included --
     # now carries `recordPublicUrl`, matching the real API's own `ListOfKeys`
     # (which always returns it) so the pinned apify-client's default bare
     # `iterate_keys()`/`list_keys()` validates. `key`/`size` stay present and
@@ -376,8 +376,8 @@ async def test_kv_keys_limit_offset_returns_slice_with_total(wired):
     assert len(body["items"]) == 10
     assert body["isTruncated"] is True
     assert "nextExclusiveStartKey" not in body
-    # Offset-mode items now carry `recordPublicUrl` too (Decision 9 -- every
-    # path through this endpoint does, not only cursor mode).
+    # Offset-mode items now carry `recordPublicUrl` too -- every
+    # path through this endpoint does, not only cursor mode.
     base = str(client.base_url).rstrip("/")
     for item in body["items"]:
         assert list(item.keys()) == ["key", "size", "recordPublicUrl"]

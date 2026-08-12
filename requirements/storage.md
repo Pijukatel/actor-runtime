@@ -43,5 +43,5 @@
   holds the full list). `recordPublicUrl` itself is attached on EVERY path
   through this endpoint — bare, cursor-mode, and `offset`-sliced alike — via
   one shared helper (`_with_record_public_url`), matching the real API's own
-  `ListOfKeys`, which always returns it (Decision 9); it is not a
+  `ListOfKeys`, which always returns it; it is not a
   cursor-mode-only or client-compatibility-only addition.

@@ -306,9 +306,9 @@ def _with_record_public_url(items: list[dict[str, Any]], request: Request, store
     """Attach ``recordPublicUrl`` to each ``{key, size}`` item, on EVERY
     KV-keys response path alike (bare, cursor-mode, and the ``offset``-sliced
     console path) -- matching the real Apify API's ``ListOfKeys``, which
-    always returns this field regardless of how the request was paged (see
-    Decision 9). One shared implementation so all three call sites in this
-    module build the exact same URL the exact same way.
+    always returns this field regardless of how the request was paged. One
+    shared implementation so all three call sites in this module build the
+    exact same URL the exact same way.
 
     Built from ``request.base_url`` -- the host/port this same request
     actually arrived on -- rather than ``Settings.container_api_base_url``
@@ -390,7 +390,7 @@ async def list_keys(store_id: str, request: Request) -> object:
     nor ``limit``) takes the cursor path with everything ``None``, which
     reproduces today's unpaginated shape exactly except for the additive
     ``recordPublicUrl`` on each item every path on this endpoint now carries
-    (Decision 9; see ``_with_record_public_url``).
+    (see ``_with_record_public_url``).
     """
     svc = get_service(request)
     _user, _storage, denied = await _guard(request, store_id, LEVEL_READ, STORAGE_KV)
@@ -507,7 +507,7 @@ async def get_items(dataset_id: str, request: Request) -> JSONResponse:
     """List a dataset's items.
 
     The response BODY stays a bare JSON array either way -- bare or paged --
-    matching today's shape exactly (Decision 2). The `X-Apify-Pagination-*`
+    matching today's shape exactly. The `X-Apify-Pagination-*`
     headers, however, are now emitted on EVERY response, bare calls included:
     the pinned apify-client's `DatasetItemsPage` (`list_items()`/
     `iterate_items()`) indexes all five directly (no `.get()`), so a genuinely

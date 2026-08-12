@@ -506,7 +506,7 @@
   (CLI/SDK/curl) caller keeps relying on for the response **body**, with
   exactly two deliberate, additive exceptions, both existing solely so the
   pinned `apify-client`'s own default bare-call idioms validate against this
-  runtime (see Decision 9):
+  runtime:
   - **Dataset items** additionally carry the five `X-Apify-Pagination-*`
     response headers on a bare request too (see below) — the body itself
     stays the exact same bare array.
@@ -557,8 +557,8 @@
   `app/routers/storages.py`'s shared `_with_record_public_url` helper, used by
   all three): the pinned `apify-client`'s `KeyValueStoreKey` response model
   requires `recordPublicUrl` (a valid URL) on every item it validates, and the
-  real API itself always returns it regardless of how a request was paged
-  (Decision 9). `recordPublicUrl` is this runtime's own absolute URL for that
+  real API itself always returns it regardless of how a request was paged.
+  `recordPublicUrl` is this runtime's own absolute URL for that
   key's record (`{requestBaseUrl}/v2/key-value-stores/{id}/records/{key}`,
   built from the handling request's own `base_url` rather than
   `container_api_base_url` — unlike `standbyUrl`/`consoleUrl`, which are only
@@ -607,7 +607,7 @@
     other aspect of the shape this surface had before cursor support existed
     — `isTruncated: false`, no `exclusiveStartKey`/`nextExclusiveStartKey`/
     `total` fields at all — except that each item now additionally carries
-    `recordPublicUrl` (Decision 9, see above).
+    `recordPublicUrl` (see above).
   - RQ requests have no analogous cursor support (`exclusiveStartId`) yet —
     a documented follow-up; its envelope has no `isTruncated` field at all.
 - `limit`/`offset` must each be a non-negative integer or the request is `400`

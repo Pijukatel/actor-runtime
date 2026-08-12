@@ -344,7 +344,7 @@ per-user storage listings — asserting all of:
    the `limit`/`offset`-supplied arm); KV keys' envelope carries no additive
    `total` field and keeps its pre-pagination field order (`items, count,
    limit, ...`), but each item now additionally carries `recordPublicUrl`
-   (bare calls included — a real-API-parity change, per Decision 9, not just
+   (bare calls included — a real-API-parity change, not just
    a compat shim, since the real API's own `ListOfKeys` always returns it).
    RQ requests and per-user listings have no such exception: RQ requests keep
    their pre-pagination field order with no additive `total`; per-user
@@ -448,7 +448,7 @@ exist for the KV-keys surface's `exclusiveStartKey` cursor contract:
    support does not narrow the surface's byte-for-byte no-params contract on
    the envelope itself. Per-item shape is the one deliberate exception: this
    same bare-request test MUST also assert each item's exact `recordPublicUrl`
-   value (never merely that `key`/`size` are present) — see Decision 9.
+   value (never merely that `key`/`size` are present).
 
 ## Mandatory upstream-fallback and runtime-config-toggle tests (standing regression checks)
 
