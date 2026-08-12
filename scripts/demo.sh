@@ -37,17 +37,18 @@
 #
 # Prerequisites:
 #   local:  docker (daemon running), apify-cli on PATH (`npm i -g
-#           apify-cli`), python3 (parses apify-cli's JSON output; it never
-#           makes an HTTP request itself), curl (liveness poll only, see
+#           apify-cli`), node (parses apify-cli's JSON output; it never
+#           makes an HTTP request itself -- and it is already there, since
+#           apify-cli itself runs on it), curl (liveness poll only, see
 #           step 3).
-#   remote: apify-cli on PATH and logged in (`apify login`), python3.
+#   remote: apify-cli on PATH and logged in (`apify login`), node.
 # Run from anywhere; paths are resolved relative to this script's repo.
 #
 # Both fixture Actors are real `apify` SDK Actors: `apify push` (step 5)
-# triggers a `docker build` whose .actor/Dockerfile pip-installs `apify` +
-# `apify-client` (and, for the caller, `httpx`), so it needs normal internet
-# egress. Once built, both containers only ever call the runtime API they
-# were pushed to (local or real, per mode).
+# triggers a `docker build` whose .actor/Dockerfile npm-installs the pinned
+# `apify` SDK, so it needs normal internet egress. Once built, both
+# containers only ever call the runtime API they were pushed to (local or
+# real, per mode).
 #
 # Local mode leaves the runtime running at the end so you can explore the
 # console; cleanup commands are printed last. Remote mode has no container
@@ -86,9 +87,19 @@ fi
 
 step() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 
+# Pretty-print JSON from stdin (stand-in for `python3 -m json.tool`, same
+# 4-space indent). Purely local parsing; never makes an HTTP request.
+json_pretty() {
+  node -e '
+let raw = "";
+process.stdin.on("data", (chunk) => { raw += chunk; });
+process.stdin.on("end", () => { console.log(JSON.stringify(JSON.parse(raw), null, 4)); });
+'
+}
+
 step "0. Checking prerequisites"
 command -v apify  >/dev/null || { echo "apify-cli is required (npm i -g apify-cli)"; exit 1; }
-command -v python3 >/dev/null || { echo "python3 is required"; exit 1; }
+command -v node >/dev/null || { echo "node is required"; exit 1; }
 if [ "$REMOTE" -eq 1 ]; then
   # A leftover APIFY_CLIENT_BASE_URL/APIFY_CONSOLE_URL in the invoking shell
   # (e.g. from a prior local-mode run, or manual testing per
@@ -185,7 +196,7 @@ cp -r "$REPO/sample_actor_caller" "$WORK/caller-actor"
 
 step "6. Running the caller Actor"
 # Contract: input is the standby Actor's name only -- the caller resolves
-# its own username and builds the id itself (see sample_actor_caller/main.py).
+# its own username and builds the id itself (see sample_actor_caller/main.js).
 INPUT_FILE="$WORK/caller-input.json"
 cat > "$INPUT_FILE" <<'JSON'
 {"standbyActorName": "standby-actor", "greeting": "hello-from-the-demo"}
@@ -202,11 +213,10 @@ step "7. Reading the results back through apify-cli"
 USERNAME="$(apify info | sed -n 's/^username: //p')"
 echo "Acting as ${USERNAME}"
 
-CALLER_META="$(python3 -c '
-import json, sys
-run = json.load(sys.stdin)
-print(run["run"]["id"], run["run"]["status"], run["storage"]["defaultDatasetId"], run["storage"]["defaultKeyValueStoreId"])
-' <<<"$CALL_JSON")"
+CALLER_META="$(node -e '
+const run = JSON.parse(process.argv[1]);
+console.log(run.run.id, run.run.status, run.storage.defaultDatasetId, run.storage.defaultKeyValueStoreId);
+' "$CALL_JSON")"
 read -r CALLER_RUN_ID CALLER_RUN_STATUS CALLER_DATASET_ID CALLER_KV_ID <<<"$CALLER_META"
 echo "Caller run ${CALLER_RUN_ID}: ${CALLER_RUN_STATUS}"
 
@@ -216,7 +226,7 @@ apify key-value-stores get-value "$CALLER_KV_ID" OUTPUT
 
 echo
 echo "Caller's dataset (the same response, saved as an item):"
-apify datasets get-items "$CALLER_DATASET_ID" | python3 -m json.tool
+apify datasets get-items "$CALLER_DATASET_ID" | json_pretty
 
 # `apify call` only ever reports the run IT started (the caller's), so the
 # standby Actor's run -- warmed as a side effect, inside the caller's own
@@ -225,20 +235,22 @@ apify datasets get-items "$CALLER_DATASET_ID" | python3 -m json.tool
 # picking the last one client-side.
 STANDBY_ACTOR_ID="${USERNAME}~standby-actor"
 STANDBY_JSON="$(apify runs ls "$STANDBY_ACTOR_ID" --json --desc --limit 1)"
-STANDBY_META="$(python3 -c '
-import json, sys
-items = json.load(sys.stdin)["items"]
-if not items:
-    sys.exit("No runs found yet for " + sys.argv[1])
-run = items[0]
-print(run["id"], run["status"], run["defaultDatasetId"])
-' "$STANDBY_ACTOR_ID" <<<"$STANDBY_JSON")"
+STANDBY_META="$(node -e '
+const [actorId, raw] = process.argv.slice(1);
+const items = JSON.parse(raw).items;
+if (!items.length) {
+    console.error(`No runs found yet for ${actorId}`);
+    process.exit(1);
+}
+const run = items[0];
+console.log(run.id, run.status, run.defaultDatasetId);
+' "$STANDBY_ACTOR_ID" "$STANDBY_JSON")"
 read -r STANDBY_RUN_ID STANDBY_RUN_STATUS STANDBY_DATASET_ID <<<"$STANDBY_META"
 echo
 echo "Standby run ${STANDBY_RUN_ID}: ${STANDBY_RUN_STATUS} (stays warm until its idle timeout)"
 
 echo "Standby Actor's dataset (one record per call it served):"
-apify datasets get-items "$STANDBY_DATASET_ID" | python3 -m json.tool
+apify datasets get-items "$STANDBY_DATASET_ID" | json_pretty
 
 step "Done"
 if [ "$REMOTE" -eq 1 ]; then
