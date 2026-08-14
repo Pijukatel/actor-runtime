@@ -2,10 +2,9 @@
 - The system is capable of building Actor docker image
 - A build is produced by building a docker image from the Actor source that was
   pushed to the system
-- `Actor build` is an object that:
-  - Is saved under specific `User`/`Actor`/`Builds`
-  - Has a status that reaches a terminal state: succeeded or failed
-  - Can be inspected from frontend console
+- Actor build details are saved in `__BUILDS__` internal storage
+- Actor build log is saved in `__LOGS__` internal storage
+- Actor details are saved in `__ACTORS__` internal storage
 
 # Actor run
 - The system is capable of running containerized Actor
@@ -15,45 +14,30 @@
   Apify base images is a non-root user. The system must provision each run's
   storage so that this (possibly non-root) user can write to it, independent of
   the user the runtime itself runs as
-- `Actor run` is an object that:
-  - Is saved under specific `User`/`Actor`/`Runs`
-  - Has a status that reaches a terminal state: succeeded, failed, aborted or
-    timed-out
-  - Exposes a log; every line carries a UTC timestamp prefix (container
-    output is captured with Docker's per-line RFC3339 timestamps, mirroring
-    real-platform run logs; the runtime's own log lines -- RUN ERROR, standby
-    teardown notes, ... -- are stamped the same way at write time)
-  - Can be inspected from frontend console
+- Actor run details are saved in `__RUNS__` internal storage
+- Actor run log is saved in `__LOGS__` internal storage
 
-# Networking
-- Every Actor container joins a shared, user-defined Docker network (not the
-  default bridge), so Actor containers can reach each other, and the runtime
-  itself, by name
-- The runtime self-attaches to that same network under a stable alias at boot,
-  so `APIFY_API_BASE_URL` inside any Actor container resolves back to the
-  runtime's own API. When the runtime is not itself running as a container
-  (e.g. run directly on a host), self-attach is skipped with a warning rather
-  than failing boot; Actor containers still join the network
-- If the shared network itself cannot be created or found at boot (e.g. a
-  daemon that restricts user-defined network creation), on-demand runs fall
-  back to Docker's default bridge network so they keep working exactly as
-  before standby actors existed; a standby Actor's non-blocking start fails
-  immediately with a clear, actionable error instead, since it has no
-  degraded-but-working mode (its container is only reachable by network DNS
-  name)
+# Users
+- Currently only one default user is implemented.
 
-# Standby actor
-- An Actor may opt into standby mode (`usesStandbyMode: true` in
-  `.actor/actor.json`, or an explicit API field): instead of running once and
-  exiting, the system keeps at most one warm, long-lived container per such
-  Actor, started lazily on the first forwarded HTTP request
-- Before forwarding, the system waits for the container to answer the
-  readiness probe on its fixed `ACTOR_STANDBY_PORT`; a container that never
-  becomes ready fails the request observably rather than hanging
-- After a configurable idle timeout with no forwarded requests, the system
-  stops and removes the container on its own (no further request required) and
-  the underlying run reaches a terminal status
-- A standby run's options (build, memory, no wall-clock timeout) are forced
-  from the Actor's standby config, not any caller-supplied value
-- See `api.md`'s "Standby actors" section for the forwarding route and
-  authorization rules
+# Environment variables in every Actor container
+
+- `APIFY_IS_AT_HOME=1` (mirrors the real platform; an SDK/client instantiated
+  in the container reports `isAtHome`/`is_at_home = true`).
+- `APIFY_META_ORIGIN` — `API` for ordinary runs (every local run arrives via
+  the API, apify-cli included)
+- `APIFY_API_BASE_URL` — the runtime's own API, reachable by name from any
+  Actor container on the shared Docker network (see "Networking" in
+  `actor-driver.md`).
+- `APIFY_TOKEN` — the run owner's token
+- `APIFY_DEFAULT_KEY_VALUE_STORE_ID` / `APIFY_DEFAULT_DATASET_ID` /
+  `APIFY_DEFAULT_REQUEST_QUEUE_ID` — the run's real storage ids (as returned by
+  the API)
+- `APIFY_ACTOR_ID` / `ACTOR_ID` and `APIFY_ACTOR_RUN_ID` / `ACTOR_RUN_ID` —
+  both the legacy `APIFY_`-prefixed and the modern unprefixed spellings, equal
+  in value.
+- `APIFY_PROXY_PASSWORD` — included **only when** the runtime itself was
+  started with `APIFY_PROXY_PASSWORD` set in its own environment (see
+  README.md's "Apify Proxy" section); otherwise the key is absent entirely,
+  never a placeholder value. One host-level password, shared unscoped across
+  every user's Actor containers — there is no per-user proxy credential.

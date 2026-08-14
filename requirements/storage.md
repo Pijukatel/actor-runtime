@@ -1,47 +1,60 @@
 # Storage backend
-- The system uses SQLite as storage backend.
-- The storage backend is using SQLite from `crawlee-python` https://github.com/apify/crawlee-python/tree/v1.8.1/src/crawlee/storage_clients/_sql
-- The storage is persistent within the container.
-- The crawlee-python SQL backend provides all three default storage types -
-  dataset, key-value store **and request queue** - so no separate request-queue
-  storage is needed. This is what lets the runtime satisfy `test.md`'s requirement
-  to fetch the request queue, even though the `Actor Runtime API` tag referenced by
-  `api.md` does not itself define request-queue endpoints (they are added by the
-  local API; see `api.md`).
-- Dataset `offset`/`limit` pagination is pushed all the way down to crawlee's own
-  `DatasetClient.get_data(offset=, limit=)`, which already reports
-  `total`/`count`/`offset` — the API layer (`api.md`'s "Pagination" section) just
-  wires optional query params through to it. Request-queue requests have no
-  equivalent offset/limit-aware read on their crawlee client, so their optional
-  `offset`/`limit` slice is computed in Python over the already-fetched full
-  list (acceptable for this project's dev-tool-sized storages; pushing it down
-  into the crawlee facade is a documented follow-up, not a blocker).
-- Key-value-store keys are a partial exception: crawlee's SQL-backed KVS
-  client's own `iterate_keys(exclusive_start_key=, limit=)` already filters
-  `key > exclusive_start_key` in ascending key order and applies `limit` as a
-  SQL `LIMIT` clause, so a request naming `exclusiveStartKey` and/or `limit`
-  (the cursor-pagination path — see `api.md`'s "Pagination" section) is pushed
-  straight through to that instead of being sliced from an already-fetched
-  full list: `Storage.kv_keys_page()` requests `limit + 1` keys to detect
-  truncation in one round trip, then drops the extra key from the returned
-  page and reports the last KEPT key as `nextExclusiveStartKey`. `limit=0` is
-  special-cased to return an empty, non-truncated page without probing at
-  all (a zero-width window has nothing to truncate). The runtime's own
-  `offset`-based console paging — which has no equivalent concept on the
-  real API or on crawlee's KVS client — is untouched and still slices an
-  already-fetched full list (`Storage.kv_keys()`, itself now just
-  `kv_keys_page()`'s own `limit=None` case) in Python, exactly like RQ
-  requests above; the two mechanisms are independent query params on the
-  same endpoint (a request naming both treats the cursor as authoritative
-  and ignores `offset`).
-- The router endpoint on top of `kv_keys_page()` (`list_keys` /
-  `_kv_keys_cursor_envelope` in `app/routers/storages.py`) implements the
-  cursor-mode item shape and `total`-omission contract described in `api.md`'s
-  "Pagination" section (no `total`, a percent-encoded `recordPublicUrl` built
-  from the handling request's own `base_url`) — see that section for the
-  full rationale. The `offset`-sliced path keeps its `total` (it already
-  holds the full list). `recordPublicUrl` itself is attached on EVERY path
-  through this endpoint — bare, cursor-mode, and `offset`-sliced alike — via
-  one shared helper (`_with_record_public_url`), matching the real API's own
-  `ListOfKeys`, which always returns it; it is not a
-  cursor-mode-only or client-compatibility-only addition.
+- The system uses only Crawlee based storages.
+- The system accesses storages only through Crawlee defined public methods.
+
+# Storage objects
+- The system stores:
+  - internal objects, that are needed for the functionality of the system.
+  - user objects, that are created by public API by the user or user's actor
+- The system uses single storage space for:
+  - for internal system objects
+  - for internal user objects
+  - for user data
+- No internal objects can be accessed by the API.
+
+## Internal objects
+### Storage metadata
+- The system has one internal key-value store called `__STORAGES__` to track all the storages and their metadata:
+  - `key` is the id of the storage
+  - `value` is the metadata of the storage
+    - owner (`userId`)
+    - statistics
+- The system stores users in dedicated key-value store called `__USERS__`:
+  - `key` is the `userId`
+  - `value` is the metadata of the user
+    - name
+    - token
+- The system stores Actors in dedicated key-value store called `__ACTORS__`:
+  - `key` is the id of the Actor `actorId`
+  - `value` is the metadata of the Actor
+    - owner (`userId`)
+    - metadata
+- The system stores Actor runs in dedicated key-value store called `__RUNS__`:
+  - `key` is the id of the Actor run `runId`
+  - `value` is the metadata of the Actor
+    - owner (`userId`)
+    - Actor (`actorId`)
+    - metadata
+- The system stores Actor builds in dedicated key-value store called `__BUILDS__`:
+  - `key` is the id of the Actor build (`buildId`)
+  - `value` is the metadata of the Actor
+    - owner (`userId`)
+    - Actor (`actorId`)
+    - metadata
+- The system stores logs in dedicated key-value store called `__LOGS__`:
+  - `key` is the id of the Actor build (`logId`)
+  - `value` is the metadata of the Actor
+    - owner (`userId`)
+    - RunOrBuild (`buildId` or `runId`)
+    - metadata
+- The system stores all needed files in dedicated key-value store called `__FILES__`:
+  - `key` is the id of the file (`fileId`)
+  - `value` is the file
+  - This key-value store is a flexible collection that can be referred by other internal object that needs to contain a file
+
+### Users
+- User can be created only by the system.
+- There is only one default user. (In the POC)
+- The user data that can be accessed by the API is a restricted view only over the objects belonging to the user.
+  - The system filters all API responses to only contain user owned resources.
+
