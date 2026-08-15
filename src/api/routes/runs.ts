@@ -1,0 +1,64 @@
+import type { Router } from 'express';
+
+import { requireUser } from '../auth.js';
+
+import { paginate, sendData, sortByTimestamp } from '../envelope.js';
+import { cannotRemoveRunningRun, recordNotFound } from '../errors.js';
+import { h, paginationParams } from '../handler.js';
+import { abortRun, deleteRun, getOwnedRun, listOwnedRuns } from '../../services/runs.js';
+import { isTerminalJobStatus } from '../../services/job-status.js';
+import { runDto } from '../dto/actors.js';
+import type { ApiServerDeps } from '../server.js';
+import { serveLog } from './logs.js';
+
+export function mountRuns(router: Router, deps: ApiServerDeps): void {
+	router.get(
+		'/actor-runs',
+		h(async (req, res) => {
+			const runs = await listOwnedRuns(requireUser(req).id);
+			const sorted = sortByTimestamp(runs, (run) => run.startedAt);
+			const envelope = paginate(sorted, paginationParams(req));
+			sendData(res, { ...envelope, items: envelope.items.map(runDto) });
+		}),
+	);
+
+	router.get(
+		'/actor-runs/:runId',
+		h(async (req, res) => {
+			const run = await getOwnedRun(requireUser(req).id, req.params.runId as string);
+			if (!run) throw recordNotFound();
+			sendData(res, runDto(run));
+		}),
+	);
+
+	router.delete(
+		'/actor-runs/:runId',
+		h(async (req, res) => {
+			const run = await getOwnedRun(requireUser(req).id, req.params.runId as string);
+			if (!run) throw recordNotFound();
+			// Matches the real platform: deleting a still-running run is rejected, not
+			// aborted-then-deleted - see `cannotRemoveRunningRun`'s doc comment for the apify-core
+			// evidence. Rejecting here (rather than deleting the record first) is also what prevents an
+			// orphaned Docker container from ever losing its one remaining stop path
+			// (`POST /actor-runs/:runId/abort`, which needs the record to still resolve).
+			if (!isTerminalJobStatus(run.status)) throw cannotRemoveRunningRun();
+			await deleteRun(run.id);
+			res.status(204).end();
+		}),
+	);
+
+	router.post(
+		'/actor-runs/:runId/abort',
+		h(async (req, res) => {
+			const run = await getOwnedRun(requireUser(req).id, req.params.runId as string);
+			if (!run) throw recordNotFound();
+			const updated = await abortRun(deps.driver, run);
+			sendData(res, runDto(updated ?? run));
+		}),
+	);
+
+	router.get(
+		'/actor-runs/:runId/log',
+		h(async (req, res) => serveLog(req, res, req.params.runId as string)),
+	);
+}

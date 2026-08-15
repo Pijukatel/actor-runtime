@@ -1,0 +1,15 @@
+{
+	"title": "Sample actor input",
+	"type": "object",
+	"schemaVersion": 1,
+	"properties": {
+		"maxPages": {
+			"title": "Max pages",
+			"type": "integer",
+			"description": "How many linked pages to crawl from the in-container test server.",
+			"default": 2,
+			"minimum": 1
+		}
+	},
+	"required": []
+}

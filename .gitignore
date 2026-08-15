@@ -7,6 +7,19 @@
 /data/
 ca-bundle.crt
 
+# Durable run-pipeline data directory - never a project artifact.
+.shepherd/
+
+# Node / TypeScript
+node_modules/
+dist/
+*.tsbuildinfo
+sample_actor_ts/node_modules/
+sample_actor_ts/dist/
+sample_actor_py/__pycache__/
+sample_actor_py/.venv/
+.npm/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
