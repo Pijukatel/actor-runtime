@@ -9,6 +9,14 @@
   replace the mandatory e2e test below; they exist because Docker is not available in every
   environment this runtime is developed/tested in, and the CLI-only e2e test is Docker-dependent.
 
+# Continuous integration
+
+- All test layers run in GitHub Actions (`.github/workflows/ci.yml`) on every pull request and on
+  pushes to the main branches: one job runs build, lint, format check, and the unit + integration
+  suites; a second job runs the mandatory CLI-only e2e suite below against the runner's Docker
+  daemon (GitHub-hosted Ubuntu runners ship one), so the e2e's Docker-skip path never silently
+  hides it in CI.
+
 # Mandatory end-to-end tests
 
 - All end-to-end tests can use only Apify cli commands to emulate user workflow.
