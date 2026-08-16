@@ -37,3 +37,9 @@ jobs:
             # Actor base images, builds the runtime image, starts the runtime container with
             # the host Docker socket, and drives it with stock apify-cli via npx.
             - run: npm run test:e2e
+            # The e2e's runtime container is normally removed by the suite's afterAll; on
+            # failure it is left running, so its server-side view of any failed request
+            # (log-stream lifecycle included) is captured here for diagnosis.
+            - name: Dump runtime container logs on failure
+              if: failure()
+              run: docker logs actor-runtime-e2e --tail 300 || true
