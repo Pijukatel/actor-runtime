@@ -36,10 +36,16 @@ export async function deleteBuild(id: string): Promise<void> {
 	await getRegistries().builds.delete(id);
 }
 
+/** Build numbers count from 1, never 0: the real platform's build-number pattern
+ * (`^([0-9]|[1-9][0-9])\.([0-9]|[1-9][0-9])(\.[1-9][0-9]{0,4})$`, matched exactly by `apify-client`'s
+ * `Build`/`Run` pydantic models) requires the third component to be 1-99999 with no leading zero - a
+ * `.0` build number is not just unconventional, it fails validation for any client that enforces this
+ * pattern (confirmed against the real `apify-client` Python package: `RunResponse.model_validate` rejects
+ * `buildNumber: '0.0.0'`). */
 async function nextBuildNumber(actorId: string, versionNumber: string): Promise<string> {
 	const existing = await getRegistries().builds.list();
 	const count = existing.filter((b) => b.actorId === actorId && b.versionNumber === versionNumber).length;
-	return `${versionNumber}.${count}`;
+	return `${versionNumber}.${count + 1}`;
 }
 
 export interface StartBuildOptions {
@@ -156,6 +162,11 @@ export async function runBuildInBackground(
 			},
 			(chunk) => appendLog(record.id, chunk),
 		);
+		// Flush before writing the terminal status, not after (mirrors the same fix in
+		// `services/runs.ts`'s `runInBackground`): by the time `driver.startBuild` resolves every `onLog`
+		// call has already happened, so flushing here guarantees the persisted log is complete before a
+		// client that just observed the terminal status can possibly read it.
+		await flushLog(record.id);
 		// Guarded: if an abort raced ahead and already moved the record to ABORTING/ABORTED, this write
 		// is refused (`RUNNING` is the only status `SUCCEEDED` is a legal next-state from) rather than
 		// clobbering the abort - see `job-status.ts`.
@@ -176,6 +187,7 @@ export async function runBuildInBackground(
 		}
 	} catch (error) {
 		const status: JobStatus = error instanceof DriverTimedOutError ? 'TIMED-OUT' : 'FAILED';
+		await flushLog(record.id);
 		// Same guard: an aborted build's driver call also rejects (the destroyed HTTP request surfaces
 		// as an error here too), but by the time that rejection is caught, `abortBuild` below has almost
 		// certainly already moved the record to ABORTED - and even in the pathological ordering where it
@@ -186,7 +198,6 @@ export async function runBuildInBackground(
 			statusMessage: (error as Error).message,
 		});
 	} finally {
-		await flushLog(record.id);
 		markLogTerminal(record.id);
 	}
 }

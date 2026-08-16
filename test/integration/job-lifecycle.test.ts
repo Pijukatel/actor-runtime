@@ -180,7 +180,7 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			// Seed a previously-good tagged build so we can assert it survives the aborted build's late
 			// "success" untouched - this is the exact clobbering scenario the tag-recording guard fixes.
 			await updateActor(actor.id, (current) =>
-				recordTaggedBuild(current, 'latest', 'previous-build-id', '0.0.0'),
+				recordTaggedBuild(current, 'latest', 'previous-build-id', '0.0.1'),
 			);
 
 			const record: BuildRecord = {
@@ -216,7 +216,7 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			// The aborted build's late "success" must not overwrite the actor's taggedBuilds entry - only
 			// a write that actually landed as SUCCEEDED is allowed to record itself against the tag.
 			const finalActor = await getRegistries().actors.get(actor.id);
-			expect(finalActor?.taggedBuilds.latest).toEqual({ buildId: 'previous-build-id', buildNumber: '0.0.0' });
+			expect(finalActor?.taggedBuilds.latest).toEqual({ buildId: 'previous-build-id', buildNumber: '0.0.1' });
 		});
 
 		it('a normal (non-aborted) successful build does record itself against the tag', async () => {

@@ -287,6 +287,7 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 				input,
 				memoryMbytes: queryNumber(req, 'memory'),
 				timeoutSecs: queryNumber(req, 'timeout'),
+				build: tag,
 				proxyPassword: process.env.APIFY_PROXY_PASSWORD,
 				apiBaseUrl: CONTAINER_API_BASE_URL,
 				token: requireUser(req).token,

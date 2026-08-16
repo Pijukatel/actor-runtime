@@ -1,5 +1,12 @@
 import type { ActorRecord, BuildRecord, RunRecord } from '../../storage/entities.js';
 
+/** Matches `services/runs.ts`'s `DEFAULT_BUILD_TAG` - backfilled here only for run records that predate
+ * `options.build` (directly-seeded test fixtures); every real run always has it set already. */
+const DEFAULT_RUN_BUILD_TAG = 'latest';
+/** Matches `services/runs.ts`'s `DISK_MBYTES_PER_MEMORY_MBYTE` - backfilled here only for run records
+ * that predate `options.diskMbytes`; every real run always has it set already. */
+const DISK_MBYTES_PER_MEMORY_MBYTE = 2;
+
 export function actorDto(actor: ActorRecord, username: string) {
 	return {
 		id: actor.id,
@@ -58,7 +65,17 @@ export function runDto(run: RunRecord) {
 		defaultDatasetId: run.defaultDatasetId,
 		defaultKeyValueStoreId: run.defaultKeyValueStoreId,
 		defaultRequestQueueId: run.defaultRequestQueueId,
-		options: run.options,
+		// `build`/`diskMbytes` and top-level `generalAccess` are required by the real Apify API contract
+		// (`apify-client`'s `RunOptions`/`Run` pydantic models have no default for any of the three) -
+		// every real run already has them (`services/runs.ts`'s `startRun`); the fallbacks here only cover
+		// directly-seeded test fixtures that predate these fields.
+		options: {
+			build: run.options.build ?? DEFAULT_RUN_BUILD_TAG,
+			memoryMbytes: run.options.memoryMbytes,
+			timeoutSecs: run.options.timeoutSecs,
+			diskMbytes: run.options.diskMbytes ?? run.options.memoryMbytes * DISK_MBYTES_PER_MEMORY_MBYTE,
+		},
+		generalAccess: run.generalAccess ?? 'FOLLOW_USER_SETTING',
 		meta: run.meta,
 		stats: {},
 		statusMessage: run.statusMessage,

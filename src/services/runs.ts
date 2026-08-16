@@ -10,6 +10,13 @@ import { findVersion } from './actors.js';
 
 const DEFAULT_MEMORY_MBYTES = 1024;
 const DEFAULT_TIMEOUT_SECS = 300;
+const DEFAULT_BUILD_TAG = 'latest';
+/** No separate platform disk-default constant exists to match exactly (`apify-core` has no
+ * `ACTOR_DEFAULT_DISK_MBYTES`-shaped constant alongside `ACTOR_DEFAULT_MEMORY_MBYTES`); this mirrors the
+ * 2x ratio `apify-core`'s own OpenAPI examples use for the pair (`packages/consts/src/actors.ts`'s run
+ * schema: `memoryMbytes: 1024` example paired with `diskMbytes: 2048`), also the exact ratio in
+ * `apify-client`'s `RunOptions` pydantic model examples. */
+const DISK_MBYTES_PER_MEMORY_MBYTE = 2;
 
 export async function listOwnedRuns(userId: string, actorId?: string): Promise<RunRecord[]> {
 	const all = await getRegistries().runs.list();
@@ -32,6 +39,11 @@ export interface StartRunOptions {
 	input?: { body: Buffer; contentType: string };
 	memoryMbytes?: number;
 	timeoutSecs?: number;
+	/** Build tag or build number this run should use (the real platform's `options.build`) - defaults to
+	 * `'latest'` when omitted, matching `DEFAULT_TAG` in `api/routes/actors.ts` (the route always resolves
+	 * and passes the actual tag it used; this default only matters for direct service-layer callers, e.g.
+	 * tests). */
+	build?: string;
 	proxyPassword?: string;
 	apiBaseUrl: string;
 	token: string;
@@ -91,6 +103,7 @@ export async function startRun(
 		await store.setValue('INPUT', options.input.body, { contentType: options.input.contentType });
 	}
 
+	const memoryMbytes = options.memoryMbytes ?? DEFAULT_MEMORY_MBYTES;
 	const record: RunRecord = {
 		id: generateId(),
 		userId: actor.userId,
@@ -103,10 +116,16 @@ export async function startRun(
 		defaultKeyValueStoreId: keyValueStore.id,
 		defaultRequestQueueId: requestQueue.id,
 		options: {
-			memoryMbytes: options.memoryMbytes ?? DEFAULT_MEMORY_MBYTES,
+			build: options.build ?? DEFAULT_BUILD_TAG,
+			memoryMbytes,
 			timeoutSecs: options.timeoutSecs ?? DEFAULT_TIMEOUT_SECS,
+			diskMbytes: memoryMbytes * DISK_MBYTES_PER_MEMORY_MBYTE,
 		},
 		meta: { origin: 'API' },
+		// The real platform's run-creation default (`RUN_GENERAL_ACCESS.FOLLOW_USER_SETTING`,
+		// `apify-core`'s `actor_jobs.server.ts`) - this runtime has no per-user "make runs public by
+		// default" setting to follow, so every run gets this fixed default.
+		generalAccess: 'FOLLOW_USER_SETTING',
 	};
 	await runs.set(record.id, record);
 
@@ -204,6 +223,14 @@ export async function runInBackground(
 			(chunk) => appendLog(record.id, chunk),
 		);
 		const status: JobStatus = outcome.timedOut ? 'TIMED-OUT' : outcome.exitCode === 0 ? 'SUCCEEDED' : 'FAILED';
+		// Flush before writing the terminal status, not after: `driver.startRun` resolving is the signal
+		// that every `onLog` call for this run has already happened (the Docker driver waits for its log
+		// capture stream to fully drain before resolving - see `docker-driver.ts`'s doc comment on
+		// `startRun`), so this flush is guaranteed to persist the run's complete output. Doing this before
+		// the status write (rather than in the `finally` below, after it) means a client that polls status,
+		// observes it turn terminal, and immediately does a non-stream `GET /v2/logs/:id` can never observe
+		// the persisted log lagging behind the status it just saw.
+		await flushLog(record.id);
 		// Guarded: `container.wait()` resolving is not proof the run wasn't aborted - `container.stop()`
 		// (from an in-flight `abortRun`) and the container exiting on its own race off the same
 		// underlying Docker event with no ordering guarantee. If `abortRun` already moved the record to
@@ -213,12 +240,12 @@ export async function runInBackground(
 			exitCode: outcome.exitCode,
 		});
 	} catch (error) {
+		await flushLog(record.id);
 		await transitionJobStatus(runs, record.id, 'FAILED', {
 			finishedAt: new Date().toISOString(),
 			statusMessage: (error as Error).message,
 		});
 	} finally {
-		await flushLog(record.id);
 		markLogTerminal(record.id);
 	}
 }

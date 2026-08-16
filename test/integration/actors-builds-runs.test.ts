@@ -108,6 +108,51 @@ describe('actors / versions / builds / runs (via real apify-client)', () => {
 		expect(list.items.some((b) => b.id === build.id)).toBe(true);
 	});
 
+	it('build numbers start at .1, never .0 (regression: apify-client Python model rejects a trailing .0 build number)', async () => {
+		const actor = await server.client.actors().create({ name: 'build-numbering-actor' });
+		const actorClient = server.client.actor(actor.id);
+		await actorClient.versions().create({
+			versionNumber: '0.0',
+			buildTag: 'latest',
+			sourceType: 'SOURCE_FILES' as never,
+			sourceFiles: [],
+		} as never);
+
+		const first = await actorClient.build('0.0', { waitForFinish: 5 });
+		expect(first.buildNumber).toBe('0.0.1');
+
+		const second = await actorClient.build('0.0', { waitForFinish: 5 });
+		expect(second.buildNumber).toBe('0.0.2');
+	});
+
+	it("a started run's options include the resolved build tag and diskMbytes, and a default generalAccess (regression: apify-client Python `Run`/`RunOptions` models require all three)", async () => {
+		const actor = await server.client.actors().create({ name: 'run-options-actor' });
+		const { builds } = getRegistries();
+		const fakeBuildId = 'fakeBuildId12345o';
+		await builds.set(fakeBuildId, {
+			id: fakeBuildId,
+			userId: actor.userId,
+			actorId: actor.id,
+			versionNumber: '0.0',
+			buildNumber: '0.0.1',
+			tag: 'latest',
+			status: 'SUCCEEDED',
+			startedAt: new Date().toISOString(),
+			finishedAt: new Date().toISOString(),
+			imageId: 'fake-image:latest',
+		});
+		await updateActor(actor.id, (current) => recordTaggedBuild(current, 'latest', fakeBuildId, '0.0.1'));
+
+		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(run.options).toEqual({
+			build: 'latest',
+			memoryMbytes: 1024,
+			timeoutSecs: 300,
+			diskMbytes: 2048,
+		});
+		expect(run.generalAccess).toBe('FOLLOW_USER_SETTING');
+	});
+
 	it('starting a run against an Actor with no tagged build 404s', async () => {
 		const actor = await server.client.actors().create({ name: 'no-build-actor' });
 		await expect(server.client.actor(actor.id).start({})).rejects.toMatchObject({ statusCode: 404 });
@@ -420,7 +465,7 @@ describe('actors / versions / builds / runs (via real apify-client)', () => {
 			userId: actor.userId,
 			actorId: actor.id,
 			versionNumber: '0.0',
-			buildNumber: `0.0.${i}`,
+			buildNumber: `0.0.${i + 1}`,
 			tag: 'latest',
 			status: 'SUCCEEDED' as const,
 			startedAt: new Date(2024, 0, i + 1).toISOString(),

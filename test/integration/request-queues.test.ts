@@ -22,6 +22,15 @@ describe('request-queues API (via real apify-client, both client dialects)', () 
 		expect(items).toHaveLength(1);
 	});
 
+	it('the GET response includes consoleUrl (regression: apify-client Python `RequestQueue` model requires it)', async () => {
+		const { id } = await server.client.requestQueues().getOrCreate();
+		const res = await fetch(`${server.baseUrl}/v2/request-queues/${id}`, {
+			headers: { Authorization: `Bearer ${server.token}` },
+		});
+		const body = (await res.json()) as { data: { consoleUrl?: string } };
+		expect(body.data.consoleUrl).toContain(id);
+	});
+
 	it('getOrCreate is idempotent by name - two calls with the same name yield the same queue', async () => {
 		const first = await server.client.requestQueues().getOrCreate('same-name');
 		const second = await server.client.requestQueues().getOrCreate('same-name');

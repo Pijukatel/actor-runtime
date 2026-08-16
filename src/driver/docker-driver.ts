@@ -220,6 +220,21 @@ export class DockerDriver implements Driver {
 		stderr.on('data', (chunk: Buffer) => onLog(chunk.toString('utf8')));
 		this.docker.modem.demuxStream(logStream as NodeJS.ReadableStream, stdout, stderr);
 
+		// `container.logs({follow:true})` is a separate Docker API connection from `container.wait()` -
+		// the two settle independently, with no ordering guarantee between "the container process exited"
+		// and "every byte of its stdout/stderr has actually arrived over the logs connection". Without
+		// this, `startRun` could resolve (and its caller could write a terminal run status) before the
+		// run's trailing log output had even reached `onLog` yet, which is exactly the finding this fixes:
+		// a client that polls status, sees it turn terminal, and immediately does a non-stream
+		// `GET /v2/logs/:id` could read the log before its final chunk landed. Waiting for both `stdout`
+		// and `stderr` to end - which Docker closes once the container's output stream is fully delivered
+		// - before this method resolves guarantees every `onLog` call this run will ever make has already
+		// happened by the time the caller acts on the outcome.
+		const logsDrained = Promise.all([
+			new Promise<void>((resolve) => stdout.once('end', resolve)),
+			new Promise<void>((resolve) => stderr.once('end', resolve)),
+		]);
+
 		const timeout = setTimeout(() => {
 			this.timedOutRuns.add(ctx.runId);
 			void container.stop().catch(() => undefined);
@@ -231,6 +246,7 @@ export class DockerDriver implements Driver {
 			// stopped by our own timeout timer - the timer having fired is the only signal that
 			// distinguishes the two, hence tracking it out-of-band instead of trusting the exit code.
 			const timedOut = this.timedOutRuns.delete(ctx.runId);
+			await logsDrained;
 			return { exitCode: result.StatusCode, timedOut };
 		} finally {
 			clearTimeout(timeout);

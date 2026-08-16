@@ -1,3 +1,5 @@
+import { PassThrough } from 'node:stream';
+
 import { describe, expect, it, vi } from 'vitest';
 import type Docker from 'dockerode';
 
@@ -90,5 +92,106 @@ describe('DockerDriver.reconcileOrphans', () => {
 		await driver.reconcileOrphans([]);
 
 		expect(listContainers).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * A stub `dockerode`-shaped object covering only what `startRun` calls, with `container.wait()` and the
+ * `container.logs()` stream each independently controllable - mirrors the real Docker daemon's two
+ * genuinely separate API connections (the finding this fixes: nothing guarantees the log stream's final
+ * chunk has arrived by the time `container.wait()` resolves).
+ */
+function stubDockerForRun() {
+	let resolveWait!: (result: { StatusCode: number }) => void;
+	const waitPromise = new Promise<{ StatusCode: number }>((resolve) => {
+		resolveWait = resolve;
+	});
+
+	// The raw (not-yet-demuxed) combined stdout/stderr stream `container.logs()` would return - a
+	// separate Docker API connection from `container.wait()` above.
+	const rawLogStream = new PassThrough();
+
+	const container = {
+		start: vi.fn(async () => undefined),
+		logs: vi.fn(async () => rawLogStream),
+		wait: vi.fn(async () => waitPromise),
+		remove: vi.fn(async () => undefined),
+		stop: vi.fn(async () => undefined),
+	};
+
+	// Real dockerode demuxing splits stdout/stderr apart by frame header; this stub doesn't need that
+	// distinction - it only needs to forward data/end so `DockerDriver.startRun` can observe "the log
+	// stream is fully drained" exactly like it would against a real daemon.
+	const demuxStream = vi.fn((stream: NodeJS.ReadableStream, stdout: PassThrough, stderr: PassThrough) => {
+		stream.on('data', (chunk: Buffer) => stdout.write(chunk));
+		stream.on('end', () => {
+			stdout.end();
+			stderr.end();
+		});
+	});
+
+	const docker = {
+		createContainer: vi.fn(async () => container),
+		modem: { demuxStream },
+	} as unknown as Docker;
+
+	return {
+		docker,
+		container,
+		/** Simulates `container.wait()` resolving - the container process has exited. */
+		triggerContainerExit(statusCode = 0): void {
+			resolveWait({ StatusCode: statusCode });
+		},
+		/** Simulates a trailing chunk still arriving over the separate Docker logs connection. */
+		pushFinalLogChunk(chunk: string): void {
+			rawLogStream.write(chunk);
+		},
+		/** Simulates the logs connection closing - the real daemon does this once the container's full
+		 * output has been delivered. */
+		endLogStream(): void {
+			rawLogStream.end();
+		},
+	};
+}
+
+describe('DockerDriver.startRun - log stream drain ordering (regression: trailing log chunk race)', () => {
+	it("does not resolve until the container's log stream has fully drained, even after container.wait() has already resolved", async () => {
+		const stub = stubDockerForRun();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		const chunks: string[] = [];
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-1', imageId: 'fake-image', env: {}, memoryMbytes: 128, timeoutSecs: 60 },
+			(chunk) => chunks.push(chunk),
+		);
+
+		// Let `startRun` run past its setup `await`s, up to (and blocking on) `container.wait()`.
+		await new Promise((resolve) => setImmediate(resolve));
+
+		// The container process exits - `container.wait()` resolves - but the separate logs connection
+		// has not delivered its trailing chunk yet: exactly the real-world gap this fix closes.
+		stub.triggerContainerExit(0);
+
+		let settled = false;
+		void outcomePromise.then(() => {
+			settled = true;
+		});
+		// Give the microtask queue several turns to drain - if `startRun` only awaited `container.wait()`
+		// (the pre-fix behaviour), it would already have settled by now.
+		await new Promise((resolve) => setImmediate(resolve));
+		await new Promise((resolve) => setImmediate(resolve));
+
+		expect(settled).toBe(false);
+		expect(chunks.join('')).toBe('');
+
+		// The trailing chunk finally arrives over the logs connection, which then closes - only now does
+		// `onLog` see it, and only now should `startRun` be allowed to resolve.
+		stub.pushFinalLogChunk('final line\n');
+		stub.endLogStream();
+
+		const outcome = await outcomePromise;
+		expect(outcome).toEqual({ exitCode: 0, timedOut: false });
+		expect(chunks.join('')).toBe('final line\n');
 	});
 });
