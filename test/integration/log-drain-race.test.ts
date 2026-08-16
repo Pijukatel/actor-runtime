@@ -65,12 +65,13 @@ function stubDockerForRun() {
 		stop: vi.fn(async () => undefined),
 	};
 
-	const demuxStream = vi.fn((stream: NodeJS.ReadableStream, stdout: PassThrough, stderr: PassThrough) => {
+	// Faithful to the real `docker-modem` `Modem.prototype.demuxStream`
+	// (`node_modules/docker-modem/lib/modem.js`): it forwards data frames only and never ends `stdout`/
+	// `stderr` itself (only `streama.on('data', processData)` is registered on the source). Ending them is
+	// `DockerDriver.startRun`'s own responsibility, derived from the SOURCE stream's `'end'` - see
+	// `test/unit/docker-driver.test.ts`'s matching stub doc comment for the regression this guards against.
+	const demuxStream = vi.fn((stream: NodeJS.ReadableStream, stdout: PassThrough) => {
 		stream.on('data', (chunk: Buffer) => stdout.write(chunk));
-		stream.on('end', () => {
-			stdout.end();
-			stderr.end();
-		});
 	});
 
 	const docker = {

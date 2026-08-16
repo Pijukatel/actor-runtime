@@ -46,6 +46,23 @@ export function startRuntimeContainer(tag: string, containerName: string): void 
 }
 
 export function stopRuntimeContainer(containerName: string): void {
+	// Dump the runtime container's own logs before force-removing it - the workflow's "Dump runtime
+	// container logs on failure" step tries `docker logs <name>` too, but this `afterAll` runs first and
+	// already removes the container by the time that step gets to run, so it always finds "No such
+	// container" and the server-side view of a failed e2e request is lost. Printing here, into the same
+	// test stdout the failure shows up in, actually captures it; the workflow step stays as a harmless
+	// backstop for cases where the process is killed before `afterAll` runs at all.
+	try {
+		const logs = execFileSync('docker', ['logs', '--tail', '300', containerName], {
+			stdio: ['ignore', 'pipe', 'pipe'],
+		});
+		process.stdout.write(`\n--- ${containerName} container logs (last 300 lines) ---\n`);
+		process.stdout.write(logs);
+		process.stdout.write(`--- end ${containerName} container logs ---\n\n`);
+	} catch {
+		// best-effort: the container may already be gone (never started, already removed) - diagnostics
+		// only, never a reason to skip the cleanup below.
+	}
 	try {
 		execFileSync('docker', ['rm', '-f', containerName], { stdio: 'ignore' });
 	} catch {

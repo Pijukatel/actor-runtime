@@ -213,27 +213,45 @@ export class DockerDriver implements Driver {
 
 		await container.start();
 
-		const logStream = await container.logs({ follow: true, stdout: true, stderr: true });
+		const logStream = (await container.logs({
+			follow: true,
+			stdout: true,
+			stderr: true,
+		})) as NodeJS.ReadableStream;
 		const stdout = new PassThrough();
 		const stderr = new PassThrough();
 		stdout.on('data', (chunk: Buffer) => onLog(chunk.toString('utf8')));
 		stderr.on('data', (chunk: Buffer) => onLog(chunk.toString('utf8')));
-		this.docker.modem.demuxStream(logStream as NodeJS.ReadableStream, stdout, stderr);
+		this.docker.modem.demuxStream(logStream, stdout, stderr);
 
 		// `container.logs({follow:true})` is a separate Docker API connection from `container.wait()` -
 		// the two settle independently, with no ordering guarantee between "the container process exited"
 		// and "every byte of its stdout/stderr has actually arrived over the logs connection". Without
 		// this, `startRun` could resolve (and its caller could write a terminal run status) before the
-		// run's trailing log output had even reached `onLog` yet, which is exactly the finding this fixes:
-		// a client that polls status, sees it turn terminal, and immediately does a non-stream
-		// `GET /v2/logs/:id` could read the log before its final chunk landed. Waiting for both `stdout`
-		// and `stderr` to end - which Docker closes once the container's output stream is fully delivered
-		// - before this method resolves guarantees every `onLog` call this run will ever make has already
-		// happened by the time the caller acts on the outcome.
-		const logsDrained = Promise.all([
-			new Promise<void>((resolve) => stdout.once('end', resolve)),
-			new Promise<void>((resolve) => stderr.once('end', resolve)),
-		]);
+		// run's trailing log output had even reached `onLog` yet: a client that polls status, sees it turn
+		// terminal, and immediately does a non-stream `GET /v2/logs/:id` could read the log before its
+		// final chunk landed.
+		//
+		// "Logs drained" MUST be derived from `logStream` (the SOURCE multiplexed stream) ending, not from
+		// `stdout`/`stderr` (the demuxed destinations) ending - `docker-modem`'s `demuxStream` only ever
+		// copies frames: it registers exactly `streama.on('data', processData)` on the source
+		// (`node_modules/docker-modem/lib/modem.js`, `Modem.prototype.demuxStream`) and never calls
+		// `.end()`/`.destroy()` on `stdout`/`stderr` itself. Awaiting the destinations' own `'end'` (the
+		// previous fix) therefore never resolves against a real daemon, which never ends them on its own -
+		// the run stayed RUNNING until its `timeoutSecs` finalized it as TIMED-OUT, exactly the CI
+		// regression this closes. So this driver ends them itself, once the source stream ends.
+		let sourceEnded = false;
+		const sourceEndedPromise = new Promise<void>((resolve) => {
+			const finish = (): void => {
+				if (sourceEnded) return;
+				sourceEnded = true;
+				stdout.end();
+				stderr.end();
+				resolve();
+			};
+			logStream.once('end', finish);
+			logStream.once('close', finish);
+		});
 
 		const timeout = setTimeout(() => {
 			this.timedOutRuns.add(ctx.runId);
@@ -246,7 +264,25 @@ export class DockerDriver implements Driver {
 			// stopped by our own timeout timer - the timer having fired is the only signal that
 			// distinguishes the two, hence tracking it out-of-band instead of trusting the exit code.
 			const timedOut = this.timedOutRuns.delete(ctx.runId);
-			await logsDrained;
+
+			// Bounded grace, counted from the container's actual exit: the logs connection *should* close
+			// very soon after, but a source stream that never ends (a daemon quirk, a hung proxy - the
+			// pathological case this grace guards against) must never again hold the run open past the
+			// container's real exit the way awaiting `stdout`/`stderr` directly used to. Race the
+			// source-end wait against a few seconds; if it expires, log a warning and finalize anyway -
+			// `stdout`/`stderr` are left open so any bytes that do eventually arrive still reach `onLog`,
+			// they just no longer block this method from resolving.
+			const LOG_DRAIN_GRACE_MS = 5000;
+			await Promise.race([
+				sourceEndedPromise,
+				new Promise<void>((resolve) => setTimeout(resolve, LOG_DRAIN_GRACE_MS)),
+			]);
+			if (!sourceEnded) {
+				console.warn(
+					`Run ${ctx.runId}: log stream did not end within ${LOG_DRAIN_GRACE_MS}ms of the container exiting; finalizing the run without waiting further.`,
+				);
+			}
+
 			return { exitCode: result.StatusCode, timedOut };
 		} finally {
 			clearTimeout(timeout);

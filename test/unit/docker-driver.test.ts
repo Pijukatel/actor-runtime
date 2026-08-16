@@ -120,14 +120,15 @@ function stubDockerForRun() {
 	};
 
 	// Real dockerode demuxing splits stdout/stderr apart by frame header; this stub doesn't need that
-	// distinction - it only needs to forward data/end so `DockerDriver.startRun` can observe "the log
-	// stream is fully drained" exactly like it would against a real daemon.
-	const demuxStream = vi.fn((stream: NodeJS.ReadableStream, stdout: PassThrough, stderr: PassThrough) => {
+	// distinction, it only needs to forward data. Crucially - faithful to the real
+	// `docker-modem` `Modem.prototype.demuxStream` (`node_modules/docker-modem/lib/modem.js`) - it must
+	// NOT end `stdout`/`stderr` when the source stream ends: the real implementation registers only
+	// `streama.on('data', processData)` and never calls `.end()`/`.destroy()` on either destination.
+	// `stdout`/`stderr` ending is entirely `DockerDriver.startRun`'s own responsibility (it derives that
+	// from the SOURCE stream, i.e. `stream` here, ending) - a demux stub that auto-ends the destinations
+	// (as this one previously did) hides exactly the bug that shipped in production.
+	const demuxStream = vi.fn((stream: NodeJS.ReadableStream, stdout: PassThrough) => {
 		stream.on('data', (chunk: Buffer) => stdout.write(chunk));
-		stream.on('end', () => {
-			stdout.end();
-			stderr.end();
-		});
 	});
 
 	const docker = {
@@ -193,5 +194,47 @@ describe('DockerDriver.startRun - log stream drain ordering (regression: trailin
 		const outcome = await outcomePromise;
 		expect(outcome).toEqual({ exitCode: 0, timedOut: false });
 		expect(chunks.join('')).toBe('final line\n');
+	});
+});
+
+describe('DockerDriver.startRun - faithful demuxStream stub (regression: dockerode never ends the demuxed destinations)', () => {
+	it('finalizes the run as SUCCEEDED promptly once the SOURCE log stream ends, even though demuxStream never calls .end() on stdout/stderr itself', async () => {
+		// This is the real dockerode behaviour, verified against `node_modules/docker-modem/lib/modem.js`'s
+		// `Modem.prototype.demuxStream`: it registers only `streama.on('data', processData)` on the source
+		// stream and never ends the `stdout`/`stderr` destinations it copies into. `stubDockerForRun`'s
+		// `demuxStream` mirrors that exactly (see its doc comment) - unlike the version of this stub that
+		// shipped alongside the regression, which auto-ended the destinations on the source's 'end' and so
+		// never exercised the real gap. Before the fix, `DockerDriver.startRun` awaited `stdout`/`stderr`'s
+		// own 'end' directly, which this faithful stub never fires - so against this stub the pre-fix code
+		// hangs until the driver's `timeoutSecs` timer stops the container (here, 60s), not resolving
+		// "promptly" the way this test requires.
+		const stub = stubDockerForRun();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		const chunks: string[] = [];
+		const startedAt = Date.now();
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-3', imageId: 'fake-image', env: {}, memoryMbytes: 128, timeoutSecs: 60 },
+			(chunk) => chunks.push(chunk),
+		);
+
+		await new Promise((resolve) => setImmediate(resolve));
+
+		stub.pushFinalLogChunk('hello from the container\n');
+		// The container process exits...
+		stub.triggerContainerExit(0);
+		// ...and its SOURCE logs connection closes right after, exactly like a real daemon. `demuxStream`
+		// itself never ends `stdout`/`stderr` - only `DockerDriver.startRun` deriving "drained" from this
+		// source-stream end (the fix) makes that irrelevant.
+		stub.endLogStream();
+
+		const outcome = await outcomePromise;
+		const elapsedMs = Date.now() - startedAt;
+
+		expect(outcome).toEqual({ exitCode: 0, timedOut: false });
+		expect(chunks.join('')).toBe('hello from the container\n');
+		// Sub-second, not "eventually, after the 60s timeoutSecs timer fires" - the pre-fix failure mode.
+		expect(elapsedMs).toBeLessThan(1000);
 	});
 });
