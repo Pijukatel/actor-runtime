@@ -28,9 +28,8 @@
 
 ## Request queues
 
-- Request queues are served entirely from the `RequestQueue` frontend - **no re-implementation of
-  request storage on top of a key-value store or anything else.** The runtime adds only two thin,
-  runtime-side layers on top of the frontend:
+- Request queues are served entirely from the `RequestQueue` frontend.
+- The runtime adds only two thin, runtime-side layers on top of the frontend:
     1. A small **head buffer** per open queue, holding requests pulled out with `fetchNextRequest()` in
        one of two states: _staged_ (so a non-consuming `GET /head` peek can be answered without
        reordering the queue) or _handed out_ (returned by `POST /head/lock`, until marked handled,

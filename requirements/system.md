@@ -51,6 +51,9 @@
 - Optionally set `APIFY_PROXY_PASSWORD` in the runtime's own environment to have it forwarded into
   every Actor container (see `actor-driver.md`).
 
+# Implementation
+- The system is implemented in TypeScript.
+
 # Offline-after-first-build note
 
 - This note is scoped to the **runtime** itself (push/build/call/log-stream/storage-access/console) -

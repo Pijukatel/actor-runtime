@@ -28,9 +28,6 @@
 
 ## Supported commands (POC)
 
-- `apify login --token <anything>` - a one-time, out-of-band step (not part of the runtime's
-  quickstart flow) that authenticates against the runtime's single default user; any non-empty token
-  works (see "User bootstrap" above). Interactive login flows are out of scope.
 - `apify push` - creates the Actor and Actor version from local source and triggers
   a build.
 - `apify call` - starts a run against the built Actor, streams its log, waits for it
@@ -42,6 +39,7 @@
 - `apify runs ls` - lists an Actor's runs
 - `apify datasets info <id>` - prints a dataset's metadata, including `itemCount`; used to inspect a
   run's default dataset after `apify call` finishes.
+- `apify api` - sends API requests
 
 ## Out of scope
 

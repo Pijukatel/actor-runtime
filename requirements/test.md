@@ -20,9 +20,9 @@
 # Mandatory end-to-end tests
 
 - All end-to-end tests can use only Apify cli commands to emulate user workflow.
-- For asserting the test results, the tests must in inspect the return values of the Apify cli commands.
+- For asserting the test results, the tests must inspect the return values of the Apify cli commands.
 - The e2e suite requires a reachable Docker daemon (it builds and runs real Actor containers) and
-  detects its absence, skipping cleanly with an explicit message rather than failing.
+  detects its absence, failing in such case.
 - The sample Actors crawl a live site (`https://crawlee.dev/` by default), so the e2e suite also
   requires outbound network access from Actor containers (GitHub-hosted runners have it). This is
   separate from the runtime's own offline capability (see `system.md`'s and `cli.md`'s offline notes),
