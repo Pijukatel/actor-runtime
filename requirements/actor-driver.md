@@ -9,7 +9,7 @@
   `__LOGS__` and fanned out live to any open `GET /v2/logs/:id?stream=true` response.
 - **Status state machine**: `READY -> RUNNING -> SUCCEEDED | FAILED | TIMED-OUT | ABORTED`, with
   `RUNNING -> ABORTING -> ABORTED` while a stop is in flight (`ABORTING`/`ABORTED` are also reachable
-  directly from `READY` - an abort issued before the build/run ever started). 
+  directly from `READY` - an abort issued before the build/run ever started).
 - `TIMED-OUT` applies to **both** builds and runs apply the same `TIMED_OUT`/`ABORTED` outcomes to both `ACTOR_JOB_TYPES.BUILD`
   and `.RUN` off a `runtime.timeoutAt`deadline.
 - a **run's** timeout is caller-configurable (`timeoutSecs` on `POST .../runs`, default **300s** if omitted)
@@ -17,7 +17,7 @@
 - Every write to a build/run's `status` field goes through one guarded transition helper
   (`services/job-status.ts`'s `transitionJobStatus`) that refuses to move a record out of a terminal
   status and only allows the edges drawn above - this is what makes `ABORTED` and `TIMED-OUT` reliable
-  in the face of a completion write racing an in-flight abort, rather than a convention every call site has to remember 
+  in the face of a completion write racing an in-flight abort, rather than a convention every call site has to remember
   to check for itself.
 - **Abort and timeout are race-proof.** Both `POST /actor-builds/:id/abort` and
   `POST /actor-runs/:id/abort` move the record to `ABORTING` _before_ asking the driver to interrupt

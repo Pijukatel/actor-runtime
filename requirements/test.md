@@ -14,8 +14,8 @@
 - All test layers run in GitHub Actions (`.github/workflows/ci.yml`) on every pull request and on
   pushes to the main branches: one job runs build, lint, format check, and the unit + integration
   suites; a second job runs the mandatory CLI-only e2e suite below against the runner's Docker
-  daemon (GitHub-hosted Ubuntu runners ship one), so the e2e's Docker-skip path never silently
-  hides it in CI.
+  daemon (GitHub-hosted Ubuntu runners ship one), so the e2e's Docker-unreachable check never
+  silently no-ops in CI - a missing daemon fails the job instead.
 
 # Mandatory end-to-end tests
 

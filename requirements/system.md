@@ -52,6 +52,7 @@
   every Actor container (see `actor-driver.md`).
 
 # Implementation
+
 - The system is implemented in TypeScript.
 
 # Offline-after-first-build note
