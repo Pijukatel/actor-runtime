@@ -214,7 +214,10 @@ export async function startTestServer(driver: Driver = unavailableDriver()): Pro
 			resetStorageForTests();
 			resetRegistriesForTests();
 			resetDefaultUserCacheForTests();
-			await rm(dataDir, { recursive: true, force: true });
+			// A background write (late log flush, run-record update) can land while the tree is
+			// being removed, recreating entries under an already-emptied directory — seen in CI as
+			// ENOTEMPTY. fs.rm retries exactly that class of error when maxRetries is set.
+			await rm(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 		},
 	};
 }
