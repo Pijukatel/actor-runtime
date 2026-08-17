@@ -8,6 +8,7 @@ request queue, and pushes one dataset item per page.
 from __future__ import annotations
 
 from apify import Actor
+from crawlee import ConcurrencySettings
 from crawlee.crawlers import ParselCrawler, ParselCrawlingContext
 
 
@@ -21,7 +22,13 @@ async def main() -> None:
         # Crawling through the Actor's default request queue exercises the runtime's
         # request-queue endpoints end to end via the Python SDK's non-locking dialect:
         # batch_add_requests, list_head, get_request, update_request.
-        crawler = ParselCrawler(max_requests_per_crawl=max_pages)
+        # Sequential crawling makes the item count deterministic: with concurrency > 1 the
+        # autoscaled pool starts extra requests before the max_requests_per_crawl stop lands,
+        # and in-progress requests are allowed to finish (overshooting maxPages).
+        crawler = ParselCrawler(
+            max_requests_per_crawl=max_pages,
+            concurrency_settings=ConcurrencySettings(min_concurrency=1, desired_concurrency=1, max_concurrency=1),
+        )
 
         @crawler.router.default_handler
         async def request_handler(context: ParselCrawlingContext) -> None:

@@ -25,6 +25,9 @@ await requestQueue.addRequest({ url: startUrl });
 const crawler = new CheerioCrawler({
 	requestQueue,
 	maxRequestsPerCrawl: maxPages,
+	// Sequential crawling keeps the dataset item count exactly equal to maxPages - with higher
+	// concurrency, requests already in flight when the limit is reached still finish and overshoot.
+	maxConcurrency: 1,
 	async requestHandler({ request, $, enqueueLinks }) {
 		log.info(`Processing ${request.url}`);
 		await enqueueLinks();
