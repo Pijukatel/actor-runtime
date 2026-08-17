@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 /**
  * Invokes the stock, unmodified `apify-cli` from npm (v1.8.0 or newer, per `cli.md`) via `npx`, so the
@@ -10,6 +10,23 @@ export function apify(args: string[], options: { cwd: string; env: NodeJS.Proces
 		env: options.env,
 		encoding: 'utf8',
 	});
+}
+
+/**
+ * Like `apify()`, but returns stdout AND stderr combined. The CLI writes human-readable output —
+ * including the log content of `apify runs log` (see `outputJobLog`'s `process.stderr.write`) — to
+ * stderr, keeping stdout for machine-readable payloads, so log-content assertions must read stderr.
+ */
+export function apifyAllOutput(args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }): string {
+	const result = spawnSync('npx', ['-y', '-p', 'apify-cli', 'apify', ...args], {
+		cwd: options.cwd,
+		env: options.env,
+		encoding: 'utf8',
+	});
+	if (result.status !== 0) {
+		throw new Error(`apify ${args.join(' ')} exited with ${result.status}:\n${result.stderr}`);
+	}
+	return `${result.stdout}\n${result.stderr}`;
 }
 
 export function apifyEnv(): NodeJS.ProcessEnv {

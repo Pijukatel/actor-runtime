@@ -15,7 +15,14 @@ import {
 	stopRuntimeContainer,
 	waitForHttpOk,
 } from './helpers/docker.js';
-import { apify, apifyEnv, type CallResult, type DatasetInfoResult, type PushResult } from './helpers/apify-cli.js';
+import {
+	apify,
+	apifyAllOutput,
+	apifyEnv,
+	type CallResult,
+	type DatasetInfoResult,
+	type PushResult,
+} from './helpers/apify-cli.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
@@ -87,7 +94,7 @@ describe.skipIf(!dockerAvailable)('full Actor dev loop via apify-cli (requires D
 		});
 		const call = JSON.parse(callOutput) as CallResult;
 
-		const log = apify(['runs', 'log', call.run.id], { cwd: REPO_ROOT, env }).toString();
+		const log = apifyAllOutput(['runs', 'log', call.run.id], { cwd: REPO_ROOT, env });
 		expect(log).toMatch(/Processing/);
 	});
 });
