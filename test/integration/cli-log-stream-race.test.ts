@@ -116,7 +116,11 @@ describe('CLI log-stream race: apify-cli outputJobLog must always settle (regres
 	let server: TestServerHandle;
 
 	afterEach(async () => {
-		await server.close();
+		// Guard, not just cleanup: every `it` above now closes its own server(s) via try/finally as it
+		// goes, so this only catches a server that somehow never got closed (e.g. an exception before the
+		// first `startTestServer()` call of a test ever assigns `server`). Without the guard, a still-
+		// unassigned `server` here would throw and mask whatever the test itself failed with.
+		if (server) await server.close();
 	});
 
 	it('a run that turns terminal at/around a waitForFinish=2 boundary never leaves the log stream promise unsettled', async () => {
@@ -127,40 +131,44 @@ describe('CLI log-stream race: apify-cli outputJobLog must always settle (regres
 
 		for (const offsetMs of offsetsMs) {
 			server = await startTestServer(timedDriver(offsetMs));
-			const actor = await seedActor(server, `race-actor-${offsetMs}`);
-			const build = await seedSucceededBuild(actor);
-			await updateActor(actor.id, (current) => recordTaggedBuild(current, 'latest', build.id, build.buildNumber));
+			try {
+				const actor = await seedActor(server, `race-actor-${offsetMs}`);
+				const build = await seedSucceededBuild(actor);
+				await updateActor(actor.id, (current) =>
+					recordTaggedBuild(current, 'latest', build.id, build.buildNumber),
+				);
 
-			// One ApifyClient instance for both calls, exactly like `runActorOrTaskOnCloud` - shares the
-			// keep-alive `httpAgent`, so the log-stream request can reuse the socket the `start` call (held
-			// open by `waitForFinish`) just released.
-			const client = new ApifyClient({ baseUrl: server.baseUrl, token: server.token, maxRetries: 0 });
+				// One ApifyClient instance for both calls, exactly like `runActorOrTaskOnCloud` - shares the
+				// keep-alive `httpAgent`, so the log-stream request can reuse the socket the `start` call (held
+				// open by `waitForFinish`) just released.
+				const client = new ApifyClient({ baseUrl: server.baseUrl, token: server.token, maxRetries: 0 });
 
-			const run = await client.actor(actor.id).start(undefined, { waitForFinish: 2 });
+				const run = await client.actor(actor.id).start(undefined, { waitForFinish: 2 });
 
-			let outcome: string;
-			if (run.status !== 'RUNNING') {
-				// Already terminal by the time `start` returned - `outputJobLog`'s non-stream branch, always safe.
-				const log = await client.log(run.id).get();
-				outcome = typeof log === 'string' ? 'finished' : 'no-logs';
-			} else {
-				const stream = await client.log(run.id).stream();
-				if (!stream) {
-					outcome = 'no-logs';
+				let outcome: string;
+				if (run.status !== 'RUNNING') {
+					// Already terminal by the time `start` returned - `outputJobLog`'s non-stream branch, always safe.
+					const log = await client.log(run.id).get();
+					outcome = typeof log === 'string' ? 'finished' : 'no-logs';
 				} else {
-					const settleOrTimeout = Promise.race([
-						outputJobLogLike(stream),
-						delay(5000).then(() => 'TIMED_OUT_UNSETTLED' as const),
-					]);
-					outcome = await settleOrTimeout;
+					const stream = await client.log(run.id).stream();
+					if (!stream) {
+						outcome = 'no-logs';
+					} else {
+						const settleOrTimeout = Promise.race([
+							outputJobLogLike(stream),
+							delay(5000).then(() => 'TIMED_OUT_UNSETTLED' as const),
+						]);
+						outcome = await settleOrTimeout;
+					}
 				}
-			}
 
-			if (outcome === 'TIMED_OUT_UNSETTLED') {
-				failures.push(`offset=${offsetMs}ms: outputJobLog-equivalent promise never settled within 5s`);
+				if (outcome === 'TIMED_OUT_UNSETTLED') {
+					failures.push(`offset=${offsetMs}ms: outputJobLog-equivalent promise never settled within 5s`);
+				}
+			} finally {
+				await server.close();
 			}
-
-			await server.close();
 		}
 
 		expect(failures).toEqual([]);
@@ -176,70 +184,96 @@ describe('CLI log-stream race: apify-cli outputJobLog must always settle (regres
 
 		for (const offsetMs of offsetsMs) {
 			server = await startTestServer();
-			const actor = await seedActor(server, `tight-race-actor-${offsetMs}`);
-			const build = await seedSucceededBuild(actor);
-			const record = bareRunRecord(actor, build);
-			await getRegistries().runs.set(record.id, record);
+			try {
+				const actor = await seedActor(server, `tight-race-actor-${offsetMs}`);
+				const build = await seedSucceededBuild(actor);
+				const record = bareRunRecord(actor, build);
+				await getRegistries().runs.set(record.id, record);
 
-			let resolveDriverRun!: (outcome: RunOutcome) => void;
-			const driver: Driver = {
-				available: true,
-				async init() {},
-				async startBuild() {
-					throw new Error('n/a');
-				},
-				async abortBuild() {},
-				async startRun(ctx, onLog) {
-					onLog('line 1\n');
-					return new Promise<RunOutcome>((resolve) => {
-						resolveDriverRun = (outcome) => {
-							onLog('Crawl finished.\n');
-							resolve(outcome);
-						};
-					});
-				},
-				async abortRun() {},
-				async reconcileOrphans() {},
-			};
+				// `resolveDriverRun` is assigned synchronously inside `startRun`, strictly before
+				// `signalStarted()` is called - so awaiting `started` below guarantees the assignment has
+				// already happened, regardless of how long `runInBackground`'s own setup (registry/version
+				// lookups, the RUNNING transition) takes to actually reach `driver.startRun` on a loaded CI
+				// runner. Without this, the `setTimeout` below races that setup: if `runInBackground` hasn't
+				// called `startRun` yet by the time the timer fires, `resolveDriverRun` is still unassigned
+				// and invoking it throws `TypeError: resolveDriverRun is not a function` from inside the
+				// timer callback - exactly the CI failure this guards against.
+				let resolveDriverRun!: (outcome: RunOutcome) => void;
+				let signalStarted!: () => void;
+				const started = new Promise<void>((resolve) => {
+					signalStarted = resolve;
+				});
+				const driver: Driver = {
+					available: true,
+					async init() {},
+					async startBuild() {
+						throw new Error('n/a');
+					},
+					async abortBuild() {},
+					async startRun(ctx, onLog) {
+						onLog('line 1\n');
+						const outcome = new Promise<RunOutcome>((resolve) => {
+							resolveDriverRun = (result) => {
+								onLog('Crawl finished.\n');
+								resolve(result);
+							};
+						});
+						signalStarted();
+						return outcome;
+					},
+					async abortRun() {},
+					async reconcileOrphans() {},
+				};
 
-			const bg = runInBackground(driver, actor, record, {
-				apiBaseUrl: server.baseUrl,
-				token: server.token,
-			});
+				const bg = runInBackground(driver, actor, record, {
+					apiBaseUrl: server.baseUrl,
+					token: server.token,
+				});
 
-			// Let the first appendLog land before opening the stream.
-			await delay(10);
+				// Wait for `resolveDriverRun` to actually be assigned before doing anything that might
+				// schedule a call to it, then let the first appendLog land before opening the stream.
+				await started;
+				await delay(10);
 
-			const openStream = async (): Promise<NodeJS.ReadableStream | undefined> =>
-				server.client.log(record.id).stream();
+				const openStream = async (): Promise<NodeJS.ReadableStream | undefined> =>
+					server.client.log(record.id).stream();
 
-			let stream: NodeJS.ReadableStream | undefined;
-			if (offsetMs <= 0) {
-				// Open the stream first, then finalize the run `-offsetMs` ms later.
-				stream = await openStream();
-				setTimeout(() => resolveDriverRun({ exitCode: 0, timedOut: false }), -offsetMs);
-			} else {
-				// Finalize first, then open the stream `offsetMs` ms later (job may already be terminal).
-				resolveDriverRun({ exitCode: 0, timedOut: false });
-				await delay(offsetMs);
-				stream = await openStream();
-			}
+				let stream: NodeJS.ReadableStream | undefined;
+				let driverTimer: NodeJS.Timeout | undefined;
+				try {
+					if (offsetMs <= 0) {
+						// Open the stream first, then finalize the run `-offsetMs` ms later.
+						stream = await openStream();
+						driverTimer = setTimeout(() => resolveDriverRun({ exitCode: 0, timedOut: false }), -offsetMs);
+					} else {
+						// Finalize first, then open the stream `offsetMs` ms later (job may already be terminal).
+						resolveDriverRun({ exitCode: 0, timedOut: false });
+						await delay(offsetMs);
+						stream = await openStream();
+					}
 
-			if (!stream) {
-				failures.push(`offset=${offsetMs}ms: log().stream() returned undefined`);
-			} else {
-				const settleOrTimeout = Promise.race([
-					outputJobLogLike(stream),
-					delay(5000).then(() => 'TIMED_OUT_UNSETTLED' as const),
-				]);
-				const outcome = await settleOrTimeout;
-				if (outcome === 'TIMED_OUT_UNSETTLED') {
-					failures.push(`offset=${offsetMs}ms: outputJobLog-equivalent promise never settled within 5s`);
+					if (!stream) {
+						failures.push(`offset=${offsetMs}ms: log().stream() returned undefined`);
+					} else {
+						const settleOrTimeout = Promise.race([
+							outputJobLogLike(stream),
+							delay(5000).then(() => 'TIMED_OUT_UNSETTLED' as const),
+						]);
+						const outcome = await settleOrTimeout;
+						if (outcome === 'TIMED_OUT_UNSETTLED') {
+							failures.push(
+								`offset=${offsetMs}ms: outputJobLog-equivalent promise never settled within 5s`,
+							);
+						}
+					}
+				} finally {
+					clearTimeout(driverTimer);
 				}
-			}
 
-			await bg;
-			await server.close();
+				await bg;
+			} finally {
+				await server.close();
+			}
 		}
 
 		expect(failures).toEqual([]);
@@ -280,88 +314,96 @@ describe('CLI log-stream race: apify-cli outputJobLog must always settle (regres
 
 		for (let trial = 0; trial < TRIALS; trial++) {
 			server = await startTestServer();
-			startLogFlusher();
-			const actor = await seedActor(server, `stress-actor-${trial}`);
-			const build = await seedSucceededBuild(actor);
-			const record = bareRunRecord(actor, build);
-			await getRegistries().runs.set(record.id, record);
+			try {
+				startLogFlusher();
+				const actor = await seedActor(server, `stress-actor-${trial}`);
+				const build = await seedSucceededBuild(actor);
+				const record = bareRunRecord(actor, build);
+				await getRegistries().runs.set(record.id, record);
 
-			let resolveDriverRun!: (outcome: RunOutcome) => void;
-			let signalStarted!: () => void;
-			const started = new Promise<void>((resolve) => {
-				signalStarted = resolve;
-			});
-			const driver: Driver = {
-				available: true,
-				async init() {},
-				async startBuild() {
-					throw new Error('n/a');
-				},
-				async abortBuild() {},
-				async startRun(ctx, onLog) {
-					onLog('line 1\n');
-					const outcome = new Promise<RunOutcome>((resolve) => {
-						resolveDriverRun = (result) => {
-							onLog('Crawl finished.\n');
-							resolve(result);
-						};
-					});
-					signalStarted();
-					return outcome;
-				},
-				async abortRun() {},
-				async reconcileOrphans() {},
-			};
+				let resolveDriverRun!: (outcome: RunOutcome) => void;
+				let signalStarted!: () => void;
+				const started = new Promise<void>((resolve) => {
+					signalStarted = resolve;
+				});
+				const driver: Driver = {
+					available: true,
+					async init() {},
+					async startBuild() {
+						throw new Error('n/a');
+					},
+					async abortBuild() {},
+					async startRun(ctx, onLog) {
+						onLog('line 1\n');
+						const outcome = new Promise<RunOutcome>((resolve) => {
+							resolveDriverRun = (result) => {
+								onLog('Crawl finished.\n');
+								resolve(result);
+							};
+						});
+						signalStarted();
+						return outcome;
+					},
+					async abortRun() {},
+					async reconcileOrphans() {},
+				};
 
-			const bg = runInBackground(driver, actor, record, {
-				apiBaseUrl: server.baseUrl,
-				token: server.token,
-			});
-			await started;
+				const bg = runInBackground(driver, actor, record, {
+					apiBaseUrl: server.baseUrl,
+					token: server.token,
+				});
+				await started;
 
-			// Unrelated concurrent traffic on the same server, mirroring real load (other API calls
-			// happening while a log stream is open) instead of testing the stream in total isolation.
-			const noise = (async () => {
-				for (let i = 0; i < 5; i++) {
-					await server.client
-						.actors()
-						.list()
-						.catch(() => undefined);
-					await delay(Math.random() * 5);
+				// Unrelated concurrent traffic on the same server, mirroring real load (other API calls
+				// happening while a log stream is open) instead of testing the stream in total isolation.
+				const noise = (async () => {
+					for (let i = 0; i < 5; i++) {
+						await server.client
+							.actors()
+							.list()
+							.catch(() => undefined);
+						await delay(Math.random() * 5);
+					}
+				})();
+
+				// Jitter around the transition instant itself - the tightest part of the window, on both sides.
+				const jitterMs = Math.round((Math.random() - 0.5) * 40); // [-20, 20]
+
+				let stream: NodeJS.ReadableStream | undefined;
+				let driverTimer: NodeJS.Timeout | undefined;
+				try {
+					if (jitterMs <= 0) {
+						stream = await server.client.log(record.id).stream();
+						driverTimer = setTimeout(() => resolveDriverRun({ exitCode: 0, timedOut: false }), -jitterMs);
+					} else {
+						resolveDriverRun({ exitCode: 0, timedOut: false });
+						await delay(jitterMs);
+						stream = await server.client.log(record.id).stream();
+					}
+
+					if (!stream) {
+						failures.push(`trial=${trial} jitter=${jitterMs}ms: log().stream() returned undefined`);
+					} else {
+						const outcome = await Promise.race([
+							outputJobLogLike(stream),
+							delay(4000).then(() => 'TIMED_OUT_UNSETTLED' as const),
+						]);
+						if (outcome === 'TIMED_OUT_UNSETTLED') {
+							failures.push(
+								`trial=${trial} jitter=${jitterMs}ms: outputJobLog-equivalent promise never settled within 4s`,
+							);
+						}
+					}
+				} finally {
+					clearTimeout(driverTimer);
 				}
-			})();
 
-			// Jitter around the transition instant itself - the tightest part of the window, on both sides.
-			const jitterMs = Math.round((Math.random() - 0.5) * 40); // [-20, 20]
-
-			let stream: NodeJS.ReadableStream | undefined;
-			if (jitterMs <= 0) {
-				stream = await server.client.log(record.id).stream();
-				setTimeout(() => resolveDriverRun({ exitCode: 0, timedOut: false }), -jitterMs);
-			} else {
-				resolveDriverRun({ exitCode: 0, timedOut: false });
-				await delay(jitterMs);
-				stream = await server.client.log(record.id).stream();
+				await bg;
+				await noise;
+			} finally {
+				stopLogFlusher();
+				await server.close();
 			}
-
-			if (!stream) {
-				failures.push(`trial=${trial} jitter=${jitterMs}ms: log().stream() returned undefined`);
-			} else {
-				const outcome = await Promise.race([
-					outputJobLogLike(stream),
-					delay(4000).then(() => 'TIMED_OUT_UNSETTLED' as const),
-				]);
-				if (outcome === 'TIMED_OUT_UNSETTLED') {
-					failures.push(
-						`trial=${trial} jitter=${jitterMs}ms: outputJobLog-equivalent promise never settled within 4s`,
-					);
-				}
-			}
-
-			await bg;
-			await noise;
-			stopLogFlusher();
-			await server.close();
 		}
 
 		expect(failures).toEqual([]);

@@ -112,6 +112,17 @@ describe('end-to-end: a run never reads terminal via HTTP before its log has ful
 
 		const run = await server.client.actor(actor.id).start({});
 
+		// The run is created as READY and only turns RUNNING once the background `runInBackground` handler
+		// (fired off asynchronously by the route, not awaited by `start()`) actually gets to its RUNNING
+		// transition - on a loaded/shared CI runner that can take longer than the gap between `start()`
+		// returning and the very first status check below. Asserting RUNNING at that single point in time
+		// (instead of polling for it first) is what produced the CI failure this fixes: `expected 'READY' to
+		// be 'RUNNING'`. This poll is not the regression under test - it just waits out that unrelated
+		// startup lag before the real assertion (the "stays RUNNING" window right below) begins.
+		await expect
+			.poll(async () => (await server.client.run(run.id).get())?.status, { timeout: 5000, interval: 20 })
+			.toBe('RUNNING');
+
 		// The container process exits - but its trailing log output has not arrived over the (separate)
 		// logs connection yet.
 		stub.triggerContainerExit(0);
