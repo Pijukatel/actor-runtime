@@ -3,10 +3,17 @@
 	"type": "object",
 	"schemaVersion": 1,
 	"properties": {
+		"startUrl": {
+			"title": "Start URL",
+			"type": "string",
+			"editor": "textfield",
+			"description": "The page the crawler starts from.",
+			"default": "https://crawlee.dev/"
+		},
 		"maxPages": {
 			"title": "Max pages",
 			"type": "integer",
-			"description": "How many linked pages to crawl from the in-container test server.",
+			"description": "The maximum number of pages to crawl, following same-domain links from the start URL.",
 			"default": 2,
 			"minimum": 1
 		}

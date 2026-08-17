@@ -23,6 +23,11 @@
 - For asserting the test results, the tests must in inspect the return values of the Apify cli commands.
 - The e2e suite requires a reachable Docker daemon (it builds and runs real Actor containers) and
   detects its absence, skipping cleanly with an explicit message rather than failing.
+- The sample Actors crawl a live site (`https://crawlee.dev/` by default), so the e2e suite also
+  requires outbound network access from Actor containers (GitHub-hosted runners have it). This is
+  separate from the runtime's own offline capability (see `system.md`'s and `cli.md`'s offline notes),
+  which covers push/call/log-stream/storage-access against the runtime itself, not what a given Actor's
+  own code does over the network.
 - Building the sample Actors' images requires pulling their base images
   (`apify/actor-node:24`, `apify/actor-python:3.13`) at least once; CI must pre-pull both before
   running the e2e suite so the timing of the actual push/call assertions is not dominated by image

@@ -3,7 +3,7 @@
 	"actorSpecification": 1,
 	"name": "my-actor",
 	"title": "TypeScript sample actor for actor-runtime",
-	"description": "Crawls maxPages linked pages served from an in-container HTTP server, over a request queue, pushing one dataset item per page.",
+	"description": "Crawls up to maxPages same-hostname pages starting from startUrl, over a request queue, pushing one dataset item per page.",
 	"version": "0.0",
 	"buildTag": "latest",
 	"meta": {
