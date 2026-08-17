@@ -21,7 +21,10 @@ export function datasetDto(
 		cleanItemCount: info.itemCount,
 		// Required by the real Apify API contract (`apify-client`'s `Dataset` pydantic model has no
 		// default for `consoleUrl`) - points at this runtime's own console, not `console.apify.com`.
-		consoleUrl: `${CONSOLE_BASE_URL}/datasets/${record.id}`,
+		// Uses the real platform's `/storage/datasets/:id` shape (not this console's own flat
+		// `/datasets/:id` page) for parity with what `apify-client`/the real Console emit; the console
+		// server redirects that shape to its own page (`console.md`).
+		consoleUrl: `${CONSOLE_BASE_URL}/storage/datasets/${record.id}`,
 		stats: { ...zeroedStats(), storageBytes: 0 },
 	};
 }
@@ -36,8 +39,9 @@ export function keyValueStoreDto(record: StorageRecord) {
 		accessedAt: record.accessedAt,
 		// Optional on the real contract (`apify-client`'s `KeyValueStore` pydantic model defaults
 		// `consoleUrl` to `None`), included anyway for parity with the dataset/request-queue DTOs above
-		// and below, which the real platform also always populates.
-		consoleUrl: `${CONSOLE_BASE_URL}/key-value-stores/${record.id}`,
+		// and below, which the real platform also always populates. Uses the real platform's
+		// `/storage/key-value-stores/:id` shape, same reasoning as `datasetDto` above.
+		consoleUrl: `${CONSOLE_BASE_URL}/storage/key-value-stores/${record.id}`,
 		stats: { ...zeroedStats(), storageBytes: 0 },
 	};
 }
@@ -66,7 +70,9 @@ export function requestQueueDto(
 		hadMultipleClients: false,
 		// Required by the real Apify API contract (`apify-client`'s `RequestQueue` pydantic model has no
 		// default for `consoleUrl`) - points at this runtime's own console, not `console.apify.com`.
-		consoleUrl: `${CONSOLE_BASE_URL}/request-queues/${record.id}`,
+		// Uses the real platform's `/storage/request-queues/:id` shape, same reasoning as `datasetDto`
+		// above.
+		consoleUrl: `${CONSOLE_BASE_URL}/storage/request-queues/${record.id}`,
 		stats: zeroedStats(),
 	};
 }

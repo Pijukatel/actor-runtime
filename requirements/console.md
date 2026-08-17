@@ -27,3 +27,4 @@
 - List view is a list of objects that can be clicked on to open detail view.
 - Detail view of an object is showing only one object with all the available data
 - Log views render ANSI colors from actor output as HTML, while the `/v2/logs/:id` API keeps serving logs raw (unconverted) for the CLI to render itself.
+- The console accepts the real Apify Console's URL shapes (as printed by stock apify-cli, e.g. `/actors/:actorId/runs/:runId`, `/storage/datasets/:id`) via redirects to its own pages.

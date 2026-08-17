@@ -94,13 +94,14 @@ describe('datasets API (via real apify-client)', () => {
 		expect(body.error.type).toBe('record-not-found');
 	});
 
-	it('the GET response includes consoleUrl (regression: apify-client Python `Dataset` model requires it)', async () => {
+	it('the GET response includes consoleUrl, using the real Apify Console URL shape (regression: apify-client Python `Dataset` model requires it; the console server redirects this shape to its own page - see console.test.ts)', async () => {
 		const { id } = await server.client.datasets().getOrCreate();
 		const res = await fetch(`${server.baseUrl}/v2/datasets/${id}`, {
 			headers: { Authorization: `Bearer ${server.token}` },
 		});
 		const body = (await res.json()) as { data: { consoleUrl?: string } };
 		expect(body.data.consoleUrl).toContain(id);
+		expect(body.data.consoleUrl).toContain(`/storage/datasets/${id}`);
 	});
 
 	it('getOrCreate is idempotent by name - two calls with the same name yield the same dataset', async () => {

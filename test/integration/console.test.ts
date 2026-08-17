@@ -10,6 +10,7 @@ import { generateId } from '../../src/storage/ids.js';
 import type { BuildRecord, RunRecord } from '../../src/storage/entities.js';
 import { startTestServer, type TestServerHandle } from './helpers/test-server.js';
 import { appendLog } from '../../src/services/logs.js';
+import { recordTaggedBuild, updateActor } from '../../src/services/actors.js';
 
 describe('console pages (HTTP fetch)', () => {
 	let server: TestServerHandle;
@@ -198,5 +199,95 @@ describe('console pages (HTTP fetch)', () => {
 		// Same structural markers (heading text), proving one shared widget template.
 		expect(firstPage).toContain('<h2>Items');
 		expect(secondPage).toContain('<h2>Items');
+	});
+
+	// --- Compatibility redirects (console.md): stock apify-cli prints links using the real Apify
+	// Console's URL shapes, since it only knows one Console. These regression-test that every shape it
+	// can print against `APIFY_CONSOLE_URL` (verified against apify-cli v1.8.0's source: `run-result.ts`,
+	// `agent-output.ts`, `commands/runs/info.ts`, `commands/builds/info.ts`) redirects here instead of 404ing.
+
+	it("redirects the real Console run URL shape to this console's own run page (representative end-to-end: also verifies the destination detail page renders)", async () => {
+		const actor = await server.client.actors().create({ name: 'redirect-run-actor' });
+		const actorRecord = (await getRegistries().actors.get(actor.id))!;
+
+		// Seed a "successful" build directly, bypassing the driver (same pattern as
+		// `actors-builds-runs.test.ts`), so starting a run doesn't require a real Docker build here.
+		const fakeBuildId = generateId();
+		const { builds } = getRegistries();
+		await builds.set(fakeBuildId, {
+			id: fakeBuildId,
+			userId: actorRecord.userId,
+			actorId: actor.id,
+			versionNumber: '0.0',
+			buildNumber: '0.0.1',
+			tag: 'latest',
+			status: 'SUCCEEDED',
+			startedAt: new Date().toISOString(),
+			finishedAt: new Date().toISOString(),
+			imageId: 'fake-image:latest',
+		});
+		await updateActor(actor.id, (current) => recordTaggedBuild(current, 'latest', fakeBuildId, '0.0.1'));
+
+		const run = await server.client.actor(actor.id).start({});
+		const cliShapeUrl = `${consoleBaseUrl}/actors/${actor.id}/runs/${run.id}`;
+
+		const redirect = await axios.get(cliShapeUrl, { maxRedirects: 0, validateStatus: () => true });
+		expect(redirect.status).toBe(302);
+		expect(redirect.headers.location).toBe(`/runs/${run.id}`);
+
+		// Following it (axios follows redirects by default) lands on the real run detail page.
+		const followed = await axios.get(cliShapeUrl);
+		expect(followed.status).toBe(200);
+		expect(followed.data).toContain(run.id);
+	});
+
+	it("redirects the real Console build URL shape (actorId + buildNumber) to this console's own build page (by resolving buildNumber to the build's internal id)", async () => {
+		const actor = await server.client.actors().create({ name: 'redirect-build-actor' });
+		await server.client
+			.actor(actor.id)
+			.versions()
+			.create({
+				versionNumber: '0.0',
+				buildTag: 'latest',
+				sourceType: 'SOURCE_FILES' as never,
+				sourceFiles: [],
+			} as never);
+		const build = await server.client.actor(actor.id).build('0.0', { waitForFinish: 5 });
+
+		const redirect = await axios.get(`${consoleBaseUrl}/actors/${actor.id}/builds/${build.buildNumber}`, {
+			maxRedirects: 0,
+			validateStatus: () => true,
+		});
+		expect(redirect.status).toBe(302);
+		expect(redirect.headers.location).toBe(`/builds/${build.id}`);
+	});
+
+	it('404s (not a redirect) for a build URL naming a buildNumber that does not exist under that actor', async () => {
+		const actor = await server.client.actors().create({ name: 'redirect-build-404-actor' });
+		const res = await axios.get(`${consoleBaseUrl}/actors/${actor.id}/builds/0.0.1`, {
+			validateStatus: () => true,
+		});
+		expect(res.status).toBe(404);
+	});
+
+	it("redirects the real Console storage URL shapes (/storage/<type>/:id) to this console's own flat pages", async () => {
+		const dataset = await server.client.datasets().getOrCreate();
+		const kvStore = await server.client.keyValueStores().getOrCreate();
+		const queue = await server.client.requestQueues().getOrCreate();
+
+		const cases: Array<[string, string]> = [
+			[`/storage/datasets/${dataset.id}`, `/datasets/${dataset.id}`],
+			[`/storage/key-value-stores/${kvStore.id}`, `/key-value-stores/${kvStore.id}`],
+			[`/storage/request-queues/${queue.id}`, `/request-queues/${queue.id}`],
+		];
+
+		for (const [from, to] of cases) {
+			const redirect = await axios.get(`${consoleBaseUrl}${from}`, {
+				maxRedirects: 0,
+				validateStatus: () => true,
+			});
+			expect(redirect.status).toBe(302);
+			expect(redirect.headers.location).toBe(to);
+		}
 	});
 });

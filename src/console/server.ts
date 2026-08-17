@@ -69,6 +69,47 @@ export function createConsoleServer(): Express {
 		res.send(layout(`Actor ${actor.name}`, body));
 	});
 
+	// --- Compatibility redirects: stock apify-cli only knows one Console, so it prints links using
+	// the real Apify Console's URL shapes (`/actors/:actorId/runs/:runId`,
+	// `/actors/:actorId/builds/:buildNumber`, `/storage/datasets/:id`, ...). This console serves its own
+	// equivalent pages at flat paths, so redirect each printed shape there instead of 404ing. (The
+	// `/actors/:actorId#/builds/:buildNumber` shape some CLI commands print needs no redirect: the `#`
+	// fragment never reaches the server, so that request already lands on `/actors/:actorId` above.)
+	// These patterns never shadow `/actors/:id` above - Express/path-to-regexp segments don't span `/`,
+	// so a two-segment pattern like `:actorId/runs/:runId` only ever matches a three-segment path.
+
+	app.get('/actors/:actorId/runs/:runId', (req, res) => {
+		res.redirect(`/runs/${req.params.runId}`);
+	});
+
+	app.get('/actors/:actorId/builds/:buildNumber', async (req, res) => {
+		// Unlike the run/dataset/KV-store redirects above and below, this one can't be a plain path
+		// rewrite: the real Console's build URL carries the human-readable `buildNumber` (e.g. `0.0.1`),
+		// but this console's own `/builds/:id` route keys off the build's internal id. Resolve it through
+		// the same `listOwnedBuilds` service the `/builds` list view already uses, scoped to the actor in
+		// the URL, before redirecting.
+		const user = await getDefaultUser();
+		const builds = await listOwnedBuilds(user.id, req.params.actorId);
+		const build = builds.find((b) => b.buildNumber === req.params.buildNumber);
+		if (!build) {
+			res.status(404).send(layout('Not found', '<p>Build not found.</p>'));
+			return;
+		}
+		res.redirect(`/builds/${build.id}`);
+	});
+
+	app.get('/storage/datasets/:id', (req, res) => {
+		res.redirect(`/datasets/${req.params.id}`);
+	});
+
+	app.get('/storage/key-value-stores/:id', (req, res) => {
+		res.redirect(`/key-value-stores/${req.params.id}`);
+	});
+
+	app.get('/storage/request-queues/:id', (req, res) => {
+		res.redirect(`/request-queues/${req.params.id}`);
+	});
+
 	app.get('/builds', async (_req, res) => {
 		const user = await getDefaultUser();
 		const builds = await listOwnedBuilds(user.id);
