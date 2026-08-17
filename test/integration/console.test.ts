@@ -9,6 +9,7 @@ import { getRegistries } from '../../src/storage/registries.js';
 import { generateId } from '../../src/storage/ids.js';
 import type { BuildRecord, RunRecord } from '../../src/storage/entities.js';
 import { startTestServer, type TestServerHandle } from './helpers/test-server.js';
+import { appendLog } from '../../src/services/logs.js';
 
 describe('console pages (HTTP fetch)', () => {
 	let server: TestServerHandle;
@@ -152,6 +153,39 @@ describe('console pages (HTTP fetch)', () => {
 		const next = await (await openRequestQueue(id)).fetchNextRequest();
 		expect(next).not.toBeNull();
 		expect(['http://example.com/1', 'http://example.com/2']).toContain(next?.url);
+	});
+
+	it('logs/:id renders ANSI SGR sequences as colored HTML spans, with no raw escape byte in the response (regression: console used to dump raw ANSI, e.g. "[32mINFO[39m", into the page)', async () => {
+		const actor = await server.client.actors().create({ name: 'console-ansi-log-actor' });
+		const actorRecord = (await getRegistries().actors.get(actor.id))!;
+
+		const build: BuildRecord = {
+			id: generateId(),
+			userId: actorRecord.userId,
+			actorId: actor.id,
+			versionNumber: '0.0',
+			buildNumber: '0.0.1',
+			tag: 'latest',
+			status: 'SUCCEEDED',
+			startedAt: new Date().toISOString(),
+			finishedAt: new Date().toISOString(),
+			imageId: 'fake-image:latest',
+		};
+		await getRegistries().builds.set(build.id, build);
+
+		const rawAnsiLine = '\x1b[32mINFO\x1b[39m \x1b[33m CheerioCrawler:\x1b[39m All requests have been processed.';
+		appendLog(build.id, rawAnsiLine);
+
+		const logPage = await axios.get(`${consoleBaseUrl}/logs/${build.id}`);
+		expect(logPage.status).toBe(200);
+		expect(logPage.data).not.toContain('\x1b');
+		expect(logPage.data).toContain('<span style="color:#2e7d32">INFO</span>');
+		expect(logPage.data).toContain('<span style="color:#b8860b"> CheerioCrawler:</span>');
+
+		// Same conversion path is shared by the build detail page's own log section.
+		const buildDetail = await axios.get(`${consoleBaseUrl}/builds/${build.id}`);
+		expect(buildDetail.data).not.toContain('\x1b');
+		expect(buildDetail.data).toContain('<span style="color:#2e7d32">INFO</span>');
 	});
 
 	it('renders exactly one widget design per storage type across multiple instances', async () => {

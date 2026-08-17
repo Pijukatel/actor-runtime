@@ -15,6 +15,7 @@ import { listRequests } from '../services/request-queues.js';
 import { openDataset, openKeyValueStore, openRequestQueue } from '../storage/open.js';
 import { pageKeys } from '../services/kv-key-listing.js';
 import { applyDatasetProjection, type DatasetItem } from '../services/dataset-projection.js';
+import { ansiToHtml } from './ansi.js';
 import { definitionList, escapeHtml, layout, table } from './templates.js';
 
 export function createConsoleServer(): Express {
@@ -96,7 +97,7 @@ export function createConsoleServer(): Express {
 				['statusMessage', build.statusMessage ?? ''],
 			]) +
 			'<h2>Log</h2><pre>' +
-			(log ? escapeHtml(log) : '(empty)') +
+			(log ? ansiToHtml(log) : '(empty)') +
 			'</pre>';
 		res.send(layout(`Build ${build.id}`, body));
 	});
@@ -129,7 +130,7 @@ export function createConsoleServer(): Express {
 				['defaultRequestQueueId', run.defaultRequestQueueId],
 			]) +
 			'<h2>Log</h2><pre>' +
-			(log ? escapeHtml(log) : '(empty)') +
+			(log ? ansiToHtml(log) : '(empty)') +
 			'</pre>';
 		res.send(layout(`Run ${run.id}`, body));
 	});
@@ -152,7 +153,7 @@ export function createConsoleServer(): Express {
 			return;
 		}
 		const log = await getFullLog(req.params.id);
-		res.send(layout(`Log ${req.params.id}`, `<pre>${escapeHtml(log || '(empty)')}</pre>`));
+		res.send(layout(`Log ${req.params.id}`, `<pre>${log ? ansiToHtml(log) : '(empty)'}</pre>`));
 	});
 
 	// --- Storage widgets: exactly one per type ---
