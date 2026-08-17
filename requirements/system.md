@@ -36,20 +36,34 @@
 
 - Required `docker run` flags: mount the host Docker socket read-write
   (`-v /var/run/docker.sock:/var/run/docker.sock`) so the runtime can build and run Actor containers,
-  and mount a persistent data volume (`-v <volume>:/data`) so storages survive a restart. Publish both
-  fixed ports (`-p 3333:3333 -p 3000:3000`). See `docker-compose.yml` for the equivalent, preferred
-  form.
+  and mount a persistent data directory (`-v <host-dir>:/data`, e.g. `-v "$(pwd)/data:/data"`) so
+  storages survive a restart and are easy to inspect from the host. Publish both fixed ports
+  (`-p 3333:3333 -p 3000:3000`). The canonical start command is:
+
+    ```bash
+    docker build -t actor-runtime .
+    docker run --rm -p 3333:3333 -p 3000:3000 \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -v "$(pwd)/data:/data" \
+      actor-runtime
+    ```
+
 - Optionally set `APIFY_PROXY_PASSWORD` in the runtime's own environment to have it forwarded into
   every Actor container (see `actor-driver.md`).
 
 # Offline-after-first-build note
 
+- This note is scoped to the **runtime** itself (push/build/call/log-stream/storage-access/console) -
+  not to what an individual Actor's own code does over the network once it's running.
 - The first build of any given Actor base image needs outbound network access to pull that base image
   (e.g. from Docker Hub); likewise, the first-ever `apify push` of a brand-new Actor needs outbound
   network access because the stock CLI fetches its actor-templates manifest from the internet. Once
-  both of those have happened at least once, the system operates fully offline: repeat builds reuse
-  the already-pulled base image and every other push/call/log-stream/storage-access needs no outbound
-  network access at all (see `cli.md`'s offline-capability note).
+  both of those have happened at least once, the runtime itself operates fully offline: repeat builds
+  reuse the already-pulled base image and every other push/call/log-stream/storage-access needs no
+  outbound network access at all (see `cli.md`'s offline-capability note).
+- The bundled sample Actors (`sample_actor_ts`, `sample_actor_py`) are not offline: they crawl a live
+  site (`https://crawlee.dev/` by default). Running them needs outbound network access from the Actor
+  container, unlike operating the runtime around them (see `test.md`).
 
 # Scope
 

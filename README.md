@@ -2,8 +2,11 @@
 
 A minimal, self-contained "local Apify platform" in a single Docker image. Start
 it with one `docker run`, point the stock `apify-cli` at it, and run the full
-Actor dev loop offline: `apify push` -> build -> run -> inspect runs, builds and
-the run's default storages (key-value store, dataset, request queue).
+Actor dev loop: `apify push` -> build -> run -> inspect runs, builds and
+the run's default storages (key-value store, dataset, request queue). The
+runtime itself needs no outbound network access after the first build/push (see
+`requirements/system.md`); the bundled sample Actors crawl the live web, so
+running them does.
 
 See `requirements/*.md` for the full behavioural spec (`system.md`, `api.md`,
 `storage.md`, `actor-driver.md`, `cli.md`, `console.md`, `test.md`).
@@ -11,19 +14,28 @@ See `requirements/*.md` for the full behavioural spec (`system.md`, `api.md`,
 ## Quick start
 
 ```bash
-docker compose up --build
-# or: docker build -t actor-runtime . && docker run -p 3333:3333 -p 3000:3000 \
-#       -v /var/run/docker.sock:/var/run/docker.sock -v actor-runtime-data:/data actor-runtime
+docker build -t actor-runtime .
+docker run --rm -p 3333:3333 -p 3000:3000 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$(pwd)/data:/data" \
+  actor-runtime
+```
 
+This mounts `./data` on the host as the runtime's `/data`, so every storage, build and run record
+lands under `./data` for easy inspection.
+
+```bash
 export APIFY_CLIENT_BASE_URL=http://localhost:3333
 export APIFY_CONSOLE_URL=http://localhost:3000
 npm install -g apify-cli
-apify login --token anything
 
 cd sample_actor_ts
 apify push
 apify call --input '{"maxPages":3}'
 ```
+
+This assumes you're already logged in (`apify login`, any stored token works - the runtime maps any
+non-empty token to its single local user; see `requirements/cli.md`).
 
 ## Development
 
@@ -57,6 +69,7 @@ npm run build && npm test
 
 ## Apify Proxy
 
-Set `APIFY_PROXY_PASSWORD` in the runtime container's own environment (see `docker-compose.yml`) to
-have it forwarded, unscoped, into every Actor container's `APIFY_PROXY_PASSWORD`. Leave it unset and
-the variable is simply absent from every Actor container - never a placeholder value.
+Set `APIFY_PROXY_PASSWORD` in the runtime container's own environment (e.g. `docker run -e
+APIFY_PROXY_PASSWORD=your-password ...`) to have it forwarded, unscoped, into every Actor container's
+`APIFY_PROXY_PASSWORD`. Leave it unset and the variable is simply absent from every Actor container -
+never a placeholder value.

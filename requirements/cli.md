@@ -19,14 +19,18 @@
 ## User bootstrap
 
 - The single default user is created **by the runtime itself** at startup (see `storage.md`'s Users
-  section) - the CLI never creates it. `apify login --token <anything>` simply authenticates the CLI
-  against that already-existing user: any non-empty token is accepted, and `GET /v2/users/me` (which
-  `apify login` and `apify info` both call) returns that user's `username`/`id`.
+  section) - the CLI never creates it.
+- Users are expected to already be logged in (`apify login`, done once, outside the runtime's
+  quickstart) before starting the dev loop against the runtime. Login itself simply authenticates the
+  CLI against that already-existing user: any non-empty token is accepted, and `GET /v2/users/me`
+  (which `apify login` and `apify info` both call) returns that user's `username`/`id`. There is no
+  separate account or token to obtain - any stored token maps to the same single local user.
 
 ## Supported commands (POC)
 
-- `apify login --token <anything>` - authenticates against the runtime's single default user (any
-  non-empty token works; see "User bootstrap" above). Interactive login flows are out of scope.
+- `apify login --token <anything>` - a one-time, out-of-band step (not part of the runtime's
+  quickstart flow) that authenticates against the runtime's single default user; any non-empty token
+  works (see "User bootstrap" above). Interactive login flows are out of scope.
 - `apify push` - creates the Actor and Actor version from local source and triggers
   a build.
 - `apify call` - starts a run against the built Actor, streams its log, waits for it
@@ -45,11 +49,17 @@
 
 ## Offline-capability note
 
+- This note is scoped to the CLI's own interaction with the **runtime**
+  (push/build/call/log-stream/storage-access) - not to what an Actor's own code does over the network
+  once `apify call` starts it running.
 - The very **first** `apify push` that creates a brand-new Actor is not offline-capable: stock
   `apify-cli` fetches the actor-templates manifest from the internet the first time it needs to create
   an Actor. Every push/call/log-stream/storage-access afterwards, and every build of an
   already-pulled base image, works with no outbound network access (see `system.md`'s offline-after-
   first-build note).
+- The bundled sample Actors crawl the live web (`https://crawlee.dev/` by default), so an `apify call`
+  that runs one of them needs outbound network access from the Actor container even though the
+  CLI-to-runtime interaction itself does not (see `system.md`).
 - A repeat `apify push` of an Actor whose local source is unmodified since its last successful build
   will fail with the stock CLI's "already on the platform and was modified there since modified
   locally" error and requires `--force` to proceed: the runtime bumps the Actor's `modifiedAt` when a
