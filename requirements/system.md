@@ -68,6 +68,9 @@
 - The bundled sample Actors (`sample_actor_ts`, `sample_actor_py`) are not offline: they crawl a live
   site (`https://crawlee.dev/` by default). Running them needs outbound network access from the Actor
   container, unlike operating the runtime around them (see `test.md`).
+- The runtime's one-time, per-token, real-console identity check (`cli.md`'s User bootstrap) is
+  best-effort online with a silent offline fallback: it never blocks startup or any request beyond its
+  own short timeout, and going offline never turns into an error - just the existing local identity.
 
 # Scope
 

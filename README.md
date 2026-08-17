@@ -35,7 +35,10 @@ apify call --input '{"maxPages":3}'
 ```
 
 This assumes you're already logged in (`apify login`, any stored token works - the runtime maps any
-non-empty token to its single local user; see `requirements/cli.md`).
+non-empty token to its single local user). If that token happens to be a real Apify account token and
+the real platform is reachable, the runtime also adopts that account's real username/id/proxy password
+the first time it sees the token; fully offline (or with any other non-empty token) it just keeps using
+the single local user, with no error either way - see `requirements/cli.md`'s User bootstrap section.
 
 ## Development
 

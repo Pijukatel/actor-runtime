@@ -18,6 +18,19 @@ export interface UserRecord {
 	username: string;
 	token: string;
 	createdAt: string;
+	/**
+	 * Real Apify Console identity, adopted at most once per token from `GET
+	 * https://api.apify.com/v2/users/me` (see `services/identity-resolution.ts`) when that token
+	 * resolves against the real platform. `id`/`username` above stay fixed forever - every ownership
+	 * filter (`actor.userId`, `run.userId`, ...) is keyed off `id`, and re-keying it out from under
+	 * already-created records would break that filtering - so adoption only ever adds these three
+	 * fields, which the `/users/me` and `/users/:userId` DTOs (`api/routes/users.ts`) prefer over
+	 * `id`/`username`/the hardcoded local proxy password when present. Undefined until (and unless)
+	 * adoption succeeds; a failed/offline resolution leaves them untouched rather than clearing them.
+	 */
+	realId?: string;
+	realUsername?: string;
+	realProxyPassword?: string;
 }
 
 export type SourceType = 'SOURCE_FILES';

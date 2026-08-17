@@ -21,6 +21,7 @@ import { actorDto, buildDto, runDto } from '../dto/actors.js';
 import type { ActorVersionRecord } from '../../storage/entities.js';
 import type { ApiServerDeps } from '../server.js';
 import { CONTAINER_API_BASE_URL } from '../../config.js';
+import { effectiveProxyPassword } from '../../services/identity-resolution.js';
 
 const DEFAULT_TAG = 'latest';
 
@@ -288,7 +289,7 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 				memoryMbytes: queryNumber(req, 'memory'),
 				timeoutSecs: queryNumber(req, 'timeout'),
 				build: tag,
-				proxyPassword: process.env.APIFY_PROXY_PASSWORD,
+				proxyPassword: effectiveProxyPassword(requireUser(req)),
 				apiBaseUrl: CONTAINER_API_BASE_URL,
 				token: requireUser(req).token,
 			});

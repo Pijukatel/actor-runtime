@@ -79,8 +79,11 @@
 - `APIFY_ACTOR_ID` / `ACTOR_ID` and `APIFY_ACTOR_RUN_ID` / `ACTOR_RUN_ID` —
   both the legacy `APIFY_`-prefixed and the modern unprefixed spellings, equal
   in value.
-- `APIFY_PROXY_PASSWORD` — included **only when** the runtime itself was
-  started with `APIFY_PROXY_PASSWORD` set in its own environment (see
-  README.md's "Apify Proxy" section); otherwise the key is absent entirely,
-  never a placeholder value. One host-level password, shared unscoped across
-  every user's Actor containers — there is no per-user proxy credential.
+- `APIFY_PROXY_PASSWORD` — included when a value is known from either of two sources, in this
+  precedence order: (1) the runtime itself was started with `APIFY_PROXY_PASSWORD` set in its own
+  environment (see README.md's "Apify Proxy" section) — always wins when set; otherwise (2) the proxy
+  password harvested from the real Apify platform the one time the run owner's token successfully
+  resolved against it (`cli.md`'s User bootstrap / real-console identity check). If neither source has
+  a value, the key is absent entirely — never a placeholder value. One host-level password (source 1)
+  or one harvested-per-account password (source 2), shared unscoped across every user's Actor
+  containers — there is no per-user proxy credential of the runtime's own.

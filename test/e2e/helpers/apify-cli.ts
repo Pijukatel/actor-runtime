@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 /**
@@ -35,53 +35,50 @@ export function apifyAllOutput(args: string[], options: { cwd: string; env: Node
 /** Any non-empty value works - the runtime maps every non-empty token to its single local user. */
 const APIFY_TOKEN = 'anything';
 
-export function apifyEnv(): NodeJS.ProcessEnv {
+/**
+ * Creates a suite-owned, empty directory to serve as `$HOME` (and `$XDG_CONFIG_HOME`, for safety) for
+ * every `apify` invocation in the e2e run. `apify-cli`'s credential store path derives from
+ * `os.homedir()` (`lib/consts.ts`: `GLOBAL_CONFIGS_FOLDER = () => join(homedir(), '.apify')` ->
+ * `AUTH_FILE_PATH = () => join(GLOBAL_CONFIGS_FOLDER(), 'auth.json')`), and Node's `os.homedir()`
+ * itself honors `$HOME` on POSIX ("uses the $HOME environment variable if defined" - Node docs) -
+ * verified against the installed `apify-cli` source. Pointing `HOME` here means `apify login` below
+ * writes and reads `<this dir>/.apify/auth.json`, never the real developer's/runner's `~/.apify`.
+ * Call once in `beforeAll`; pass the returned path to `apifyEnv()` and `loginApifyCli()`.
+ */
+export function createIsolatedApifyHome(): string {
+	return mkdtempSync(join(tmpdir(), 'actor-runtime-e2e-apify-home-'));
+}
+
+export function removeIsolatedApifyHome(dir: string): void {
+	rmSync(dir, { recursive: true, force: true });
+}
+
+export function apifyEnv(isolatedApifyHome: string): NodeJS.ProcessEnv {
 	return {
 		...process.env,
 		APIFY_CLIENT_BASE_URL: 'http://localhost:3333',
 		APIFY_CONSOLE_URL: 'http://localhost:3000',
-		APIFY_TOKEN,
-		// Forces the CLI's file-based credential store instead of the OS keyring, so
-		// `ensureApifyCliAuthenticated()` below (which writes that file directly) is what the CLI
-		// actually reads, deterministically, in every environment this suite runs in.
+		HOME: isolatedApifyHome,
+		XDG_CONFIG_HOME: isolatedApifyHome,
+		// Forces the CLI's file-based credential store instead of the OS keyring, so the isolated
+		// `auth.json` written by `loginApifyCli()` below is what every command actually reads,
+		// deterministically, in every environment this suite runs in.
 		APIFY_DISABLE_KEYRING: '1',
 	};
 }
 
 /**
- * `apify login` is no longer a supported command (`requirements/cli.md`). It authenticates by
- * writing a token into the CLI's own on-disk credential store (`~/.apify/auth.json`, per
- * `apify-cli`'s `lib/consts.ts#AUTH_FILE_PATH`) and letting the CLI's first authenticated request
- * resolve and persist the account's username/id (`lib/utils.ts#getLoggedClient`) - exactly what
- * `apify login --token <x>` itself does under the hood (`commands/auth/login.ts#tryToLogin`). This
- * writes that same `{ token }` seed directly, without ever invoking the `login` command.
- *
- * `APIFY_TOKEN` in `apifyEnv()` above is not, by itself, sufficient: real `apify-cli` v1.8.0 only
- * reads that env var for `apify actor:*` commands and `mcp install` (`lib/actor.ts`,
- * `commands/mcp/install.ts`) - `push`/`call`/`runs`/`datasets`/`api` all resolve their token
- * exclusively through `getLoggedClientOrThrow()` -> `getLoggedClient()` -> the credential store, with
- * no env-var fallback. Verified by reading `apify-cli`'s installed source and confirming live: with
- * only `APIFY_TOKEN` set and no stored credentials, `apify info`/`apify api GET v2/users/me` fail with
- * "You are not logged in with your Apify account." Seeding the credential store below is what makes
- * every command actually work.
+ * Performs one genuine `apify login --token <token>` inside the isolated `$HOME` from
+ * `createIsolatedApifyHome()` - the CLI's own supported bootstrap for the "already logged in" state
+ * (`commands/auth/login.ts#tryToLogin` -> `lib/utils.ts#getLoggedClient`), not a hand-written
+ * `auth.json`. `login`'s own base-URL resolution (`getConsoleUrl().includes('localhost') ?
+ * 'http://localhost:3333' : undefined`) targets this runtime because `apifyEnv()` sets
+ * `APIFY_CONSOLE_URL` to `http://localhost:3000` - independent of `APIFY_CLIENT_BASE_URL` - verified
+ * against apify-cli's installed source. Any non-empty token works: the runtime maps every non-empty
+ * token to its single local user (until/unless it resolves to a real one - `requirements/cli.md`).
  */
-export function ensureApifyCliAuthenticated(): void {
-	const authDir = join(homedir(), '.apify');
-	mkdirSync(authDir, { recursive: true });
-	const authFilePath = join(authDir, 'auth.json');
-
-	let existing: Record<string, unknown> = {};
-	if (existsSync(authFilePath)) {
-		try {
-			existing = JSON.parse(readFileSync(authFilePath, 'utf8')) as Record<string, unknown>;
-		} catch {
-			existing = {};
-		}
-	}
-
-	if (existing.token) return; // already authenticated (e.g. a developer's own real login)
-
-	writeFileSync(authFilePath, JSON.stringify({ ...existing, token: APIFY_TOKEN }, null, '\t'), { mode: 0o600 });
+export function loginApifyCli(cwd: string, isolatedApifyHome: string): void {
+	apify(['login', '--token', APIFY_TOKEN], { cwd, env: apifyEnv(isolatedApifyHome) });
 }
 
 /** The `{ data: ... }` envelope every Apify API response (and `apify api`'s printed output) uses. */

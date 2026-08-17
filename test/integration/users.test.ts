@@ -20,6 +20,10 @@ describe('users API', () => {
 		const user = await server.client.user('me').get();
 		expect(user.username).toBeTruthy();
 		expect(user.id).toBeTruthy();
+		// Never a placeholder proxy password (`identity-resolution.ts`'s `effectiveProxyPassword`):
+		// with no `APIFY_PROXY_PASSWORD` set and nothing harvested from a (blocked, in this sandbox)
+		// upstream, the `proxy` field is omitted entirely rather than carrying a made-up value.
+		expect((user as unknown as { proxy?: unknown }).proxy).toBeUndefined();
 	});
 
 	it('any non-empty bearer token authenticates as the same default user', async () => {

@@ -21,7 +21,9 @@ import {
 	apify,
 	apifyAllOutput,
 	apifyEnv,
-	ensureApifyCliAuthenticated,
+	createIsolatedApifyHome,
+	loginApifyCli,
+	removeIsolatedApifyHome,
 	type ApiEnvelope,
 	type CallResult,
 	type DatasetInfoResult,
@@ -34,6 +36,8 @@ const CONTAINER_NAME = 'actor-runtime-e2e';
 const IMAGE_TAG = 'actor-runtime:e2e';
 
 describe('full Actor dev loop via apify-cli (requires Docker)', () => {
+	let isolatedApifyHome: string;
+
 	beforeAll(
 		async () => {
 			if (!isDockerAvailable()) {
@@ -47,21 +51,21 @@ describe('full Actor dev loop via apify-cli (requires Docker)', () => {
 			startRuntimeContainer(IMAGE_TAG, CONTAINER_NAME);
 			await waitForHttpOk('http://localhost:3333/v2/users/me?token=x');
 
-			// `apify login` is no longer a supported command (`requirements/cli.md`). Real `apify-cli`
-			// v1.8.0's top-level commands (`push`/`call`/`runs`/`datasets`/`api`) resolve their token only
-			// from the CLI's own on-disk credential store (`getLoggedClientOrThrow()` in its
-			// `lib/utils.ts`), never from an `APIFY_TOKEN` env var - that env var is only consulted by
-			// `apify actor:*` and `mcp install`, not by the commands this suite drives (verified against
-			// the published v1.8.0 source; a bare `APIFY_TOKEN` with no stored credentials still fails
-			// every command below with "You are not logged in"). Seeding that credential store directly
-			// is what actually replaces the removed `apify login --token x` call.
-			ensureApifyCliAuthenticated();
+			// Isolate the CLI's credential store to a suite-owned `$HOME`, then let the CLI's own
+			// `login` command bootstrap the "already logged in" state - no direct `auth.json` write
+			// (`requirements/cli.md`'s User bootstrap section; `helpers/apify-cli.ts` has the full
+			// derivation). This can never read or clobber the real developer's/runner's `~/.apify`.
+			isolatedApifyHome = createIsolatedApifyHome();
+			loginApifyCli(REPO_ROOT, isolatedApifyHome);
 		},
 		10 * 60 * 1000,
 	);
 
 	afterAll(() => {
 		stopRuntimeContainer(CONTAINER_NAME);
+		// `beforeAll` can throw before `isolatedApifyHome` is ever assigned (e.g. the Docker-unreachable
+		// check above) - guard the same way `stopRuntimeContainer` already tolerates "never started".
+		if (isolatedApifyHome) removeIsolatedApifyHome(isolatedApifyHome);
 	});
 
 	const cases = [
@@ -73,7 +77,7 @@ describe('full Actor dev loop via apify-cli (requires Docker)', () => {
 		it(
 			`${label}: push -> build -> call(maxPages=2) -> call(maxPages=4), item count tracks input`,
 			async () => {
-				const env = apifyEnv();
+				const env = apifyEnv(isolatedApifyHome);
 
 				const pushOutput = apify(['push', '--json'], { cwd: actorDir, env });
 				const push = JSON.parse(pushOutput) as PushResult;
@@ -103,7 +107,7 @@ describe('full Actor dev loop via apify-cli (requires Docker)', () => {
 	}
 
 	it('the run log contains the crawler per-page lines', () => {
-		const env = apifyEnv();
+		const env = apifyEnv(isolatedApifyHome);
 		const callOutput = apify(['call', '--input', JSON.stringify({ maxPages: 1 }), '--json'], {
 			cwd: join(REPO_ROOT, 'sample_actor_ts'),
 			env,
@@ -115,7 +119,7 @@ describe('full Actor dev loop via apify-cli (requires Docker)', () => {
 	});
 
 	it('apify api reads back the run and its default dataset (requirements/cli.md: `apify api`)', () => {
-		const env = apifyEnv();
+		const env = apifyEnv(isolatedApifyHome);
 		const callOutput = apify(['call', '--input', JSON.stringify({ maxPages: 1 }), '--json'], {
 			cwd: join(REPO_ROOT, 'sample_actor_ts'),
 			env,
