@@ -50,14 +50,13 @@
 - The system is capable of running containerized Actor
 - A run launches the Actor's built image as a container, with the Actor's input and its default
   storages (key-value store, dataset, request queue) wired in **entirely over HTTP** - the run's
-  storages are reachable only through `APIFY_API_BASE_URL`; nothing is bind-mounted, so the container's
-  user id is irrelevant.
+  storages are reachable only through `APIFY_API_BASE_URL`.
 - Actor run details are saved in `__RUNS__` internal storage
 - Actor run log is saved in `__LOGS__` internal storage
 
 # Users
 
-- Currently only one default user is implemented.
+- Users are created adhoc by the runtime for each new token used in the API call (`cli.md`'s User bootstrap).
 
 # Environment variables in every Actor container
 
@@ -83,7 +82,6 @@
   precedence order: (1) the runtime itself was started with `APIFY_PROXY_PASSWORD` set in its own
   environment (see README.md's "Apify Proxy" section) — always wins when set; otherwise (2) the proxy
   password harvested from the real Apify platform the one time the run owner's token successfully
-  resolved against it (`cli.md`'s User bootstrap / real-console identity check). If neither source has
-  a value, the key is absent entirely — never a placeholder value. One host-level password (source 1)
-  or one harvested-per-account password (source 2), shared unscoped across every user's Actor
-  containers — there is no per-user proxy credential of the runtime's own.
+  resolved against it (`cli.md`'s User bootstrap). If neither source has a value, the key is absent entirely — never a 
+  placeholder value. One host-level password (source 1)
+  or one harvested-per-account password (source 2) used specifically for each user.

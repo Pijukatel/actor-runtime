@@ -65,6 +65,7 @@
     - `value` is the metadata of the user
         - name
         - token
+        - proxyPassword (optional)
 - The system stores Actors in dedicated key-value store called `__ACTORS__`:
     - `key` is the id of the Actor `actorId`
     - `value` is the metadata of the Actor
@@ -96,9 +97,8 @@
 ### Users
 
 - User can be created only by the system.
-- There is only one default user. (In the POC)
 - The user data that can be accessed by the API is a restricted view only over the objects belonging to the user.
-    - The system filters all API responses to only contain user owned resources.
+- The system filters all API responses to only contain user owned resources.
 
 # Known differences from the Apify platform
 
@@ -123,4 +123,4 @@
    from the storage itself (`KeyValueStore` has no `getInfo()`); dataset `fields`/`omit`/`clean`/
    `skipHidden`/`skipEmpty`/`unwind` are applied by the runtime after paging (the fs dataset backend
    ignores everything but `offset`/`limit`/`desc`), so `total` always counts unfiltered items.
-6. One runtime process per data directory; a single user, no ACLs, no usage/billing fields.
+6. One runtime process per data directory; no usage/billing fields.

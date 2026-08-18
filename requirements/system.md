@@ -69,8 +69,7 @@
   site (`https://crawlee.dev/` by default). Running them needs outbound network access from the Actor
   container, unlike operating the runtime around them (see `test.md`).
 - The runtime's one-time, per-token, real-console identity check (`cli.md`'s User bootstrap) is
-  best-effort online with a silent offline fallback: it never blocks startup or any request beyond its
-  own short timeout, and going offline never turns into an error - just the existing local identity.
+  best-effort online with a silent offline fallback.
 
 # Scope
 
@@ -87,8 +86,9 @@ The intended scale of the system is:
 - less than 100 datasets
 - less than 100 key value stores
 - less than 100 request queues
-- 1 user
-  The intended scale is not enforced, but the system operating above the intended scale can experience performance or functional issues.
+- less than 5 users
+
+The intended scale is not enforced, but the system operating above the intended scale can experience performance or functional issues.
 
 # Tests
 
