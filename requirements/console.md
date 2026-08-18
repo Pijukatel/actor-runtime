@@ -1,17 +1,36 @@
 # Frontend
+
 - Console frontend is simple view-only page that allows to inspect each user object.
+- Server-rendered HTML from the same process that serves the API, on its own fixed port (3000). No
+  SPA, no bundler, no build step - plain Express routes returning HTML strings. It reads through the
+  same service layer as the API handlers, so storage/build/run access logic is shared rather than
+  reimplemented.
+- Frontend shows for each object the owner (`userId`).
+- The console has no login of its own (it is unauthenticated and view-only), so with multiple users it
+  lists and shows every user's objects rather than scoping to one - the API's own endpoints stay
+  strictly scoped to the calling token's user (`storage.md`'s "Users" section).
 - There are three types of objects: key-value store, dataset, request queue.
-  - For each object type there must be exactly one widget for inspection.
+    - For each object type there must be exactly one widget for inspection.
+    - The request-queue widget leads with the authoritative counts from `RequestQueue.getInfo()`
+      (`totalRequestCount`/`handledRequestCount`/`pendingRequestCount`) plus a requests table; it is the
+      same in-process, best-effort id index the API's `GET /requests` uses (never `GET /head`/`POST/head/lock`, which would mutate queue state - see
+      `storage.md`'s "Known differences from the Apify platform" - it reflects only what this runtime
+      process has seen, not necessarily the whole queue, and does not survive a restart).
 
 - It contains list view and detail view for following objects:
-  - Actors
-  - Actor builds
-  - Actor runs
-  - Logs
-  - User owned storages
-    - key-value stores
-    - datasets
-    - request queues
+    - Actors
+    - Actor builds
+    - Actor runs
+    - Logs
+    - User owned storages
+        - key-value stores
+        - datasets
+        - request queues
 
 - List view is a list of objects that can be clicked on to open detail view.
 - Detail view of an object is showing only one object with all the available data
+- A run's default storage ids (`defaultDatasetId`, `defaultKeyValueStoreId`, `defaultRequestQueueId`) are
+  rendered as links to the corresponding storage detail views (in the run detail view and in the runs
+  list's dataset column), not as plain text.
+- Log views render ANSI colors from actor output as HTML, while the `/v2/logs/:id` API keeps serving logs raw (unconverted) for the CLI to render itself.
+- The console accepts the real Apify Console's URL shapes (as printed by stock apify-cli, e.g. `/actors/:actorId/runs/:runId`, `/storage/datasets/:id`) via redirects to its own pages.
