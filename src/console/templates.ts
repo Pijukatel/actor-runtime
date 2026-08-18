@@ -47,16 +47,35 @@ ${body}
 </html>`;
 }
 
-export function table(headers: string[], rows: string[][], linkColumn = 0, linkPrefix = ''): string {
+/** A table cell (or definition-list value) rendered as a link to another console page. */
+export interface LinkedCell {
+	text: string;
+	href: string;
+}
+
+function renderValue(value: unknown): string {
+	if (value !== null && typeof value === 'object' && 'href' in value) {
+		const { text, href } = value as LinkedCell;
+		return `<a href="${escapeHtml(href)}">${escapeHtml(text)}</a>`;
+	}
+	return escapeHtml(value);
+}
+
+export function table(
+	headers: string[],
+	rows: Array<Array<string | LinkedCell>>,
+	linkColumn = 0,
+	linkPrefix = '',
+): string {
 	if (rows.length === 0) return '<p class="empty">Nothing here yet.</p>';
 	const head = `<tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr>`;
 	const body = rows
 		.map((row) => {
 			const cells = row
 				.map((cell, i) =>
-					i === linkColumn && linkPrefix
+					i === linkColumn && linkPrefix && typeof cell === 'string'
 						? `<td><a href="${linkPrefix}/${encodeURIComponent(cell)}">${escapeHtml(cell)}</a></td>`
-						: `<td>${escapeHtml(cell)}</td>`,
+						: `<td>${renderValue(cell)}</td>`,
 				)
 				.join('');
 			return `<tr>${cells}</tr>`;
@@ -66,6 +85,6 @@ export function table(headers: string[], rows: string[][], linkColumn = 0, linkP
 }
 
 export function definitionList(fields: Array<[string, unknown]>): string {
-	const rows = fields.map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`).join('');
+	const rows = fields.map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${renderValue(value)}</dd>`).join('');
 	return `<dl>${rows}</dl>`;
 }

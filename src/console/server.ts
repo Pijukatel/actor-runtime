@@ -23,7 +23,12 @@ import { openDataset, openKeyValueStore, openRequestQueue } from '../storage/ope
 import { pageKeys } from '../services/kv-key-listing.js';
 import { applyDatasetProjection, type DatasetItem } from '../services/dataset-projection.js';
 import { ansiToHtml } from './ansi.js';
-import { definitionList, escapeHtml, layout, table } from './templates.js';
+import { definitionList, escapeHtml, layout, table, type LinkedCell } from './templates.js';
+
+/** A run's default-storage id rendered as a link to that storage's detail view instead of plain text. */
+function storageLink(prefix: '/datasets' | '/key-value-stores' | '/request-queues', id: string): LinkedCell {
+	return { text: id, href: `${prefix}/${encodeURIComponent(id)}` };
+}
 
 export function createConsoleServer(): Express {
 	const app = express();
@@ -156,7 +161,14 @@ export function createConsoleServer(): Express {
 
 	app.get('/runs', async (_req, res) => {
 		const runs = await listAllRuns();
-		const rows = runs.map((r) => [r.id, r.userId, r.actorId, r.status, r.startedAt, r.defaultDatasetId]);
+		const rows = runs.map((r) => [
+			r.id,
+			r.userId,
+			r.actorId,
+			r.status,
+			r.startedAt,
+			storageLink('/datasets', r.defaultDatasetId),
+		]);
 		res.send(
 			layout(
 				'Runs',
@@ -181,9 +193,9 @@ export function createConsoleServer(): Express {
 				['status', run.status],
 				['startedAt', run.startedAt],
 				['finishedAt', run.finishedAt ?? ''],
-				['defaultDatasetId', run.defaultDatasetId],
-				['defaultKeyValueStoreId', run.defaultKeyValueStoreId],
-				['defaultRequestQueueId', run.defaultRequestQueueId],
+				['defaultDatasetId', storageLink('/datasets', run.defaultDatasetId)],
+				['defaultKeyValueStoreId', storageLink('/key-value-stores', run.defaultKeyValueStoreId)],
+				['defaultRequestQueueId', storageLink('/request-queues', run.defaultRequestQueueId)],
 			]) +
 			'<h2>Log</h2><pre>' +
 			(log ? ansiToHtml(log) : '(empty)') +

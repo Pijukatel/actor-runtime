@@ -29,5 +29,8 @@
 
 - List view is a list of objects that can be clicked on to open detail view.
 - Detail view of an object is showing only one object with all the available data
+- A run's default storage ids (`defaultDatasetId`, `defaultKeyValueStoreId`, `defaultRequestQueueId`) are
+  rendered as links to the corresponding storage detail views (in the run detail view and in the runs
+  list's dataset column), not as plain text.
 - Log views render ANSI colors from actor output as HTML, while the `/v2/logs/:id` API keeps serving logs raw (unconverted) for the CLI to render itself.
 - The console accepts the real Apify Console's URL shapes (as printed by stock apify-cli, e.g. `/actors/:actorId/runs/:runId`, `/storage/datasets/:id`) via redirects to its own pages.

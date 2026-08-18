@@ -128,6 +128,49 @@ describe('console pages (HTTP fetch)', () => {
 		expect(runLog.status).toBe(200);
 	});
 
+	it('run views render the default storage ids as links to the storage detail views (regression: they used to be plain text)', async () => {
+		const actor = await server.client.actors().create({ name: 'console-storage-links-actor' });
+		const actorRecord = (await getRegistries().actors.get(actor.id))!;
+
+		const dataset = await server.client.datasets().getOrCreate();
+		const store = await server.client.keyValueStores().getOrCreate();
+		const queue = await server.client.requestQueues().getOrCreate();
+
+		const run: RunRecord = {
+			id: generateId(),
+			userId: actorRecord.userId,
+			actorId: actor.id,
+			buildId: generateId(),
+			buildNumber: '0.0.1',
+			status: 'SUCCEEDED',
+			startedAt: new Date().toISOString(),
+			finishedAt: new Date().toISOString(),
+			defaultDatasetId: dataset.id,
+			defaultKeyValueStoreId: store.id,
+			defaultRequestQueueId: queue.id,
+			options: { memoryMbytes: 1024, timeoutSecs: 300 },
+			meta: { origin: 'API' },
+		};
+		await getRegistries().runs.set(run.id, run);
+
+		const detail = (await axios.get(`${consoleBaseUrl}/runs/${run.id}`)).data as string;
+		expect(detail).toContain(`<a href="/datasets/${dataset.id}">${dataset.id}</a>`);
+		expect(detail).toContain(`<a href="/key-value-stores/${store.id}">${store.id}</a>`);
+		expect(detail).toContain(`<a href="/request-queues/${queue.id}">${queue.id}</a>`);
+
+		// The runs list's defaultDatasetId column links too, and each linked page actually resolves.
+		const list = (await axios.get(`${consoleBaseUrl}/runs`)).data as string;
+		expect(list).toContain(`<a href="/datasets/${dataset.id}">${dataset.id}</a>`);
+		for (const href of [
+			`/datasets/${dataset.id}`,
+			`/key-value-stores/${store.id}`,
+			`/request-queues/${queue.id}`,
+		]) {
+			const target = await axios.get(`${consoleBaseUrl}${href}`);
+			expect(target.status).toBe(200);
+		}
+	});
+
 	it('viewing the request-queue detail page does not fetch/lock any request out of the queue (regression: it used to call getHead/peekHead, which calls fetchNextRequest under the hood)', async () => {
 		const { id } = await server.client.requestQueues().getOrCreate();
 		const queue = server.client.requestQueue(id);
