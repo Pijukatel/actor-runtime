@@ -1,0 +1,9 @@
+{
+	"actorSpecification": 1,
+	"name": "sdk-docs-orchestrator",
+	"title": "Apify Python SDK - docs pipeline orchestrator",
+	"description": "Calls sdk-concept-links to collect the SDK concept pages, then sdk-concept-scraper to scrape each of them, and republishes the result.",
+	"version": "0.0",
+	"buildTag": "latest",
+	"input": "./input_schema.json"
+}

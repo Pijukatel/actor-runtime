@@ -1,0 +1,9 @@
+{
+	"actorSpecification": 1,
+	"name": "sdk-concept-scraper",
+	"title": "Apify Python SDK - concept article scraper",
+	"description": "Scrapes the detailed article (title, headings, prose, code samples) of each Apify Python SDK docs page it is given.",
+	"version": "0.0",
+	"buildTag": "latest",
+	"input": "./input_schema.json"
+}

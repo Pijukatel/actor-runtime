@@ -1,0 +1,29 @@
+{
+	"title": "Apify Python SDK - concept links input",
+	"type": "object",
+	"schemaVersion": 1,
+	"properties": {
+		"startUrl": {
+			"title": "Start URL",
+			"type": "string",
+			"description": "Docs page to collect the concept links from.",
+			"editor": "textfield",
+			"default": "https://docs.apify.com/sdk/python/docs/overview"
+		},
+		"sectionPath": {
+			"title": "Section path",
+			"type": "string",
+			"description": "Only links whose path contains this substring are collected. Point it at another section (for example '/docs/guides/') to reuse the Actor for it.",
+			"editor": "textfield",
+			"default": "/docs/concepts/"
+		},
+		"maxLinks": {
+			"title": "Maximum links",
+			"type": "integer",
+			"description": "Caps how many links are pushed to the dataset. Leave empty for all of them.",
+			"editor": "number",
+			"minimum": 1
+		}
+	},
+	"required": []
+}

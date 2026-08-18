@@ -1,0 +1,46 @@
+{
+	"title": "Apify Python SDK - concept article scraper input",
+	"type": "object",
+	"schemaVersion": 1,
+	"properties": {
+		"urls": {
+			"title": "URLs",
+			"type": "array",
+			"description": "Docs pages to scrape. Typically the concept links collected by the sdk-concept-links Actor.",
+			"editor": "stringList",
+			"default": []
+		},
+		"maxArticles": {
+			"title": "Maximum articles",
+			"type": "integer",
+			"description": "Caps how many of the given URLs are scraped. Leave empty to scrape all of them.",
+			"editor": "number",
+			"minimum": 1
+		},
+		"maxTextLength": {
+			"title": "Maximum text length",
+			"type": "integer",
+			"description": "Characters of article prose kept per page.",
+			"editor": "number",
+			"minimum": 100,
+			"default": 20000
+		},
+		"maxCodeSamples": {
+			"title": "Maximum code samples",
+			"type": "integer",
+			"description": "Code blocks kept per page.",
+			"editor": "number",
+			"minimum": 0,
+			"default": 10
+		},
+		"maxConcurrency": {
+			"title": "Maximum concurrency",
+			"type": "integer",
+			"description": "How many pages are fetched in parallel.",
+			"editor": "number",
+			"minimum": 1,
+			"default": 5
+		}
+	},
+	"required": []
+}

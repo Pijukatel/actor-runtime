@@ -1,0 +1,44 @@
+{
+	"title": "Apify Python SDK - docs pipeline orchestrator input",
+	"type": "object",
+	"schemaVersion": 1,
+	"properties": {
+		"linksActorId": {
+			"title": "Links Actor",
+			"type": "string",
+			"description": "Actor that collects the concept links. Either its id or its name.",
+			"editor": "textfield",
+			"default": "sdk-concept-links"
+		},
+		"scraperActorId": {
+			"title": "Scraper Actor",
+			"type": "string",
+			"description": "Actor that scrapes a concept page. Either its id or its name.",
+			"editor": "textfield",
+			"default": "sdk-concept-scraper"
+		},
+		"startUrl": {
+			"title": "Start URL",
+			"type": "string",
+			"description": "Docs page the concept links are collected from.",
+			"editor": "textfield",
+			"default": "https://docs.apify.com/sdk/python/docs/overview"
+		},
+		"maxConcepts": {
+			"title": "Maximum concepts",
+			"type": "integer",
+			"description": "Caps how many of the collected concept pages get scraped. Leave empty for all of them.",
+			"editor": "number",
+			"minimum": 1
+		},
+		"childRunTimeoutSecs": {
+			"title": "Child run timeout (seconds)",
+			"type": "integer",
+			"description": "Timeout applied to each of the two child runs.",
+			"editor": "number",
+			"minimum": 1,
+			"default": 600
+		}
+	},
+	"required": []
+}

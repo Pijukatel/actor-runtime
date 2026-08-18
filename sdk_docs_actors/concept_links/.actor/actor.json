@@ -1,0 +1,9 @@
+{
+	"actorSpecification": 1,
+	"name": "sdk-concept-links",
+	"title": "Apify Python SDK - concept links",
+	"description": "Collects links to the Apify Python SDK concept pages from the SDK docs overview page.",
+	"version": "0.0",
+	"buildTag": "latest",
+	"input": "./input_schema.json"
+}
