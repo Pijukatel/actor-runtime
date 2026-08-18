@@ -76,7 +76,7 @@ describe('API shell: envelope, 501/404, internal-object isolation, ownership sco
 		}
 	});
 
-	it('list endpoints only ever return resources owned by the bootstrap user', async () => {
+	it("list endpoints only ever return resources owned by the calling token's user", async () => {
 		await server.client.actors().create({ name: 'owned-actor' });
 		await server.client.datasets().getOrCreate('owned-dataset');
 

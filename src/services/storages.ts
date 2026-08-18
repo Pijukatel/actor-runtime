@@ -68,6 +68,19 @@ export async function listOwnedStorages(userId: string, type: StorageType): Prom
 	return all.filter((s) => s.userId === userId && s.type === type);
 }
 
+/** Cross-user listing, for the console only (see `services/actors.ts: listAllActors`'s doc comment). */
+export async function listAllStorages(type: StorageType): Promise<StorageRecord[]> {
+	const all = await getRegistries().storages.list();
+	return all.filter((s) => s.type === type);
+}
+
+/** Cross-user lookup by id, for the console only (see `listAllStorages`). */
+export async function getStorageById(id: string, type: StorageType): Promise<StorageRecord | null> {
+	const record = await getRegistries().storages.get(id);
+	if (!record || record.type !== type) return null;
+	return record;
+}
+
 export async function findOwnedStorageByName(
 	userId: string,
 	type: StorageType,

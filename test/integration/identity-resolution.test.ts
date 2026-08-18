@@ -1,13 +1,13 @@
 /**
- * Covers `services/identity-resolution.ts` and its two call sites (`api/routes/users.ts`'s DTO,
- * `api/routes/actors.ts`'s run-start `proxyPassword` wiring) against a stubbed upstream - never real
- * egress to `api.apify.com` (this sandbox's proxy blocks it anyway; see `cli.md`'s User bootstrap
- * section for the documented contract this exercises).
+ * Covers the real-platform identity probe (`services/identity-resolution.ts`'s `fetchRealIdentity`) and
+ * its orchestration in `services/users.ts: getOrCreateUserForToken()`, against a stubbed upstream -
+ * never real egress to `api.apify.com` (this sandbox's proxy blocks it anyway; see `cli.md`'s User
+ * bootstrap section for the documented contract this exercises).
  *
  * Every test below authenticates with its own never-before-used token, so each test's identity
- * resolution is independent - `ensureIdentityResolvedForToken`'s per-token cache is a module-level
- * singleton for the lifetime of this file's test run, and reusing a token across tests would let an
- * earlier test's outcome (adopted or offline) leak into a later one.
+ * resolution is independent - `getOrCreateUserForToken`'s per-token cache is a module-level singleton
+ * for the lifetime of this file's test run, and reusing a token across tests would let an earlier
+ * test's outcome (adopted or fabricated) leak into a later one.
  */
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
@@ -71,8 +71,7 @@ describe('identity resolution against the real platform (stubbed upstream)', () 
 		await server.close();
 	});
 
-	it('adopts the real username/id/proxy password on first use, and /users/:userId resolves both the internal and the real id', async () => {
-		const internalUser = (await getRegistries().users.list())[0]!;
+	it('a never-before-seen token that resolves against the real platform gets a user whose real id/username/proxy password ARE its identity outright', async () => {
 		const stub = await startStubUpstream({
 			data: {
 				id: 'real-user-id-1',
@@ -89,10 +88,13 @@ describe('identity resolution against the real platform (stubbed upstream)', () 
 			expect(me.username).toBe('real-username-1');
 			expect(me.proxy?.password).toBe('real-proxy-password-1');
 
-			// The internal id (never changed - ownership filters are keyed off it) still resolves...
-			const byInternalId = (await client.user(internalUser.id).get()) as unknown as UserMeResponse;
-			expect(byInternalId.id).toBe('real-user-id-1');
-			// ...and so does the newly-adopted real id.
+			// The record itself is keyed by (and owns) the real id - no separate internal id survives
+			// alongside it.
+			const stored = await getRegistries().users.get('real-user-id-1');
+			expect(stored?.username).toBe('real-username-1');
+			expect(stored?.token).toBe('adopt-test-token');
+
+			// `/users/:userId` resolves the same real id straight back to the full self DTO.
 			const byRealId = (await client.user('real-user-id-1').get()) as unknown as UserMeResponse;
 			expect(byRealId.id).toBe('real-user-id-1');
 
@@ -102,16 +104,15 @@ describe('identity resolution against the real platform (stubbed upstream)', () 
 		}
 	});
 
-	it('falls back to the local identity, with no error and no proxy field, when the upstream is unreachable', async () => {
+	it('fabricates a local-user-{n} / 0000000000000000{n} identity, with no error and no proxy field, when the upstream is unreachable', async () => {
 		process.env.APIFY_UPSTREAM_API_BASE_URL = 'http://127.0.0.1:1'; // nothing listens here
 		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 		try {
-			const localUser = (await getRegistries().users.list())[0]!;
 			const client = clientWithToken(server.baseUrl, 'offline-test-token');
 
 			const me = (await client.user('me').get()) as unknown as UserMeResponse;
-			expect(me.id).toBe(localUser.id);
-			expect(me.username).toBe(localUser.username);
+			expect(me.username).toMatch(/^local-user-\d+$/);
+			expect(me.id).toMatch(/^0000000000000000\d+$/);
 			// Never a placeholder password: with nothing known, `proxy` is omitted entirely.
 			expect(me.proxy).toBeUndefined();
 
@@ -146,6 +147,35 @@ describe('identity resolution against the real platform (stubbed upstream)', () 
 			await stub.close();
 		}
 	});
+
+	it('a stored token maps back to its persisted user on a simulated restart, with no re-probe of the upstream', async () => {
+		const stub = await startStubUpstream({
+			data: {
+				id: 'restart-real-id',
+				username: 'restart-real-username',
+				proxy: { password: 'restart-proxy-password' },
+			},
+		});
+		process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
+		try {
+			const client = clientWithToken(server.baseUrl, 'restart-token');
+			const before = (await client.user('me').get()) as unknown as UserMeResponse;
+			expect(stub.hitCount()).toBe(1);
+
+			// Simulate a process restart: forget every in-memory memo (token cache + fabricated counter),
+			// but the `__USERS__` registry itself (this test's `dataDir`) is untouched.
+			const { resetUsersForTests } = await import('../../src/services/users.js');
+			resetUsersForTests();
+
+			const after = (await client.user('me').get()) as unknown as UserMeResponse;
+			expect(after.id).toBe(before.id);
+			expect(after.username).toBe(before.username);
+			// No second hit: the stored token resolved straight from the registry, not a re-probe.
+			expect(stub.hitCount()).toBe(1);
+		} finally {
+			await stub.close();
+		}
+	});
 });
 
 /** A driver that is "available" and records the env it was asked to run a container with (same idea as
@@ -173,7 +203,7 @@ function envCapturingDriver(): { driver: Driver; getCapturedEnv: () => Record<st
 	return { driver, getCapturedEnv: () => capturedEnv };
 }
 
-describe('harvested proxy password flows into Actor run containers', () => {
+describe('harvested proxy password flows into Actor run containers, per user', () => {
 	let server: TestServerHandle;
 	let getCapturedEnv: () => Record<string, string> | undefined;
 	let previousUpstreamUrl: string | undefined;
@@ -263,5 +293,33 @@ describe('harvested proxy password flows into Actor run containers', () => {
 		const env = await runOnceAndGetEnv('proxy-offline-absent-token');
 		expect(env).toBeDefined();
 		expect(Object.hasOwn(env!, 'APIFY_PROXY_PASSWORD')).toBe(false);
+	});
+
+	it('two different users each get their own harvested proxy password in their own runs', async () => {
+		const stubA = await startStubUpstream({
+			data: { id: 'proxy-user-a', username: 'proxy-username-a', proxy: { password: 'password-for-a' } },
+		});
+		process.env.APIFY_UPSTREAM_API_BASE_URL = stubA.baseUrl;
+		delete process.env.APIFY_PROXY_PASSWORD;
+		let envA: Record<string, string> | undefined;
+		try {
+			envA = await runOnceAndGetEnv('proxy-per-user-token-a');
+		} finally {
+			await stubA.close();
+		}
+
+		const stubB = await startStubUpstream({
+			data: { id: 'proxy-user-b', username: 'proxy-username-b', proxy: { password: 'password-for-b' } },
+		});
+		process.env.APIFY_UPSTREAM_API_BASE_URL = stubB.baseUrl;
+		let envB: Record<string, string> | undefined;
+		try {
+			envB = await runOnceAndGetEnv('proxy-per-user-token-b');
+		} finally {
+			await stubB.close();
+		}
+
+		expect(envA?.APIFY_PROXY_PASSWORD).toBe('password-for-a');
+		expect(envB?.APIFY_PROXY_PASSWORD).toBe('password-for-b');
 	});
 });

@@ -1,6 +1,5 @@
 import { bootstrapStorage } from './storage/bootstrap.js';
 import { openRegistries } from './storage/registries.js';
-import { bootstrapDefaultUser } from './services/users.js';
 import { reconcileOrphanedJobs } from './services/runs.js';
 import { createDriver } from './driver/index.js';
 import { createApiServer } from './api/server.js';
@@ -12,7 +11,9 @@ import { API_PORT, CONSOLE_PORT, DEFAULT_DATA_DIR } from './config.js';
 async function main(): Promise<void> {
 	bootstrapStorage(DEFAULT_DATA_DIR);
 	await openRegistries();
-	await bootstrapDefaultUser();
+	// No default user is created here any more - users are created ad-hoc, per previously-unseen token,
+	// at the first API request that carries it (`services/users.ts: getOrCreateUserForToken()`,
+	// `cli.md`'s User bootstrap).
 	startLogFlusher();
 
 	const driver = await createDriver();

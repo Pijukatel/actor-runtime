@@ -36,6 +36,22 @@ export async function getOwnedActor(userId: string, id: string): Promise<ActorRe
 }
 
 /**
+ * Cross-user listing, for the console only (`console.md`: the console is an unauthenticated, view-only
+ * local dev tool with no login of its own, so with multiple users it shows every user's objects rather
+ * than scoping to one - see `console/server.ts`). The API's own `listOwnedActors` above stays strictly
+ * per-user; nothing here is reachable from `api/routes/*`.
+ */
+export async function listAllActors(): Promise<ActorRecord[]> {
+	return getRegistries().actors.list();
+}
+
+/** Cross-user lookup by id, for the console only (see `listAllActors`) - no ownership check, since the
+ * console's detail pages show any user's object. */
+export async function getActorById(id: string): Promise<ActorRecord | null> {
+	return getRegistries().actors.get(id);
+}
+
+/**
  * Resolves the CLI-friendly identifiers real Apify accepts as `:actorId`: the actual id, the plain
  * Actor `name`, or the `username~name` form (`storage.md`/`api.md` amendment) - useful for
  * `apify push`'s "does this Actor already exist" probe, which looks the Actor up by name before an id

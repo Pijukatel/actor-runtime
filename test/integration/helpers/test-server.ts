@@ -8,7 +8,7 @@ import { ApifyClient } from 'apify-client';
 
 import { bootstrapStorage, resetStorageForTests, shutdownStorage } from '../../../src/storage/bootstrap.js';
 import { openRegistries, resetRegistriesForTests } from '../../../src/storage/registries.js';
-import { bootstrapDefaultUser, resetDefaultUserCacheForTests } from '../../../src/services/users.js';
+import { resetUsersForTests } from '../../../src/services/users.js';
 import { createApiServer } from '../../../src/api/server.js';
 import { resetLogsForTests, stopLogFlusher } from '../../../src/services/logs.js';
 import type { BuildOutcome, Driver, RunOutcome } from '../../../src/driver/types.js';
@@ -182,11 +182,20 @@ export interface TestServerHandle {
 	close(): Promise<void>;
 }
 
-export async function startTestServer(driver: Driver = unavailableDriver()): Promise<TestServerHandle> {
+/** Default token `startTestServer()` builds its `client` with. No user is created eagerly any more (no
+ * startup-created default user) - the underlying user is minted ad-hoc on whichever request happens to
+ * be the first to actually use `client`/`token` (`services/users.ts: getOrCreateUserForToken()`), same
+ * as against the real runtime. Tests that need a *second*, distinct user pass their own `token` to
+ * `startTestServer` (or make requests with another `ApifyClient`/token against the same `baseUrl`). */
+const DEFAULT_TEST_TOKEN = 'test-default-token';
+
+export async function startTestServer(
+	driver: Driver = unavailableDriver(),
+	token: string = DEFAULT_TEST_TOKEN,
+): Promise<TestServerHandle> {
 	const dataDir = await mkdtemp(join(tmpdir(), 'actor-runtime-test-'));
 	bootstrapStorage(dataDir);
 	await openRegistries();
-	const user = await bootstrapDefaultUser();
 
 	const app = createApiServer({ driver });
 	const server: Server = await new Promise((resolve) => {
@@ -198,12 +207,12 @@ export async function startTestServer(driver: Driver = unavailableDriver()): Pro
 	// maxRetries: 0 - real apify-client retries 5xx (so a deliberate 501 from the request-deletion
 	// endpoints would otherwise burn ~8 exponential-backoff retries per test); production behaviour is
 	// unaffected, this only speeds up the test suite.
-	const client = new ApifyClient({ baseUrl, token: user.token, maxRetries: 0 });
+	const client = new ApifyClient({ baseUrl, token, maxRetries: 0 });
 
 	return {
 		client,
 		baseUrl,
-		token: user.token,
+		token,
 		dataDir,
 		driver,
 		async close() {
@@ -213,7 +222,7 @@ export async function startTestServer(driver: Driver = unavailableDriver()): Pro
 			await shutdownStorage();
 			resetStorageForTests();
 			resetRegistriesForTests();
-			resetDefaultUserCacheForTests();
+			resetUsersForTests();
 			// A background write (late log flush, run-record update) can land while the tree is
 			// being removed, recreating entries under an already-emptied directory — seen in CI as
 			// ENOTEMPTY. fs.rm retries exactly that class of error when maxRetries is set.

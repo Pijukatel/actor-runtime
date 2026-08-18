@@ -21,7 +21,7 @@ import { actorDto, buildDto, runDto } from '../dto/actors.js';
 import type { ActorVersionRecord } from '../../storage/entities.js';
 import type { ApiServerDeps } from '../server.js';
 import { CONTAINER_API_BASE_URL } from '../../config.js';
-import { effectiveProxyPassword } from '../../services/identity-resolution.js';
+import { resolveProxyPassword } from '../../services/users.js';
 
 const DEFAULT_TAG = 'latest';
 
@@ -284,12 +284,17 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 			const input =
 				body.length > 0 ? { body, contentType: req.header('content-type') ?? 'application/json' } : undefined;
 
+			// `resolveProxyPassword(requireUser(req))` is the *run owner's* proxy password, not just "the
+			// caller's": `actor` was resolved via `resolveOwnedActor(requireUser(req).id, ...)` above, so
+			// `actor.userId === requireUser(req).id` always holds - the caller can only ever start a run on
+			// their own Actor - which makes the two the same user record (`actor-driver.md`'s "one
+			// harvested-per-account password used specifically for each user").
 			const run = await startRun(deps.driver, actor, build, {
 				input,
 				memoryMbytes: queryNumber(req, 'memory'),
 				timeoutSecs: queryNumber(req, 'timeout'),
 				build: tag,
-				proxyPassword: effectiveProxyPassword(requireUser(req)),
+				proxyPassword: resolveProxyPassword(requireUser(req)),
 				apiBaseUrl: CONTAINER_API_BASE_URL,
 				token: requireUser(req).token,
 			});

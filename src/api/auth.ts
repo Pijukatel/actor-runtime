@@ -1,8 +1,7 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 
 import type { UserRecord } from '../storage/entities.js';
-import { getDefaultUser } from '../services/users.js';
-import { ensureIdentityResolvedForToken } from '../services/identity-resolution.js';
+import { getOrCreateUserForToken } from '../services/users.js';
 import { sendError } from './envelope.js';
 
 declare module 'express-serve-static-core' {
@@ -23,16 +22,11 @@ function extractToken(req: Request): string | undefined {
 }
 
 /**
- * Single default user for the POC: any non-empty bearer token or `?token=` authenticates as the one
- * bootstrap user. No per-user tokens, no ACLs. Resolves through `getDefaultUser()` - the same memoised
- * accessor the console uses - rather than re-implementing "list users, take the first one" here: this
- * runs on every API request, so it is the hot path the memo (one `getValue` instead of a full
- * `Registry.list()` scan) actually matters for.
- *
- * Also gives every token one lazy, best-effort chance to resolve against the real platform
- * (`ensureIdentityResolvedForToken`, `services/identity-resolution.ts`) before `getDefaultUser()` reads
- * the record back - cached per token after the first attempt, so this is a no-op await on every request
- * after that token's first.
+ * Per-token multi-user auth: any non-empty bearer token or `?token=` authenticates as *that token's*
+ * user, created ad-hoc on first sighting and resolved from cache/registry on every request after
+ * (`getOrCreateUserForToken`, `services/users.ts` - which also owns the once-per-token real-platform
+ * probe, `cli.md`'s User bootstrap). Different tokens resolve to different users; the same token always
+ * resolves back to the same one, including across a restart.
  */
 export function auth(): RequestHandler {
 	return async (req: Request, res: Response, next: NextFunction) => {
@@ -41,12 +35,11 @@ export function auth(): RequestHandler {
 			sendError(res, 401, 'user-not-authenticated', 'Authentication token is not provided');
 			return;
 		}
-		await ensureIdentityResolvedForToken(token);
-		// No try/catch: a `getDefaultUser()` rejection (bootstrap never ran) propagates as a rejected
-		// promise, which Express 5 forwards to the generic error middleware in `server.ts` on its own -
-		// that middleware already produces the same 500/`internal-error` envelope and (unlike a local
-		// catch) logs the real error via `console.error` first.
-		req.user = await getDefaultUser();
+		// No try/catch: a `getOrCreateUserForToken()` rejection propagates as a rejected promise, which
+		// Express 5 forwards to the generic error middleware in `server.ts` on its own - that middleware
+		// already produces the same 500/`internal-error` envelope and (unlike a local catch) logs the real
+		// error via `console.error` first.
+		req.user = await getOrCreateUserForToken(token);
 		next();
 	};
 }

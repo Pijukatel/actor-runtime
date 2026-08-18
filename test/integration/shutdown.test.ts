@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { bootstrapStorage, getRuntimeStorage, resetStorageForTests } from '../../src/storage/bootstrap.js';
 import { openRegistries, resetRegistriesForTests } from '../../src/storage/registries.js';
-import { bootstrapDefaultUser, resetDefaultUserCacheForTests } from '../../src/services/users.js';
+import { getOrCreateUserForToken, resetUsersForTests } from '../../src/services/users.js';
 import { createApiServer } from '../../src/api/server.js';
 import { createConsoleServer } from '../../src/console/server.js';
 import { resetLogsForTests, stopLogFlusher } from '../../src/services/logs.js';
@@ -28,7 +28,7 @@ describe('gracefulShutdown', () => {
 		stopLogFlusher();
 		resetLogsForTests();
 		resetRegistriesForTests();
-		resetDefaultUserCacheForTests();
+		resetUsersForTests();
 		resetStorageForTests();
 		if (dataDir) await rm(dataDir, { recursive: true, force: true });
 		dataDir = undefined;
@@ -40,7 +40,7 @@ describe('gracefulShutdown', () => {
 		dataDir = await mkdtemp(join(tmpdir(), 'actor-runtime-shutdown-'));
 		bootstrapStorage(dataDir);
 		await openRegistries();
-		const user = await bootstrapDefaultUser();
+		const user = await getOrCreateUserForToken('shutdown-test-token');
 
 		const apiApp = createApiServer({ driver: unavailableDriver() });
 		const consoleApp = createConsoleServer();

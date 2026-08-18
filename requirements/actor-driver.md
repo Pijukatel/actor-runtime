@@ -82,6 +82,6 @@
   precedence order: (1) the runtime itself was started with `APIFY_PROXY_PASSWORD` set in its own
   environment (see README.md's "Apify Proxy" section) — always wins when set; otherwise (2) the proxy
   password harvested from the real Apify platform the one time the run owner's token successfully
-  resolved against it (`cli.md`'s User bootstrap). If neither source has a value, the key is absent entirely — never a 
+  resolved against it (`cli.md`'s User bootstrap). If neither source has a value, the key is absent entirely — never a
   placeholder value. One host-level password (source 1)
   or one harvested-per-account password (source 2) used specifically for each user.

@@ -1,16 +1,23 @@
 /**
  * Server-rendered console: list + detail views for Actors, builds, runs, logs, and the three
  * user-storage types, each with exactly one inspection widget per storage type (`console.md`). Reads
- * through the same service layer as the API handlers, so ownership filtering is shared.
+ * through the same service layer as the API handlers, so ownership filtering (over on the API side) is
+ * shared rather than reimplemented.
+ *
+ * The console itself has no login of its own - it is a view-only, unauthenticated local dev tool
+ * (`console.md`) - so with multiple users it does not scope to any one of them: every list/detail route
+ * below reads through the `listAll*`/`get*ById` cross-user service functions (see e.g.
+ * `services/actors.ts: listAllActors`), never the API's own per-user `listOwned*`/`getOwned*`, and every
+ * list row and detail view shows the object's owner `userId` (`console.md`: "Frontend shows for each
+ * object the owner (userId)").
  */
 import express, { type Express } from 'express';
 
-import { getDefaultUser } from '../services/users.js';
-import { listOwnedActors, resolveOwnedActor } from '../services/actors.js';
-import { getOwnedBuild, listOwnedBuilds } from '../services/builds.js';
-import { getOwnedRun, listOwnedRuns } from '../services/runs.js';
+import { getActorById, listAllActors } from '../services/actors.js';
+import { getBuildById, listAllBuilds } from '../services/builds.js';
+import { getRunById, listAllRuns } from '../services/runs.js';
 import { getFullLog } from '../services/logs.js';
-import { getOwnedStorage, listOwnedStorages } from '../services/storages.js';
+import { getStorageById, listAllStorages } from '../services/storages.js';
 import { listRequests } from '../services/request-queues.js';
 import { openDataset, openKeyValueStore, openRequestQueue } from '../storage/open.js';
 import { pageKeys } from '../services/kv-key-listing.js';
@@ -27,21 +34,22 @@ export function createConsoleServer(): Express {
 	});
 
 	app.get('/actors', async (_req, res) => {
-		const user = await getDefaultUser();
-		const actors = await listOwnedActors(user.id);
+		const actors = await listAllActors();
 		const rows = actors.map((a) => [
 			a.id,
+			a.userId,
 			a.name,
 			a.title ?? '',
 			String(a.versions.length),
 			Object.keys(a.taggedBuilds).join(', '),
 		]);
-		res.send(layout('Actors', table(['id', 'name', 'title', 'versions', 'tagged builds'], rows, 0, '/actors')));
+		res.send(
+			layout('Actors', table(['id', 'userId', 'name', 'title', 'versions', 'tagged builds'], rows, 0, '/actors')),
+		);
 	});
 
 	app.get('/actors/:id', async (req, res) => {
-		const user = await getDefaultUser();
-		const actor = await resolveOwnedActor(user.id, req.params.id, user.username);
+		const actor = await getActorById(req.params.id);
 		if (!actor) {
 			res.status(404).send(layout('Not found', '<p>Actor not found.</p>'));
 			return;
@@ -49,6 +57,7 @@ export function createConsoleServer(): Express {
 		const body =
 			definitionList([
 				['id', actor.id],
+				['userId', actor.userId],
 				['name', actor.name],
 				['title', actor.title ?? ''],
 				['createdAt', actor.createdAt],
@@ -85,11 +94,9 @@ export function createConsoleServer(): Express {
 	app.get('/actors/:actorId/builds/:buildNumber', async (req, res) => {
 		// Unlike the run/dataset/KV-store redirects above and below, this one can't be a plain path
 		// rewrite: the real Console's build URL carries the human-readable `buildNumber` (e.g. `0.0.1`),
-		// but this console's own `/builds/:id` route keys off the build's internal id. Resolve it through
-		// the same `listOwnedBuilds` service the `/builds` list view already uses, scoped to the actor in
-		// the URL, before redirecting.
-		const user = await getDefaultUser();
-		const builds = await listOwnedBuilds(user.id, req.params.actorId);
+		// but this console's own `/builds/:id` route keys off the build's internal id. Resolve it
+		// cross-user (`listAllBuilds`, scoped to the actor in the URL) before redirecting.
+		const builds = await listAllBuilds(req.params.actorId);
 		const build = builds.find((b) => b.buildNumber === req.params.buildNumber);
 		if (!build) {
 			res.status(404).send(layout('Not found', '<p>Build not found.</p>'));
@@ -111,15 +118,18 @@ export function createConsoleServer(): Express {
 	});
 
 	app.get('/builds', async (_req, res) => {
-		const user = await getDefaultUser();
-		const builds = await listOwnedBuilds(user.id);
-		const rows = builds.map((b) => [b.id, b.actorId, b.buildNumber, b.status, b.startedAt]);
-		res.send(layout('Builds', table(['id', 'actorId', 'buildNumber', 'status', 'startedAt'], rows, 0, '/builds')));
+		const builds = await listAllBuilds();
+		const rows = builds.map((b) => [b.id, b.userId, b.actorId, b.buildNumber, b.status, b.startedAt]);
+		res.send(
+			layout(
+				'Builds',
+				table(['id', 'userId', 'actorId', 'buildNumber', 'status', 'startedAt'], rows, 0, '/builds'),
+			),
+		);
 	});
 
 	app.get('/builds/:id', async (req, res) => {
-		const user = await getDefaultUser();
-		const build = await getOwnedBuild(user.id, req.params.id);
+		const build = await getBuildById(req.params.id);
 		if (!build) {
 			res.status(404).send(layout('Not found', '<p>Build not found.</p>'));
 			return;
@@ -128,6 +138,7 @@ export function createConsoleServer(): Express {
 		const body =
 			definitionList([
 				['id', build.id],
+				['userId', build.userId],
 				['actorId', build.actorId],
 				['versionNumber', build.versionNumber],
 				['buildNumber', build.buildNumber],
@@ -144,15 +155,18 @@ export function createConsoleServer(): Express {
 	});
 
 	app.get('/runs', async (_req, res) => {
-		const user = await getDefaultUser();
-		const runs = await listOwnedRuns(user.id);
-		const rows = runs.map((r) => [r.id, r.actorId, r.status, r.startedAt, r.defaultDatasetId]);
-		res.send(layout('Runs', table(['id', 'actorId', 'status', 'startedAt', 'defaultDatasetId'], rows, 0, '/runs')));
+		const runs = await listAllRuns();
+		const rows = runs.map((r) => [r.id, r.userId, r.actorId, r.status, r.startedAt, r.defaultDatasetId]);
+		res.send(
+			layout(
+				'Runs',
+				table(['id', 'userId', 'actorId', 'status', 'startedAt', 'defaultDatasetId'], rows, 0, '/runs'),
+			),
+		);
 	});
 
 	app.get('/runs/:id', async (req, res) => {
-		const user = await getDefaultUser();
-		const run = await getOwnedRun(user.id, req.params.id);
+		const run = await getRunById(req.params.id);
 		if (!run) {
 			res.status(404).send(layout('Not found', '<p>Run not found.</p>'));
 			return;
@@ -161,6 +175,7 @@ export function createConsoleServer(): Express {
 		const body =
 			definitionList([
 				['id', run.id],
+				['userId', run.userId],
 				['actorId', run.actorId],
 				['buildId', run.buildId],
 				['status', run.status],
@@ -177,18 +192,20 @@ export function createConsoleServer(): Express {
 	});
 
 	app.get('/logs', async (_req, res) => {
-		const user = await getDefaultUser();
-		const [builds, runs] = await Promise.all([listOwnedBuilds(user.id), listOwnedRuns(user.id)]);
-		const rows = [...builds.map((b) => [b.id, 'build', b.status]), ...runs.map((r) => [r.id, 'run', r.status])];
-		res.send(layout('Logs', table(['id', 'kind', 'status'], rows, 0, '/logs')));
+		const [builds, runs] = await Promise.all([listAllBuilds(), listAllRuns()]);
+		const rows = [
+			...builds.map((b) => [b.id, b.userId, 'build', b.status]),
+			...runs.map((r) => [r.id, r.userId, 'run', r.status]),
+		];
+		res.send(layout('Logs', table(['id', 'userId', 'kind', 'status'], rows, 0, '/logs')));
 	});
 
 	app.get('/logs/:id', async (req, res) => {
-		const user = await getDefaultUser();
-		// A log id is always either a build id or a run id - resolve ownership through whichever one
-		// owns it (same 404-before-render pattern as the `/builds/:id` and `/runs/:id` routes above),
-		// so this route doesn't skip the ownership check its siblings both enforce.
-		const owned = (await getOwnedBuild(user.id, req.params.id)) ?? (await getOwnedRun(user.id, req.params.id));
+		// A log id is always either a build id or a run id - resolve existence through whichever one
+		// owns it (same 404-before-render pattern as the `/builds/:id` and `/runs/:id` routes above, just
+		// cross-user rather than ownership-scoped), so this route doesn't skip the existence check its
+		// siblings both enforce.
+		const owned = (await getBuildById(req.params.id)) ?? (await getRunById(req.params.id));
 		if (!owned) {
 			res.status(404).send(layout('Not found', '<p>Log not found.</p>'));
 			return;
@@ -200,15 +217,13 @@ export function createConsoleServer(): Express {
 	// --- Storage widgets: exactly one per type ---
 
 	app.get('/datasets', async (_req, res) => {
-		const user = await getDefaultUser();
-		const records = await listOwnedStorages(user.id, 'dataset');
-		const rows = records.map((r) => [r.id, r.name ?? '', r.createdAt]);
-		res.send(layout('Datasets', table(['id', 'name', 'createdAt'], rows, 0, '/datasets')));
+		const records = await listAllStorages('dataset');
+		const rows = records.map((r) => [r.id, r.userId, r.name ?? '', r.createdAt]);
+		res.send(layout('Datasets', table(['id', 'userId', 'name', 'createdAt'], rows, 0, '/datasets')));
 	});
 
 	app.get('/datasets/:id', async (req, res) => {
-		const user = await getDefaultUser();
-		const record = await getOwnedStorage(user.id, req.params.id, 'dataset');
+		const record = await getStorageById(req.params.id, 'dataset');
 		if (!record) {
 			res.status(404).send(layout('Not found', '<p>Dataset not found.</p>'));
 			return;
@@ -220,6 +235,7 @@ export function createConsoleServer(): Express {
 		const body =
 			definitionList([
 				['id', record.id],
+				['userId', record.userId],
 				['name', record.name ?? ''],
 				['itemCount', info.itemCount],
 				['createdAt', info.createdAt.toISOString()],
@@ -232,15 +248,15 @@ export function createConsoleServer(): Express {
 	});
 
 	app.get('/key-value-stores', async (_req, res) => {
-		const user = await getDefaultUser();
-		const records = await listOwnedStorages(user.id, 'keyValueStore');
-		const rows = records.map((r) => [r.id, r.name ?? '', r.createdAt]);
-		res.send(layout('Key-value stores', table(['id', 'name', 'createdAt'], rows, 0, '/key-value-stores')));
+		const records = await listAllStorages('keyValueStore');
+		const rows = records.map((r) => [r.id, r.userId, r.name ?? '', r.createdAt]);
+		res.send(
+			layout('Key-value stores', table(['id', 'userId', 'name', 'createdAt'], rows, 0, '/key-value-stores')),
+		);
 	});
 
 	app.get('/key-value-stores/:id', async (req, res) => {
-		const user = await getDefaultUser();
-		const record = await getOwnedStorage(user.id, req.params.id, 'keyValueStore');
+		const record = await getStorageById(req.params.id, 'keyValueStore');
 		if (!record) {
 			res.status(404).send(layout('Not found', '<p>Key-value store not found.</p>'));
 			return;
@@ -254,6 +270,7 @@ export function createConsoleServer(): Express {
 		const body =
 			definitionList([
 				['id', record.id],
+				['userId', record.userId],
 				['name', record.name ?? ''],
 				['createdAt', record.createdAt],
 				['keyCount', allKeys.length],
@@ -267,15 +284,13 @@ export function createConsoleServer(): Express {
 	});
 
 	app.get('/request-queues', async (_req, res) => {
-		const user = await getDefaultUser();
-		const records = await listOwnedStorages(user.id, 'requestQueue');
-		const rows = records.map((r) => [r.id, r.name ?? '', r.createdAt]);
-		res.send(layout('Request queues', table(['id', 'name', 'createdAt'], rows, 0, '/request-queues')));
+		const records = await listAllStorages('requestQueue');
+		const rows = records.map((r) => [r.id, r.userId, r.name ?? '', r.createdAt]);
+		res.send(layout('Request queues', table(['id', 'userId', 'name', 'createdAt'], rows, 0, '/request-queues')));
 	});
 
 	app.get('/request-queues/:id', async (req, res) => {
-		const user = await getDefaultUser();
-		const record = await getOwnedStorage(user.id, req.params.id, 'requestQueue');
+		const record = await getStorageById(req.params.id, 'requestQueue');
 		if (!record) {
 			res.status(404).send(layout('Not found', '<p>Request queue not found.</p>'));
 			return;
@@ -291,6 +306,7 @@ export function createConsoleServer(): Express {
 		const body =
 			definitionList([
 				['id', record.id],
+				['userId', record.userId],
 				['name', record.name ?? ''],
 				['totalRequestCount', info.totalRequestCount],
 				['handledRequestCount', info.handledRequestCount],

@@ -32,7 +32,9 @@ export function apifyAllOutput(args: string[], options: { cwd: string; env: Node
 	return `${result.stdout}\n${result.stderr}`;
 }
 
-/** Any non-empty value works - the runtime maps every non-empty token to its single local user. */
+/** Any non-empty value works - the runtime creates a user for this token ad-hoc on its first API
+ * request (`cli.md`'s User bootstrap), the same token throughout this e2e run mapping back to that one
+ * user on every subsequent request. */
 const APIFY_TOKEN = 'anything';
 
 /**
@@ -74,8 +76,9 @@ export function apifyEnv(isolatedApifyHome: string): NodeJS.ProcessEnv {
  * `auth.json`. `login`'s own base-URL resolution (`getConsoleUrl().includes('localhost') ?
  * 'http://localhost:3333' : undefined`) targets this runtime because `apifyEnv()` sets
  * `APIFY_CONSOLE_URL` to `http://localhost:3000` - independent of `APIFY_CLIENT_BASE_URL` - verified
- * against apify-cli's installed source. Any non-empty token works: the runtime maps every non-empty
- * token to its single local user (until/unless it resolves to a real one - `requirements/cli.md`).
+ * against apify-cli's installed source. Any non-empty token works: the runtime creates a user for it ad
+ * hoc on first use (fabricated unless the token resolves against the real platform -
+ * `requirements/cli.md`).
  */
 export function loginApifyCli(cwd: string, isolatedApifyHome: string): void {
 	apify(['login', '--token', APIFY_TOKEN], { cwd, env: apifyEnv(isolatedApifyHome) });

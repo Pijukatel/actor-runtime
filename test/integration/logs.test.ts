@@ -10,6 +10,7 @@ import {
 	markLogTerminal,
 } from '../../src/services/logs.js';
 import { getRegistries } from '../../src/storage/registries.js';
+import { getOrCreateUserForToken } from '../../src/services/users.js';
 
 /** Polls `check()` until it returns true or `timeoutMs` elapses, rather than a fixed sleep - keeps the
  * disconnect test fast on the happy path and still deterministic if cleanup is ever slow. */
@@ -55,8 +56,7 @@ describe('log streaming', () => {
 		appendLog(jobId, 'line 1\n');
 
 		// Seed ownership so the log endpoint's ownership check passes.
-		const { getRegistries } = await import('../../src/storage/registries.js');
-		const user = (await getRegistries().users.list())[0]!;
+		const user = await getOrCreateUserForToken(server.token);
 		await getRegistries().runs.set(jobId, {
 			id: jobId,
 			userId: user.id,
@@ -95,8 +95,7 @@ describe('log streaming', () => {
 		const jobId = 'disconnectingJobId1';
 		appendLog(jobId, 'line 1\n');
 
-		const { getRegistries } = await import('../../src/storage/registries.js');
-		const user = (await getRegistries().users.list())[0]!;
+		const user = await getOrCreateUserForToken(server.token);
 		await getRegistries().runs.set(jobId, {
 			id: jobId,
 			userId: user.id,
@@ -257,7 +256,7 @@ describe('log streaming', () => {
 		const jobId = 'readyWindowAbortJob1';
 		appendLog(jobId, 'line 1\n');
 
-		const user = (await getRegistries().users.list())[0]!;
+		const user = await getOrCreateUserForToken(server.token);
 		await getRegistries().runs.set(jobId, {
 			id: jobId,
 			userId: user.id,
@@ -298,7 +297,7 @@ describe('log streaming', () => {
 		// Deliberately no `appendLog` call at all - mirrors a job reconciled after a process restart,
 		// where `live` (services/logs.ts) starts out completely empty for this id.
 
-		const user = (await getRegistries().users.list())[0]!;
+		const user = await getOrCreateUserForToken(server.token);
 		await getRegistries().runs.set(jobId, {
 			id: jobId,
 			userId: user.id,
@@ -334,7 +333,7 @@ describe('log streaming', () => {
 		const jobId = 'happyPathMarkTerminal1';
 		appendLog(jobId, 'line 1\n');
 
-		const user = (await getRegistries().users.list())[0]!;
+		const user = await getOrCreateUserForToken(server.token);
 		await getRegistries().runs.set(jobId, {
 			id: jobId,
 			userId: user.id,
@@ -373,7 +372,7 @@ describe('log streaming', () => {
 		const jobId = 'alreadyTerminalRecord1';
 		appendLog(jobId, 'line 1\n');
 
-		const user = (await getRegistries().users.list())[0]!;
+		const user = await getOrCreateUserForToken(server.token);
 		await getRegistries().runs.set(jobId, {
 			id: jobId,
 			userId: user.id,
@@ -420,7 +419,7 @@ describe('log streaming', () => {
 		appendLog(jobId, 'line 1\n');
 		markLogTerminal(jobId);
 
-		const user = (await getRegistries().users.list())[0]!;
+		const user = await getOrCreateUserForToken(server.token);
 		await getRegistries().runs.set(jobId, {
 			id: jobId,
 			userId: user.id,

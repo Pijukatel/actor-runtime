@@ -30,6 +30,17 @@ export async function getOwnedBuild(userId: string, id: string): Promise<BuildRe
 	return record;
 }
 
+/** Cross-user listing, for the console only (see `services/actors.ts: listAllActors`'s doc comment). */
+export async function listAllBuilds(actorId?: string): Promise<BuildRecord[]> {
+	const all = await getRegistries().builds.list();
+	return actorId ? all.filter((build) => build.actorId === actorId) : all;
+}
+
+/** Cross-user lookup by id, for the console only (see `listAllBuilds`). */
+export async function getBuildById(id: string): Promise<BuildRecord | null> {
+	return getRegistries().builds.get(id);
+}
+
 /** Mirrors `deleteActor` (`services/actors.ts`) - the route layer resolves+authorizes the record (via
  * `getOwnedBuild`) and passes only its id down, same split as every other service-layer mutation. */
 export async function deleteBuild(id: string): Promise<void> {

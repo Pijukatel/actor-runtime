@@ -2,6 +2,7 @@ import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import axios from 'axios';
+import { ApifyClient } from 'apify-client';
 
 import { createConsoleServer } from '../../src/console/server.js';
 import { openRequestQueue } from '../../src/storage/open.js';
@@ -268,6 +269,56 @@ describe('console pages (HTTP fetch)', () => {
 			validateStatus: () => true,
 		});
 		expect(res.status).toBe(404);
+	});
+
+	it('shows the owner userId on every list page and every detail view (console.md: "Frontend shows for each object the owner (userId)")', async () => {
+		const actor = await server.client.actors().create({ name: 'owner-display-actor' });
+		const dataset = await server.client.datasets().getOrCreate('owner-display-dataset');
+		const me = await server.client.user('me').get();
+
+		const actorsList = await axios.get(`${consoleBaseUrl}/actors`);
+		expect(actorsList.data).toContain('userId');
+		expect(actorsList.data).toContain(me.id);
+
+		const actorDetail = await axios.get(`${consoleBaseUrl}/actors/${actor.id}`);
+		expect(actorDetail.data).toContain(me.id);
+
+		const datasetsList = await axios.get(`${consoleBaseUrl}/datasets`);
+		expect(datasetsList.data).toContain('userId');
+
+		const datasetDetail = await axios.get(`${consoleBaseUrl}/datasets/${dataset.id}`);
+		expect(datasetDetail.data).toContain(me.id);
+	});
+
+	it('lists objects across ALL users, not just one (view-only local dev console, no login of its own)', async () => {
+		const otherClient = new ApifyClient({
+			baseUrl: server.baseUrl,
+			token: 'console-other-user-token',
+			maxRetries: 0,
+		});
+
+		const actorMine = await server.client.actors().create({ name: 'console-cross-user-mine' });
+		const actorOther = await otherClient.actors().create({ name: 'console-cross-user-other' });
+		const meId = (await server.client.user('me').get()).id;
+		const otherId = (await otherClient.user('me').get()).id;
+		expect(meId).not.toBe(otherId);
+
+		const actorsList = await axios.get(`${consoleBaseUrl}/actors`);
+		expect(actorsList.data).toContain(actorMine.id);
+		expect(actorsList.data).toContain(actorOther.id);
+		expect(actorsList.data).toContain(meId);
+		expect(actorsList.data).toContain(otherId);
+
+		// The other user's actor detail page renders too - the console has no per-user scoping of its own.
+		const otherDetail = await axios.get(`${consoleBaseUrl}/actors/${actorOther.id}`);
+		expect(otherDetail.status).toBe(200);
+		expect(otherDetail.data).toContain(otherId);
+
+		const datasetMine = await server.client.datasets().getOrCreate('console-cross-user-dataset-mine');
+		const datasetOther = await otherClient.datasets().getOrCreate('console-cross-user-dataset-other');
+		const datasetsList = await axios.get(`${consoleBaseUrl}/datasets`);
+		expect(datasetsList.data).toContain(datasetMine.id);
+		expect(datasetsList.data).toContain(datasetOther.id);
 	});
 
 	it("redirects the real Console storage URL shapes (/storage/<type>/:id) to this console's own flat pages", async () => {

@@ -31,7 +31,7 @@
     - **Failure** (offline, non-200, timeout, or the token simply isn't a real one) - no error, no
       behavior change: the runtime creates a new user local user with name `local-user-{number}` and fabricated id `0000000000000000{number}` (where {number} is increasing count of fabricated users). One concise log line is printed (e.g. "could not resolve token against
       api.apify.com, using local identity").
-- Real and fabricated users are both saved in __USERS__ key value store
+- Real and fabricated users are both saved in `__USERS__` key value store
 - **Proxy password precedence**: the same "adopted, real" proxy password (when known) is also what the
   runtime forwards as `APIFY_PROXY_PASSWORD` into every Actor run container (see `actor-driver.md`),
   with the runtime's own `APIFY_PROXY_PASSWORD` environment variable (explicit operator config) always

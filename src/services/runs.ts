@@ -29,6 +29,16 @@ export async function getOwnedRun(userId: string, id: string): Promise<RunRecord
 	return record;
 }
 
+/** Cross-user listing, for the console only (see `services/actors.ts: listAllActors`'s doc comment). */
+export async function listAllRuns(): Promise<RunRecord[]> {
+	return getRegistries().runs.list();
+}
+
+/** Cross-user lookup by id, for the console only (see `listAllRuns`). */
+export async function getRunById(id: string): Promise<RunRecord | null> {
+	return getRegistries().runs.get(id);
+}
+
 /** Mirrors `deleteActor` (`services/actors.ts`) - the route layer resolves+authorizes the record (via
  * `getOwnedRun`) and passes only its id down, same split as every other service-layer mutation. */
 export async function deleteRun(id: string): Promise<void> {

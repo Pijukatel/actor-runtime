@@ -13,24 +13,25 @@ export interface StorageRecord {
 	accessedAt: string;
 }
 
+/**
+ * One record per token, created ad-hoc by `services/users.ts: getOrCreateUserForToken()` on the first
+ * request that ever carries a given token (`cli.md`'s User bootstrap) - there is no startup-created
+ * default user any more. `id`/`username` are the user's real identity outright, not an overlay on some
+ * other fixed internal id: for a token that resolves against the real platform they are that account's
+ * actual `id`/`username`; otherwise they are the fabricated `local-user-{n}` / `0000000000000000{n}`
+ * pair. Every ownership filter (`actor.userId`, `run.userId`, ...) is keyed off `id` directly. Plain
+ * per storage.md - no display-preference/overlay fields.
+ */
 export interface UserRecord {
 	id: string;
 	username: string;
 	token: string;
 	createdAt: string;
-	/**
-	 * Real Apify Console identity, adopted at most once per token from `GET
-	 * https://api.apify.com/v2/users/me` (see `services/identity-resolution.ts`) when that token
-	 * resolves against the real platform. `id`/`username` above stay fixed forever - every ownership
-	 * filter (`actor.userId`, `run.userId`, ...) is keyed off `id`, and re-keying it out from under
-	 * already-created records would break that filtering - so adoption only ever adds these three
-	 * fields, which the `/users/me` and `/users/:userId` DTOs (`api/routes/users.ts`) prefer over
-	 * `id`/`username`/the hardcoded local proxy password when present. Undefined until (and unless)
-	 * adoption succeeds; a failed/offline resolution leaves them untouched rather than clearing them.
-	 */
-	realId?: string;
-	realUsername?: string;
-	realProxyPassword?: string;
+	/** Real Apify Proxy password for this account, harvested from the upstream `/v2/users/me` response
+	 * at creation time when the token resolved against the real platform (see
+	 * `services/identity-resolution.ts`). Absent for a fabricated user, or a real one whose upstream
+	 * response carried none. */
+	proxyPassword?: string;
 }
 
 export type SourceType = 'SOURCE_FILES';
