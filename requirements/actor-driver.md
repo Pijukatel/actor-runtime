@@ -38,6 +38,12 @@
 - Actor build log is saved in `__LOGS__` internal storage
 - Actor details are saved in `__ACTORS__` internal storage
 
+# Bind mount volumes with Actor source code
+- To enable rapid development of Actors, it is desired to avoid the need to rebuild the Actors. This can be achieved by bind mounting the actor local development folder when starting the container.
+- When building an Actor, get the location where the Actor source code is locally located and save it in `__ACTORS__` under `localDevFolder`
+- Detect the working directory of docker image `docker inspect -f '{{.Config.WorkingDir}}' {DOCKER_IMAGE}` (replace {DOCKER_IMAGE} by the docker image identifier) and save it to `__ACTORS__` under `imageWorkingDirectory` 
+- Each Actor stored by the local Actor runtime is started with bind mounted development folder using these additional arguments `-v {localDevFolder}:{imageWorkingDirectory} -v {imageWorkingDirectory}/node_modules`
+
 # Networking
 
 - On startup, the runtime detects its own container id, ensures a Docker network `apify-local`

@@ -71,6 +71,8 @@
     - `value` is the metadata of the Actor
         - owner (`userId`)
         - metadata
+        - localDevFolder
+        - imageWorkingDirectory
 - The system stores Actor runs in dedicated key-value store called `__RUNS__`:
     - `key` is the id of the Actor run `runId`
     - `value` is the metadata of the Actor
