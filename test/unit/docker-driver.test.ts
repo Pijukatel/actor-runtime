@@ -18,8 +18,8 @@ import { DockerDriver } from '../../src/driver/docker-driver.js';
 function stubDocker(containers: Array<{ Id: string; Labels: Record<string, string> }>) {
 	const removed: string[] = [];
 	const removeCallOptions: Array<Record<string, unknown> | undefined> = [];
-	const listContainers = vi.fn(async (options?: { all?: boolean; filters?: string }) => {
-		const filters = options?.filters ? (JSON.parse(options.filters) as { label?: string[] }) : {};
+	const listContainers = vi.fn(async (options: { all: boolean; filters: string }) => {
+		const filters = JSON.parse(options.filters) as { label?: string[] };
 		const labelKeys = filters.label ?? [];
 		if (labelKeys.length === 0) return containers;
 		return containers.filter((c) => labelKeys.every((key) => key in c.Labels));
@@ -49,7 +49,7 @@ describe('DockerDriver.reconcileOrphans', () => {
 
 		expect(listContainers.mock.calls.length).toBeGreaterThanOrEqual(2);
 		const allLabelValues: string[] = [];
-		for (const [options] of listContainers.mock.calls as Array<[{ all: boolean; filters: string }]>) {
+		for (const [options] of listContainers.mock.calls) {
 			expect(options.all).toBe(true);
 			const filters = JSON.parse(options.filters) as { label?: string[] };
 			expect(filters.label?.length ?? 0).toBeLessThanOrEqual(1);

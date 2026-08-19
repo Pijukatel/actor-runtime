@@ -21,11 +21,12 @@ Local Actor runtime is an Actor development tool for developing, running, and de
 - To simulate multiple users use custom token and in additional authorization header. For example: `apify cli api v2/datasets -H '{"authorization": "Bearer TOKEN"}'`
 - You can use already authenticated CLI or call `apify login --token TOKEN`
 - To iterate on an Actor's source without a rebuild for every change: push and build the Actor once, then
-  register its local source folder with `apify api POST ../actor-runtime/dev-folder/<actorId> --body
-'"/abs/path/to/src"'` (the `../` escapes the CLI's own `/v2` base and lands on this runtime's own
-  `/actor-runtime/*` endpoint). From then on, edit locally, recompile locally (`tsc` or the
-  language-appropriate equivalent), and `apify call` again - no `apify push`/build in between. Submitting
-  `--body '""'` clears the registration. Dependency changes still need a real rebuild.
+  register its local source folder with
+  `apify api POST ../actor-runtime/dev-folder/<actorId> --body '"/abs/path/to/src"'` (the `../` escapes
+  the CLI's own `/v2` base and lands on this runtime's own `/actor-runtime/*` endpoint). From then on,
+  edit locally, recompile locally (`tsc` or the language-appropriate equivalent), and `apify call` again -
+  no `apify push`/build in between. Submitting `--body '""'` clears the registration. Dependency changes
+  still need a real rebuild.
 
 ## Through direct API calls
 - You can also send direct API calls. For example: http://localhost:3333/v2/datasets?token=TOKEN

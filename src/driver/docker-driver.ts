@@ -1,9 +1,11 @@
 /**
  * The Docker driver: build/run Actor images over the host Docker socket via `dockerode`. Every Actor
  * container joins the `apify-local` network so it can resolve the runtime's own container by the
- * fixed DNS alias `apify-api` (`actor-driver.md`). Storage access is HTTP-only; the one filesystem
- * bind mount this driver ever adds is the optional local-dev-folder mount (`RunContext.devMount`, see
- * `startRun` below) - conditional, never unconditional, on every Actor's container.
+ * fixed DNS alias `apify-api` (`actor-driver.md`). Storage access is HTTP-only; the only filesystem
+ * bind mounts this driver ever adds are the optional local-dev-folder mount on a real run
+ * (`RunContext.devMount`, see `startRun` below) - conditional, never unconditional, on every Actor's
+ * container - and the read-only probe mount `probeDevFolder` creates to validate a candidate dev folder
+ * before it is ever registered (see below), whose container is never started.
  *
  * Genuine cancellation: `docker.buildImage()` accepts an `abortSignal` option that dockerode forwards
  * all the way to Node's `http.request({ signal })` (`docker-modem/lib/modem.js`: `optionsf.signal =

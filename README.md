@@ -51,7 +51,9 @@ apify api POST ../actor-runtime/dev-folder/<actorId> --body '"/abs/path/to/sampl
 
 `<actorId>` is the id `apify push --json` printed (`.actor.id`); the path must be absolute and must
 already exist on the **host** - the runtime verifies this by actually trying to mount it, and rejects
-the call with a clear error if the Actor has no successful build yet or the path can't be confirmed.
+the call with a clear error if the Actor has no build tagged `latest` yet (a stock `apify push` always
+tags its build `latest`, so this is normally just "build at least once first") or the path can't be
+confirmed.
 The same thing is also a single-field form on the Actor's page in the console (`http://localhost:3000`).
 
 From then on:
