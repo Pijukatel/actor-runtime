@@ -21,11 +21,6 @@
 
 - All end-to-end tests can use only Apify cli commands to emulate user workflow.
 - For asserting the test results, the tests must inspect the return values of the Apify cli commands.
-- **Narrow carve-out:** an assertion about a host/Docker-level invariant that no `apify` CLI command can
-  observe at all - e.g. whether a Docker volume or container was actually reclaimed - may read the Docker
-  CLI directly instead. This does not apply to anything observable through the Apify CLI, which must
-  still be asserted through it as above; it exists only because Docker volume/container accounting has
-  no Apify-CLI-observable surface to assert against.
 - The e2e suite requires a reachable Docker daemon (it builds and runs real Actor containers) and
   detects its absence, failing in such case.
 - The sample Actors crawl a live site (`https://crawlee.dev/` by default), so the e2e suite also

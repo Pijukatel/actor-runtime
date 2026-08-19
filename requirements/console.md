@@ -9,14 +9,7 @@
 - The console has no login of its own, so with multiple users it lists and shows every user's objects
   rather than scoping to one - the API's own endpoints stay strictly scoped to the calling token's user
   (`storage.md`'s "Users" section).
-- **The console is unauthenticated, and view-only except for exactly one mutation**: the Actor detail
-  view's local dev-folder registration form (below). This amends the previous blanket "unauthenticated
-  and view-only" statement, which no longer describes the shipped console accurately - it still has no
-  login of its own, and every other route remains a plain read, but that one form genuinely writes
-  state. It writes cross-user the same way the console's reads already are cross-user: resolving the
-  Actor by the id already in the page URL, with no token and no ownership check - a documented deviation
-  from the API's own strictly owner-scoped equivalent write, not an accident (`actor-driver.md`,
-  `api.md`'s `/actor-runtime/*` section).
+- The console is unauthenticated, and view-only
 - There are three types of objects: key-value store, dataset, request queue.
     - For each object type there must be exactly one widget for inspection.
     - The request-queue widget leads with the authoritative counts from `RequestQueue.getInfo()`

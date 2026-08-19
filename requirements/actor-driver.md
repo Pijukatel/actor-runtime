@@ -44,23 +44,10 @@
   every source change. This is achieved by bind mounting the Actor's local development folder over the
   built image's working directory when starting the container - edit locally, recompile locally
   (`tsc`, or the language-appropriate equivalent), `apify call` again, with no `apify push`/build in
-  between. Node does not hot-reload a running process, so the recompiled output is picked up by the
-  **next run's container start**, not inside an already-running container - this matches the runtime
-  exactly, since it creates a fresh container per run.
-- `localDevFolder` is **registered explicitly**, not learned automatically from a build: a new
-  local-only endpoint, `POST /actor-runtime/dev-folder/:actorId` (see `api.md`), also exposed as a
-  single-field form on the console's Actor detail view (`console.md`), sets or clears it. Both surfaces
-  funnel through one shared validate-and-persist service function. This is a deliberate correction of
-  this section's original phrasing ("when building an Actor, get the location...") - nothing on the
-  wire between `apify push` and this runtime ever carries a host filesystem path, so there is no
-  build-time signal to "get" it from; the developer supplies it out-of-band, once, after their first
-  successful push+build.
-- **Registration requires a build tagged `latest`.** The registration path verifies the candidate
-  folder against the image of the Actor's build tagged `latest` (see below), with no fallback to any
-  other tag - an Actor whose only successful build is tagged something else is rejected the same way a
-  tag-less run would be. Either way (no build at all, or a successful build under a different tag), the
-  rejection is a clear error at registration time naming the missing `latest` tag, never a silent accept
-  with nothing to check against.
+  between.
+- `localDevFolder` is **registered explicitly** on a new local-only endpoint,
+  `POST /actor-runtime/dev-folder/:actorId` (see `api.md`), also exposed as a single-field form on the console's Actor detail view (`console.md`), sets or clears it. Both surfaces
+  funnel through one shared validate-and-persist service function.
 - **Registration validates the path in two layers**, not shape alone:
     1. A cheap shape pre-filter: the submitted value must be an absolute POSIX path, contain no newline
        or NUL byte, and stay under a length cap. A leading `~` is never expanded - this runtime never
@@ -76,24 +63,8 @@
        literal `/.` appended** as `Source`, read-only) against the Actor's own latest successfully-built
        image; success removes it immediately without ever calling `.start()`, and a rejection means
        creation itself failed, so there is nothing to clean up either way. The appended `/.` is what makes
-       this a directory check, not just an existence check: verified empirically against a real daemon, it
-       forces the same `stat` moby already runs to also reject a plain file (`stat <path>/.: not a
-directory`) while leaving every other case unchanged - a real directory (or a symlink to one) still
-       succeeds, and a missing path still rejects with the same "does not exist" substring, only now
-       trailed by `/.`. Because the daemon's message and the probe's own `Source` therefore always carry
-       that suffix, neither is ever echoed to the user or stored anywhere - only the classified outcome
-       below crosses that boundary, so a rejected or accepted path is always shown exactly as the caller
-       submitted it, never with a trailing `/.`. The probe container carries a fixed label
-       (`actor-runtime.devFolderProbe`) so that if its own removal call ever fails - creation succeeded, so
-       a real container now exists on the daemon - it is not simply lost: the startup orphan sweep (below)
-       unconditionally force-removes every container carrying that label, regardless of which run (if any)
-       it belongs to.
-    - Submitting the **empty string clears the registration** and never runs either validation layer -
-      there is no path to check, and clearing must always succeed, including when Docker itself is
-      unreachable. Clearing an Actor that has nothing registered is a no-op: no registry write at all.
-      A **whitespace-only** string (e.g. `"   "`) is not a clear - only the literal empty string is;
-      whitespace-only is trimmed and then rejected by the shape check (400), the same as any other value
-      that fails to start with `/`.
+       this a directory check, not just an existence check.
+    - Submitting the **empty string clears the registration** and never runs either validation layer.
     - Errors are classified by shape, most specific first, and every non-success branch rejects rather
       than guessing: no HTTP response at all (Docker itself unreachable) is reported as "could not
       verify - Docker is unreachable", never as "does not exist"; the probe's own image returning 404 is
@@ -101,51 +72,17 @@ directory`) while leaving every other case unchanged - a real directory (or a sy
       rejection whose message contains the exact substring `bind source path does not exist` is the one
       case reported as "path does not exist"; a mount-validation rejection whose message contains the
       exact substring `not a directory` (reachable only because of the appended `/.` above) is reported
-      as "path is not a directory" - a **file** passes plain `Mounts`-type bind validation on its own
-      (Docker allows a file as a bind source at container-create), so without this check a registered file
-      would silently accept and only break a run later when it is mounted over the image's working
-      directory; every other mount-validation-shaped rejection (a permission error, Docker Desktop's
-      file-sharing denial, or anything unrecognized) is reported as a generic "could not verify this path"
-        - never a false "does not exist" or "not a directory".
+      as "path is not a directory".
 - **`imageWorkingDirectory` is captured by the driver itself, and is build-specific, not
   Actor-specific.** Right after a successful build: `docker.getImage(imageId).inspect()` over
   `dockerode`, reading `.Config.WorkingDir`, then persisted onto **that build's own `BuildRecord`** in
   `__BUILDS__` (see `storage.md`), in the same status-transition write that moves the build to
-  `SUCCEEDED`. This corrects this section's original shelled-out-CLI phrasing for detecting an image's
-  working directory - this codebase talks to the host Docker socket exclusively through `dockerode`,
-  never by shelling out to a `docker` command-line invocation, matching every other Docker interaction
-  in `actor-driver.md`. An inspect failure is logged and tolerated - it must never fail an
-  otherwise-successful build - and an empty or `/` working directory is left unset the same way:
-  mounting a dev folder over `/` would destroy the container.
-    - **There is no `imageWorkingDirectory` field on the Actor record at all** - a design correction made
-      at the human's explicit direction ("the workdir should be build specific, not actor specific"). An
-      Actor-level field, written unconditionally on every successful build regardless of tag, would let a
-      multi-tag Actor's more-recently-built _non_-`latest` build silently overwrite the value a same-run
-      `latest` mount is built from - a real, silent wrong-container-path defect, not just the
-      already-accepted "stale most-recent-build" staleness. There is exactly one source of truth now: each
-      build's own working directory, on that build's own record.
+  `SUCCEEDED`.
     - Both the mount a run actually applies (`services/runs.ts`) and the status the console/API report
       (`services/dev-folder.ts: devFolderStatus`) resolve the Actor's `latest`-tagged `BuildRecord` (the
-      same resolution a tag-less run performs) and read `imageWorkingDirectory` off _that build_, never off
-      the Actor. A run against a non-`latest` tag likewise uses that tag's own resolved build's working
-      directory, never `latest`'s or any other tag's - each run's mount target always matches the image its
-      own container was actually started from.
-- **The mount is conditional, applied only when both fields are present and non-empty** -
-  `localDevFolder` on the Actor, and a known, non-`/`, non-empty `imageWorkingDirectory` on the specific
-  `BuildRecord` this run resolved. An Actor that was never registered (or was cleared), or whose resolved
-  build has no known working directory, starts exactly as if this feature did not exist: no
-  mount-related entries at all in its container's configuration. The console's "mount will apply on the
-  next run" display reflects this same resolution - it is `true` only when the Actor's `latest`-tagged
-  build has a known working directory, never merely because some build, at some point, once had one.
-- **The mount uses `HostConfig.Mounts`, never the legacy `Binds` array or literal `-v` flags.** This
-  corrects the section's original
-  `-v {localDevFolder}:{imageWorkingDirectory} -v {imageWorkingDirectory}/node_modules` phrasing: a plain
-  `-v`/`Binds` bind **auto-creates** a missing host source directory silently, which would defeat the
-  whole point of validating existence at registration and would let a folder that vanished between
-  registration and a run start silently mount an empty directory over the image's working directory
-  instead of failing the run. A `Mounts`-type
-  bind **errors** on a missing source instead (unless `BindOptions.CreateMountpoint` is explicitly set,
-  which this runtime never does), giving the same strictness at run start as at registration. One
+      same resolution a tag-less run performs) and read `imageWorkingDirectory` off _that build_..
+- **The mount is conditional, applied only when both fields are present and non-empty**
+- **The mount uses `HostConfig.Mounts`, never the legacy `Binds` array or literal `-v` flags.**
   `HostConfig.Mounts` array carries both entries:
     - `{ Type: 'bind', Source: localDevFolder, Target: imageWorkingDirectory }` - read-write (no
       `ReadOnly`), matching this section's original plain, unsuffixed mount intent.
@@ -166,13 +103,7 @@ directory`) while leaving every other case unchanged - a real directory (or a sy
   run that fails against a since-vanished folder explains why in its very first log line, and the
   daemon's own `Mounts`-type rejection (see above) fails that run loudly rather than silently mounting
   an empty auto-created directory.
-- Neither `localDevFolder` nor `imageWorkingDirectory` is ever exposed on the public `/v2` API
-  (`storage.md`).
-- **Registering or clearing a dev folder never bumps the Actor's `modifiedAt`.** Unlike
-  `localDevFolder`/`imageWorkingDirectory` themselves, `modifiedAt` _is_ exposed on `/v2` - bumping it on
-  every dev-folder write would leak this local-only feature into the emulated API through a timing side
-  channel, contradicting the whole point of keeping it outside `/v2`. The write goes straight to the
-  `__ACTORS__` registry rather than through the normal `modifiedAt`-bumping Actor-update path.
+- **Registering or clearing a dev folder never bumps the Actor's `modifiedAt`.
 
 # Networking
 

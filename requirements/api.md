@@ -124,58 +124,15 @@
       implement. Not built here; both paths are in the vendored spec table (`api/spec-table.ts`) as
       `implemented: false` so they answer `501`, not `404`.
 - All endpoints from the specification that do not have implementation must return response `501 Not Implemented`
-- All endpoints not present in specification must return `404 Not Found` - **except** the
-  `/actor-runtime/*` namespace below, which is deliberately outside the Apify spec entirely and is
-  never routed through the `501`/`404` classification this rule describes.
+- All endpoints not present in specification must return `404 Not Found` - **except** the `/actor-runtime/*`
 
-# Private API
-
-- Not implemented
-
-## Upstream fallback (opt-in, off by default, all HTTP methods)
-
-- Not implemented
-
-# `/actor-runtime/*` - a deliberately non-Apify, local-only namespace
-
-- Everything under `/actor-runtime/*` is this runtime's own tooling surface, not part of the emulated
-  Apify `/v2` API - it exists only because this runtime runs locally, and has no equivalent on the real
-  platform. The "every off-spec path returns 404" rule above (and "501 vs 404") applies only to paths
-  that are, or resemble, real Apify spec paths; `/actor-runtime/*` is carved out of that rule entirely,
-  as a namespace, not as a one-off exception for a single route.
-- It is mounted directly on the API app, outside the `v2` router, and registered before the
-  `501`/`404` catch-all - so unlike every path under `/v2`, a route here is not classified against the
-  vendored Apify spec table at all.
-- **Also served at `/v2/actor-runtime/*`**, via the exact same router instance (no duplicated route
-  logic) - this is an alias, not a second implementation. It exists solely because `apify api`'s own
-  URL-building hardcodes a `/v2`-suffixed base URL (`${apifyClient.baseUrl}/${endpoint}`) and its
-  `normalizePath` strips only a leading `/` and a leading `v2/`, never `..`: the clean, documented
-  invocation `apify api POST /actor-runtime/dev-folder/<actorId>` (no `../`) therefore resolves to
-  `<base>/v2/actor-runtime/dev-folder/<actorId>`, not the canonical `/actor-runtime/*` path. Both mounts
-  are registered before `app.use('/v2', v2)`, never nested under the `v2` router, so a request is
-  authenticated exactly once by this namespace's own `auth()` regardless of which of the two paths
-  reached it - never followed by `v2`'s own `auth()` on the same request. `/v2/actor-runtime/*` is
-  **not** part of the emulated Apify API despite the `/v2` prefix - it is the identical, deliberately
-  non-Apify namespace described above, reachable a second way purely for CLI ergonomics. `actorDto`
-  still never exposes the dev-folder fields on any real `/v2` Actor response, regardless of which of the
-  two paths was used to set or clear them.
+# Actor runtime API
+- `/actor-runtime/*` is API that control specifics function of the local Actor runtime
 - **`POST /actor-runtime/dev-folder/:actorId`** - registers (or clears) the Actor's local dev folder for
   the bind-mount feature (`actor-driver.md`'s "Bind mount volumes with Actor source code"). `:actorId`
   accepts the same forms as the rest of the API (id, plain name, `username~name`).
-    - **Authenticated** the same way as every `/v2` route (`Authorization: Bearer <token>` or `?token=`),
-      even though it sits outside the `v2` router and so does not inherit that router's `auth()`
-      middleware automatically - it applies its own. Ownership-scoped via the same `resolveOwnedActor`
-      lookup `/v2` uses: a caller can only register a dev folder for their own Actor, and a mismatched
-      or nonexistent `:actorId` answers `404` with error type `record-not-found`, exactly like the rest
-      of the API.
-    - **Request body**: a JSON string - `'"/abs/path/to/src"'` to set, `'""'` to clear. Only the literal
-      empty string clears; a non-empty string is trimmed and then shape-checked, so a whitespace-only
-      body (e.g. `'"   "'`) is rejected as a malformed path, not treated as a clear. This is deliberate,
-      not merely convenient: `apify api`'s `--body` flag validates with `JSON.parse` and refuses anything
-      that is not valid JSON, so a bare, unquoted path can never reach this route through the documented
-      CLI invocation at all. A body that is not valid JSON, or is valid JSON but not a string (a bare
-      number, an object, ...), is rejected with `400` / `invalid-request` - never silently coerced or
-      stored verbatim.
+    - **Authenticated** the same way as every `/v2` route.
+    - **Request body**: a JSON string - `'"/abs/path/to/src"'` to set, `'""'` to clear.
     - **Response**: on success, `{ data: { localDevFolder, imageWorkingDirectory, mountWillApply } }` -
       the same three values the console detail page shows (`console.md`), doubling as the read-back this
       design has no separate `GET` for.
@@ -199,17 +156,14 @@
         - `503` `dev-folder-check-unavailable` - Docker itself is unreachable.
         - `500` `internal-error` - the probe's own image is missing (a 404 from the daemon on an image
           that should exist) - an operational fault, not a bad submitted path.
-    - These exact codes/types are an implementation choice, not a spec-level commitment the way the
-      `/v2` envelope contract is - but the _distinctions themselves_ (does-not-exist vs. could-not-verify,
-      build-first vs. bad-path) are load-bearing and must not collapse into one generic error.
     - The documented CLI invocation is
       `apify api POST /actor-runtime/dev-folder/<actorId> --body '"/abs/path/to/src"'` - the CLI's
-      `apify api` escape hatch, which resolves this exact path onto `/v2/actor-runtime/dev-folder/<actorId>`
-      (the alias just above), carrying the same bearer token every other `apify` command sends. An older
-      form using a leading `../` (escaping the CLI's own `/v2`-suffixed base URL to land on the canonical
-      `/actor-runtime/*` path directly) still works and is not being removed - it is simply no longer the
-      documented, recommended form now that the alias makes the plain, un-escaped path work too.
 - The console's own dev-folder form (`console.md`) does **not** go through this endpoint - it posts to a
   console-local, unauthenticated route on the console's own port, resolving the Actor cross-user by the
   id already in its page URL. Both routes funnel into the same underlying validate-and-persist service
   function, so the two surfaces can never drift apart in behavior, only in how they are reached.
+
+## Upstream fallback (opt-in, off by default, all HTTP methods)
+
+- Not implemented
+
