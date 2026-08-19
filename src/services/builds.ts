@@ -41,6 +41,24 @@ export async function getBuildById(id: string): Promise<BuildRecord | null> {
 	return getRegistries().builds.get(id);
 }
 
+/** The two ways `tag` can fail to resolve on an Actor, kept distinguishable rather than collapsed to one
+ * generic "not found": `no-such-tag` when `tag` was never recorded at all, `build-deleted` when the tag
+ * *is* recorded but its `BuildRecord` is gone (`deleteBuild` below removes the record without clearing
+ * any tag that pointed at it). */
+export type TaggedBuildLookup =
+	{ found: false; reason: 'no-such-tag' | 'build-deleted' } | { found: true; build: BuildRecord };
+
+/** Resolves `tag` on `actor` to its `BuildRecord` - the exact lookup `POST /actors/:actorId/runs`
+ * performs, and the one `services/dev-folder.ts`'s registration probe reuses to find an image to check
+ * against. No fallback to any other tag. */
+export async function resolveTaggedBuild(actor: ActorRecord, tag: string): Promise<TaggedBuildLookup> {
+	const tagged = actor.taggedBuilds[tag];
+	if (!tagged) return { found: false, reason: 'no-such-tag' };
+	const build = await getBuildById(tagged.buildId);
+	if (!build) return { found: false, reason: 'build-deleted' };
+	return { found: true, build };
+}
+
 /** Mirrors `deleteActor` (`services/actors.ts`) - the route layer resolves+authorizes the record (via
  * `getOwnedBuild`) and passes only its id down, same split as every other service-layer mutation. */
 export async function deleteBuild(id: string): Promise<void> {
@@ -192,17 +210,10 @@ export async function runBuildInBackground(
 		// `apify call`/`POST .../runs` against that tag even though the build record itself correctly
 		// stayed ABORTED.
 		if (succeeded?.status === 'SUCCEEDED') {
-			// Folded into the same `updateActor` call that records the tagged build (`actor-driver.md`'s
-			// "`imageWorkingDirectory` is captured by the driver itself" bullet), so it lands in
-			// `__ACTORS__` in one write, not two. Only set when this build's inspect actually produced a
-			// value: `outcome.imageWorkingDirectory` is `undefined` both when the inspect call itself
-			// failed and when the image's working directory was empty/`/` (`docker-driver.ts`'s
-			// `inspectWorkingDirectory`) - either way, that must never fail the (otherwise-successful)
-			// build, and it must not clobber a previously known-good value with `undefined` just because
-			// *this* build's inspect happened to come up empty (`storage.md`'s `imageWorkingDirectory`
-			// field already accepts reflecting only the most recent successful build, a known staleness
-			// gap; overwriting a known value with "unset" on a transient inspect hiccup would be strictly
-			// worse than that, not better).
+			// Folded into the same `updateActor` call that records the tagged build, one write not two.
+			// Only set when this build's inspect actually produced a value - `outcome.imageWorkingDirectory`
+			// is `undefined` on an inspect failure or an empty/`/` working directory, and either way that
+			// must not clobber a previously known-good value with `undefined`.
 			await updateActor(actor.id, (current) => {
 				const withTag = recordTaggedBuild(current, options.tag, record.id, record.buildNumber);
 				return outcome.imageWorkingDirectory !== undefined

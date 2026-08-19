@@ -13,7 +13,7 @@ import { mountBuilds } from './routes/builds.js';
 import { mountRuns } from './routes/runs.js';
 import { mountLogs } from './routes/logs.js';
 import { mountRunStorageAliases } from './routes/run-storage-aliases.js';
-import { mountDevFolder } from './routes/dev-folder.js';
+import { devFolderRouter } from './routes/dev-folder.js';
 import type { Driver } from '../driver/types.js';
 
 export interface ApiServerDeps {
@@ -45,8 +45,8 @@ export function createApiServer(deps: ApiServerDeps): Express {
 
 	// `/actor-runtime/*` - a deliberately non-Apify, local-runtime-only namespace (`api.md`), registered
 	// before the 501/404 catch-all below but outside the `v2` router entirely, so it needs its own
-	// `auth()` (see `mountDevFolder`'s doc comment) rather than inheriting `v2.use(auth())` above.
-	mountDevFolder(app, deps);
+	// `auth()` (see `devFolderRouter`'s doc comment) rather than inheriting `v2.use(auth())` above.
+	app.use('/actor-runtime', devFolderRouter(deps));
 
 	app.use((req: Request, res: Response) => {
 		const path = req.path.replace(/^\/+/, '');

@@ -1,30 +1,55 @@
 /**
  * `POST /actor-runtime/dev-folder/:actorId` - deliberately outside the emulated `/v2` surface
- * (`api.md`'s `/actor-runtime/*` namespace), so this is mounted directly on the API `app`, not the `v2`
- * router (`server.ts`'s "Auth is per-router, not global" note) - it therefore needs its own `auth()`,
- * applied to a small router of its own below, not inherited from `v2`.
+ * (`api.md`'s `/actor-runtime/*` namespace), so this router is mounted directly on the API `app`
+ * (`server.ts`), not nested under the `v2` router - it needs its own `auth()` rather than inheriting
+ * `v2`'s.
  *
- * Canonical body is a JSON string: `'"/abs/path"'` to set, `'""'` to clear (`api.md`'s `/actor-runtime/*`
- * section - `apify api`'s own `--body` validates with `JSON.parse` and refuses anything that isn't
- * valid JSON, so a bare, unquoted path can never reach this route through the documented CLI invocation
- * at all). A JSON value that parses but isn't a string (a number, an object, ...) is rejected the same
- * way a malformed body is - only a genuine JSON string is ever a valid registration payload.
+ * Canonical body is a JSON string: `'"/abs/path"'` to set, `'""'` to clear (`api.md`). A JSON value that
+ * parses but isn't a string is rejected the same way a malformed body is.
  *
- * Ownership-scoped like every other Actor write on this API port: `resolveOwnedActor` (not the
- * console's cross-user `getActorById`) so a caller can only ever register a dev folder for their own
- * Actor, and can name it by id, plain name, or `username~name` the same way `POST .../builds` and
- * `POST .../runs` already do.
+ * Ownership-scoped like every other Actor write on this API port: `resolveOwnedActor`, so a caller can
+ * only ever register a dev folder for their own Actor.
  */
-import express, { type Express } from 'express';
+import express, { type Router } from 'express';
 
 import { auth, requireUser } from '../auth.js';
 import { sendData } from '../envelope.js';
-import { ApiError, recordNotFound } from '../errors.js';
+import { ApiError, invalidRequest, recordNotFound } from '../errors.js';
 import { h, jsonBody } from '../handler.js';
-import { describeDevFolderError, devFolderStatus, resolveOwnedActor, setDevFolder } from '../../services/actors.js';
+import {
+	describeDevFolderFailure,
+	devFolderStatus,
+	setDevFolder,
+	type SetDevFolderResult,
+} from '../../services/dev-folder.js';
+import { resolveOwnedActor } from '../../services/actors.js';
 import type { ApiServerDeps } from '../server.js';
 
-export function mountDevFolder(app: Express, deps: ApiServerDeps): void {
+/** Maps a non-`ok` `SetDevFolderResult` to the `ApiError` this route throws - the HTTP status and API
+ * error `type` are this route's own concern, not the service layer's (`describeDevFolderFailure` only
+ * supplies the message text, shared with the console). */
+function toApiError(result: Exclude<SetDevFolderResult, { kind: 'ok' }>): ApiError {
+	const message = describeDevFolderFailure(result);
+	switch (result.kind) {
+		case 'invalid-path':
+			return invalidRequest(message);
+		case 'no-successful-build':
+			return new ApiError(400, 'dev-folder-not-buildable', message);
+		case 'not-found':
+			return new ApiError(400, 'dev-folder-path-not-found', message);
+		case 'unreachable':
+			return new ApiError(503, 'dev-folder-check-unavailable', message);
+		case 'image-missing':
+			return new ApiError(500, 'internal-error', message);
+		case 'unknown':
+			return new ApiError(400, 'dev-folder-check-failed', message);
+	}
+}
+
+/** Builds the `/actor-runtime/dev-folder` router - `server.ts` mounts it itself
+ * (`app.use('/actor-runtime', devFolderRouter(deps))`), matching every other `mount*` route module's
+ * convention of owning its route pattern, not the mount path. */
+export function devFolderRouter(deps: ApiServerDeps): Router {
 	const router = express.Router();
 	router.use(auth());
 
@@ -37,18 +62,13 @@ export function mountDevFolder(app: Express, deps: ApiServerDeps): void {
 
 			const raw = jsonBody<unknown>(req);
 			if (typeof raw !== 'string') {
-				throw new ApiError(
-					400,
-					'invalid-request',
+				throw invalidRequest(
 					'Request body must be a JSON string - e.g. "/abs/path/to/src" to set, or "" to clear',
 				);
 			}
 
-			const result = await setDevFolder(deps.driver, actor, raw.trim());
-			if (result.kind !== 'ok') {
-				const info = describeDevFolderError(result);
-				throw new ApiError(info.status, info.type, info.message);
-			}
+			const result = await setDevFolder(deps.driver, actor, raw);
+			if (result.kind !== 'ok') throw toApiError(result);
 
 			// The response body doubles as the read-back - there is deliberately no separate `GET` for
 			// this yet - with the same three fields the console detail page shows.
@@ -56,5 +76,5 @@ export function mountDevFolder(app: Express, deps: ApiServerDeps): void {
 		}),
 	);
 
-	app.use('/actor-runtime', router);
+	return router;
 }

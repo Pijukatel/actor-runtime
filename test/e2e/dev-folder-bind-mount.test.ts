@@ -7,10 +7,15 @@
  * `node_modules` must survive the mount (the anonymous-volume guarantee). Registration is itself an
  * `apify` command, so `requirements/test.md`'s CLI-only rule needs no exception here.
  *
+ * Drives the loop against a throwaway copy of `sample_actor_ts` in a temp directory, never against the
+ * committed sample Actor itself - an interrupted run (Ctrl-C, an OOM, a crash between the edit and the
+ * restore) must not risk leaving an edited marker line in tracked source.
+ *
  * Requires a reachable Docker daemon and fails loudly, never skips, mirroring `actor-dev-loop.test.ts`.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -36,8 +41,7 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
-const ACTOR_DIR = join(REPO_ROOT, 'sample_actor_ts');
-const MAIN_TS = join(ACTOR_DIR, 'src', 'main.ts');
+const SAMPLE_ACTOR_DIR = join(REPO_ROOT, 'sample_actor_ts');
 const CONTAINER_NAME = 'actor-runtime-e2e-devfolder';
 const IMAGE_TAG = 'actor-runtime:e2e-devfolder';
 // `sample_actor_ts/Dockerfile` sets no `WORKDIR` of its own, so it inherits the base image's - the
@@ -50,7 +54,7 @@ const ORIGINAL_MARKER = 'Crawl finished.';
 const EDITED_MARKER = 'Crawl finished (dev-folder-edit-marker).';
 
 /** `apify api POST ...`'s printed `{ data: ... }` envelope for this endpoint's response shape
- * (`services/actors.ts: devFolderStatus`). */
+ * (`services/dev-folder.ts: devFolderStatus`). */
 interface DevFolderApiResult {
 	data: { localDevFolder: string | null; imageWorkingDirectory: string | null; mountWillApply: boolean };
 }
@@ -58,8 +62,7 @@ interface DevFolderApiResult {
 function registerDevFolder(actorId: string, path: string, env: NodeJS.ProcessEnv): DevFolderApiResult {
 	// The exact CLI invocation `requirements/api.md`'s `/actor-runtime/*` section documents, escaping the
 	// CLI's own `/v2` base - `cwd: REPO_ROOT` matters here since `../actor-runtime/...` resolves against
-	// the CLI's configured base URL, not the filesystem; it is unrelated to `path` itself, which is
-	// always this test's own absolute `ACTOR_DIR`.
+	// the CLI's configured base URL, not the filesystem; it is unrelated to `path` itself.
 	const output = apify(['api', 'POST', `../actor-runtime/dev-folder/${actorId}`, '--body', JSON.stringify(path)], {
 		cwd: REPO_ROOT,
 		env,
@@ -69,7 +72,9 @@ function registerDevFolder(actorId: string, path: string, env: NodeJS.ProcessEnv
 
 describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (requires Docker)', () => {
 	let isolatedApifyHome: string;
-	let originalMainTs: string | undefined;
+	let actorDir: string;
+	let mainTs: string;
+	let originalMainTs: string;
 
 	beforeAll(
 		async () => {
@@ -87,30 +92,31 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 			isolatedApifyHome = createIsolatedApifyHome();
 			loginApifyCli(REPO_ROOT, isolatedApifyHome);
 
-			originalMainTs = readFileSync(MAIN_TS, 'utf8');
+			// A throwaway copy of the sample Actor - this suite edits `src/main.ts` and runs local builds
+			// against it, and neither must ever touch the committed `sample_actor_ts` tree. `node_modules`/
+			// `dist` are excluded: they are gitignored and unnecessary to copy, since `npm install`/`npm run
+			// build` below regenerate both fresh inside the copy anyway.
+			actorDir = mkdtempSync(join(tmpdir(), 'actor-runtime-e2e-devfolder-actor-'));
+			const EXCLUDED_TOP_LEVEL_DIRS = [join(SAMPLE_ACTOR_DIR, 'node_modules'), join(SAMPLE_ACTOR_DIR, 'dist')];
+			cpSync(SAMPLE_ACTOR_DIR, actorDir, {
+				recursive: true,
+				filter: (src) => !EXCLUDED_TOP_LEVEL_DIRS.some((dir) => src === dir || src.startsWith(`${dir}/`)),
+			});
+			mainTs = join(actorDir, 'src', 'main.ts');
+			originalMainTs = readFileSync(mainTs, 'utf8');
+
 			// A genuine local compile needs the sample Actor's own devDependencies (`typescript`) present on
 			// the *host* - distinct from what `apify push` sends the runtime (source files only; the
 			// runtime's own Docker build installs and compiles them again, inside the image).
-			execFileSync('npm', ['install'], { cwd: ACTOR_DIR, stdio: 'inherit' });
+			execFileSync('npm', ['install'], { cwd: actorDir, stdio: 'inherit' });
 		},
 		10 * 60 * 1000,
 	);
 
 	afterAll(() => {
-		// Best-effort: restore src/ and dist/ to what they were before this suite touched them, so a
-		// later local run of `actor-dev-loop.test.ts` (or a human) doesn't inherit the edited marker.
-		// Guarded the same way `isolatedApifyHome` below is - `beforeAll` can throw before either is ever
-		// assigned (e.g. the Docker-unreachable check at its top).
-		if (originalMainTs !== undefined) {
-			writeFileSync(MAIN_TS, originalMainTs);
-			try {
-				execFileSync('npm', ['run', 'build'], { cwd: ACTOR_DIR, stdio: 'ignore' });
-			} catch {
-				// best-effort only
-			}
-		}
 		stopRuntimeContainer(CONTAINER_NAME);
 		if (isolatedApifyHome) removeIsolatedApifyHome(isolatedApifyHome);
+		if (actorDir) rmSync(actorDir, { recursive: true, force: true });
 	});
 
 	it(
@@ -120,31 +126,31 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 
 			// One real push + build, as the product description requires ("push and build once, then
 			// register") - the build-first precondition (`requirements/api.md`).
-			const pushOutput = apify(['push', '--json'], { cwd: ACTOR_DIR, env });
+			const pushOutput = apify(['push', '--json'], { cwd: actorDir, env });
 			const push = JSON.parse(pushOutput) as PushResult;
 			expect(push.build.status).toBe('SUCCEEDED');
 			const actorId = push.actor.id;
 
 			// Local build, so the host folder already looks like the image's working directory before it
-			// is ever bind-mounted over it - `dist/main.js` for the container's own `CMD` to run,
-			// matching the layout the image itself expects. The host folder's own `node_modules` (just
-			// installed above) is
-			// deliberately NOT what the container is meant to rely on - the assertion below proves the
-			// anonymous volume, not this directory's own `node_modules`, is what the container actually used.
-			execFileSync('npm', ['run', 'build'], { cwd: ACTOR_DIR, stdio: 'inherit' });
+			// is ever bind-mounted over it - `dist/main.js` for the container's own `CMD` to run, matching
+			// the layout the image itself expects. The host folder's own `node_modules` (just installed
+			// above) is deliberately NOT what the container is meant to rely on - the assertion below
+			// proves the anonymous volume, not this directory's own `node_modules`, is what the container
+			// actually used.
+			execFileSync('npm', ['run', 'build'], { cwd: actorDir, stdio: 'inherit' });
 
-			const registered = registerDevFolder(actorId, ACTOR_DIR, env);
-			expect(registered.data.localDevFolder).toBe(ACTOR_DIR);
+			const registered = registerDevFolder(actorId, actorDir, env);
+			expect(registered.data.localDevFolder).toBe(actorDir);
 			expect(registered.data.imageWorkingDirectory).toBe(EXPECTED_IMAGE_WORKING_DIR);
 			expect(registered.data.mountWillApply).toBe(true);
 
 			// Edit the source, recompile locally - deliberately no `apify push`/`apify build` between here
 			// and the `apify call` below, which is the entire point of the feature.
-			writeFileSync(MAIN_TS, originalMainTs!.replace(ORIGINAL_MARKER, EDITED_MARKER));
-			execFileSync('npm', ['run', 'build'], { cwd: ACTOR_DIR, stdio: 'inherit' });
+			writeFileSync(mainTs, originalMainTs.replace(ORIGINAL_MARKER, EDITED_MARKER));
+			execFileSync('npm', ['run', 'build'], { cwd: actorDir, stdio: 'inherit' });
 
 			const callOutput = apify(['call', '--input', JSON.stringify({ maxPages: 1 }), '--json'], {
-				cwd: ACTOR_DIR,
+				cwd: actorDir,
 				env,
 			});
 			const call = JSON.parse(callOutput) as CallResult;
@@ -161,7 +167,7 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 
 			// An explicit mount line at the top of the run's log (`actor-driver.md`'s "Observability"
 			// bullet), naming both the host path and the container path being mounted.
-			expect(log).toContain(ACTOR_DIR);
+			expect(log).toContain(actorDir);
 			expect(log).toContain(EXPECTED_IMAGE_WORKING_DIR);
 		},
 		5 * 60 * 1000,
@@ -172,11 +178,11 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 		async () => {
 			const env = apifyEnv(isolatedApifyHome);
 
-			const pushOutput = apify(['push', '--json'], { cwd: ACTOR_DIR, env });
+			const pushOutput = apify(['push', '--json'], { cwd: actorDir, env });
 			const push = JSON.parse(pushOutput) as PushResult;
 			const actorId = push.actor.id;
 
-			registerDevFolder(actorId, ACTOR_DIR, env);
+			registerDevFolder(actorId, actorDir, env);
 
 			const clearOutput = apify(['api', 'POST', `../actor-runtime/dev-folder/${actorId}`, '--body', '""'], {
 				cwd: REPO_ROOT,
@@ -186,14 +192,14 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 			expect(cleared.data.localDevFolder).toBeNull();
 			expect(cleared.data.mountWillApply).toBe(false);
 
-			// The edited marker from a previous test in this file (if it ran first) or the host `dist/`
-			// otherwise must NOT be what this run sees - restore the original source/build first so this
-			// case is self-contained regardless of test order.
-			writeFileSync(MAIN_TS, originalMainTs!);
-			execFileSync('npm', ['run', 'build'], { cwd: ACTOR_DIR, stdio: 'inherit' });
+			// The edited marker from the previous test in this file (if it ran first) must NOT be what this
+			// run sees - restore the original source/build first so this case is self-contained regardless
+			// of test order.
+			writeFileSync(mainTs, originalMainTs);
+			execFileSync('npm', ['run', 'build'], { cwd: actorDir, stdio: 'inherit' });
 
 			const callOutput = apify(['call', '--input', JSON.stringify({ maxPages: 1 }), '--json'], {
-				cwd: ACTOR_DIR,
+				cwd: actorDir,
 				env,
 			});
 			const call = JSON.parse(callOutput) as CallResult;
@@ -211,13 +217,13 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 		async () => {
 			const env = apifyEnv(isolatedApifyHome);
 
-			const pushOutput = apify(['push', '--json'], { cwd: ACTOR_DIR, env });
+			const pushOutput = apify(['push', '--json'], { cwd: actorDir, env });
 			const push = JSON.parse(pushOutput) as PushResult;
 			const actorId = push.actor.id;
 
-			writeFileSync(MAIN_TS, originalMainTs!);
-			execFileSync('npm', ['run', 'build'], { cwd: ACTOR_DIR, stdio: 'inherit' });
-			registerDevFolder(actorId, ACTOR_DIR, env);
+			writeFileSync(mainTs, originalMainTs);
+			execFileSync('npm', ['run', 'build'], { cwd: actorDir, stdio: 'inherit' });
+			registerDevFolder(actorId, actorDir, env);
 
 			// Dangling (unattached) volumes on the whole daemon - a coarse but simple proxy: this suite is
 			// the only thing exercising anonymous volumes against this daemon in a CI run, so a stable count
@@ -231,7 +237,7 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 			const before = countDanglingVolumes();
 			for (let i = 0; i < 3; i++) {
 				const callOutput = apify(['call', '--input', JSON.stringify({ maxPages: 1 }), '--json'], {
-					cwd: ACTOR_DIR,
+					cwd: actorDir,
 					env,
 				});
 				const call = JSON.parse(callOutput) as CallResult;

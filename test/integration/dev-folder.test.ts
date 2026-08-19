@@ -144,6 +144,24 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 		expect(res.status).toBe(400);
 	});
 
+	it('400s for a whitespace-only body instead of silently clearing - only the literal empty string clears', async () => {
+		const driver = devFolderDriver({ ok: true });
+		server = await startTestServer(driver);
+		const actor = await server.client.actors().create({ name: 'whitespace-only-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
+		await post(server.baseUrl, actor.id, JSON.stringify('/abs/existing-path'), server.token);
+
+		const res = await post(server.baseUrl, actor.id, JSON.stringify('   '), server.token);
+		expect(res.status).toBe(400);
+		// The probe must never be reached either - a whitespace-only body is rejected by the shape check,
+		// not treated as a candidate path to verify.
+		expect(driver.probeDevFolderCalls).toEqual([['/abs/existing-path', 'fake-image:latest']]);
+
+		// Not a clear: the prior registration survives untouched.
+		const stored = await getRegistries().actors.get(actor.id);
+		expect(stored?.localDevFolder).toBe('/abs/existing-path');
+	});
+
 	it('400s for a relative path, even for an actor with a successful build, and stores nothing', async () => {
 		server = await startTestServer(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'relative-path-actor' });
@@ -358,19 +376,64 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 		expect(res.data.error.message.toLowerCase()).not.toContain('does not exist');
 	});
 
-	it('the registered value never appears in any /v2 Actor response (list or get)', async () => {
+	it('the registered value never appears in any /v2 Actor response (list or get), and modifiedAt does not move either - closing the timestamp side channel, not just the path string', async () => {
 		server = await startTestServer(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'no-leak-actor' });
 		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
+		const beforeFetch = await server.client.actor(actor.id).get();
+
 		await post(server.baseUrl, actor.id, JSON.stringify('/abs/should-not-leak'), server.token);
 
 		const fetched = await server.client.actor(actor.id).get();
 		expect(JSON.stringify(fetched)).not.toContain('/abs/should-not-leak');
 		expect(fetched).not.toHaveProperty('localDevFolder');
 		expect(fetched).not.toHaveProperty('imageWorkingDirectory');
+		// `modifiedAt` *is* a real `/v2` field - a plain path-string check would miss a registration that
+		// leaked only through this timestamp moving, so this asserts it explicitly stays put.
+		expect(fetched?.modifiedAt).toEqual(beforeFetch?.modifiedAt);
 
 		const listed = await server.client.actors().list();
 		expect(JSON.stringify(listed)).not.toContain('/abs/should-not-leak');
+	});
+
+	it("registering a dev folder never bumps the Actor's modifiedAt", async () => {
+		server = await startTestServer(devFolderDriver({ ok: true }));
+		const actor = await server.client.actors().create({ name: 'modifiedat-set-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
+		const before = (await getRegistries().actors.get(actor.id))!.modifiedAt;
+
+		const res = await post(server.baseUrl, actor.id, JSON.stringify('/abs/path'), server.token);
+		expect(res.status).toBe(200);
+
+		const after = (await getRegistries().actors.get(actor.id))!.modifiedAt;
+		expect(after).toBe(before);
+	});
+
+	it("clearing a previously-registered dev folder never bumps the Actor's modifiedAt", async () => {
+		server = await startTestServer(devFolderDriver({ ok: true }));
+		const actor = await server.client.actors().create({ name: 'modifiedat-clear-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
+		await post(server.baseUrl, actor.id, JSON.stringify('/abs/path'), server.token);
+		const before = (await getRegistries().actors.get(actor.id))!.modifiedAt;
+
+		const res = await post(server.baseUrl, actor.id, JSON.stringify(''), server.token);
+		expect(res.status).toBe(200);
+
+		const after = (await getRegistries().actors.get(actor.id))!.modifiedAt;
+		expect(after).toBe(before);
+	});
+
+	it('clearing an actor that has nothing registered is a no-op write and never bumps modifiedAt', async () => {
+		server = await startTestServer(devFolderDriver({ ok: true }));
+		const actor = await server.client.actors().create({ name: 'modifiedat-noop-clear-actor' });
+		const before = (await getRegistries().actors.get(actor.id))!.modifiedAt;
+
+		const res = await post(server.baseUrl, actor.id, JSON.stringify(''), server.token);
+		expect(res.status).toBe(200);
+		expect(res.data.data.localDevFolder).toBeNull();
+
+		const after = (await getRegistries().actors.get(actor.id))!.modifiedAt;
+		expect(after).toBe(before);
 	});
 });
 
@@ -451,6 +514,47 @@ describe('console: dev-folder registration form on the Actor detail view', () =>
 		const detail = await axios.get(`${consoleBaseUrl}/actors/${actor.id}`);
 		expect(detail.data).toContain('(none registered)');
 		expect(detail.data).not.toContain('/abs/old-path');
+
+		const stored = await getRegistries().actors.get(actor.id);
+		expect(stored?.localDevFolder).toBeUndefined();
+	});
+
+	it('submitting a whitespace-only value does not clear - it redirects with an inline error and the prior path survives', async () => {
+		await setUpConsole(devFolderDriver({ ok: true }));
+		const actor = await server.client.actors().create({ name: 'devfolder-whitespace-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
+		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/existing-path' }));
+
+		const submit = await axios.post(`${consoleBaseUrl}/actors/${actor.id}/dev-folder`, 'localDevFolder=%20%20%20', {
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			maxRedirects: 0,
+			validateStatus: () => true,
+		});
+		expect(submit.status).toBe(302);
+		expect(submit.headers.location).toContain('devFolderError=');
+
+		const detail = await axios.get(`${consoleBaseUrl}${submit.headers.location}`);
+		expect(detail.data).toContain('/abs/existing-path');
+		expect(detail.data).not.toContain('(none registered)');
+
+		const stored = await getRegistries().actors.get(actor.id);
+		expect(stored?.localDevFolder).toBe('/abs/existing-path');
+	});
+
+	it('a submission with the localDevFolder field entirely absent from the body is treated as an empty value (clears), the untested false side of the field-presence guard', async () => {
+		await setUpConsole(devFolderDriver({ ok: true }));
+		const actor = await server.client.actors().create({ name: 'devfolder-missing-field-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
+		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/old-path' }));
+
+		// A urlencoded body with no `localDevFolder` key at all - `body?.localDevFolder` is `undefined`,
+		// not an empty string, so this exercises the guard's false branch, not its true branch.
+		const submit = await axios.post(`${consoleBaseUrl}/actors/${actor.id}/dev-folder`, 'unrelated=1', {
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			maxRedirects: 0,
+			validateStatus: () => true,
+		});
+		expect(submit.status).toBe(302);
 
 		const stored = await getRegistries().actors.get(actor.id);
 		expect(stored?.localDevFolder).toBeUndefined();
@@ -537,6 +641,9 @@ function devMountCapturingDriver(): { driver: Driver; getCapturedDevMount: () =>
 		},
 		async abortRun() {},
 		async reconcileOrphans() {},
+		async probeDevFolder() {
+			throw new Error('not used by this stub');
+		},
 	};
 	return { driver, getCapturedDevMount: () => capturedDevMount };
 }

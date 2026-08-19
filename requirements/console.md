@@ -54,7 +54,8 @@
   JSON) - the console's own port, not the API's - resolving the Actor the same cross-user way every
   other console read does. It funnels into the same validate-and-persist service function the API
   endpoint uses, so the two surfaces can never observe or produce different outcomes for the same input.
-  Submitting an empty value clears the registration, exactly like the API's empty-JSON-string body.
+  Submitting an empty value clears the registration, exactly like the API's empty-JSON-string body; a
+  whitespace-only value is rejected as a malformed path instead, also matching the API.
 - A submission that fails validation (a relative path, an Actor with no successful build, a path the
   host-side probe could not confirm exists, Docker being unreachable, ...) redirects back to the same
   detail page with the classified error message shown inline - the build-first rejection and the

@@ -36,6 +36,8 @@ export function layout(title: string, body: string): string {
 	dt { font-weight: 600; }
 	pre { background: #f5f5f5; padding: 1rem; overflow-x: auto; white-space: pre-wrap; }
 	.empty { color: #777; font-style: italic; }
+	.error { color: #b00020; }
+	.wide-input { width: 28rem; }
 	h1 { margin-top: 0; }
 </style>
 </head>
@@ -82,6 +84,22 @@ export function table(
 		})
 		.join('');
 	return `<table>${head}${body}</table>`;
+}
+
+/** The dev-folder registration form on the Actor detail view - a single text field plus a submit
+ * button, styled via this file's shared `<style>` block (`.error`/`.wide-input`/`.empty`), matching
+ * every other console page's convention of no inline `style=` attributes. */
+export function devFolderForm(actorId: string, currentValue: string, errorMessage?: string): string {
+	const errorHtml = errorMessage ? `<p class="error"><strong>Error:</strong> ${escapeHtml(errorMessage)}</p>` : '';
+	return (
+		errorHtml +
+		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/dev-folder">` +
+		`<input type="text" name="localDevFolder" value="${escapeHtml(currentValue)}" ` +
+		'placeholder="/abs/path/to/src" class="wide-input"> ' +
+		'<button type="submit">Save</button>' +
+		'</form>' +
+		'<p class="empty">Submit an empty value to clear the registration.</p>'
+	);
 }
 
 export function definitionList(fields: Array<[string, unknown]>): string {

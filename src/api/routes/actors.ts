@@ -13,10 +13,15 @@ import {
 	findVersion,
 	listOwnedActors,
 	resolveOwnedActor,
-	resolveTaggedBuild,
 	updateActor,
 } from '../../services/actors.js';
-import { listOwnedBuilds, startBuild, waitForBuildFinish, type StartBuildOptions } from '../../services/builds.js';
+import {
+	listOwnedBuilds,
+	resolveTaggedBuild,
+	startBuild,
+	waitForBuildFinish,
+	type StartBuildOptions,
+} from '../../services/builds.js';
 import { listOwnedRuns, startRun, waitForRunFinish } from '../../services/runs.js';
 import { getRegistries } from '../../storage/registries.js';
 import { actorDto, buildDto, runDto } from '../dto/actors.js';
@@ -276,17 +281,15 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 			const tag = queryString(req, 'build') ?? DEFAULT_TAG;
 			const lookup = await resolveTaggedBuild(actor, tag);
 			if (!lookup.found) {
-				// Two distinct 404s, not one generic one: a tag that was never recorded at all vs. a tag
-				// that *is* recorded but whose `BuildRecord` was since deleted (`DELETE
-				// /actor-builds/:buildId` does not clear any tag pointing at the deleted build) - see
-				// `resolveTaggedBuild`'s doc comment. Both keep the same status (404) and error `type`
-				// (`record-not-found`); only the message differs, so a caller reading the tag genuinely
-				// still exists is never told it doesn't.
-				throw recordNotFound(
-					lookup.reason === 'build-deleted'
-						? `Actor's build tagged "${tag}" was deleted`
-						: `Actor has no build tagged "${tag}"`,
-				);
+				// `no-such-tag` names the tag, matching base behavior exactly. `build-deleted` (the tag
+				// exists, but its BuildRecord was removed via `DELETE /actor-builds/:buildId`, which does
+				// not clear the tag pointing at it) throws the same bare `recordNotFound()` base did for
+				// this case too - not a custom message - so run-start stays byte-for-byte base-identical
+				// for every input class; `resolveTaggedBuild` (services/builds.ts) only exists so this
+				// route and the dev-folder probe can each still branch on *which* reason it was, without
+				// duplicating the tag/build lookup itself.
+				if (lookup.reason === 'build-deleted') throw recordNotFound();
+				throw recordNotFound(`Actor has no build tagged "${tag}"`);
 			}
 			const build = lookup.build;
 

@@ -74,7 +74,10 @@
        up either way.
     - Submitting the **empty string clears the registration** and never runs either validation layer -
       there is no path to check, and clearing must always succeed, including when Docker itself is
-      unreachable.
+      unreachable. Clearing an Actor that has nothing registered is a no-op: no registry write at all.
+      A **whitespace-only** string (e.g. `"   "`) is not a clear - only the literal empty string is;
+      whitespace-only is trimmed and then rejected by the shape check (400), the same as any other value
+      that fails to start with `/`.
     - Errors are classified by shape, most specific first, and every non-success branch rejects rather
       than guessing: no HTTP response at all (Docker itself unreachable) is reported as "could not verify
         - Docker is unreachable", never as "does not exist"; the probe's own image returning 404 is an
@@ -128,6 +131,11 @@
   an empty auto-created directory.
 - Neither `localDevFolder` nor `imageWorkingDirectory` is ever exposed on the public `/v2` API
   (`storage.md`).
+- **Registering or clearing a dev folder never bumps the Actor's `modifiedAt`.** Unlike
+  `localDevFolder`/`imageWorkingDirectory` themselves, `modifiedAt` _is_ exposed on `/v2` - bumping it on
+  every dev-folder write would leak this local-only feature into the emulated API through a timing side
+  channel, contradicting the whole point of keeping it outside `/v2`. The write goes straight to the
+  `__ACTORS__` registry rather than through the normal `modifiedAt`-bumping Actor-update path.
 
 # Networking
 

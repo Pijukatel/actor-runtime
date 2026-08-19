@@ -41,11 +41,10 @@ describe('DockerDriver.reconcileOrphans', () => {
 		const [options] = listContainers.mock.calls[0] as [{ all: boolean; filters: string }];
 		expect(options.all).toBe(true);
 		const filters = JSON.parse(options.filters) as { label: string[] };
-		// Exactly one label filter entry - the bare key, never `key=value` - so two or more orphaned run
-		// ids can never be AND'd together by the daemon's per-key label matching (a single container can
-		// never satisfy two different values of the same label at once - see the doc comment on
+		// Two label filter entries - bare keys, never `key=value` - so two or more orphaned run ids can
+		// never be AND'd together by the daemon's per-key label matching (see the doc comment on
 		// `reconcileOrphans` for the moby `MatchKVList` semantics this sidesteps entirely).
-		expect(filters.label).toEqual(['actor-runtime.runId']);
+		expect(filters.label).toEqual(['actor-runtime.runId', 'actor-runtime.devFolderProbe']);
 	});
 
 	it("matches run ids against each returned container's own label client-side, removing only the orphaned ones", async () => {
@@ -87,14 +86,31 @@ describe('DockerDriver.reconcileOrphans', () => {
 		expect(listContainers).not.toHaveBeenCalled();
 	});
 
-	it('does nothing when there are no orphaned run ids, even if available', async () => {
+	it('still lists containers with no orphaned run ids, to sweep any leftover dev-folder probe', async () => {
 		const { docker, listContainers } = stubDocker([]);
 		const driver = new DockerDriver(docker);
 		driver.available = true;
 
 		await driver.reconcileOrphans([]);
 
-		expect(listContainers).not.toHaveBeenCalled();
+		// Unlike the "unavailable" case above, an empty `runIds` list must not short-circuit the daemon
+		// call entirely - a probe container that outlived its own removal (`probeDevFolder`) has no run id
+		// at all, so it can only ever be found by actually listing.
+		expect(listContainers).toHaveBeenCalledTimes(1);
+	});
+
+	it('removes a leftover dev-folder probe container even when it matches no orphaned run id', async () => {
+		const { docker, getContainer, removed, removeCallOptions } = stubDocker([
+			{ Id: 'probe-container', Labels: { 'actor-runtime.devFolderProbe': 'true' } },
+		]);
+		const driver = new DockerDriver(docker);
+		driver.available = true;
+
+		await driver.reconcileOrphans([]);
+
+		expect(getContainer).toHaveBeenCalledTimes(1);
+		expect(removed).toEqual(['probe-container']);
+		expect(removeCallOptions).toEqual([{ force: true, v: true }]);
 	});
 
 	it('removes each matched container with { force: true, v: true } (an orphaned devMount run must not leak its anonymous node_modules volume past a restart)', async () => {
@@ -476,6 +492,24 @@ describe('DockerDriver.probeDevFolder (actor-driver.md: "a create-only probe con
 		]);
 		expect(remove).toHaveBeenCalledTimes(1);
 		expect(start).not.toHaveBeenCalled();
+		expect(options.Labels).toEqual({ 'actor-runtime.devFolderProbe': 'true' });
+	});
+
+	it('still reports ok when the probe container was created but its removal fails, and logs the failure instead of swallowing it', async () => {
+		const remove = vi.fn(async () => {
+			throw new Error('removal failed: container already stopping');
+		});
+		const createContainer = vi.fn(async () => ({ id: 'probe-id', remove, start: vi.fn() }));
+		const driver = new DockerDriver({ createContainer } as unknown as Docker);
+		driver.available = true;
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+		const outcome = await driver.probeDevFolder('/abs/path', 'image:tag');
+
+		expect(outcome).toEqual({ ok: true });
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining('probe-id'));
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining('removal failed'));
+		warn.mockRestore();
 	});
 
 	it('never even calls createContainer when the driver already knows Docker is unavailable - short-circuits to unreachable', async () => {

@@ -60,29 +60,17 @@ export interface ActorRecord {
 	versions: ActorVersionRecord[];
 	/** tag -> latest successful build for that tag; `apify push` polls this after a build. */
 	taggedBuilds: Record<string, { buildId: string; buildNumber: string }>;
-	/**
-	 * The host path bind-mounted over the image's working directory at run start, for rapid local dev
-	 * without a rebuild (`actor-driver.md`'s "Bind mount volumes with Actor source code"). Set/cleared
-	 * only through `services/actors.ts: setDevFolder` (the API's `POST /actor-runtime/dev-folder/:actorId`
-	 * and the console's dev-folder form both funnel through it) - never touched by any other Actor write
-	 * (`storage.md`). Absent (never registered) and present-but-empty are not distinguished on this type;
-	 * `setDevFolder` always stores either a non-empty absolute path or clears the key entirely via
-	 * `undefined` (which a JSON round-trip through the KV store drops), so in practice this is only ever
-	 * "absent" or "a real path" - never an empty string at rest. Optional and never exposed on `/v2`
-	 * (`dto/actors.ts: actorDto` is explicit field-by-field).
-	 */
+	/** Host path bind-mounted over the image's working directory at run start (`actor-driver.md`). Set or
+	 * cleared only through `services/dev-folder.ts: setDevFolder` - via a direct registry write that
+	 * deliberately bypasses `updateActor`, so registering/clearing never bumps `modifiedAt` (which, unlike
+	 * this field, *is* exposed on `/v2`). Never touched by any other Actor write. Optional and never
+	 * exposed on `/v2` itself either (`dto/actors.ts: actorDto` is explicit field-by-field). */
 	localDevFolder?: string;
-	/**
-	 * The Actor's most recently successfully-built image's `Config.WorkingDir`, captured by the driver
-	 * right after that build (`docker-driver.ts`'s `startBuild`) and persisted in the same `updateActor`
-	 * call that records the tagged build (`services/builds.ts`). Optional: unset until at least one build
-	 * has succeeded and its image could be inspected, and left unset (not overwritten) by a build whose
-	 * inspect failed or whose image's working directory was empty/`/` (mounting over `/` would destroy
-	 * the container). Reflects the *most recent* successful build only - running an older, differently
-	 * tagged build whose image had a different working directory is a known staleness gap, accepted for
-	 * the POC (`actor-driver.md`'s "`imageWorkingDirectory` is captured by the driver itself" bullet).
-	 * Optional and never exposed on `/v2`, same as `localDevFolder`.
-	 */
+	/** The Actor's most recently successfully-built image's `Config.WorkingDir`, captured right after
+	 * that build (`docker-driver.ts`) and persisted in the same `updateActor` call that records the
+	 * tagged build. Unset until a build has succeeded and its image could be inspected, or when the
+	 * working directory was empty/`/`. Reflects only the *most recent* successful build - a known
+	 * staleness gap, accepted for the POC. Optional and never exposed on `/v2`, same as `localDevFolder`. */
 	imageWorkingDirectory?: string;
 }
 

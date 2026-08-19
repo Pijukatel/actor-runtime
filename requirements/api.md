@@ -155,12 +155,14 @@
       lookup `/v2` uses: a caller can only register a dev folder for their own Actor, and a mismatched
       or nonexistent `:actorId` answers `404` with error type `record-not-found`, exactly like the rest
       of the API.
-    - **Request body**: a JSON string - `'"/abs/path/to/src"'` to set, `'""'` to clear, trimmed after
-      parsing. This is deliberate, not merely convenient: `apify api`'s `--body` flag validates with
-      `JSON.parse` and refuses anything that is not valid JSON, so a bare, unquoted path can never reach
-      this route through the documented CLI invocation at all. A body that is not valid JSON, or is
-      valid JSON but not a string (a bare number, an object, ...), is rejected with `400` /
-      `invalid-request` - never silently coerced or stored verbatim.
+    - **Request body**: a JSON string - `'"/abs/path/to/src"'` to set, `'""'` to clear. Only the literal
+      empty string clears; a non-empty string is trimmed and then shape-checked, so a whitespace-only
+      body (e.g. `'"   "'`) is rejected as a malformed path, not treated as a clear. This is deliberate,
+      not merely convenient: `apify api`'s `--body` flag validates with `JSON.parse` and refuses anything
+      that is not valid JSON, so a bare, unquoted path can never reach this route through the documented
+      CLI invocation at all. A body that is not valid JSON, or is valid JSON but not a string (a bare
+      number, an object, ...), is rejected with `400` / `invalid-request` - never silently coerced or
+      stored verbatim.
     - **Response**: on success, `{ data: { localDevFolder, imageWorkingDirectory, mountWillApply } }` -
       the same three values the console detail page shows (`console.md`), doubling as the read-back this
       design has no separate `GET` for.

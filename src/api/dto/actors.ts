@@ -1,7 +1,7 @@
 import type { ActorRecord, BuildRecord, RunRecord } from '../../storage/entities.js';
 
-/** Matches `services/runs.ts`'s `DEFAULT_BUILD_TAG` - backfilled here only for run records that predate
- * `options.build` (directly-seeded test fixtures); every real run always has it set already. */
+/** Matches `services/actors.ts`'s `DEFAULT_BUILD_TAG` - backfilled here only for run records that
+ * predate `options.build` (directly-seeded test fixtures); every real run always has it set already. */
 const DEFAULT_RUN_BUILD_TAG = 'latest';
 /** Matches `services/runs.ts`'s `DISK_MBYTES_PER_MEMORY_MBYTE` - backfilled here only for run records
  * that predate `options.diskMbytes`; every real run always has it set already. */

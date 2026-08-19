@@ -162,7 +162,7 @@ describe('actors / versions / builds / runs (via real apify-client)', () => {
 		});
 	});
 
-	it('starting a run against a tag whose BuildRecord was since deleted 404s with a message that does not claim the tag is missing (it is not)', async () => {
+	it('starting a run against a tag whose BuildRecord was since deleted 404s the same bare way base did (not the "no build tagged" message, since the tag genuinely still exists)', async () => {
 		const actor = await server.client.actors().create({ name: 'deleted-tagged-build-actor' });
 
 		// Seed a tagged, successful build directly, then delete the underlying BuildRecord without
@@ -185,13 +185,15 @@ describe('actors / versions / builds / runs (via real apify-client)', () => {
 		await updateActor(actor.id, (current) => recordTaggedBuild(current, 'latest', fakeBuildId, '0.0.1'));
 		await builds.delete(fakeBuildId);
 
-		// Before the fix this collapsed to the exact same "Actor has no build tagged" message as the
-		// no-such-tag case above - factually wrong here, since the tag `latest` genuinely still exists on
-		// this Actor. Status (404) and type (`record-not-found`) are unchanged either way.
+		// At base (`9cb32f0:src/api/routes/actors.ts`), a tag whose BuildRecord had been deleted fell
+		// through to a bare `recordNotFound()` - the default "Record was not found" message, distinct from
+		// the "Actor has no build tagged" message the no-such-tag case above gets. This locks in that this
+		// input class stays byte-for-byte base-identical: `resolveTaggedBuild` exists only so this route can
+		// tell the two failure reasons apart internally, not to change what either one reports.
 		await expect(server.client.actor(actor.id).start({})).rejects.toMatchObject({
 			statusCode: 404,
 			type: 'record-not-found',
-			message: 'Actor\'s build tagged "latest" was deleted',
+			message: 'Record was not found',
 		});
 	});
 

@@ -199,6 +199,9 @@ function envCapturingDriver(): { driver: Driver; getCapturedEnv: () => Record<st
 		},
 		async abortRun() {},
 		async reconcileOrphans() {},
+		async probeDevFolder() {
+			throw new Error('not used by this stub');
+		},
 	};
 	return { driver, getCapturedEnv: () => capturedEnv };
 }

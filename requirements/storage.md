@@ -74,12 +74,14 @@
         - `localDevFolder` - **optional**. Absent means no dev folder has ever been registered for this
           Actor. Set/cleared only through `POST /actor-runtime/dev-folder/:actorId` or the console's
           equivalent form (`api.md`, `console.md`) - never as a side effect of any other Actor write
-          (pushing a version, starting a build, etc.). Submitting the empty string is a distinct,
-          first-class "clear" operation, not a stored empty-string value: it removes the field entirely,
-          the same as if it had never been registered - there is no state that distinguishes "cleared"
-          from "never set". When present, it is always a non-empty absolute host path that passed both
-          the shape check and the host-side existence probe at the time it was registered
-          (`actor-driver.md`).
+          (pushing a version, starting a build, etc.), and never bumping `modifiedAt` either (see
+          `actor-driver.md`'s "Registering or clearing a dev folder never bumps `modifiedAt`" bullet -
+          `modifiedAt` is exposed on `/v2`, unlike this field). Submitting the literal empty string is a
+          distinct, first-class "clear" operation, not a stored empty-string value: it removes the field
+          entirely, the same as if it had never been registered, and is a no-op write when there was
+          nothing to clear. A whitespace-only string does not clear - it is rejected as a malformed path
+          (`actor-driver.md`). When present, it is always a non-empty absolute host path that passed both
+          the shape check and the host-side existence probe at the time it was registered.
         - `imageWorkingDirectory` - **optional**. Absent until at least one build has succeeded and its
           image's working directory could be captured (`.Config.WorkingDir` via `dockerode`, never by
           shelling out to a `docker` command-line invocation); also absent when the captured value was

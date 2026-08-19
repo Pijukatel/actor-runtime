@@ -16,13 +16,8 @@
  */
 import express, { type Express } from 'express';
 
-import {
-	describeDevFolderError,
-	devFolderStatus,
-	getActorById,
-	listAllActors,
-	setDevFolder,
-} from '../services/actors.js';
+import { getActorById, listAllActors } from '../services/actors.js';
+import { describeDevFolderFailure, devFolderStatus, setDevFolder } from '../services/dev-folder.js';
 import { getBuildById, listAllBuilds } from '../services/builds.js';
 import { getRunById, listAllRuns } from '../services/runs.js';
 import { getFullLog } from '../services/logs.js';
@@ -32,7 +27,7 @@ import { openDataset, openKeyValueStore, openRequestQueue } from '../storage/ope
 import { pageKeys } from '../services/kv-key-listing.js';
 import { applyDatasetProjection, type DatasetItem } from '../services/dataset-projection.js';
 import { ansiToHtml } from './ansi.js';
-import { definitionList, escapeHtml, layout, table, type LinkedCell } from './templates.js';
+import { definitionList, devFolderForm, escapeHtml, layout, table, type LinkedCell } from './templates.js';
 import type { Driver } from '../driver/types.js';
 
 /** A run's default-storage id rendered as a link to that storage's detail view instead of plain text. */
@@ -49,9 +44,6 @@ export interface ConsoleServerDeps {
  * through from the POST handler's redirect query param below, since a redirect itself carries no state
  * of its own. */
 function devFolderSection(actorId: string, status: ReturnType<typeof devFolderStatus>, errorMessage?: string): string {
-	const errorHtml = errorMessage
-		? `<p style="color:#b00020"><strong>Error:</strong> ${escapeHtml(errorMessage)}</p>`
-		: '';
 	return (
 		'<h2>Local dev folder</h2>' +
 		definitionList([
@@ -59,13 +51,7 @@ function devFolderSection(actorId: string, status: ReturnType<typeof devFolderSt
 			['imageWorkingDirectory', status.imageWorkingDirectory ?? '(not yet detected - build the Actor first)'],
 			['mount will apply on the next run', String(status.mountWillApply)],
 		]) +
-		errorHtml +
-		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/dev-folder">` +
-		`<input type="text" name="localDevFolder" value="${escapeHtml(status.localDevFolder ?? '')}" ` +
-		'placeholder="/abs/path/to/src" style="width:28rem"> ' +
-		'<button type="submit">Save</button>' +
-		'</form>' +
-		'<p class="empty">Submit an empty value to clear the registration.</p>'
+		devFolderForm(actorId, status.localDevFolder ?? '', errorMessage)
 	);
 }
 
@@ -127,15 +113,10 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		res.send(layout(`Actor ${actor.name}`, body));
 	});
 
-	/**
-	 * The console's one mutation (`console.md`'s "Local dev-folder registration form" section) -
-	 * funnels through the exact same `setDevFolder` the API's `POST /actor-runtime/dev-folder/:actorId`
-	 * uses, resolving the Actor cross-user by the id already in the page URL (no token, matching the
-	 * console's existing unauthenticated reads) rather than through `resolveOwnedActor`. A failure
-	 * redirects back with the classified message in a query param - `describeDevFolderError`'s wording,
-	 * not a bespoke one - so the build-first rejection and the does-not-exist/could-not-verify
-	 * distinction are surfaced, not swallowed.
-	 */
+	/** The console's one mutation - funnels through the same `setDevFolder` the API endpoint uses,
+	 * resolving the Actor cross-user by the id already in the page URL (no token) rather than through
+	 * `resolveOwnedActor`. A failure redirects back with `describeDevFolderFailure`'s message in a query
+	 * param, so it's surfaced inline rather than swallowed by the redirect. */
 	app.post('/actors/:id/dev-folder', async (req, res) => {
 		const actor = await getActorById(req.params.id);
 		if (!actor) {
@@ -143,12 +124,15 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			return;
 		}
 		const body = req.body as Record<string, unknown> | undefined;
-		const submitted = typeof body?.localDevFolder === 'string' ? body.localDevFolder.trim() : '';
+		// Not trimmed here - `setDevFolder` itself distinguishes an explicit clear (the literal empty
+		// string) from a whitespace-only submission (rejected, not treated as a clear); trimming here
+		// first would collapse that distinction before it ever reaches the service.
+		const submitted = typeof body?.localDevFolder === 'string' ? body.localDevFolder : '';
 
 		const result = await setDevFolder(deps.driver, actor, submitted);
 		if (result.kind !== 'ok') {
-			const info = describeDevFolderError(result);
-			res.redirect(`/actors/${encodeURIComponent(actor.id)}?devFolderError=${encodeURIComponent(info.message)}`);
+			const message = describeDevFolderFailure(result);
+			res.redirect(`/actors/${encodeURIComponent(actor.id)}?devFolderError=${encodeURIComponent(message)}`);
 			return;
 		}
 		res.redirect(`/actors/${encodeURIComponent(actor.id)}`);

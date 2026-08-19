@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { validateDevFolderPathShape } from '../../src/services/actors.js';
+import { validateDevFolderPathShape } from '../../src/services/dev-folder.js';
 
 describe('validateDevFolderPathShape', () => {
 	it('accepts a plain absolute POSIX path', () => {
