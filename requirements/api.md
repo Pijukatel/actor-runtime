@@ -127,43 +127,30 @@
 - All endpoints not present in specification must return `404 Not Found` - **except** the `/actor-runtime/*`
 
 # Actor runtime API
+
 - `/actor-runtime/*` is API that control specifics function of the local Actor runtime
 - **`POST /actor-runtime/dev-folder/:actorId`** - registers (or clears) the Actor's local dev folder for
-  the bind-mount feature (`actor-driver.md`'s "Bind mount volumes with Actor source code"). `:actorId`
-  accepts the same forms as the rest of the API (id, plain name, `username~name`).
-    - **Authenticated** the same way as every `/v2` route.
-    - **Request body**: a JSON string - `'"/abs/path/to/src"'` to set, `'""'` to clear.
+  the bind-mount feature (`actor-driver.md`). `:actorId` accepts the same forms as the rest of the API
+  (id, plain name, `username~name`).
+    - **Authenticated** the same way as every `/v2` route, and scoped to the caller's own Actors.
+    - **Request body**: a JSON string - the absolute path to set, or `""` to clear.
     - **Response**: on success, `{ data: { localDevFolder, imageWorkingDirectory, mountWillApply } }` -
       the same three values the console detail page shows (`console.md`), doubling as the read-back this
       design has no separate `GET` for.
-    - **Error responses**, by rejection reason (`actor-driver.md` has the full validation/classification
-      detail):
-        - `400` `invalid-request` - the body isn't a JSON string, or the string fails the absolute-path
-          shape check.
-        - `400` `dev-folder-not-buildable` - the Actor has no build tagged `latest`: either no build has
-          ever succeeded, or its only successful build(s) are tagged something else, with no fallback to
-          an arbitrary other tag.
-        - `400` `dev-folder-path-not-found` - the host-side probe's daemon rejection contained the exact
-          "bind source path does not exist" substring.
-        - `400` `dev-folder-not-a-directory` - the host-side probe's daemon rejection contained the exact
-          "not a directory" substring - the candidate exists but is a regular file, not a directory.
-          Reachable because the probe's mount `Source` is the candidate path with a literal `/.` appended
-          (`actor-driver.md`), which forces the daemon's own `stat` to also discriminate a file from a
-          directory; this suffix never appears in the stored value or in this response, only in the
-          classification that produced it.
-        - `400` `dev-folder-check-failed` - any other mount-validation-shaped rejection; reported as
-          "could not verify", never as "does not exist" or "not a directory".
+    - **Error responses**, by rejection reason:
+        - `400` `invalid-request` - the body isn't a JSON string, or the string isn't a valid absolute
+          path.
+        - `400` `dev-folder-not-buildable` - the Actor has no build tagged `latest`.
+        - `400` `dev-folder-path-not-found` - the path does not exist on the host.
+        - `400` `dev-folder-not-a-directory` - the path exists but is not a directory.
+        - `400` `dev-folder-check-failed` - the path could not be verified, for any other reason.
         - `503` `dev-folder-check-unavailable` - Docker itself is unreachable.
-        - `500` `internal-error` - the probe's own image is missing (a 404 from the daemon on an image
-          that should exist) - an operational fault, not a bad submitted path.
-    - The documented CLI invocation is
-      `apify api POST /actor-runtime/dev-folder/<actorId> --body '"/abs/path/to/src"'` - the CLI's
+        - `500` `internal-error` - an operational fault unrelated to the submitted path.
 - The console's own dev-folder form (`console.md`) does **not** go through this endpoint - it posts to a
-  console-local, unauthenticated route on the console's own port, resolving the Actor cross-user by the
-  id already in its page URL. Both routes funnel into the same underlying validate-and-persist service
-  function, so the two surfaces can never drift apart in behavior, only in how they are reached.
+  console-local, unauthenticated route on the console's own port. Both routes funnel into the same
+  underlying validate-and-persist path, so the two surfaces can never drift apart in behavior, only in
+  how they are reached.
 
 ## Upstream fallback (opt-in, off by default, all HTTP methods)
 
 - Not implemented
-

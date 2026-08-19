@@ -41,8 +41,8 @@ export async function getOwnedActor(userId: string, id: string): Promise<ActorRe
 
 /**
  * Cross-user listing, for the console only (`console.md`: the console is an unauthenticated local dev
- * tool with no login of its own, and view-only except for exactly one mutation (dev-folder
- * registration), so with multiple users it shows every user's objects rather than scoping to one - see
+ * tool with no login of its own, and every route is a read except the dev-folder registration form, so
+ * with multiple users it shows every user's objects rather than scoping to one - see
  * `console/server.ts`). The API's own `listOwnedActors` above stays strictly per-user; nothing here is
  * reachable from `api/routes/*`.
  */

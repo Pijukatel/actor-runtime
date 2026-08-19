@@ -9,7 +9,8 @@
 - The console has no login of its own, so with multiple users it lists and shows every user's objects
   rather than scoping to one - the API's own endpoints stay strictly scoped to the calling token's user
   (`storage.md`'s "Users" section).
-- The console is unauthenticated, and view-only
+- The console is unauthenticated. Every route is a read except the dev-folder form below, which is the
+  console's one write - it is no longer strictly view-only.
 - There are three types of objects: key-value store, dataset, request queue.
     - For each object type there must be exactly one widget for inspection.
     - The request-queue widget leads with the authoritative counts from `RequestQueue.getInfo()`
@@ -38,19 +39,13 @@
 
 ## Local dev-folder registration form (Actor detail view)
 
-- The Actor detail view shows three additional, always-visible values, reflecting the same underlying
-  state the API's `POST /actor-runtime/dev-folder/:actorId` reads and writes (`api.md`): the currently
-  registered local dev folder (or a clear "none registered" state), the detected image working
-  directory (or a clear "not yet detected" state when no build has produced one yet), and an explicit
-  indication of whether a mount will therefore be applied on the Actor's next run.
-- A single-field form submits to a console-local `POST /actors/:id/dev-folder` route (urlencoded, not
-  JSON) - the console's own port, not the API's - resolving the Actor the same cross-user way every
-  other console read does. It funnels into the same validate-and-persist service function the API
-  endpoint uses, so the two surfaces can never observe or produce different outcomes for the same input.
-  Submitting an empty value clears the registration, exactly like the API's empty-JSON-string body; a
-  whitespace-only value is rejected as a malformed path instead, also matching the API.
-- A submission that fails validation (a relative path, an Actor with no successful build, a path the
-  host-side probe could not confirm exists, Docker being unreachable, ...) redirects back to the same
-  detail page with the classified error message shown inline - the build-first rejection and the
-  does-not-exist/could-not-verify distinction are surfaced to whoever is looking at the page, never
-  swallowed by the redirect.
+- The Actor detail view shows the Actor's registered local dev folder (or that none is registered), the
+  detected image working directory (or that none is known yet), and whether a mount will therefore be
+  applied on the Actor's next run - the same status the API endpoint reports (`api.md`).
+- A single-field form exposes the same registration capability as the API endpoint: submitting it sets
+  or clears the dev folder, funnelling into the same validate-and-persist path, so the two surfaces can
+  never observe or produce different outcomes for the same input. Submitting an empty value clears the
+  registration, matching the API; a whitespace-only value is rejected as a malformed path, also matching
+  the API.
+- A submission that fails validation redirects back to the same detail page with the classified error
+  message shown inline, never swallowed by the redirect.

@@ -208,8 +208,8 @@ export async function runInBackground(
 	const env = buildEnv(record, actor, version, options);
 	// Both-or-neither, enforced by `DevFolderMount`'s type (`driver/types.ts`) - a mount is only ever
 	// added when the Actor actually has a non-empty registered dev folder AND this *run's own resolved
-	// build* has a known, non-empty image working directory (`actor-driver.md`: "The mount is
-	// conditional, applied only when both fields are present and non-empty"). Deliberately
+	// build* has a known, non-empty image working directory (`actor-driver.md`: "The mount is applied
+	// only when both a registered dev folder and a known working directory exist"). Deliberately
 	// `build.imageWorkingDirectory` here, never an Actor-level field: the working directory is
 	// build-specific, not Actor-specific - `build` above is already the exact `BuildRecord` this run
 	// resolved (by tag or number, `startRun`'s caller), so a multi-tag Actor's `latest` run always mounts

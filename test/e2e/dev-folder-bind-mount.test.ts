@@ -248,8 +248,8 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 			expect(log).toContain(EDITED_MARKER);
 			expect(log).not.toContain(`${ORIGINAL_MARKER}\n`);
 
-			// An explicit mount line at the top of the run's log (`actor-driver.md`'s "Observability"
-			// bullet), naming both the host path and the container path being mounted.
+			// An explicit mount line at the top of the run's log, naming both the host path and the
+			// container path being mounted.
 			expect(log).toContain(actorDir);
 			expect(log).toContain(EXPECTED_IMAGE_WORKING_DIR);
 		},

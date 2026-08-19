@@ -44,66 +44,36 @@
   every source change. This is achieved by bind mounting the Actor's local development folder over the
   built image's working directory when starting the container - edit locally, recompile locally
   (`tsc`, or the language-appropriate equivalent), `apify call` again, with no `apify push`/build in
-  between.
+  between. A running container never picks up a recompile; only the next run's container start does.
+  Dependency or environment changes still require a real rebuild.
 - `localDevFolder` is **registered explicitly** on a new local-only endpoint,
-  `POST /actor-runtime/dev-folder/:actorId` (see `api.md`), also exposed as a single-field form on the console's Actor detail view (`console.md`), sets or clears it. Both surfaces
-  funnel through one shared validate-and-persist service function.
+  `POST /actor-runtime/dev-folder/:actorId` (see `api.md`), also exposed as a single-field form on the
+  console's Actor detail view (`console.md`), sets or clears it. Both surfaces funnel through one
+  shared validate-and-persist path, so they can never disagree.
 - **Registration validates the path in two layers**, not shape alone:
-    1. A cheap shape pre-filter: the submitted value must be an absolute POSIX path, contain no newline
-       or NUL byte, and stay under a length cap. A leading `~` is never expanded - this runtime never
-       shells out to interpret one.
-    2. A **host-side existence-and-directory check**. The runtime process's own filesystem is not
-       necessarily the host's - the shipped image runs this runtime containerized against the host Docker
-       socket (`npm run dev`'s bare-host mode is the exception, per `README.md`), so `fs.existsSync`
-       cannot be trusted to mean anything in the runtime's own filesystem: it would test the wrong
-       filesystem entirely whenever the runtime itself is containerized. The only Docker Engine API
-       surface that validates an arbitrary host path at all is the mount-validation the daemon runs inside
-       `POST /containers/create`, so the check is a **create-only probe container, never started**: a
-       container is created with a single `Mounts` entry (`Type: 'bind'`, the candidate path **with a
-       literal `/.` appended** as `Source`, read-only) against the Actor's own latest successfully-built
-       image; success removes it immediately without ever calling `.start()`, and a rejection means
-       creation itself failed, so there is nothing to clean up either way. The appended `/.` is what makes
-       this a directory check, not just an existence check.
+    1. A cheap shape check: the submitted value must be an absolute POSIX path.
+    2. A **host-side existence-and-directory check**. The runtime's own filesystem cannot be trusted to
+       judge a host path - it is not necessarily the host's filesystem at all - so this must be verified
+       some other way.
     - Submitting the **empty string clears the registration** and never runs either validation layer.
-    - Errors are classified by shape, most specific first, and every non-success branch rejects rather
-      than guessing: no HTTP response at all (Docker itself unreachable) is reported as "could not
-      verify - Docker is unreachable", never as "does not exist"; the probe's own image returning 404 is
-      an operational fault ("could not verify - internal error"), not a bad path; a mount-validation
-      rejection whose message contains the exact substring `bind source path does not exist` is the one
-      case reported as "path does not exist"; a mount-validation rejection whose message contains the
-      exact substring `not a directory` (reachable only because of the appended `/.` above) is reported
-      as "path is not a directory".
-- **`imageWorkingDirectory` is captured by the driver itself, and is build-specific, not
-  Actor-specific.** Right after a successful build: `docker.getImage(imageId).inspect()` over
-  `dockerode`, reading `.Config.WorkingDir`, then persisted onto **that build's own `BuildRecord`** in
-  `__BUILDS__` (see `storage.md`), in the same status-transition write that moves the build to
-  `SUCCEEDED`.
-    - Both the mount a run actually applies (`services/runs.ts`) and the status the console/API report
-      (`services/dev-folder.ts: devFolderStatus`) resolve the Actor's `latest`-tagged `BuildRecord` (the
-      same resolution a tag-less run performs) and read `imageWorkingDirectory` off _that build_..
-- **The mount is conditional, applied only when both fields are present and non-empty**
-- **The mount uses `HostConfig.Mounts`, never the legacy `Binds` array or literal `-v` flags.**
-  `HostConfig.Mounts` array carries both entries:
-    - `{ Type: 'bind', Source: localDevFolder, Target: imageWorkingDirectory }` - read-write (no
-      `ReadOnly`), matching this section's original plain, unsuffixed mount intent.
-    - `{ Type: 'volume', Source: '', Target: '{imageWorkingDirectory}/node_modules' }` - the
-      `Mounts`-array equivalent of the anonymous-volume, bare-container-path `-v` form. Docker copies the
-      image's existing contents into an anonymous volume before mounting it, which is exactly what
-      preserves the image's own installed `node_modules` underneath a bind that otherwise covers the
-      whole working directory: a _named_ volume would start empty, and a plain bind would erase it
-      entirely. Dependency changes therefore still require a real rebuild - a new package in
-      `package.json` only lands in the image (and so in the preserved `node_modules`) after one.
-- **Every run's container removal passes `{ v: true }`**, on both the normal per-run removal and
-  startup's orphan reconciliation. Without it, the anonymous `node_modules` volume above would leak one
-  volume per run, forever, silently filling the host's disk - introducing the anonymous volume without
-  this fix is not safe.
-- **Observability**: since a folder's existence is verified at registration, a folder that is later
-  deleted, moved, or made unreadable before a run starts is now a residual, not the primary, risk - the
-  run's log opens with an explicit line naming the host path and the container path being mounted, so a
-  run that fails against a since-vanished folder explains why in its very first log line, and the
-  daemon's own `Mounts`-type rejection (see above) fails that run loudly rather than silently mounting
-  an empty auto-created directory.
-- **Registering or clearing a dev folder never bumps the Actor's `modifiedAt`.
+    - Every non-success outcome is classified rather than guessed: being unable to verify the path at
+      all (e.g. Docker is unreachable) is reported as "could not verify", never as "does not exist"; a
+      path confirmed missing is reported as "path does not exist"; a path that exists but is a file is
+      reported as "path is not a directory"; anything else unverifiable is a generic "could not verify".
+- **`imageWorkingDirectory` is captured by the driver itself, right after a successful build, and is
+  build-specific, not Actor-specific** - it is persisted on that build's own record (see `storage.md`),
+  never on the Actor.
+    - Both the mount a run actually applies and the status the console/API report resolve the Actor's
+      `latest`-tagged build (the same resolution a tag-less run performs) and read
+      `imageWorkingDirectory` off _that build_.
+- **The mount is applied only when both a registered dev folder and a known working directory exist**
+  for the run's resolved build; either missing means the run starts exactly as if the feature did not
+  exist.
+- If the registered folder has since been deleted, moved, or made unreadable, the run must **fail
+  visibly** - never silently mount an empty directory in its place.
+- The Actor image's own installed dependencies (e.g. `node_modules`) must remain available to the Actor
+  despite the mount covering the whole working directory.
+- **Registering or clearing a dev folder never bumps the Actor's `modifiedAt`.**
 
 # Networking
 

@@ -9,7 +9,8 @@ export interface BuildContext {
 }
 
 /** Host folder + image working directory, carried together so "both or neither" is enforced by the
- * type itself (`actor-driver.md`'s "conditional, only when both fields are present" rule). */
+ * type itself (`actor-driver.md`'s "The mount is applied only when both a registered dev folder and a
+ * known working directory exist" rule). */
 export interface DevFolderMount {
 	localDevFolder: string;
 	imageWorkingDirectory: string;

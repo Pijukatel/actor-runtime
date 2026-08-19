@@ -4,15 +4,15 @@
  * through the same service layer as the API handlers, so ownership filtering (over on the API side) is
  * shared rather than reimplemented.
  *
- * The console itself has no login of its own - it is unauthenticated, and view-only except for exactly
- * one mutation (`console.md`'s "The console is unauthenticated, and view-only except for exactly one
- * mutation"): the dev-folder form on the Actor detail view. With multiple users it does not scope reads
- * to any one of them: every list/detail route below reads through the `listAll*`/`get*ById` cross-user
- * service functions (see e.g. `services/actors.ts: listAllActors`), never the API's own per-user
- * `listOwned*`/`getOwned*`, and every list row and detail view shows the object's owner `userId`
- * (`console.md`: "Frontend shows for each object the owner (userId)"). The dev-folder form writes
- * cross-user the same way - a documented deviation from the API's own strictly-owner-scoped write, not
- * an accident (`console.md`'s dev-folder section again: "a documented deviation... not an accident").
+ * The console itself has no login of its own - it is unauthenticated, and every route is a read except
+ * exactly one mutation (`console.md`'s "Every route is a read except the dev-folder form below, which is
+ * the console's one write"): the dev-folder form on the Actor detail view. With multiple users it does
+ * not scope reads to any one of them: every list/detail route below reads through the
+ * `listAll*`/`get*ById` cross-user service functions (see e.g. `services/actors.ts: listAllActors`),
+ * never the API's own per-user `listOwned*`/`getOwned*`, and every list row and detail view shows the
+ * object's owner `userId` (`console.md`: "Frontend shows for each object the owner (userId)"). The
+ * dev-folder form writes cross-user the same way - a deliberate deviation from the API's own
+ * strictly-owner-scoped write, not an accident.
  */
 import express, { type Express } from 'express';
 
@@ -64,7 +64,8 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 	const app = express();
 	app.disable('x-powered-by');
 	// Only the dev-folder form below posts anything - every other console route is a plain `GET`
-	// (`console.md`'s "view-only except for exactly one mutation").
+	// (`console.md`'s "Every route is a read except the dev-folder form below, which is the console's
+	// one write").
 	app.use(express.urlencoded({ extended: false }));
 
 	app.get('/', async (_req, res) => {

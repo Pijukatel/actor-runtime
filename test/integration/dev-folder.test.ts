@@ -91,10 +91,9 @@ function post(baseUrl: string, actorId: string, body: string, token?: string) {
 	});
 }
 
-/** Same request as `post` above, but through the `/v2/actor-runtime/*` alias
- * (`api.md`: "Also served at /v2/actor-runtime/*") - exists solely because `apify api` hardcodes a
- * `/v2`-suffixed base URL; the clean, documented CLI invocation with no `../` resolves onto exactly this
- * path. */
+/** Same request as `post` above, but through the `/v2/actor-runtime/*` alias - exists solely because
+ * `apify api` hardcodes a `/v2`-suffixed base URL; the clean, documented CLI invocation with no `../`
+ * resolves onto exactly this path. */
 function postViaV2Alias(baseUrl: string, actorId: string, body: string, token?: string) {
 	return axios.post(`${baseUrl}/v2/actor-runtime/dev-folder/${actorId}`, body, {
 		headers: token ? { Authorization: `Bearer ${token}` } : {},

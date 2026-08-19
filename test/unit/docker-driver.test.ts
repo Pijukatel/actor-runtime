@@ -299,7 +299,7 @@ describe('DockerDriver.startRun - faithful demuxStream stub (regression: dockero
 	});
 });
 
-describe('DockerDriver.startRun - dev-folder mount composition (actor-driver.md: "The mount uses HostConfig.Mounts")', () => {
+describe('DockerDriver.startRun - dev-folder mount composition (actor-driver.md: "The Actor image\'s own installed dependencies ... must remain available")', () => {
 	it('adds exactly the bind + anonymous-volume Mounts entries when devMount is present, and never a Binds key', async () => {
 		const stub = stubDockerForRun();
 		const driver = new DockerDriver(stub.docker);
@@ -500,7 +500,7 @@ describe('DockerDriver.startBuild - imageWorkingDirectory capture (actor-driver.
 	});
 });
 
-describe('DockerDriver.probeDevFolder (actor-driver.md: "a create-only probe container, never started")', () => {
+describe('DockerDriver.probeDevFolder (actor-driver.md: "A host-side existence-and-directory check")', () => {
 	it('returns ok and removes the (never-started) probe container on success, without ever calling .start()', async () => {
 		const start = vi.fn();
 		const remove = vi.fn(async () => undefined);

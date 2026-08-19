@@ -72,32 +72,20 @@
         - owner (`userId`)
         - metadata
         - `localDevFolder` - **optional**. Absent means no dev folder has ever been registered for this
-          Actor. Set/cleared only through `POST /actor-runtime/dev-folder/:actorId` or the console's
-          equivalent form (`api.md`, `console.md`) - never as a side effect of any other Actor write
-          (pushing a version, starting a build, etc.), and never bumping `modifiedAt` either (see
-          `actor-driver.md`'s "Registering or clearing a dev folder never bumps `modifiedAt`" bullet -
-          `modifiedAt` is exposed on `/v2`, unlike this field). Submitting the literal empty string is a
-          distinct, first-class "clear" operation, not a stored empty-string value: it removes the field
-          entirely, the same as if it had never been registered, and is a no-op write when there was
-          nothing to clear. A whitespace-only string does not clear - it is rejected as a malformed path
-          (`actor-driver.md`). When present, it is always a non-empty absolute host path that passed both
-          the shape check and the host-side existence-and-directory probe at the time it was registered.
+          Actor. Set or cleared only through `POST /actor-runtime/dev-folder/:actorId` or the console's
+          equivalent form (`api.md`, `console.md`), never as a side effect of any other Actor write, and
+          never bumping `modifiedAt` (`actor-driver.md`). Submitting the empty string clears it - the
+          field is removed entirely, not stored as an empty string. When present, it is always an
+          absolute host path that has passed registration validation (`actor-driver.md`).
         - There is **no `imageWorkingDirectory` field on the Actor record.** It lives on the `BuildRecord`
-          instead (`__BUILDS__` below) - build-specific, not Actor-specific, per the human's explicit
-          direction. An Actor-level field would reflect whichever tag was built most recently, regardless
-          of which tag a given run actually resolves; for a multi-tag Actor whose non-`latest` tag was
-          built more recently, a `latest` run would then mount at the wrong container path while still
-          reporting a mount would apply. Both the mount a run actually applies (`services/runs.ts`) and
-          the status the console/API report (`services/dev-folder.ts: devFolderStatus`) instead resolve
-          the Actor's `latest`-tagged `BuildRecord` and read `imageWorkingDirectory` off _that build_, so
-          there is exactly one source of truth, not two that can disagree.
-        - `localDevFolder`, together with the resolved build's `imageWorkingDirectory` (see above), are
-          **absent (or empty) meaning no mount**: `startRun` only adds the dev-folder bind mount when both
-          are present and non-empty simultaneously (`actor-driver.md`) - an Actor/build missing either one
-          starts exactly as if the feature did not exist.
+          instead (`__BUILDS__` below) - build-specific, not Actor-specific: the workdir a run mounts
+          against must be the one for the build that run itself resolved, never whichever tag happened to
+          build most recently.
+        - `localDevFolder`, together with the resolved build's `imageWorkingDirectory`, are **absent (or
+          empty) meaning no mount**: a run only adds the dev-folder bind mount when both are present and
+          non-empty (`actor-driver.md`).
         - Neither `localDevFolder` nor any build's `imageWorkingDirectory` is ever exposed on the public
-          `/v2` API - `api/dto/actors.ts`'s `actorDto` and `buildDto` are both explicit field-by-field, so
-          neither field can leak into a `/v2` response (Actor or build) by construction.
+          `/v2` API.
 - The system stores Actor runs in dedicated key-value store called `__RUNS__`:
     - `key` is the id of the Actor run `runId`
     - `value` is the metadata of the Actor
@@ -111,12 +99,9 @@
         - Actor (`actorId`)
         - metadata
         - `imageWorkingDirectory` - **optional**, and specific to this one build. Absent unless this
-          particular build succeeded and its own image's working directory could be captured
-          (`.Config.WorkingDir` via `dockerode`, never by shelling out to a `docker` command-line
-          invocation); also absent when the captured value was empty or `/`. The driver only produces the
-          value on a successful `BuildOutcome`; `services/builds.ts` writes it in the same
-          status-transition write that moves this build to `SUCCEEDED` - never on any other build, and
-          never derived from, or copied onto, the Actor record (see `localDevFolder`'s entry above).
+          particular build succeeded and its own image's working directory could be captured (also
+          absent when the captured value was empty or `/`) - never on any other build, and never derived
+          from, or copied onto, the Actor record (see `localDevFolder`'s entry above).
 - The system stores logs in dedicated key-value store called `__LOGS__`:
     - `key` is the id of the Actor build (`logId`)
     - `value` is the metadata of the Actor
