@@ -10,7 +10,7 @@
  * `actors.ts` importing back from `builds.ts` would cycle. This module imports both `actors.ts` and
  * `builds.ts`; nothing imports it back.
  */
-import type { ActorRecord } from '../storage/entities.js';
+import type { ActorRecord, BuildRecord } from '../storage/entities.js';
 import { getRegistries } from '../storage/registries.js';
 import type { Driver } from '../driver/types.js';
 import { DEFAULT_BUILD_TAG } from './actors.js';
@@ -36,14 +36,20 @@ export function validateDevFolderPathShape(path: string): string | null {
 	return null;
 }
 
-/** Resolves the image id the probe checks the candidate path against: the Actor's `DEFAULT_BUILD_TAG`
- * ('latest') build, the same resolution a tag-less real run performs. No fallback to any other tag - an
- * Actor whose only successful build is tagged something else is rejected the same way a tag-less run
- * would be. Both `resolveTaggedBuild` failure reasons collapse to `null` here: either way there is no
- * image to probe against. */
-async function resolveProbeImageId(actor: ActorRecord): Promise<string | null> {
+/** Resolves the `BuildRecord` that both the probe and the console/API status display check against: the
+ * Actor's `DEFAULT_BUILD_TAG` ('latest') build, the same resolution a tag-less real run performs. No
+ * fallback to any other tag - an Actor whose only successful build is tagged something else is rejected
+ * (or shown as not-yet-buildable) the same way a tag-less run would be. `resolveTaggedBuild`'s two
+ * failure reasons both collapse to `null` here: either way there is no build to check against. */
+async function resolveLatestBuild(actor: ActorRecord): Promise<BuildRecord | null> {
 	const lookup = await resolveTaggedBuild(actor, DEFAULT_BUILD_TAG);
-	return lookup.found ? (lookup.build.imageId ?? null) : null;
+	return lookup.found ? lookup.build : null;
+}
+
+/** Resolves the image id the probe checks the candidate path against - see `resolveLatestBuild`. */
+async function resolveProbeImageId(actor: ActorRecord): Promise<string | null> {
+	const build = await resolveLatestBuild(actor);
+	return build?.imageId ?? null;
 }
 
 /** Every way `setDevFolder` can end, `ok` included - a discriminated union both the API route and the
@@ -55,6 +61,7 @@ export type SetDevFolderResult =
 	| { kind: 'unreachable' }
 	| { kind: 'image-missing' }
 	| { kind: 'not-found' }
+	| { kind: 'not-a-directory' }
 	| { kind: 'unknown' };
 
 /** Writes `localDevFolder` directly on the `__ACTORS__` registry, bypassing `services/actors.ts:
@@ -112,6 +119,8 @@ export function describeDevFolderFailure(result: Exclude<SetDevFolderResult, { k
 			return `This Actor has no build tagged "${DEFAULT_BUILD_TAG}" - build one before registering a dev folder.`;
 		case 'not-found':
 			return 'The submitted path does not exist on the host.';
+		case 'not-a-directory':
+			return 'The submitted path exists but is a file, not a directory - only a directory can be registered.';
 		case 'unreachable':
 			return 'Could not verify the path - Docker is unreachable.';
 		case 'image-missing':
@@ -123,17 +132,26 @@ export function describeDevFolderFailure(result: Exclude<SetDevFolderResult, { k
 
 export interface DevFolderStatus {
 	localDevFolder: string | null;
+	/** The working directory of the Actor's `DEFAULT_BUILD_TAG` ('latest') build - the same build a
+	 * tag-less run resolves and a run would actually mount against (`resolveLatestBuild` above). Build-
+	 * specific, not Actor-specific: this is never read off the Actor record, so a differently-tagged,
+	 * more-recently-built image can never make this field (or `mountWillApply` below) report a value that
+	 * does not match what `latest` would actually use. `null` when there is no such build yet, or its
+	 * inspect never produced a value. */
 	imageWorkingDirectory: string | null;
-	/** Whether `startRun` will actually add the bind mount on this Actor's next run - `true` only when
-	 * both fields are present and non-empty. */
+	/** Whether `startRun` will actually add the bind mount on the Actor's next tag-less/`latest` run -
+	 * `true` only when both fields are present and non-empty. */
 	mountWillApply: boolean;
 }
 
 /** The three values both the API's registration response and the console detail page show - one
- * derivation, so they can never drift apart. */
-export function devFolderStatus(actor: ActorRecord): DevFolderStatus {
+ * derivation, so they can never drift apart. Async because `imageWorkingDirectory` now comes from the
+ * Actor's `latest`-tagged `BuildRecord` (`resolveLatestBuild`), not a field cached on the Actor itself -
+ * the fix for the cross-tag staleness a single Actor-level field could not avoid. */
+export async function devFolderStatus(actor: ActorRecord): Promise<DevFolderStatus> {
 	const localDevFolder = actor.localDevFolder ?? null;
-	const imageWorkingDirectory = actor.imageWorkingDirectory ?? null;
+	const build = await resolveLatestBuild(actor);
+	const imageWorkingDirectory = build?.imageWorkingDirectory ?? null;
 	return {
 		localDevFolder,
 		imageWorkingDirectory,

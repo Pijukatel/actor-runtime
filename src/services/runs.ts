@@ -207,14 +207,20 @@ export async function runInBackground(
 	const version = findVersion(actor, build.versionNumber);
 	const env = buildEnv(record, actor, version, options);
 	// Both-or-neither, enforced by `DevFolderMount`'s type (`driver/types.ts`) - a mount is only ever
-	// added when the Actor actually has a non-empty registered dev folder AND a known, non-empty image
-	// working directory (`actor-driver.md`: "The mount is conditional, applied only when both fields are
-	// present and non-empty"). An Actor that was never registered (or was cleared) gets `devMount:
-	// undefined`, which `docker-driver.ts`'s `startRun` treats identically to "no `Mounts` key at all" -
-	// the regression guarantee that an unregistered/cleared Actor's run container is unaffected.
+	// added when the Actor actually has a non-empty registered dev folder AND this *run's own resolved
+	// build* has a known, non-empty image working directory (`actor-driver.md`: "The mount is
+	// conditional, applied only when both fields are present and non-empty"). Deliberately
+	// `build.imageWorkingDirectory` here, never an Actor-level field: the working directory is
+	// build-specific, not Actor-specific - `build` above is already the exact `BuildRecord` this run
+	// resolved (by tag or number, `startRun`'s caller), so a multi-tag Actor's `latest` run always mounts
+	// at `latest`'s own build's working directory, never at some other, more-recently-built tag's. An
+	// Actor that was never registered (or was cleared), or whose resolved build has no known working
+	// directory, gets `devMount: undefined`, which `docker-driver.ts`'s `startRun` treats identically to
+	// "no `Mounts` key at all" - the regression guarantee that an unregistered/cleared Actor's run
+	// container is unaffected.
 	const devMount =
-		actor.localDevFolder && actor.imageWorkingDirectory
-			? { localDevFolder: actor.localDevFolder, imageWorkingDirectory: actor.imageWorkingDirectory }
+		actor.localDevFolder && build.imageWorkingDirectory
+			? { localDevFolder: actor.localDevFolder, imageWorkingDirectory: build.imageWorkingDirectory }
 			: undefined;
 
 	// Re-check right before creating the container: an abort issued while the registry/version lookups

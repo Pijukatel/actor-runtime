@@ -114,7 +114,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				1,
 				'/builds',
 			) +
-			devFolderSection(actor.id, devFolderStatus(actor), devFolderError);
+			devFolderSection(actor.id, await devFolderStatus(actor), devFolderError);
 		res.send(layout(`Actor ${actor.name}`, body));
 	});
 

@@ -2,7 +2,7 @@
  * E2E case for the local dev-folder bind mount - only a real Docker daemon can prove a genuine host
  * path passes the probe and the mount itself, so this is the one place that exercise runs: after one
  * real push+build, registering the Actor's host source folder via the documented
- * `apify api POST ../actor-runtime/dev-folder/<actorId>` invocation and then recompiling *locally* must
+ * `apify api POST /actor-runtime/dev-folder/<actorId>` invocation and then recompiling *locally* must
  * be picked up by the *next* `apify call`, with no intervening `apify push`/build - and the image's own
  * `node_modules` must survive the mount (the anonymous-volume guarantee). Registration is itself an
  * `apify` command, so `requirements/test.md`'s CLI-only rule needs no exception here.
@@ -35,6 +35,7 @@ import {
 	createIsolatedApifyHome,
 	loginApifyCli,
 	removeIsolatedApifyHome,
+	type ApiEnvelope,
 	type CallResult,
 	type PushResult,
 } from './helpers/apify-cli.js';
@@ -60,10 +61,12 @@ interface DevFolderApiResult {
 }
 
 function registerDevFolder(actorId: string, path: string, env: NodeJS.ProcessEnv): DevFolderApiResult {
-	// The exact CLI invocation `requirements/api.md`'s `/actor-runtime/*` section documents, escaping the
-	// CLI's own `/v2` base - `cwd: REPO_ROOT` matters here since `../actor-runtime/...` resolves against
-	// the CLI's configured base URL, not the filesystem; it is unrelated to `path` itself.
-	const output = apify(['api', 'POST', `../actor-runtime/dev-folder/${actorId}`, '--body', JSON.stringify(path)], {
+	// The exact CLI invocation `requirements/api.md`'s `/actor-runtime/*` section documents - the clean
+	// form, no `../`, which `apify api` resolves onto `/v2/actor-runtime/dev-folder/<actorId>` (the alias
+	// `server.ts` mounts solely for this ergonomics reason). `cwd: REPO_ROOT` matters here since
+	// `/actor-runtime/...` resolves against the CLI's configured base URL, not the filesystem; it is
+	// unrelated to `path` itself.
+	const output = apify(['api', 'POST', `/actor-runtime/dev-folder/${actorId}`, '--body', JSON.stringify(path)], {
 		cwd: REPO_ROOT,
 		env,
 	});
@@ -120,6 +123,72 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 	});
 
 	it(
+		"two consecutive runs of the registered Actor, with a local recompile in between and no push/build between them, differ the way the recompile dictates - the dev loop's actual point",
+		async () => {
+			const env = apifyEnv(isolatedApifyHome);
+
+			// One real push + build (the build-first precondition) - this is the very first test in the
+			// file to touch `mainTs`, so the source pushed here (and the image's own baked-in
+			// `dist/main.js`, compiled by the Dockerfile's `RUN npm run build` inside the container) both
+			// still carry `ORIGINAL_MARKER`.
+			const pushOutput = apify(['push', '--json'], { cwd: actorDir, env });
+			const push = JSON.parse(pushOutput) as PushResult;
+			expect(push.build.status).toBe('SUCCEEDED');
+			const actorId = push.actor.id;
+
+			// An initial local compile of the still-pristine source, so the registered host folder has a
+			// real `dist/` for the FIRST of the two runs below - registering a folder never compiles
+			// anything itself, and `beforeAll` only ran `npm install`, never a build.
+			execFileSync('npm', ['run', 'build'], { cwd: actorDir, stdio: 'inherit' });
+
+			const registered = registerDevFolder(actorId, actorDir, env);
+			expect(registered.data.mountWillApply).toBe(true);
+
+			// Run #1: no edit, no recompile since the push above - the host folder's `dist/` still matches
+			// what the image itself was just built from.
+			const firstCallOutput = apify(['call', '--input', JSON.stringify({ maxPages: 1 }), '--json'], {
+				cwd: actorDir,
+				env,
+			});
+			const firstCall = JSON.parse(firstCallOutput) as CallResult;
+			expect(firstCall.run.status).toBe('SUCCEEDED');
+			const firstLog = apifyAllOutput(['runs', 'log', firstCall.run.id], { cwd: REPO_ROOT, env });
+			expect(firstLog).toContain(ORIGINAL_MARKER);
+			expect(firstLog).not.toContain(EDITED_MARKER);
+
+			// The recompile IN BETWEEN the two runs - the entire point of this feature. No `apify
+			// push`/`apify build` anywhere in this test after the one push above.
+			writeFileSync(mainTs, originalMainTs.replace(ORIGINAL_MARKER, EDITED_MARKER));
+			execFileSync('npm', ['run', 'build'], { cwd: actorDir, stdio: 'inherit' });
+
+			// Run #2: same registered Actor, same image throughout (asserted below via buildId) - only the
+			// host folder's own compiled output changed.
+			const secondCallOutput = apify(['call', '--input', JSON.stringify({ maxPages: 1 }), '--json'], {
+				cwd: actorDir,
+				env,
+			});
+			const secondCall = JSON.parse(secondCallOutput) as CallResult;
+			expect(secondCall.run.status).toBe('SUCCEEDED');
+			const secondLog = apifyAllOutput(['runs', 'log', secondCall.run.id], { cwd: REPO_ROOT, env });
+			expect(secondLog).toContain(EDITED_MARKER);
+			expect(secondLog).not.toContain(`${ORIGINAL_MARKER}\n`);
+
+			// Both runs resolved to the exact same build - direct proof that no image build happened
+			// between them, so the output difference above is attributable only to the local recompile,
+			// never to a new image. `apify api GET actor-runs/<id>` (a real, already-implemented `/v2`
+			// path - no alias needed) reads back each run's `buildId` (`runDto`).
+			const firstRunApi = JSON.parse(
+				apify(['api', 'GET', `actor-runs/${firstCall.run.id}`], { cwd: REPO_ROOT, env }),
+			) as ApiEnvelope<{ buildId: string }>;
+			const secondRunApi = JSON.parse(
+				apify(['api', 'GET', `actor-runs/${secondCall.run.id}`], { cwd: REPO_ROOT, env }),
+			) as ApiEnvelope<{ buildId: string }>;
+			expect(secondRunApi.data.buildId).toBe(firstRunApi.data.buildId);
+		},
+		5 * 60 * 1000,
+	);
+
+	it(
 		'registers the host folder, then a local recompile (no push/build) is what the next run sees, with node_modules preserved',
 		async () => {
 			const env = apifyEnv(isolatedApifyHome);
@@ -129,7 +198,12 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 			// carries `ORIGINAL_MARKER`, so the image's own baked-in `dist/main.js` (compiled by the
 			// Dockerfile's own `RUN npm run build`, inside the container) contains `ORIGINAL_MARKER`, not
 			// `EDITED_MARKER` - that distinction is what the log assertions below rely on.
-			const pushOutput = apify(['push', '--json'], { cwd: actorDir, env });
+			// `--force`: the previous test's successful build bumped this same remote Actor's
+			// `modifiedAt` (its build recording bumps `updateActor`) to after `actorDir`'s files' mtimes,
+			// which were fixed once when `beforeAll` copied `sample_actor_ts` into the temp dir. Without
+			// `--force`, `apify push` refuses any push whose files are all older than the remote record -
+			// a deliberate staleness guard, not a bug - and this push's files never got newer.
+			const pushOutput = apify(['push', '--json', '--force'], { cwd: actorDir, env });
 			const push = JSON.parse(pushOutput) as PushResult;
 			expect(push.build.status).toBe('SUCCEEDED');
 			const actorId = push.actor.id;
@@ -195,13 +269,16 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 			// `dist/` is never mounted over it, so its content (or `node_modules`' absence) is irrelevant.
 			writeFileSync(mainTs, originalMainTs);
 
-			const pushOutput = apify(['push', '--json'], { cwd: actorDir, env });
+			// `--force`: same staleness guard as the previous test's push (see its comment) - the prior
+			// test's own build bumped this Actor's remote `modifiedAt` again, past `actorDir`'s files'
+			// mtimes.
+			const pushOutput = apify(['push', '--json', '--force'], { cwd: actorDir, env });
 			const push = JSON.parse(pushOutput) as PushResult;
 			const actorId = push.actor.id;
 
 			registerDevFolder(actorId, actorDir, env);
 
-			const clearOutput = apify(['api', 'POST', `../actor-runtime/dev-folder/${actorId}`, '--body', '""'], {
+			const clearOutput = apify(['api', 'POST', `/actor-runtime/dev-folder/${actorId}`, '--body', '""'], {
 				cwd: REPO_ROOT,
 				env,
 			});
@@ -228,7 +305,10 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 		async () => {
 			const env = apifyEnv(isolatedApifyHome);
 
-			const pushOutput = apify(['push', '--json'], { cwd: actorDir, env });
+			// `--force`: same staleness guard as the earlier pushes in this file (see the first
+			// occurrence's comment above) - the previous test's build bumped this Actor's remote
+			// `modifiedAt` again, past `actorDir`'s files' mtimes.
+			const pushOutput = apify(['push', '--json', '--force'], { cwd: actorDir, env });
 			const push = JSON.parse(pushOutput) as PushResult;
 			const actorId = push.actor.id;
 

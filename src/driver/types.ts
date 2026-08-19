@@ -36,9 +36,11 @@ export interface BuildOutcome {
  * shape, most specific first (`actor-driver.md`'s "Registration validates the path in two layers"):
  * `unreachable` (no HTTP response at all), `image-missing` (the probe's own image 404s - an operational
  * fault, not a bad path), `not-found` (the daemon's rejection contained the exact substring "bind source
- * path does not exist" - the one case allowed to say so), `unknown` (any other mount-shaped rejection -
- * reported as "could not verify", never as missing). */
-export type DevFolderProbeFailureReason = 'unreachable' | 'image-missing' | 'not-found' | 'unknown';
+ * path does not exist" - the one case allowed to say so), `not-a-directory` (the daemon's rejection
+ * contained the exact substring "not a directory" - the candidate exists but is a regular file, not a
+ * directory: registration accepts only directories), `unknown` (any other mount-shaped rejection -
+ * reported as "could not verify", never as missing or as "not a directory"). */
+export type DevFolderProbeFailureReason = 'unreachable' | 'image-missing' | 'not-found' | 'not-a-directory' | 'unknown';
 
 export type DevFolderProbeOutcome = { ok: true } | { ok: false; reason: DevFolderProbeFailureReason };
 

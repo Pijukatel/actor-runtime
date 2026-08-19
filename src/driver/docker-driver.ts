@@ -50,6 +50,14 @@ const PROBE_MOUNT_TARGET = '/probe';
  * (moby's `daemon/volume/mounts/validate.go: errBindSourceDoesNotExist`) - the one rejection shape
  * `classifyProbeError` reports as "does not exist" rather than a generic "could not verify". */
 const BIND_SOURCE_MISSING_SUBSTRING = 'bind source path does not exist';
+/** The daemon's own fixed error-message substring (moby's mount validation, `stat <path>: not a
+ * directory`) for a bind source that exists but is a regular file, not a directory - reachable only
+ * because the probe below appends `/.` to the candidate path (see `probeDevFolder`'s doc comment): a
+ * trailing `/.` on a file path forces the stat that produces exactly this message, discriminating a file
+ * from a directory in the same create-only call that already discriminates missing from present. The one
+ * rejection shape `classifyProbeError` reports as "not a directory" rather than a generic "could not
+ * verify", and never as "does not exist". */
+const NOT_A_DIRECTORY_SUBSTRING = 'not a directory';
 
 /** Narrows an unknown rejection to the shape `docker-modem` attaches to a daemon HTTP-level error
  * response (`Modem.prototype.buildPayload`: `msg.statusCode = res.statusCode`) - present only when the
@@ -66,12 +74,13 @@ function hasStatusCode(error: unknown): error is Error & { statusCode: number } 
 
 /** Classifies a `createContainer` rejection from `probeDevFolder`, most specific first - see
  * `DevFolderProbeFailureReason`'s doc comment in `driver/types.ts` for what each outcome means and why
- * a permission error/"not a directory"/Docker Desktop file-sharing denial must never be asserted as
- * "does not exist". */
+ * a permission error/Docker Desktop file-sharing denial must never be asserted as "does not exist" or
+ * "not a directory". */
 function classifyProbeError(error: unknown): DevFolderProbeFailureReason {
 	if (!hasStatusCode(error)) return 'unreachable';
 	if (error.statusCode === 404) return 'image-missing';
 	if (error.message.includes(BIND_SOURCE_MISSING_SUBSTRING)) return 'not-found';
+	if (error.message.includes(NOT_A_DIRECTORY_SUBSTRING)) return 'not-a-directory';
 	return 'unknown';
 }
 
@@ -381,14 +390,26 @@ export class DockerDriver implements Driver {
 	}
 
 	/**
-	 * Host-side existence check for a candidate dev-folder path: a create-only probe container, never
-	 * started. `fs.existsSync` would test this process's own filesystem, not the host's; the only Engine
-	 * API surface that validates an arbitrary host path is the mount-validation moby runs inside
-	 * `POST /containers/create`. `BindOptions.CreateMountpoint` (which would auto-create a missing source
-	 * and defeat this check) is never set. `imageId` is always the Actor's own latest successfully-built
-	 * image (resolved by `services/dev-folder.ts`), never a self-inspected runtime image (`HOSTNAME` is
-	 * unset in bare local dev, per `selfAttachToNetwork` above) or a pulled one (would break
-	 * offline-after-first-build).
+	 * Host-side existence-and-directory check for a candidate dev-folder path: a create-only probe
+	 * container, never started. `fs.existsSync` would test this process's own filesystem, not the host's;
+	 * the only Engine API surface that validates an arbitrary host path is the mount-validation moby runs
+	 * inside `POST /containers/create`. `BindOptions.CreateMountpoint` (which would auto-create a missing
+	 * source and defeat this check) is never set. `imageId` is always the Actor's own latest
+	 * successfully-built image (resolved by `services/dev-folder.ts`), never a self-inspected runtime
+	 * image (`HOSTNAME` is unset in bare local dev, per `selfAttachToNetwork` above) or a pulled one
+	 * (would break offline-after-first-build).
+	 *
+	 * The mount `Source` is the candidate path with a literal `/.` appended, never the bare path -
+	 * verified empirically against a real daemon (a `FROM scratch` probe image, no network pull needed):
+	 * appending `/.` forces the same `stat` moby already performs to also reject a regular file (`invalid
+	 * mount config for type "bind": stat <path>/.: not a directory`, classified below as
+	 * `not-a-directory`) while leaving every other outcome unchanged - a real directory (or a symlink
+	 * resolving to one) still succeeds, and a missing path still rejects with the same
+	 * `BIND_SOURCE_MISSING_SUBSTRING` (now trailed by `/.`, which the substring match ignores). Since the
+	 * daemon's rejection message and this call's own `Source` therefore always carry the `/.` suffix, the
+	 * caller (`services/dev-folder.ts`) never echoes either back to the user - only this function's own
+	 * classified `DevFolderProbeFailureReason` crosses that boundary, so the path stored and displayed
+	 * anywhere is always exactly what the caller submitted.
 	 */
 	async probeDevFolder(candidatePath: string, imageId: string): Promise<DevFolderProbeOutcome> {
 		if (!this.available) return { ok: false, reason: 'unreachable' };
@@ -399,7 +420,9 @@ export class DockerDriver implements Driver {
 				Image: imageId,
 				Labels: { [PROBE_LABEL]: 'true' },
 				HostConfig: {
-					Mounts: [{ Type: 'bind', Source: candidatePath, Target: PROBE_MOUNT_TARGET, ReadOnly: true }],
+					Mounts: [
+						{ Type: 'bind', Source: `${candidatePath}/.`, Target: PROBE_MOUNT_TARGET, ReadOnly: true },
+					],
 				},
 			});
 		} catch (error) {

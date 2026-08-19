@@ -58,8 +58,14 @@ function devFolderDriver(
 }
 
 /** A SUCCEEDED build with a fake image, tagged against the actor - the build-first precondition's
- * "happy path" state (mirrors `job-lifecycle.test.ts`'s identical helper). */
-async function seedSucceededBuild(actor: ActorRecord, tag = 'latest'): Promise<BuildRecord> {
+ * "happy path" state (mirrors `job-lifecycle.test.ts`'s identical helper). `imageWorkingDirectory` lives
+ * on this build record itself, never on the Actor (directive: build-specific, not Actor-specific) - pass
+ * it here to seed a build whose working directory `devFolderStatus`/`startRun` would resolve. */
+async function seedSucceededBuild(
+	actor: ActorRecord,
+	tag = 'latest',
+	imageWorkingDirectory?: string,
+): Promise<BuildRecord> {
 	const build: BuildRecord = {
 		id: generateId(),
 		userId: actor.userId,
@@ -71,6 +77,7 @@ async function seedSucceededBuild(actor: ActorRecord, tag = 'latest'): Promise<B
 		startedAt: new Date().toISOString(),
 		finishedAt: new Date().toISOString(),
 		imageId: 'fake-image:latest',
+		...(imageWorkingDirectory !== undefined ? { imageWorkingDirectory } : {}),
 	};
 	await getRegistries().builds.set(build.id, build);
 	await updateActor(actor.id, (current) => recordTaggedBuild(current, tag, build.id, build.buildNumber));
@@ -79,6 +86,17 @@ async function seedSucceededBuild(actor: ActorRecord, tag = 'latest'): Promise<B
 
 function post(baseUrl: string, actorId: string, body: string, token?: string) {
 	return axios.post(`${baseUrl}/actor-runtime/dev-folder/${actorId}`, body, {
+		headers: token ? { Authorization: `Bearer ${token}` } : {},
+		validateStatus: () => true,
+	});
+}
+
+/** Same request as `post` above, but through the `/v2/actor-runtime/*` alias
+ * (`api.md`: "Also served at /v2/actor-runtime/*") - exists solely because `apify api` hardcodes a
+ * `/v2`-suffixed base URL; the clean, documented CLI invocation with no `../` resolves onto exactly this
+ * path. */
+function postViaV2Alias(baseUrl: string, actorId: string, body: string, token?: string) {
+	return axios.post(`${baseUrl}/v2/actor-runtime/dev-folder/${actorId}`, body, {
 		headers: token ? { Authorization: `Bearer ${token}` } : {},
 		validateStatus: () => true,
 	});
@@ -239,11 +257,10 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 		expect(stored?.localDevFolder).toBe('/abs/path/to/src');
 	});
 
-	it('the response reports the detected imageWorkingDirectory and whether a mount will apply', async () => {
+	it('the response reports the detected imageWorkingDirectory (from the resolved build, not the Actor) and whether a mount will apply', async () => {
 		server = await startTestServer(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'status-fields-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
-		await updateActor(actor.id, (current) => ({ ...current, imageWorkingDirectory: '/usr/src/app' }));
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
 
 		const res = await post(server.baseUrl, actor.id, JSON.stringify('/abs/path'), server.token);
 		expect(res.data.data).toEqual({
@@ -346,6 +363,21 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 		expect(stored?.localDevFolder).toBeUndefined();
 	});
 
+	it('classifies a not-a-directory probe outcome as 400 "not a directory" (a file candidate), distinguishable from "does not exist"', async () => {
+		server = await startTestServer(devFolderDriver({ ok: false, reason: 'not-a-directory' }));
+		const actor = await server.client.actors().create({ name: 'not-a-directory-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
+
+		const res = await post(server.baseUrl, actor.id, JSON.stringify('/abs/a-file'), server.token);
+		expect(res.status).toBe(400);
+		expect(res.data.error.type).toBe('dev-folder-not-a-directory');
+		expect(res.data.error.message.toLowerCase()).toContain('not a directory');
+		expect(res.data.error.message.toLowerCase()).not.toContain('does not exist');
+
+		const stored = await getRegistries().actors.get(actor.id);
+		expect(stored?.localDevFolder).toBeUndefined();
+	});
+
 	it('classifies an unreachable probe outcome as 503, distinguishable from "does not exist"', async () => {
 		server = await startTestServer(devFolderDriver({ ok: false, reason: 'unreachable' }));
 		const actor = await server.client.actors().create({ name: 'unreachable-actor' });
@@ -434,6 +466,114 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 
 		const after = (await getRegistries().actors.get(actor.id))!.modifiedAt;
 		expect(after).toBe(before);
+	});
+});
+
+describe("POST /v2/actor-runtime/dev-folder/:actorId - the alias apify api's hardcoded /v2 base makes reachable", () => {
+	let server: TestServerHandle;
+
+	afterEach(async () => {
+		await server.close();
+	});
+
+	it('401s with no auth token, exactly like the canonical path - authenticated exactly once, never skipped nor doubled', async () => {
+		server = await startTestServer(devFolderDriver({ ok: true }));
+		const res = await postViaV2Alias(server.baseUrl, 'whatever-id', JSON.stringify('/abs/path'));
+		expect(res.status).toBe(401);
+	});
+
+	it("404s for another user's actor via the alias, exactly like the canonical path (ownership-scoped)", async () => {
+		server = await startTestServer(devFolderDriver({ ok: true }));
+		const actor = await server.client.actors().create({ name: 'alias-other-users-actor' });
+
+		const res = await postViaV2Alias(
+			server.baseUrl,
+			actor.id,
+			JSON.stringify('/abs/path'),
+			'a-completely-different-token',
+		);
+		expect(res.status).toBe(404);
+	});
+
+	it('registers and reads back successfully via the alias - the same handler as the canonical path, not a separate implementation', async () => {
+		server = await startTestServer(devFolderDriver({ ok: true }));
+		const actor = await server.client.actors().create({ name: 'alias-happy-path-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
+
+		const res = await postViaV2Alias(server.baseUrl, actor.id, JSON.stringify('/abs/via-alias'), server.token);
+		expect(res.status).toBe(200);
+		expect(res.data.data.localDevFolder).toBe('/abs/via-alias');
+
+		const stored = await getRegistries().actors.get(actor.id);
+		expect(stored?.localDevFolder).toBe('/abs/via-alias');
+	});
+
+	it('a registration made through the canonical path is read back identically through the alias, and vice versa - one piece of state, two paths to it', async () => {
+		server = await startTestServer(devFolderDriver({ ok: true }));
+		const actor = await server.client.actors().create({ name: 'alias-parity-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
+
+		const viaCanonical = await post(
+			server.baseUrl,
+			actor.id,
+			JSON.stringify('/abs/set-via-canonical'),
+			server.token,
+		);
+		expect(viaCanonical.status).toBe(200);
+		const readViaAlias = await postViaV2Alias(server.baseUrl, actor.id, JSON.stringify(''), server.token);
+		// Clearing (the literal empty string) is itself a read-back of the prior value via the response
+		// envelope's own echo, but more directly: re-set via the alias, then read back via the canonical
+		// path, proving the two paths share one underlying record.
+		expect(readViaAlias.data.data.localDevFolder).toBeNull();
+
+		const viaAlias = await postViaV2Alias(
+			server.baseUrl,
+			actor.id,
+			JSON.stringify('/abs/set-via-alias'),
+			server.token,
+		);
+		expect(viaAlias.status).toBe(200);
+		const readViaCanonical = await post(
+			server.baseUrl,
+			actor.id,
+			JSON.stringify('/abs/set-via-alias'),
+			server.token,
+		);
+		expect(readViaCanonical.data.data.localDevFolder).toBe('/abs/set-via-alias');
+
+		const stored = await getRegistries().actors.get(actor.id);
+		expect(stored?.localDevFolder).toBe('/abs/set-via-alias');
+	});
+
+	it('400s for a malformed body via the alias, identically to the canonical path', async () => {
+		server = await startTestServer(devFolderDriver({ ok: true }));
+		const actor = await server.client.actors().create({ name: 'alias-malformed-body-actor' });
+		const res = await postViaV2Alias(server.baseUrl, actor.id, 'not-json-at-all', server.token);
+		expect(res.status).toBe(400);
+	});
+
+	it('the dev-folder fields never appear in any real /v2 Actor response, whichever path registered them', async () => {
+		server = await startTestServer(devFolderDriver({ ok: true }));
+		const actor = await server.client.actors().create({ name: 'alias-no-leak-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
+
+		await postViaV2Alias(server.baseUrl, actor.id, JSON.stringify('/abs/should-not-leak-via-alias'), server.token);
+
+		const fetched = await server.client.actor(actor.id).get();
+		expect(JSON.stringify(fetched)).not.toContain('/abs/should-not-leak-via-alias');
+		expect(fetched).not.toHaveProperty('localDevFolder');
+	});
+
+	it('an unmatched path under /v2/actor-runtime/* does not get routed as a real /v2 Actor path', async () => {
+		server = await startTestServer(devFolderDriver({ ok: true }));
+		const res = await axios.post(`${server.baseUrl}/v2/actor-runtime/nonexistent-sub-route`, '{}', {
+			headers: { Authorization: `Bearer ${server.token}` },
+			validateStatus: () => true,
+		});
+		// Never a 200/mutation - either this namespace's own 404 (unmatched route on the devFolder
+		// router) or, if it falls through to `v2`'s own catch-all, that catch-all's 404/501 - either way,
+		// never treated as a genuine Apify Actor path.
+		expect([404, 501]).toContain(res.status);
 	});
 });
 
@@ -655,16 +795,12 @@ describe('run-start devMount derivation (actor fields -> RunContext.devMount, se
 		await server.close();
 	});
 
-	it('an Actor with both localDevFolder and imageWorkingDirectory set gets exactly that pair as devMount on the real run-start service path', async () => {
+	it("an Actor with localDevFolder set and a latest-tagged build carrying imageWorkingDirectory gets exactly that pair as devMount - from the build's own field, never an Actor-level one", async () => {
 		const capturing = devMountCapturingDriver();
 		server = await startTestServer(capturing.driver);
 		const actor = await server.client.actors().create({ name: 'devmount-present-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
-		await updateActor(actor.id, (current) => ({
-			...current,
-			localDevFolder: '/abs/dev/src',
-			imageWorkingDirectory: '/usr/src/app',
-		}));
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
+		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
 
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 		expect(run.status).toBe('SUCCEEDED');
@@ -678,7 +814,7 @@ describe('run-start devMount derivation (actor fields -> RunContext.devMount, se
 		const capturing = devMountCapturingDriver();
 		server = await startTestServer(capturing.driver);
 		const actor = await server.client.actors().create({ name: 'devmount-never-registered-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
 
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 		expect(run.status).toBe('SUCCEEDED');
@@ -689,16 +825,46 @@ describe('run-start devMount derivation (actor fields -> RunContext.devMount, se
 		const capturing = devMountCapturingDriver();
 		server = await startTestServer(capturing.driver);
 		const actor = await server.client.actors().create({ name: 'devmount-cleared-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
-		await updateActor(actor.id, (current) => ({
-			...current,
-			localDevFolder: '/abs/dev/src',
-			imageWorkingDirectory: '/usr/src/app',
-		}));
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
+		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
 		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: undefined }));
 
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 		expect(run.status).toBe('SUCCEEDED');
 		expect(capturing.getCapturedDevMount()).toBeUndefined();
+	});
+
+	it("a latest-tagged run's devMount uses latest's own build working directory, never a more-recently-built other tag's (the cross-tag staleness directive 2 fixes)", async () => {
+		const capturing = devMountCapturingDriver();
+		server = await startTestServer(capturing.driver);
+		const actor = await server.client.actors().create({ name: 'devmount-cross-tag-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
+		// Built more recently than `latest`, under a different tag, with a different working directory -
+		// this must never leak into a tag-less (`latest`) run's devMount.
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'staging', '/app');
+		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+
+		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(run.status).toBe('SUCCEEDED');
+		expect(capturing.getCapturedDevMount()).toEqual({
+			localDevFolder: '/abs/dev/src',
+			imageWorkingDirectory: '/usr/src/app',
+		});
+	});
+
+	it("a run against a non-latest tag mounts at that tag's OWN build working directory, not latest's", async () => {
+		const capturing = devMountCapturingDriver();
+		server = await startTestServer(capturing.driver);
+		const actor = await server.client.actors().create({ name: 'devmount-non-latest-run-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'staging', '/app');
+		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+
+		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5, build: 'staging' });
+		expect(run.status).toBe('SUCCEEDED');
+		expect(capturing.getCapturedDevMount()).toEqual({
+			localDevFolder: '/abs/dev/src',
+			imageWorkingDirectory: '/app',
+		});
 	});
 });

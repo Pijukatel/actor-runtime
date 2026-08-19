@@ -516,8 +516,10 @@ describe('DockerDriver.probeDevFolder (actor-driver.md: "a create-only probe con
 		expect(createContainer).toHaveBeenCalledTimes(1);
 		const [options] = createContainer.mock.calls[0]!;
 		expect(options.Image).toBe('image:tag');
+		// `/.` appended to the candidate path (directive: "the probe must accept ONLY directories") - the
+		// stored/returned path itself is never affected, only this internal probe `Source`.
 		expect(options.HostConfig?.Mounts).toEqual([
-			{ Type: 'bind', Source: '/abs/path', Target: '/probe', ReadOnly: true },
+			{ Type: 'bind', Source: '/abs/path/.', Target: '/probe', ReadOnly: true },
 		]);
 		expect(remove).toHaveBeenCalledTimes(1);
 		expect(start).not.toHaveBeenCalled();
@@ -593,7 +595,7 @@ describe('DockerDriver.probeDevFolder (actor-driver.md: "a create-only probe con
 		expect(outcome).toEqual({ ok: false, reason: 'not-found' });
 	});
 
-	it('classifies "source path must be a directory" as unknown, never as not-found', async () => {
+	it('classifies a differently-worded "must be a directory" rejection as unknown, never as not-a-directory - only the exact "not a directory" substring is', async () => {
 		const createContainer = vi.fn(async () => {
 			throw Object.assign(
 				new Error(
@@ -608,6 +610,23 @@ describe('DockerDriver.probeDevFolder (actor-driver.md: "a create-only probe con
 		const outcome = await driver.probeDevFolder('/abs/path', 'image:tag');
 
 		expect(outcome).toEqual({ ok: false, reason: 'unknown' });
+	});
+
+	it('classifies the exact "not a directory" substring as not-a-directory - a regular file candidate, discriminated by the appended "/." (verified empirically against a real daemon)', async () => {
+		const createContainer = vi.fn(async () => {
+			throw Object.assign(
+				new Error(
+					'(HTTP code 400) bad parameter - invalid mount config for type "bind": stat /abs/path/.: not a directory',
+				),
+				{ statusCode: 400 },
+			);
+		});
+		const driver = new DockerDriver({ createContainer } as unknown as Docker);
+		driver.available = true;
+
+		const outcome = await driver.probeDevFolder('/abs/path', 'image:tag');
+
+		expect(outcome).toEqual({ ok: false, reason: 'not-a-directory' });
 	});
 
 	it('classifies a Docker Desktop file-sharing denial (a real, existing path) as unknown, never as not-found - the false-negative this design deliberately avoids', async () => {

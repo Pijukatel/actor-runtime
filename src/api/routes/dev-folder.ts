@@ -1,8 +1,11 @@
 /**
  * `POST /actor-runtime/dev-folder/:actorId` - deliberately outside the emulated `/v2` surface
  * (`api.md`'s `/actor-runtime/*` namespace). `server.ts` creates its own sub-router, calls
- * `mountDevFolder` on it, and mounts that sub-router at `/actor-runtime` - not nested under the `v2`
- * router, so this route needs its own `auth()` rather than inheriting `v2`'s.
+ * `mountDevFolder` on it once, and mounts that same router instance at both `/actor-runtime` (canonical)
+ * and `/v2/actor-runtime` (an alias existing solely because `apify api` hardcodes a `/v2`-suffixed base
+ * URL - see `server.ts`'s doc comment). Neither mount is nested under the `v2` router, so this route
+ * needs its own `auth()` rather than inheriting `v2`'s - and since only one of the two mounts ever
+ * matches a given request, that `auth()` still runs exactly once per request either way.
  *
  * Canonical body is a JSON string: `'"/abs/path"'` to set, `'""'` to clear (`api.md`). A JSON value that
  * parses but isn't a string is rejected the same way a malformed body is.
@@ -37,6 +40,8 @@ function toApiError(result: Exclude<SetDevFolderResult, { kind: 'ok' }>): ApiErr
 			return new ApiError(400, 'dev-folder-not-buildable', message);
 		case 'not-found':
 			return new ApiError(400, 'dev-folder-path-not-found', message);
+		case 'not-a-directory':
+			return new ApiError(400, 'dev-folder-not-a-directory', message);
 		case 'unreachable':
 			return new ApiError(503, 'dev-folder-check-unavailable', message);
 		case 'image-missing':
@@ -73,7 +78,7 @@ export function mountDevFolder(router: Router, deps: ApiServerDeps): void {
 
 			// The response body doubles as the read-back - there is deliberately no separate `GET` for
 			// this yet - with the same three fields the console detail page shows.
-			sendData(res, devFolderStatus(result.actor));
+			sendData(res, await devFolderStatus(result.actor));
 		}),
 	);
 }

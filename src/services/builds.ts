@@ -198,11 +198,21 @@ export async function runBuildInBackground(
 		await flushLog(record.id);
 		// Guarded: if an abort raced ahead and already moved the record to ABORTING/ABORTED, this write
 		// is refused (`RUNNING` is the only status `SUCCEEDED` is a legal next-state from) rather than
-		// clobbering the abort - see `job-status.ts`.
+		// clobbering the abort - see `job-status.ts`. `imageWorkingDirectory` lands on the *build* record
+		// itself here, not the Actor - build-specific, not Actor-specific (`actor-driver.md`; the human
+		// directed this after a multi-tag Actor's most-recently-built, differently-tagged image could
+		// otherwise silently overwrite the value a same-run, different-tag mount was built from). Omitted
+		// entirely from the patch when the inspect produced nothing (`outcome.imageWorkingDirectory` is
+		// `undefined` on an inspect failure or an empty/`/` working directory) rather than written as
+		// `undefined` - `entities.ts`'s doc comment on the field: "never present on a non-SUCCEEDED build"
+		// stays true for the value too, there is simply nothing to record for this build.
 		const succeeded = await transitionJobStatus(builds, record.id, 'SUCCEEDED', {
 			finishedAt: new Date().toISOString(),
 			imageId: outcome.imageId,
 			exitCode: 0,
+			...(outcome.imageWorkingDirectory !== undefined
+				? { imageWorkingDirectory: outcome.imageWorkingDirectory }
+				: {}),
 		});
 		// Only tag the build against the actor if the SUCCEEDED write actually landed - if an abort won
 		// the race above, `succeeded.status` is `ABORTED` (or the record vanished) and tagging here would
@@ -210,16 +220,9 @@ export async function runBuildInBackground(
 		// `apify call`/`POST .../runs` against that tag even though the build record itself correctly
 		// stayed ABORTED.
 		if (succeeded?.status === 'SUCCEEDED') {
-			// Folded into the same `updateActor` call that records the tagged build, one write not two.
-			// Only set when this build's inspect actually produced a value - `outcome.imageWorkingDirectory`
-			// is `undefined` on an inspect failure or an empty/`/` working directory, and either way that
-			// must not clobber a previously known-good value with `undefined`.
-			await updateActor(actor.id, (current) => {
-				const withTag = recordTaggedBuild(current, options.tag, record.id, record.buildNumber);
-				return outcome.imageWorkingDirectory !== undefined
-					? { ...withTag, imageWorkingDirectory: outcome.imageWorkingDirectory }
-					: withTag;
-			});
+			await updateActor(actor.id, (current) =>
+				recordTaggedBuild(current, options.tag, record.id, record.buildNumber),
+			);
 		}
 	} catch (error) {
 		const status: JobStatus = error instanceof DriverTimedOutError ? 'TIMED-OUT' : 'FAILED';

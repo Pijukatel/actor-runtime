@@ -46,7 +46,7 @@ After the one push+build above, register your Actor's local source folder so eve
 local edits without a rebuild:
 
 ```bash
-apify api POST ../actor-runtime/dev-folder/<actorId> --body '"/abs/path/to/sample_actor_ts"'
+apify api POST /actor-runtime/dev-folder/<actorId> --body '"/abs/path/to/sample_actor_ts"'
 ```
 
 `<actorId>` is the id `apify push --json` printed (`.actor.id`); the path must be absolute and must

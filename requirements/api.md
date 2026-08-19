@@ -146,6 +146,19 @@
 - It is mounted directly on the API app, outside the `v2` router, and registered before the
   `501`/`404` catch-all - so unlike every path under `/v2`, a route here is not classified against the
   vendored Apify spec table at all.
+- **Also served at `/v2/actor-runtime/*`**, via the exact same router instance (no duplicated route
+  logic) - this is an alias, not a second implementation. It exists solely because `apify api`'s own
+  URL-building hardcodes a `/v2`-suffixed base URL (`${apifyClient.baseUrl}/${endpoint}`) and its
+  `normalizePath` strips only a leading `/` and a leading `v2/`, never `..`: the clean, documented
+  invocation `apify api POST /actor-runtime/dev-folder/<actorId>` (no `../`) therefore resolves to
+  `<base>/v2/actor-runtime/dev-folder/<actorId>`, not the canonical `/actor-runtime/*` path. Both mounts
+  are registered before `app.use('/v2', v2)`, never nested under the `v2` router, so a request is
+  authenticated exactly once by this namespace's own `auth()` regardless of which of the two paths
+  reached it - never followed by `v2`'s own `auth()` on the same request. `/v2/actor-runtime/*` is
+  **not** part of the emulated Apify API despite the `/v2` prefix - it is the identical, deliberately
+  non-Apify namespace described above, reachable a second way purely for CLI ergonomics. `actorDto`
+  still never exposes the dev-folder fields on any real `/v2` Actor response, regardless of which of the
+  two paths was used to set or clear them.
 - **`POST /actor-runtime/dev-folder/:actorId`** - registers (or clears) the Actor's local dev folder for
   the bind-mount feature (`actor-driver.md`'s "Bind mount volumes with Actor source code"). `:actorId`
   accepts the same forms as the rest of the API (id, plain name, `username~name`).
@@ -175,8 +188,14 @@
           an arbitrary other tag.
         - `400` `dev-folder-path-not-found` - the host-side probe's daemon rejection contained the exact
           "bind source path does not exist" substring.
+        - `400` `dev-folder-not-a-directory` - the host-side probe's daemon rejection contained the exact
+          "not a directory" substring - the candidate exists but is a regular file, not a directory.
+          Reachable because the probe's mount `Source` is the candidate path with a literal `/.` appended
+          (`actor-driver.md`), which forces the daemon's own `stat` to also discriminate a file from a
+          directory; this suffix never appears in the stored value or in this response, only in the
+          classification that produced it.
         - `400` `dev-folder-check-failed` - any other mount-validation-shaped rejection; reported as
-          "could not verify", never as "does not exist".
+          "could not verify", never as "does not exist" or "not a directory".
         - `503` `dev-folder-check-unavailable` - Docker itself is unreachable.
         - `500` `internal-error` - the probe's own image is missing (a 404 from the daemon on an image
           that should exist) - an operational fault, not a bad submitted path.
@@ -184,9 +203,12 @@
       `/v2` envelope contract is - but the _distinctions themselves_ (does-not-exist vs. could-not-verify,
       build-first vs. bad-path) are load-bearing and must not collapse into one generic error.
     - The documented CLI invocation is
-      `apify api POST ../actor-runtime/dev-folder/<actorId> --body '"/abs/path/to/src"'` - the CLI's
-      `apify api` escape hatch, whose `../` resolves past its own configured `/v2`-suffixed base URL and
-      lands on this route directly, carrying the same bearer token every other `apify` command sends.
+      `apify api POST /actor-runtime/dev-folder/<actorId> --body '"/abs/path/to/src"'` - the CLI's
+      `apify api` escape hatch, which resolves this exact path onto `/v2/actor-runtime/dev-folder/<actorId>`
+      (the alias just above), carrying the same bearer token every other `apify` command sends. An older
+      form using a leading `../` (escaping the CLI's own `/v2`-suffixed base URL to land on the canonical
+      `/actor-runtime/*` path directly) still works and is not being removed - it is simply no longer the
+      documented, recommended form now that the alias makes the plain, un-escaped path work too.
 - The console's own dev-folder form (`console.md`) does **not** go through this endpoint - it posts to a
   console-local, unauthenticated route on the console's own port, resolving the Actor cross-user by the
   id already in its page URL. Both routes funnel into the same underlying validate-and-persist service
