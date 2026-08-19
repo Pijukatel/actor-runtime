@@ -8,6 +8,7 @@ import { h, jsonBody, paginationParams, queryBoolean, queryNumber, queryString, 
 import {
 	addOrReplaceVersion,
 	createActor,
+	DEFAULT_BUILD_TAG as DEFAULT_TAG,
 	deleteActor,
 	findVersion,
 	listOwnedActors,
@@ -23,8 +24,6 @@ import type { ActorVersionRecord } from '../../storage/entities.js';
 import type { ApiServerDeps } from '../server.js';
 import { CONTAINER_API_BASE_URL } from '../../config.js';
 import { resolveProxyPassword } from '../../services/users.js';
-
-const DEFAULT_TAG = 'latest';
 
 export function mountActors(router: Router, deps: ApiServerDeps): void {
 	router.get(
@@ -275,8 +274,21 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 			if (!actor) throw recordNotFound();
 
 			const tag = queryString(req, 'build') ?? DEFAULT_TAG;
-			const build = await resolveTaggedBuild(actor, tag);
-			if (!build) throw recordNotFound(`Actor has no build tagged "${tag}"`);
+			const lookup = await resolveTaggedBuild(actor, tag);
+			if (!lookup.found) {
+				// Two distinct 404s, not one generic one: a tag that was never recorded at all vs. a tag
+				// that *is* recorded but whose `BuildRecord` was since deleted (`DELETE
+				// /actor-builds/:buildId` does not clear any tag pointing at the deleted build) - see
+				// `resolveTaggedBuild`'s doc comment. Both keep the same status (404) and error `type`
+				// (`record-not-found`); only the message differs, so a caller reading the tag genuinely
+				// still exists is never told it doesn't.
+				throw recordNotFound(
+					lookup.reason === 'build-deleted'
+						? `Actor's build tagged "${tag}" was deleted`
+						: `Actor has no build tagged "${tag}"`,
+				);
+			}
+			const build = lookup.build;
 
 			const body = rawBody(req);
 			const input =

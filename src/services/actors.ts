@@ -3,23 +3,35 @@ import type { ActorRecord, ActorVersionRecord, BuildRecord } from '../storage/en
 import { getRegistries } from '../storage/registries.js';
 import type { Driver, DevFolderProbeOutcome } from '../driver/types.js';
 
-/** The tag a build/run resolves to when the caller names none - mirrored by `POST
- * /actors/:actorId/runs` (`api/routes/actors.ts`'s own `DEFAULT_TAG`) and by `resolveDevFolderProbeBuild`
- * below, which shares this constant so the two can never drift apart. */
+/** The tag a build/run resolves to when the caller names none. `api/routes/actors.ts` imports this
+ * constant directly (aliased to its own local `DEFAULT_TAG` name) instead of declaring a second
+ * `'latest'` literal, and `services/runs.ts` does the same for its `DEFAULT_BUILD_TAG` - one exported
+ * value, three import sites, so the three can no longer drift apart the way three independent literals
+ * could. */
 export const DEFAULT_BUILD_TAG = 'latest';
 
 /**
- * Resolves the `BuildRecord` tagged `tag` on this Actor - the exact lookup `POST
- * /actors/:actorId/runs` performs (`actor.taggedBuilds[tag]`, then load that build by id), extracted
- * here so the registration probe below can resolve an image the identical way a real run does, instead
- * of re-implementing it. A missing tag and a missing build record are both reported the same way a
- * missing tag is at that route: `null`, with no fallback to any other tag.
+ * Resolves the tag `tag` on this Actor to its `BuildRecord`, or a reason it couldn't be resolved - the
+ * exact lookup `POST /actors/:actorId/runs` performs (`actor.taggedBuilds[tag]`, then load that build
+ * by id), extracted here so the registration probe below can resolve an image the identical way a real
+ * run does, instead of re-implementing it. The two failure shapes are kept distinguishable rather than
+ * both collapsing to one generic "not found": `no-such-tag` when `tag` has never been recorded on this
+ * Actor at all, and `build-deleted` when the tag *is* recorded but the `BuildRecord` it points at is
+ * gone (builds are deletable via `DELETE /actor-builds/:buildId` - `services/builds.ts`'s `deleteBuild`
+ * does not clear any tag that pointed at it). Callers that only care about "did this resolve" can check
+ * `result.found`; callers that need an accurate error message (like the run-start route) can tell the
+ * two failure shapes apart instead of reporting "no build tagged" for a tag that does, in fact, exist.
+ * No fallback to any other tag in either failure case.
  */
-export async function resolveTaggedBuild(actor: ActorRecord, tag: string): Promise<BuildRecord | null> {
+export type TaggedBuildLookup =
+	{ found: false; reason: 'no-such-tag' | 'build-deleted' } | { found: true; build: BuildRecord };
+
+export async function resolveTaggedBuild(actor: ActorRecord, tag: string): Promise<TaggedBuildLookup> {
 	const tagged = actor.taggedBuilds[tag];
-	if (!tagged) return null;
+	if (!tagged) return { found: false, reason: 'no-such-tag' };
 	const build = await getRegistries().builds.get(tagged.buildId);
-	return build ?? null;
+	if (!build) return { found: false, reason: 'build-deleted' };
+	return { found: true, build };
 }
 
 export interface CreateActorInput {
@@ -135,6 +147,10 @@ export function recordTaggedBuild(actor: ActorRecord, tag: string, buildId: stri
 // callers pass an already-unwrapped, already-trimmed string: the API unwraps its JSON-string body, the
 // console reads its urlencoded form field.
 
+/** Upper bound `validateDevFolderPathShape` rejects a path past - generous enough that no genuine host
+ * path would ever hit it, just a guard against pathological input. */
+const MAX_DEV_FOLDER_PATH_LENGTH = 4096;
+
 /** Cheap shape pre-filter, run before the host-side existence check, never instead of it (see
  * `actor-driver.md`'s "Registration validates the path in two layers" bullet). `~` is not expanded - this codebase never
  * shells out (see `docker-driver.ts`'s class doc comment), so there is no shell to expand it, and
@@ -142,8 +158,6 @@ export function recordTaggedBuild(actor: ActorRecord, tag: string, buildId: stri
  * should assume. Returns `null` for a shape-valid non-empty path, or a human-readable rejection reason.
  * Exported for direct unit testing as a pure function; the empty-string "clear" case is handled by
  * `setDevFolder` before this is ever called, not inside it. */
-const MAX_DEV_FOLDER_PATH_LENGTH = 4096;
-
 export function validateDevFolderPathShape(path: string): string | null {
 	if (path.length > MAX_DEV_FOLDER_PATH_LENGTH) {
 		return `Path is too long (max ${MAX_DEV_FOLDER_PATH_LENGTH} characters)`;
@@ -170,8 +184,11 @@ export function validateDevFolderPathShape(path: string): string | null {
  * `latest`-tagged successful build - the build-first precondition.
  */
 async function resolveProbeImageId(actor: ActorRecord): Promise<string | null> {
-	const build = await resolveTaggedBuild(actor, DEFAULT_BUILD_TAG);
-	return build?.imageId ?? null;
+	const lookup = await resolveTaggedBuild(actor, DEFAULT_BUILD_TAG);
+	// Both `resolveTaggedBuild` failure reasons ("no such tag" and "tag exists but its build was
+	// deleted") collapse to the same `null` here - either way there is no build to probe against, so the
+	// caller reports the same "no successful build" precondition failure for both.
+	return lookup.found ? (lookup.build.imageId ?? null) : null;
 }
 
 /** Every way `setDevFolder` can end, `ok` included - a discriminated union so both the API route and the

@@ -153,9 +153,46 @@ describe('actors / versions / builds / runs (via real apify-client)', () => {
 		expect(run.generalAccess).toBe('FOLLOW_USER_SETTING');
 	});
 
-	it('starting a run against an Actor with no tagged build 404s', async () => {
+	it('starting a run against an Actor with no tagged build 404s, naming the tag that has no build', async () => {
 		const actor = await server.client.actors().create({ name: 'no-build-actor' });
-		await expect(server.client.actor(actor.id).start({})).rejects.toMatchObject({ statusCode: 404 });
+		await expect(server.client.actor(actor.id).start({})).rejects.toMatchObject({
+			statusCode: 404,
+			type: 'record-not-found',
+			message: 'Actor has no build tagged "latest"',
+		});
+	});
+
+	it('starting a run against a tag whose BuildRecord was since deleted 404s with a message that does not claim the tag is missing (it is not)', async () => {
+		const actor = await server.client.actors().create({ name: 'deleted-tagged-build-actor' });
+
+		// Seed a tagged, successful build directly, then delete the underlying BuildRecord without
+		// clearing the tag - the exact state `deleteBuild` (`services/builds.ts`) leaves behind, since it
+		// only removes the build itself and never touches `actor.taggedBuilds`.
+		const { builds } = getRegistries();
+		const fakeBuildId = 'fakeBuildId12345d';
+		await builds.set(fakeBuildId, {
+			id: fakeBuildId,
+			userId: actor.userId,
+			actorId: actor.id,
+			versionNumber: '0.0',
+			buildNumber: '0.0.1',
+			tag: 'latest',
+			status: 'SUCCEEDED',
+			startedAt: new Date().toISOString(),
+			finishedAt: new Date().toISOString(),
+			imageId: 'fake-image:latest',
+		});
+		await updateActor(actor.id, (current) => recordTaggedBuild(current, 'latest', fakeBuildId, '0.0.1'));
+		await builds.delete(fakeBuildId);
+
+		// Before the fix this collapsed to the exact same "Actor has no build tagged" message as the
+		// no-such-tag case above - factually wrong here, since the tag `latest` genuinely still exists on
+		// this Actor. Status (404) and type (`record-not-found`) are unchanged either way.
+		await expect(server.client.actor(actor.id).start({})).rejects.toMatchObject({
+			statusCode: 404,
+			type: 'record-not-found',
+			message: 'Actor\'s build tagged "latest" was deleted',
+		});
 	});
 
 	it('a run against a (test-seeded) successful build wires storages/env, then fails fast without Docker', async () => {

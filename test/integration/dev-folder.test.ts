@@ -19,7 +19,7 @@ import { getRegistries } from '../../src/storage/registries.js';
 import { generateId } from '../../src/storage/ids.js';
 import { recordTaggedBuild, updateActor } from '../../src/services/actors.js';
 import type { ActorRecord, BuildRecord } from '../../src/storage/entities.js';
-import type { Driver, DevFolderProbeOutcome } from '../../src/driver/types.js';
+import type { Driver, DevFolderMount, DevFolderProbeOutcome } from '../../src/driver/types.js';
 
 /**
  * A `Driver` whose only interesting behaviour is `probeDevFolder`, returning a caller-controlled
@@ -512,5 +512,86 @@ describe('console: dev-folder registration form on the Actor detail view', () =>
 			},
 		);
 		expect(res.status).toBe(404);
+	});
+});
+
+/**
+ * A driver that is "available" and records the `devMount` it was asked to start a container with -
+ * mirrors `run-env-vars.test.ts`'s `envCapturingDriver`, capturing `ctx.devMount` instead of `ctx.env`,
+ * so `services/runs.ts`'s actor-fields -> `RunContext.devMount` derivation can be exercised end to end
+ * through the real `startRun` service path, without a real Docker socket.
+ */
+function devMountCapturingDriver(): { driver: Driver; getCapturedDevMount: () => DevFolderMount | undefined } {
+	let capturedDevMount: DevFolderMount | undefined;
+	const driver: Driver = {
+		available: true,
+		async init() {},
+		async startBuild() {
+			throw new Error('not used by this stub');
+		},
+		async abortBuild() {},
+		async startRun(ctx, onLog) {
+			capturedDevMount = ctx.devMount;
+			onLog('done\n');
+			return { exitCode: 0 };
+		},
+		async abortRun() {},
+		async reconcileOrphans() {},
+	};
+	return { driver, getCapturedDevMount: () => capturedDevMount };
+}
+
+describe('run-start devMount derivation (actor fields -> RunContext.devMount, services/runs.ts)', () => {
+	let server: TestServerHandle;
+
+	afterEach(async () => {
+		await server.close();
+	});
+
+	it('an Actor with both localDevFolder and imageWorkingDirectory set gets exactly that pair as devMount on the real run-start service path', async () => {
+		const capturing = devMountCapturingDriver();
+		server = await startTestServer(capturing.driver);
+		const actor = await server.client.actors().create({ name: 'devmount-present-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
+		await updateActor(actor.id, (current) => ({
+			...current,
+			localDevFolder: '/abs/dev/src',
+			imageWorkingDirectory: '/usr/src/app',
+		}));
+
+		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(run.status).toBe('SUCCEEDED');
+		expect(capturing.getCapturedDevMount()).toEqual({
+			localDevFolder: '/abs/dev/src',
+			imageWorkingDirectory: '/usr/src/app',
+		});
+	});
+
+	it('an Actor that was never registered gets devMount: undefined on the real run-start service path', async () => {
+		const capturing = devMountCapturingDriver();
+		server = await startTestServer(capturing.driver);
+		const actor = await server.client.actors().create({ name: 'devmount-never-registered-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
+
+		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(run.status).toBe('SUCCEEDED');
+		expect(capturing.getCapturedDevMount()).toBeUndefined();
+	});
+
+	it('an Actor whose registration was set and then cleared also gets devMount: undefined, not the stale pair', async () => {
+		const capturing = devMountCapturingDriver();
+		server = await startTestServer(capturing.driver);
+		const actor = await server.client.actors().create({ name: 'devmount-cleared-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
+		await updateActor(actor.id, (current) => ({
+			...current,
+			localDevFolder: '/abs/dev/src',
+			imageWorkingDirectory: '/usr/src/app',
+		}));
+		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: undefined }));
+
+		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(run.status).toBe('SUCCEEDED');
+		expect(capturing.getCapturedDevMount()).toBeUndefined();
 	});
 });

@@ -6,11 +6,10 @@ import { openKeyValueStore } from '../storage/open.js';
 import type { Driver } from '../driver/types.js';
 import { appendLog, flushLog, markLogTerminal } from './logs.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
-import { findVersion } from './actors.js';
+import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
 
 const DEFAULT_MEMORY_MBYTES = 1024;
 const DEFAULT_TIMEOUT_SECS = 300;
-const DEFAULT_BUILD_TAG = 'latest';
 /** No separate platform disk-default constant exists to match exactly (`apify-core` has no
  * `ACTOR_DEFAULT_DISK_MBYTES`-shaped constant alongside `ACTOR_DEFAULT_MEMORY_MBYTES`); this mirrors the
  * 2x ratio `apify-core`'s own OpenAPI examples use for the pair (`packages/consts/src/actors.ts`'s run
@@ -50,9 +49,9 @@ export interface StartRunOptions {
 	memoryMbytes?: number;
 	timeoutSecs?: number;
 	/** Build tag or build number this run should use (the real platform's `options.build`) - defaults to
-	 * `'latest'` when omitted, matching `DEFAULT_TAG` in `api/routes/actors.ts` (the route always resolves
-	 * and passes the actual tag it used; this default only matters for direct service-layer callers, e.g.
-	 * tests). */
+	 * `DEFAULT_BUILD_TAG` (`'latest'`, `services/actors.ts`) when omitted; `api/routes/actors.ts`'s route
+	 * imports that same constant as its local `DEFAULT_TAG` and always resolves and passes the actual tag
+	 * it used, so this default only matters for direct service-layer callers, e.g. tests. */
 	build?: string;
 	proxyPassword?: string;
 	apiBaseUrl: string;
