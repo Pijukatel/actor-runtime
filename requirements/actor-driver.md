@@ -65,15 +65,20 @@
     1. A cheap shape pre-filter: the submitted value must be an absolute POSIX path, contain no newline
        or NUL byte, and stay under a length cap. A leading `~` is never expanded - this runtime never
        shells out to interpret one.
-    2. A **host-side existence check**. The runtime process's own filesystem is not the host's (this
-       runtime always runs containerized itself, talking to the _host_ Docker socket - `fs.existsSync`
-       here would test the wrong filesystem entirely). The only Docker Engine API surface that validates
-       an arbitrary host path at all is the mount-validation the daemon runs inside `POST
-/containers/create`, so the check is a **create-only probe container, never started**: a container
-       is created with a single `Mounts` entry (`Type: 'bind'`, the candidate path as `Source`, read-only)
-       against the Actor's own latest successfully-built image; success removes it immediately without
-       ever calling `.start()`, and a rejection means creation itself failed, so there is nothing to clean
-       up either way.
+    2. A **host-side existence check**. The runtime process's own filesystem is not necessarily the
+       host's - the shipped image runs this runtime containerized against the host Docker socket
+       (`npm run dev`'s bare-host mode is the exception, per `README.md`), so `fs.existsSync` cannot be
+       trusted to mean anything in the runtime's own filesystem: it would test the wrong filesystem
+       entirely whenever the runtime itself is containerized. The only Docker Engine API surface that
+       validates an arbitrary host path at all is the mount-validation the daemon runs inside
+       `POST /containers/create`, so the check is a **create-only probe container, never started**: a
+       container is created with a single `Mounts` entry (`Type: 'bind'`, the candidate path as `Source`,
+       read-only) against the Actor's own latest successfully-built image; success removes it immediately
+       without ever calling `.start()`, and a rejection means creation itself failed, so there is nothing
+       to clean up either way. The probe container carries a fixed label (`actor-runtime.devFolderProbe`)
+       so that if its own removal call ever fails - creation succeeded, so a real container now exists on
+       the daemon - it is not simply lost: the startup orphan sweep (below) unconditionally force-removes
+       every container carrying that label, regardless of which run (if any) it belongs to.
     - Submitting the **empty string clears the registration** and never runs either validation layer -
       there is no path to check, and clearing must always succeed, including when Docker itself is
       unreachable. Clearing an Actor that has nothing registered is a no-op: no registry write at all.
@@ -104,11 +109,12 @@
   registered (or was cleared) starts exactly as if this feature did not exist: no mount-related entries
   at all in its container's configuration.
 - **The mount uses `HostConfig.Mounts`, never the legacy `Binds` array or literal `-v` flags.** This
-  corrects the section's original `-v {localDevFolder}:{imageWorkingDirectory} -v
-{imageWorkingDirectory}/node_modules` phrasing: a plain `-v`/`Binds` bind **auto-creates** a missing
-  host source directory silently, which would defeat the whole point of validating existence at
-  registration and would let a folder that vanished between registration and a run start silently mount
-  an empty directory over the image's working directory instead of failing the run. A `Mounts`-type
+  corrects the section's original
+  `-v {localDevFolder}:{imageWorkingDirectory} -v {imageWorkingDirectory}/node_modules` phrasing: a plain
+  `-v`/`Binds` bind **auto-creates** a missing host source directory silently, which would defeat the
+  whole point of validating existence at registration and would let a folder that vanished between
+  registration and a run start silently mount an empty directory over the image's working directory
+  instead of failing the run. A `Mounts`-type
   bind **errors** on a missing source instead (unless `BindOptions.CreateMountpoint` is explicitly set,
   which this runtime never does), giving the same strictness at run start as at registration. One
   `HostConfig.Mounts` array carries both entries:

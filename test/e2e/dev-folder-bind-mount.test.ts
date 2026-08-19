@@ -125,38 +125,47 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 			const env = apifyEnv(isolatedApifyHome);
 
 			// One real push + build, as the product description requires ("push and build once, then
-			// register") - the build-first precondition (`requirements/api.md`).
+			// register") - the build-first precondition (`requirements/api.md`). The pushed source still
+			// carries `ORIGINAL_MARKER`, so the image's own baked-in `dist/main.js` (compiled by the
+			// Dockerfile's own `RUN npm run build`, inside the container) contains `ORIGINAL_MARKER`, not
+			// `EDITED_MARKER` - that distinction is what the log assertions below rely on.
 			const pushOutput = apify(['push', '--json'], { cwd: actorDir, env });
 			const push = JSON.parse(pushOutput) as PushResult;
 			expect(push.build.status).toBe('SUCCEEDED');
 			const actorId = push.actor.id;
 
-			// Local build, so the host folder already looks like the image's working directory before it
-			// is ever bind-mounted over it - `dist/main.js` for the container's own `CMD` to run, matching
-			// the layout the image itself expects. The host folder's own `node_modules` (just installed
-			// above) is deliberately NOT what the container is meant to rely on - the assertion below
-			// proves the anonymous volume, not this directory's own `node_modules`, is what the container
-			// actually used.
+			// Edit the source and recompile locally - deliberately no `apify push`/`apify build` between
+			// here and the `apify call` below, which is the entire point of the feature. `node_modules`
+			// (installed in `beforeAll`) is still present in `actorDir` at this point, so `tsc` can run.
+			writeFileSync(mainTs, originalMainTs.replace(ORIGINAL_MARKER, EDITED_MARKER));
 			execFileSync('npm', ['run', 'build'], { cwd: actorDir, stdio: 'inherit' });
+
+			// Remove `node_modules` from the copied folder now, before registering it as the dev folder -
+			// this is what makes the run below actually discriminate the anonymous volume, rather than
+			// merely being consistent with it. `sample_actor_ts/package.json` lists `apify` and
+			// `@crawlee/cheerio` as regular dependencies, so a `node_modules` left in place here would let
+			// the Actor's imports resolve from the *host's* own install, and the `call` below would succeed
+			// whether or not the anonymous volume worked at all. With it gone, the only place those imports
+			// can resolve from inside the container is the anonymous `node_modules` volume seeded from the
+			// image's own install (`actor-driver.md`'s anonymous-volume guarantee) - if that volume ever
+			// stopped preserving the image's installed packages, the call below would fail with a
+			// module-resolution error instead of silently succeeding.
+			rmSync(join(actorDir, 'node_modules'), { recursive: true, force: true });
 
 			const registered = registerDevFolder(actorId, actorDir, env);
 			expect(registered.data.localDevFolder).toBe(actorDir);
 			expect(registered.data.imageWorkingDirectory).toBe(EXPECTED_IMAGE_WORKING_DIR);
 			expect(registered.data.mountWillApply).toBe(true);
 
-			// Edit the source, recompile locally - deliberately no `apify push`/`apify build` between here
-			// and the `apify call` below, which is the entire point of the feature.
-			writeFileSync(mainTs, originalMainTs.replace(ORIGINAL_MARKER, EDITED_MARKER));
-			execFileSync('npm', ['run', 'build'], { cwd: actorDir, stdio: 'inherit' });
-
 			const callOutput = apify(['call', '--input', JSON.stringify({ maxPages: 1 }), '--json'], {
 				cwd: actorDir,
 				env,
 			});
 			const call = JSON.parse(callOutput) as CallResult;
-			// The dependencies (`apify`, `@crawlee/cheerio`) still resolved and the crawl actually ran -
-			// proving the anonymous `node_modules` volume preserved the image's own installed packages,
-			// even though the bind mount just replaced the whole working directory with the host folder.
+			// Succeeds despite `actorDir` having no `node_modules` of its own (removed above) - the crawl
+			// cannot run at all without `apify`/`@crawlee/cheerio` resolving, and the only place they could
+			// have come from inside the container is the anonymous `node_modules` volume seeded from the
+			// image's own install, which is exactly the guarantee this test proves.
 			expect(call.run.status).toBe('SUCCEEDED');
 
 			const log = apifyAllOutput(['runs', 'log', call.run.id], { cwd: REPO_ROOT, env });
@@ -178,6 +187,14 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 		async () => {
 			const env = apifyEnv(isolatedApifyHome);
 
+			// Restore the original source before pushing, for this case's own clarity - but no local
+			// rebuild is needed, and none would be possible without reinstalling: the previous test removed
+			// `actorDir/node_modules` for good (see its comments) and this test's assertions don't read
+			// `actorDir`'s compiled output at all. With the mount cleared below, the container runs
+			// whichever `dist/main.js` the push+build above just baked into the image - `actorDir`'s own
+			// `dist/` is never mounted over it, so its content (or `node_modules`' absence) is irrelevant.
+			writeFileSync(mainTs, originalMainTs);
+
 			const pushOutput = apify(['push', '--json'], { cwd: actorDir, env });
 			const push = JSON.parse(pushOutput) as PushResult;
 			const actorId = push.actor.id;
@@ -191,12 +208,6 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 			const cleared = JSON.parse(clearOutput) as DevFolderApiResult;
 			expect(cleared.data.localDevFolder).toBeNull();
 			expect(cleared.data.mountWillApply).toBe(false);
-
-			// The edited marker from the previous test in this file (if it ran first) must NOT be what this
-			// run sees - restore the original source/build first so this case is self-contained regardless
-			// of test order.
-			writeFileSync(mainTs, originalMainTs);
-			execFileSync('npm', ['run', 'build'], { cwd: actorDir, stdio: 'inherit' });
 
 			const callOutput = apify(['call', '--input', JSON.stringify({ maxPages: 1 }), '--json'], {
 				cwd: actorDir,
@@ -221,8 +232,13 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 			const push = JSON.parse(pushOutput) as PushResult;
 			const actorId = push.actor.id;
 
-			writeFileSync(mainTs, originalMainTs);
-			execFileSync('npm', ['run', 'build'], { cwd: actorDir, stdio: 'inherit' });
+			// Reuses `actorDir/dist` exactly as the first test in this file compiled it - still valid,
+			// dependency-resolving JS regardless of what `mainTs`'s source text says now (`it` blocks in
+			// this file run in declaration order, and nothing after the first test recompiles `dist`). This
+			// test only measures volume accounting across repeated runs, not what marker the log contains,
+			// so no further edit or local rebuild is needed here - and none would be possible without
+			// reinstalling, since `actorDir/node_modules` stays removed for the rest of this file (see the
+			// first test).
 			registerDevFolder(actorId, actorDir, env);
 
 			// Dangling (unattached) volumes on the whole daemon - a coarse but simple proxy: this suite is

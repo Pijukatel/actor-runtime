@@ -187,7 +187,9 @@ function stubDockerForRun() {
 		stream.on('data', (chunk: Buffer) => stdout.write(chunk));
 	});
 
-	const createContainer = vi.fn(async () => container);
+	// Typed with the real `dockerode` parameter shape so `mock.calls[0]` is genuinely a
+	// `[Docker.ContainerCreateOptions]` tuple below - no unsound cast needed to read it back.
+	const createContainer = vi.fn(async (_options: Docker.ContainerCreateOptions) => container);
 	const docker = {
 		createContainer,
 		modem: { demuxStream },
@@ -316,12 +318,12 @@ describe('DockerDriver.startRun - dev-folder mount composition (actor-driver.md:
 		);
 		await new Promise((resolve) => setImmediate(resolve));
 
-		const [options] = stub.createContainer.mock.calls[0] as [{ HostConfig: Record<string, unknown> }];
-		expect(options.HostConfig.Mounts).toEqual([
+		const [options] = stub.createContainer.mock.calls[0]!;
+		expect(options.HostConfig?.Mounts).toEqual([
 			{ Type: 'bind', Source: '/host/src', Target: '/usr/src/app' },
 			{ Type: 'volume', Source: '', Target: '/usr/src/app/node_modules' },
 		]);
-		expect(options.HostConfig.Binds).toBeUndefined();
+		expect(options.HostConfig?.Binds).toBeUndefined();
 
 		stub.triggerContainerExit(0);
 		stub.endLogStream();
@@ -339,9 +341,9 @@ describe('DockerDriver.startRun - dev-folder mount composition (actor-driver.md:
 		);
 		await new Promise((resolve) => setImmediate(resolve));
 
-		const [options] = stub.createContainer.mock.calls[0] as [{ HostConfig: Record<string, unknown> }];
-		expect(options.HostConfig.Mounts).toBeUndefined();
-		expect(options.HostConfig.Binds).toBeUndefined();
+		const [options] = stub.createContainer.mock.calls[0]!;
+		expect(options.HostConfig?.Mounts).toBeUndefined();
+		expect(options.HostConfig?.Binds).toBeUndefined();
 
 		stub.triggerContainerExit(0);
 		stub.endLogStream();
@@ -502,7 +504,9 @@ describe('DockerDriver.probeDevFolder (actor-driver.md: "a create-only probe con
 	it('returns ok and removes the (never-started) probe container on success, without ever calling .start()', async () => {
 		const start = vi.fn();
 		const remove = vi.fn(async () => undefined);
-		const createContainer = vi.fn(async () => ({ remove, start }));
+		// Typed with the real `dockerode` parameter shape so `mock.calls[0]` is genuinely a
+		// `[Docker.ContainerCreateOptions]` tuple below - no unsound cast needed to read it back.
+		const createContainer = vi.fn(async (_options: Docker.ContainerCreateOptions) => ({ remove, start }));
 		const driver = new DockerDriver({ createContainer } as unknown as Docker);
 		driver.available = true;
 
@@ -510,9 +514,9 @@ describe('DockerDriver.probeDevFolder (actor-driver.md: "a create-only probe con
 
 		expect(outcome).toEqual({ ok: true });
 		expect(createContainer).toHaveBeenCalledTimes(1);
-		const [options] = createContainer.mock.calls[0] as [{ Image: string; HostConfig: { Mounts: unknown[] } }];
+		const [options] = createContainer.mock.calls[0]!;
 		expect(options.Image).toBe('image:tag');
-		expect(options.HostConfig.Mounts).toEqual([
+		expect(options.HostConfig?.Mounts).toEqual([
 			{ Type: 'bind', Source: '/abs/path', Target: '/probe', ReadOnly: true },
 		]);
 		expect(remove).toHaveBeenCalledTimes(1);
