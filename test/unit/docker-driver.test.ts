@@ -97,7 +97,7 @@ describe('DockerDriver.reconcileOrphans', () => {
 		expect(listContainers).not.toHaveBeenCalled();
 	});
 
-	it('removes each matched container with { force: true, v: true } (design.md: Volume cleanup - an orphaned devMount run must not leak its anonymous node_modules volume past a restart)', async () => {
+	it('removes each matched container with { force: true, v: true } (an orphaned devMount run must not leak its anonymous node_modules volume past a restart)', async () => {
 		const { docker, removeCallOptions } = stubDocker([
 			{ Id: 'container-a', Labels: { 'actor-runtime.runId': 'run-a' } },
 		]);
@@ -256,7 +256,7 @@ describe('DockerDriver.startRun - faithful demuxStream stub (regression: dockero
 	});
 });
 
-describe('DockerDriver.startRun - dev-folder mount composition (design.md: "Applying the mount")', () => {
+describe('DockerDriver.startRun - dev-folder mount composition (actor-driver.md: "The mount uses HostConfig.Mounts")', () => {
 	it('adds exactly the bind + anonymous-volume Mounts entries when devMount is present, and never a Binds key', async () => {
 		const stub = stubDockerForRun();
 		const driver = new DockerDriver(stub.docker);
@@ -355,7 +355,7 @@ describe('DockerDriver.startRun - dev-folder mount composition (design.md: "Appl
 	});
 });
 
-describe('DockerDriver container removal passes { v: true } (design.md: "Volume cleanup is in this PR")', () => {
+describe('DockerDriver container removal passes { v: true } (actor-driver.md: "container removal passes { v: true }")', () => {
 	it("startRun's finally block removes the container with { v: true }, whether or not the run had a devMount", async () => {
 		const stub = stubDockerForRun();
 		const driver = new DockerDriver(stub.docker);
@@ -374,7 +374,7 @@ describe('DockerDriver container removal passes { v: true } (design.md: "Volume 
 	});
 });
 
-describe('DockerDriver.startBuild - imageWorkingDirectory capture (design.md: "Capture of imageWorkingDirectory")', () => {
+describe('DockerDriver.startBuild - imageWorkingDirectory capture (actor-driver.md: "imageWorkingDirectory is captured by the driver itself")', () => {
 	/** A stub covering only what `startBuild` calls: `buildImage`, `modem.followProgress` (invoking its
 	 * `onFinished` callback synchronously, as a successful build with no progress lines), and `getImage`
 	 * for the post-build inspect. */
@@ -457,7 +457,7 @@ describe('DockerDriver.startBuild - imageWorkingDirectory capture (design.md: "C
 	});
 });
 
-describe('DockerDriver.probeDevFolder (design.md: "The check is a create-only probe container, never started")', () => {
+describe('DockerDriver.probeDevFolder (actor-driver.md: "a create-only probe container, never started")', () => {
 	it('returns ok and removes the (never-started) probe container on success, without ever calling .start()', async () => {
 		const start = vi.fn();
 		const remove = vi.fn(async () => undefined);

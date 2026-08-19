@@ -5,13 +5,14 @@
  * shared rather than reimplemented.
  *
  * The console itself has no login of its own - it is unauthenticated, and view-only except for exactly
- * one mutation (`console.md`, amended by `design.md`'s Decision #3): the dev-folder form on the Actor
- * detail view. With multiple users it does not scope reads to any one of them: every list/detail route
- * below reads through the `listAll*`/`get*ById` cross-user service functions (see e.g.
- * `services/actors.ts: listAllActors`), never the API's own per-user `listOwned*`/`getOwned*`, and every
- * list row and detail view shows the object's owner `userId` (`console.md`: "Frontend shows for each
- * object the owner (userId)"). The dev-folder form writes cross-user the same way - a documented
- * deviation from the API's own strictly-owner-scoped write, not an accident (`design.md`'s Risks).
+ * one mutation (`console.md`'s "The console is unauthenticated, and view-only except for exactly one
+ * mutation"): the dev-folder form on the Actor detail view. With multiple users it does not scope reads
+ * to any one of them: every list/detail route below reads through the `listAll*`/`get*ById` cross-user
+ * service functions (see e.g. `services/actors.ts: listAllActors`), never the API's own per-user
+ * `listOwned*`/`getOwned*`, and every list row and detail view shows the object's owner `userId`
+ * (`console.md`: "Frontend shows for each object the owner (userId)"). The dev-folder form writes
+ * cross-user the same way - a documented deviation from the API's own strictly-owner-scoped write, not
+ * an accident (`console.md`'s dev-folder section again: "a documented deviation... not an accident").
  */
 import express, { type Express } from 'express';
 
@@ -44,8 +45,9 @@ export interface ConsoleServerDeps {
 }
 
 /** The dev-folder registration form + its three read-only status rows, rendered on the Actor detail
- * view (`design.md`'s console decisions). `errorMessage` is threaded through from the POST handler's
- * redirect query param below, since a redirect itself carries no state of its own. */
+ * view (`console.md`'s "Local dev-folder registration form" section). `errorMessage` is threaded
+ * through from the POST handler's redirect query param below, since a redirect itself carries no state
+ * of its own. */
 function devFolderSection(actorId: string, status: ReturnType<typeof devFolderStatus>, errorMessage?: string): string {
 	const errorHtml = errorMessage
 		? `<p style="color:#b00020"><strong>Error:</strong> ${escapeHtml(errorMessage)}</p>`
@@ -126,13 +128,13 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 	});
 
 	/**
-	 * The console's one mutation (`design.md`'s Decision #3) - funnels through the exact same
-	 * `setDevFolder` the API's `POST /actor-runtime/dev-folder/:actorId` uses, resolving the Actor
-	 * cross-user by the id already in the page URL (no token, matching the console's existing
-	 * unauthenticated reads) rather than through `resolveOwnedActor`. A failure redirects back with the
-	 * classified message in a query param - `describeDevFolderError`'s wording, not a bespoke one - so
-	 * the build-first rejection and the does-not-exist/could-not-verify distinction are surfaced, not
-	 * swallowed (success criterion 27).
+	 * The console's one mutation (`console.md`'s "Local dev-folder registration form" section) -
+	 * funnels through the exact same `setDevFolder` the API's `POST /actor-runtime/dev-folder/:actorId`
+	 * uses, resolving the Actor cross-user by the id already in the page URL (no token, matching the
+	 * console's existing unauthenticated reads) rather than through `resolveOwnedActor`. A failure
+	 * redirects back with the classified message in a query param - `describeDevFolderError`'s wording,
+	 * not a bespoke one - so the build-first rejection and the does-not-exist/could-not-verify
+	 * distinction are surfaced, not swallowed.
 	 */
 	app.post('/actors/:id/dev-folder', async (req, res) => {
 		const actor = await getActorById(req.params.id);

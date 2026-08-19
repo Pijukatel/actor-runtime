@@ -1,7 +1,26 @@
 import { generateId } from '../storage/ids.js';
-import type { ActorRecord, ActorVersionRecord } from '../storage/entities.js';
+import type { ActorRecord, ActorVersionRecord, BuildRecord } from '../storage/entities.js';
 import { getRegistries } from '../storage/registries.js';
 import type { Driver, DevFolderProbeOutcome } from '../driver/types.js';
+
+/** The tag a build/run resolves to when the caller names none - mirrored by `POST
+ * /actors/:actorId/runs` (`api/routes/actors.ts`'s own `DEFAULT_TAG`) and by `resolveDevFolderProbeBuild`
+ * below, which shares this constant so the two can never drift apart. */
+export const DEFAULT_BUILD_TAG = 'latest';
+
+/**
+ * Resolves the `BuildRecord` tagged `tag` on this Actor - the exact lookup `POST
+ * /actors/:actorId/runs` performs (`actor.taggedBuilds[tag]`, then load that build by id), extracted
+ * here so the registration probe below can resolve an image the identical way a real run does, instead
+ * of re-implementing it. A missing tag and a missing build record are both reported the same way a
+ * missing tag is at that route: `null`, with no fallback to any other tag.
+ */
+export async function resolveTaggedBuild(actor: ActorRecord, tag: string): Promise<BuildRecord | null> {
+	const tagged = actor.taggedBuilds[tag];
+	if (!tagged) return null;
+	const build = await getRegistries().builds.get(tagged.buildId);
+	return build ?? null;
+}
 
 export interface CreateActorInput {
 	name: string;
@@ -108,7 +127,7 @@ export function recordTaggedBuild(actor: ActorRecord, tag: string, buildId: stri
 	return { ...actor, taggedBuilds: { ...actor.taggedBuilds, [tag]: { buildId, buildNumber } } };
 }
 
-// --- Local dev-folder registration (`design.md`) ---
+// --- Local dev-folder registration (`actor-driver.md`'s "Bind mount volumes with Actor source code") ---
 //
 // One validate-and-persist entry point, `setDevFolder`, shared by the API's
 // `POST /actor-runtime/dev-folder/:actorId` (`api/routes/dev-folder.ts`) and the console's single-field
@@ -116,8 +135,8 @@ export function recordTaggedBuild(actor: ActorRecord, tag: string, buildId: stri
 // callers pass an already-unwrapped, already-trimmed string: the API unwraps its JSON-string body, the
 // console reads its urlencoded form field.
 
-/** Cheap shape pre-filter, run before the host-side existence check, never instead of it (`design.md`'s
- * "Validation is now two layered checks, not shape alone"). `~` is not expanded - this codebase never
+/** Cheap shape pre-filter, run before the host-side existence check, never instead of it (see
+ * `actor-driver.md`'s "Registration validates the path in two layers" bullet). `~` is not expanded - this codebase never
  * shells out (see `docker-driver.ts`'s class doc comment), so there is no shell to expand it, and
  * expanding it here would require guessing which host user's home directory this runtime process
  * should assume. Returns `null` for a shape-valid non-empty path, or a human-readable rejection reason.
@@ -139,23 +158,19 @@ export function validateDevFolderPathShape(path: string): string | null {
 }
 
 /**
- * Resolves the image id `setDevFolder` hands to `driver.probeDevFolder` - the Actor's own latest
- * successfully-built image, "the same id the driver already uses to start real runs" (`design.md`).
- * `taggedBuilds` is only ever populated by `recordTaggedBuild`, itself only called after a build
- * transitions to `SUCCEEDED` (`services/builds.ts: runBuildInBackground`), so any entry at all is proof
- * of a genuine past success - matching how `POST /actors/:actorId/runs` resolves a run's build by tag
- * (`api/routes/actors.ts`'s `DEFAULT_TAG`), this prefers the `latest` tag when present and otherwise
- * falls back to whichever tag exists. Returns `null` when the Actor has never had a successful build at
- * all - the build-first precondition (`design.md`'s Decisions #9-adjacent scope-split; success
- * criterion 6).
+ * Resolves the image id `setDevFolder` hands to `driver.probeDevFolder` - via `resolveTaggedBuild` at
+ * `DEFAULT_BUILD_TAG` ('latest'), the exact same resolution `POST /actors/:actorId/runs` performs when
+ * a run's caller names no `?build=` tag (`api/routes/actors.ts`'s own default). There is deliberately
+ * no fallback to some other tag when `latest` is absent: an Actor whose only successful build(s) are
+ * tagged something else is exactly the Actor a tag-less real run would also 404 against, so the probe
+ * must refuse it the same way, not silently succeed against a build a real run could not reach without
+ * an explicit tag. `taggedBuilds` is only ever populated by `recordTaggedBuild`, itself only called
+ * after a build transitions to `SUCCEEDED` (`services/builds.ts: runBuildInBackground`), so a resolved
+ * build is always proof of a genuine past success. Returns `null` when the Actor has never had a
+ * `latest`-tagged successful build - the build-first precondition.
  */
 async function resolveProbeImageId(actor: ActorRecord): Promise<string | null> {
-	const tags = Object.keys(actor.taggedBuilds);
-	const preferredTag = actor.taggedBuilds.latest ? 'latest' : tags[0];
-	if (!preferredTag) return null;
-	const tagged = actor.taggedBuilds[preferredTag];
-	if (!tagged) return null;
-	const build = await getRegistries().builds.get(tagged.buildId);
+	const build = await resolveTaggedBuild(actor, DEFAULT_BUILD_TAG);
 	return build?.imageId ?? null;
 }
 
@@ -172,17 +187,17 @@ export type SetDevFolderResult =
 	| { kind: 'unknown' };
 
 /**
- * The one validate-and-persist path both the API endpoint and the console form funnel through
- * (`design.md`: "Both paths funnel into one service function that validates and persists"). `path` is
- * already unwrapped from its transport encoding and trimmed by the caller.
+ * The one validate-and-persist path both the API endpoint and the console form funnel through - see
+ * this file's own module comment above ("Local dev-folder registration"). `path` is already unwrapped
+ * from its transport encoding and trimmed by the caller.
  *
  * An empty `path` is a first-class "clear" operation - it always succeeds, never runs the shape check,
- * the build-first check, or the existence probe (`design.md`: "Clearing... never runs the existence
- * check, since there is no path to check"). A non-empty `path` must pass the shape pre-filter, then
- * requires the Actor to have at least one successful build (so there is an image to probe against at
- * all), then must pass the host-side existence probe - in that order, each one short-circuiting the
- * next on failure. A rejected call never touches `updateActor` at all, so a previously-registered value
- * survives untouched across a later failed registration attempt (success criterion 8).
+ * the build-first check, or the existence probe (`actor-driver.md`: "Submitting the empty string clears
+ * the registration and never runs either validation layer"). A non-empty `path` must pass the shape
+ * pre-filter, then requires the Actor to have at least one successful build (so there is an image to
+ * probe against at all), then must pass the host-side existence probe - in that order, each one
+ * short-circuiting the next on failure. A rejected call never touches `updateActor` at all, so a
+ * previously-registered value survives untouched across a later failed registration attempt.
  */
 export async function setDevFolder(driver: Driver, actor: ActorRecord, path: string): Promise<SetDevFolderResult> {
 	if (path === '') {
@@ -212,8 +227,9 @@ export interface DevFolderErrorInfo {
 }
 
 /** Maps every non-`ok` `SetDevFolderResult` to the status/type/message the API route wraps in an
- * `ApiError` and the console form renders inline - one mapping, two presentations (`design.md`'s error
- * classification, most specific first: unreachable/image-missing/not-found/unknown). */
+ * `ApiError` and the console form renders inline - one mapping, two presentations of the error
+ * classification `actor-driver.md` documents (most specific first: unreachable/image-missing/
+ * not-found/unknown). */
 export function describeDevFolderError(result: Exclude<SetDevFolderResult, { kind: 'ok' }>): DevFolderErrorInfo {
 	switch (result.kind) {
 		case 'invalid-path':
@@ -255,14 +271,14 @@ export interface DevFolderStatus {
 	localDevFolder: string | null;
 	imageWorkingDirectory: string | null;
 	/** Whether `startRun` will actually add the bind mount on this Actor's next run - `true` only when
-	 * both fields are present and non-empty (`design.md`: "No mount is added when either field is
-	 * missing or the folder is empty"). Shown separately from the two raw fields so the console/API
-	 * caller never has to re-derive this condition themselves (success criterion 28). */
+	 * both fields are present and non-empty (`actor-driver.md`: "The mount is conditional, applied only
+	 * when both fields are present and non-empty"). Shown separately from the two raw fields so the
+	 * console/API caller never has to re-derive this condition themselves. */
 	mountWillApply: boolean;
 }
 
 /** The three values both the API's registration response and the console detail page show - one
- * derivation, so they can never drift apart (success criterion 27). */
+ * derivation, so they can never drift apart. */
 export function devFolderStatus(actor: ActorRecord): DevFolderStatus {
 	const localDevFolder = actor.localDevFolder ?? null;
 	const imageWorkingDirectory = actor.imageWorkingDirectory ?? null;

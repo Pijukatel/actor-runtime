@@ -1,6 +1,7 @@
 /**
- * Pure-function coverage for `validateDevFolderPathShape` (`design.md`: "A cheap shape pre-filter still
- * runs first" - absolute POSIX path, no newline/NUL, length cap, `~` never expanded). This is the only
+ * Pure-function coverage for `validateDevFolderPathShape` (`actor-driver.md`'s "Registration validates
+ * the path in two layers" bullet: shape pre-filter runs first - absolute POSIX path, no newline/NUL,
+ * length cap, `~` never expanded). This is the only
  * layer of validation exercisable with no registries/driver at all; `setDevFolder`'s build-first and
  * host-side-probe layers are covered by `test/integration/dev-folder.test.ts`.
  */

@@ -1,7 +1,7 @@
 /**
- * E2E case for the local dev-folder bind mount (`design.md`'s Testability section, "Only the real-Docker
- * e2e suite can prove a genuine host path passes the probe and the mount itself"): after one real
- * push+build, registering the Actor's host source folder via the documented
+ * E2E case for the local dev-folder bind mount - only a real Docker daemon can prove a genuine host
+ * path passes the probe and the mount itself, so this is the one place that exercise runs: after one
+ * real push+build, registering the Actor's host source folder via the documented
  * `apify api POST ../actor-runtime/dev-folder/<actorId>` invocation and then recompiling *locally* must
  * be picked up by the *next* `apify call`, with no intervening `apify push`/build - and the image's own
  * `node_modules` must survive the mount (the anonymous-volume guarantee). Registration is itself an
@@ -40,11 +40,11 @@ const ACTOR_DIR = join(REPO_ROOT, 'sample_actor_ts');
 const MAIN_TS = join(ACTOR_DIR, 'src', 'main.ts');
 const CONTAINER_NAME = 'actor-runtime-e2e-devfolder';
 const IMAGE_TAG = 'actor-runtime:e2e-devfolder';
-// `sample_actor_ts/Dockerfile` sets no `WORKDIR` of its own, so it inherits the base image's
-// (`apify/actor-node`'s own Dockerfile - confirmed live against its current default branch in
-// `.shepherd/_request_fact_check.md`'s round-1 claim 7). Asserted independently below via the
-// registration response's own `imageWorkingDirectory`, not only assumed here - if the base image ever
-// moves its `WORKDIR`, that assertion (not the mount itself) is what will fail first and explain why.
+// `sample_actor_ts/Dockerfile` sets no `WORKDIR` of its own, so it inherits the base image's - the
+// `apify/actor-node` image's own Dockerfile sets `WORKDIR /usr/src/app`. Asserted independently below
+// via the registration response's own `imageWorkingDirectory`, not only assumed here - if the base
+// image ever moves its `WORKDIR`, that assertion (not the mount itself) is what will fail first and
+// explain why.
 const EXPECTED_IMAGE_WORKING_DIR = '/usr/src/app';
 const ORIGINAL_MARKER = 'Crawl finished.';
 const EDITED_MARKER = 'Crawl finished (dev-folder-edit-marker).';
@@ -56,10 +56,10 @@ interface DevFolderApiResult {
 }
 
 function registerDevFolder(actorId: string, path: string, env: NodeJS.ProcessEnv): DevFolderApiResult {
-	// The exact CLI invocation the product description promises, escaping the CLI's own `/v2` base
-	// (`design.md`'s Decision #5) - `cwd: REPO_ROOT` matters here since `../actor-runtime/...` resolves
-	// against the CLI's configured base URL, not the filesystem; it is unrelated to `path` itself, which
-	// is always this test's own absolute `ACTOR_DIR`.
+	// The exact CLI invocation `requirements/api.md`'s `/actor-runtime/*` section documents, escaping the
+	// CLI's own `/v2` base - `cwd: REPO_ROOT` matters here since `../actor-runtime/...` resolves against
+	// the CLI's configured base URL, not the filesystem; it is unrelated to `path` itself, which is
+	// always this test's own absolute `ACTOR_DIR`.
 	const output = apify(['api', 'POST', `../actor-runtime/dev-folder/${actorId}`, '--body', JSON.stringify(path)], {
 		cwd: REPO_ROOT,
 		env,
@@ -126,8 +126,9 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 			const actorId = push.actor.id;
 
 			// Local build, so the host folder already looks like the image's working directory before it
-			// is ever bind-mounted over it (`design.md`'s "Layout mismatch" risk) - `dist/main.js` for the
-			// container's own `CMD` to run. The host folder's own `node_modules` (just installed above) is
+			// is ever bind-mounted over it - `dist/main.js` for the container's own `CMD` to run,
+			// matching the layout the image itself expects. The host folder's own `node_modules` (just
+			// installed above) is
 			// deliberately NOT what the container is meant to rely on - the assertion below proves the
 			// anonymous volume, not this directory's own `node_modules`, is what the container actually used.
 			execFileSync('npm', ['run', 'build'], { cwd: ACTOR_DIR, stdio: 'inherit' });
@@ -158,8 +159,8 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 			expect(log).toContain(EDITED_MARKER);
 			expect(log).not.toContain(`${ORIGINAL_MARKER}\n`);
 
-			// An explicit mount line at the top of the run's log (`design.md`'s "Observability of the
-			// mount"), naming both the host path and the container path being mounted.
+			// An explicit mount line at the top of the run's log (`actor-driver.md`'s "Observability"
+			// bullet), naming both the host path and the container path being mounted.
 			expect(log).toContain(ACTOR_DIR);
 			expect(log).toContain(EXPECTED_IMAGE_WORKING_DIR);
 		},

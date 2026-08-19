@@ -314,6 +314,71 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 		});
 	});
 
+	describe('imageWorkingDirectory persists alongside the tagged build in the same write', () => {
+		it('a successful build outcome carrying imageWorkingDirectory lands it on the Actor together with the tagged build', async () => {
+			const driver = fixedBuildOutcomeDriver({ imageId: 'x', imageWorkingDirectory: '/usr/src/app' });
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'dev-folder-capture-actor');
+
+			const record: BuildRecord = {
+				id: generateId(),
+				userId: actor.userId,
+				actorId: actor.id,
+				versionNumber: '0.0',
+				buildNumber: '0.0.1',
+				tag: 'latest',
+				status: 'READY',
+				startedAt: new Date().toISOString(),
+			};
+			await getRegistries().builds.set(record.id, record);
+
+			await runBuildInBackground(driver, actor, VERSION, record, { tag: 'latest', useCache: true });
+
+			const final = await getRegistries().builds.get(record.id);
+			expect(final?.status).toBe('SUCCEEDED');
+
+			// Both effects of the single `updateActor` call landed together: the tagged build...
+			const finalActor = await getRegistries().actors.get(actor.id);
+			expect(finalActor?.taggedBuilds.latest).toEqual({ buildId: record.id, buildNumber: record.buildNumber });
+			// ...and the captured working directory, in the same write, not a separate one.
+			expect(finalActor?.imageWorkingDirectory).toBe('/usr/src/app');
+		});
+
+		it('a successful build outcome with no imageWorkingDirectory leaves a previously stored value untouched', async () => {
+			const driver = fixedBuildOutcomeDriver({ imageId: 'y' });
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'dev-folder-preserve-actor');
+
+			// A known-good value from an earlier build's inspect, which this build's outcome (no
+			// `imageWorkingDirectory` at all - e.g. its inspect failed or came up empty/`/`) must not
+			// clobber with `undefined`.
+			await updateActor(actor.id, (current) => ({ ...current, imageWorkingDirectory: '/usr/src/app' }));
+
+			const record: BuildRecord = {
+				id: generateId(),
+				userId: actor.userId,
+				actorId: actor.id,
+				versionNumber: '0.0',
+				buildNumber: '0.0.2',
+				tag: 'latest',
+				status: 'READY',
+				startedAt: new Date().toISOString(),
+			};
+			await getRegistries().builds.set(record.id, record);
+
+			await runBuildInBackground(driver, actor, VERSION, record, { tag: 'latest', useCache: true });
+
+			const final = await getRegistries().builds.get(record.id);
+			expect(final?.status).toBe('SUCCEEDED');
+
+			// The tag still moves to the new build...
+			const finalActor = await getRegistries().actors.get(actor.id);
+			expect(finalActor?.taggedBuilds.latest).toEqual({ buildId: record.id, buildNumber: record.buildNumber });
+			// ...but the previously known working directory survives, since this outcome carried none.
+			expect(finalActor?.imageWorkingDirectory).toBe('/usr/src/app');
+		});
+	});
+
 	describe('finding 3: run abort is race-proof end to end', () => {
 		it('abort while running: ABORTED sticks despite the completion write racing in after', async () => {
 			const driver = deferredRunDriver();

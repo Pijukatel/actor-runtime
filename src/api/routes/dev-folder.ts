@@ -1,14 +1,14 @@
 /**
  * `POST /actor-runtime/dev-folder/:actorId` - deliberately outside the emulated `/v2` surface
- * (`api.md`'s `/actor-runtime/*` namespace; `design.md`'s Decisions #1/#8), so this is mounted directly
- * on the API `app`, not the `v2` router (`server.ts`'s "Auth is per-router, not global" note) - it
- * therefore needs its own `auth()`, applied to a small router of its own below, not inherited from `v2`.
+ * (`api.md`'s `/actor-runtime/*` namespace), so this is mounted directly on the API `app`, not the `v2`
+ * router (`server.ts`'s "Auth is per-router, not global" note) - it therefore needs its own `auth()`,
+ * applied to a small router of its own below, not inherited from `v2`.
  *
- * Canonical body is a JSON string: `'"/abs/path"'` to set, `'""'` to clear (`design.md`'s Decision #6 -
- * `apify api`'s own `--body` validates with `JSON.parse` and refuses anything that isn't valid JSON, so
- * a bare, unquoted path can never reach this route through the documented CLI invocation at all). A
- * JSON value that parses but isn't a string (a number, an object, ...) is rejected the same way a
- * malformed body is - only a genuine JSON string is ever a valid registration payload.
+ * Canonical body is a JSON string: `'"/abs/path"'` to set, `'""'` to clear (`api.md`'s `/actor-runtime/*`
+ * section - `apify api`'s own `--body` validates with `JSON.parse` and refuses anything that isn't
+ * valid JSON, so a bare, unquoted path can never reach this route through the documented CLI invocation
+ * at all). A JSON value that parses but isn't a string (a number, an object, ...) is rejected the same
+ * way a malformed body is - only a genuine JSON string is ever a valid registration payload.
  *
  * Ownership-scoped like every other Actor write on this API port: `resolveOwnedActor` (not the
  * console's cross-user `getActorById`) so a caller can only ever register a dev folder for their own
@@ -50,8 +50,8 @@ export function mountDevFolder(app: Express, deps: ApiServerDeps): void {
 				throw new ApiError(info.status, info.type, info.message);
 			}
 
-			// The response body doubles as the read-back this design deliberately has no separate `GET`
-			// for yet (`design.md`'s Follow-ups) - the same three fields the console detail page shows.
+			// The response body doubles as the read-back - there is deliberately no separate `GET` for
+			// this yet - with the same three fields the console detail page shows.
 			sendData(res, devFolderStatus(result.actor));
 		}),
 	);

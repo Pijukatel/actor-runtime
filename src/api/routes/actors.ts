@@ -12,6 +12,7 @@ import {
 	findVersion,
 	listOwnedActors,
 	resolveOwnedActor,
+	resolveTaggedBuild,
 	updateActor,
 } from '../../services/actors.js';
 import { listOwnedBuilds, startBuild, waitForBuildFinish, type StartBuildOptions } from '../../services/builds.js';
@@ -274,11 +275,8 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 			if (!actor) throw recordNotFound();
 
 			const tag = queryString(req, 'build') ?? DEFAULT_TAG;
-			const tagged = actor.taggedBuilds[tag];
-			if (!tagged) throw recordNotFound(`Actor has no build tagged "${tag}"`);
-			const { builds } = getRegistries();
-			const build = await builds.get(tagged.buildId);
-			if (!build) throw recordNotFound();
+			const build = await resolveTaggedBuild(actor, tag);
+			if (!build) throw recordNotFound(`Actor has no build tagged "${tag}"`);
 
 			const body = rawBody(req);
 			const input =

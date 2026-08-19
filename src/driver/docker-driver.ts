@@ -40,13 +40,12 @@ const NETWORK_NAME = 'apify-local';
 const RUN_LABEL = 'actor-runtime.runId';
 /** Target path for the create-only, never-started existence probe container (`probeDevFolder` below) -
  * arbitrary, since the probe is never started and nothing ever reads from it; moby validates the mount
- * source before the container object is even returned (`_request_fact_check.md`'s round-3 delta,
- * claim 2). */
+ * source before the container object is even returned from `POST /containers/create`, so no path is
+ * ever read from this target. */
 const PROBE_MOUNT_TARGET = '/probe';
 /** The daemon's own fixed error-message substring for a `Mounts`-type bind whose source is missing
- * (moby's `daemon/volume/mounts/validate.go: errBindSourceDoesNotExist`, pinned by
- * `_request_fact_check.md`'s round-3 delta, claim 1) - the one rejection shape `classifyProbeError`
- * reports as "does not exist" rather than a generic "could not verify". */
+ * (moby's `daemon/volume/mounts/validate.go: errBindSourceDoesNotExist`) - the one rejection shape
+ * `classifyProbeError` reports as "does not exist" rather than a generic "could not verify". */
 const BIND_SOURCE_MISSING_SUBSTRING = 'bind source path does not exist';
 
 /** Narrows an unknown rejection to the shape `docker-modem` attaches to a daemon HTTP-level error
@@ -228,10 +227,10 @@ export class DockerDriver implements Driver {
 	}
 
 	/**
-	 * `.Config.WorkingDir` of the image just built, via `docker.getImage(imageId).inspect()`
-	 * (`design.md`'s "Capture of `imageWorkingDirectory`" - this codebase talks to the host socket
-	 * through `dockerode` only, never a shelled-out `docker inspect`, correcting
-	 * `actor-driver.md`'s original CLI-flag phrasing). An inspect failure is logged and tolerated - it
+	 * `.Config.WorkingDir` of the image just built, via `docker.getImage(imageId).inspect()` - this
+	 * codebase talks to the host socket through `dockerode` exclusively, never a shelled-out
+	 * `docker inspect` (see `actor-driver.md`'s "Bind mount volumes with Actor source code" section, and
+	 * this file's own class doc comment above). An inspect failure is logged and tolerated - it
 	 * must never fail an otherwise-successful build - and an empty or `/` working directory is treated
 	 * the same as "unknown": mounting a dev folder over `/` at run start would destroy the container.
 	 */
@@ -263,11 +262,12 @@ export class DockerDriver implements Driver {
 
 		const env = Object.entries(ctx.env).map(([key, value]) => `${key}=${value}`);
 
-		// Observability of the mount (`design.md`): a secondary diagnostic now that existence is verified
-		// at registration - if the folder is deleted/moved/made unreadable between registration and this
-		// run, the daemon's own rejection below explains why the run failed, but only if the very first
-		// log line already named the two paths. Written before `createContainer` so it is genuinely first,
-		// even if the daemon call itself is what ends up failing.
+		// Observability of the mount (`actor-driver.md`'s "Observability" bullet): a secondary
+		// diagnostic now that existence is verified at registration - if the folder is deleted/moved/made
+		// unreadable between registration and this run, the daemon's own rejection below explains why the
+		// run failed, but only if the very first log line already named the two paths. Written before
+		// `createContainer` so it is genuinely first, even if the daemon call itself is what ends up
+		// failing.
 		if (ctx.devMount) {
 			onLog(
 				`Mounting local dev folder ${ctx.devMount.localDevFolder} over the image's working directory ` +
@@ -367,25 +367,26 @@ export class DockerDriver implements Driver {
 			this.timedOutRuns.delete(ctx.runId);
 			this.runContainers.delete(ctx.runId);
 			// `{ v: true }` also removes the container's anonymous volumes - without it, the anonymous
-			// `node_modules` volume `buildDevMounts` adds for a `devMount` run would leak one volume per run,
-			// forever (`design.md`'s "Volume cleanup is in this PR"). Harmless for a run with no `devMount`:
-			// such a container has no anonymous volumes to remove in the first place.
+			// `node_modules` volume `buildDevMounts` adds for a `devMount` run would leak one volume per
+			// run, forever (see `actor-driver.md`'s "Every run's container removal passes `{ v: true }`"
+			// bullet). Harmless for a run with no `devMount`: such a container has no anonymous volumes to
+			// remove in the first place.
 			await container.remove({ v: true }).catch(() => undefined);
 		}
 	}
 
 	/**
-	 * The two `HostConfig.Mounts` entries for a `devMount` run (`design.md`'s "Applying the mount") -
-	 * `Mounts`, not `Binds`, for the same reason `probeDevFolder` uses `Mounts`: a `Mounts`-type bind
-	 * errors on a missing source instead of silently auto-creating one (`_request_fact_check.md`'s
-	 * round-3 delta, claim 1), so a folder that vanished between registration and this run start fails
-	 * the run loudly instead of masking the image's own working directory with an empty auto-created
-	 * directory. The bind is read-write (no `ReadOnly`), matching the requirement's own plain `-v` form.
-	 * The second entry - `Type: 'volume'` with an empty `Source` - is the `Mounts`-array equivalent of the
-	 * anonymous-volume bare-path `-v` form: Docker copies the image's existing `node_modules` into it
-	 * before mounting, which is what preserves the image's installed dependencies underneath a bind that
-	 * otherwise covers the whole working directory (a *named* volume would start empty; a plain bind
-	 * would erase - `_request_fact_check.md`'s claim 6).
+	 * The two `HostConfig.Mounts` entries for a `devMount` run (`actor-driver.md`'s "The mount uses
+	 * `HostConfig.Mounts`..." bullet) - `Mounts`, not `Binds`, for the same reason `probeDevFolder` uses
+	 * `Mounts`: a `Mounts`-type bind errors on a missing source instead of silently auto-creating one
+	 * (moby's `daemon/volume/mounts/validate.go`, unlike the legacy `Binds`/`-v` auto-create behavior), so
+	 * a folder that vanished between registration and this run start fails the run loudly instead of
+	 * masking the image's own working directory with an empty auto-created directory. The bind is
+	 * read-write (no `ReadOnly`), matching the requirement's own plain `-v` form. The second entry -
+	 * `Type: 'volume'` with an empty `Source` - is the `Mounts`-array equivalent of the anonymous-volume
+	 * bare-path `-v` form: Docker copies the image's existing `node_modules` into it before mounting,
+	 * which is what preserves the image's installed dependencies underneath a bind that otherwise covers
+	 * the whole working directory (a *named* volume would start empty; a plain bind would erase it).
 	 */
 	private buildDevMounts(devMount: DevFolderMount): Docker.MountSettings[] {
 		return [
@@ -395,21 +396,22 @@ export class DockerDriver implements Driver {
 	}
 
 	/**
-	 * Host-side existence check for a candidate dev-folder path (`design.md`'s "Registration"): a
-	 * create-only probe container, never started. `fs.existsSync` would test this *runtime process's*
-	 * filesystem, not the host's (this driver always runs against the host's own Docker socket - see the
-	 * class doc comment); the only Engine API surface that validates an arbitrary host path at all is the
-	 * mount-validation moby runs inside `POST /containers/create` (`_request_fact_check.md`'s round-3
-	 * delta, claims 2 and 4). `BindOptions.CreateMountpoint` (the option that would auto-create a missing
-	 * source and defeat this check entirely) is deliberately never set - `@types/dockerode`'s own
+	 * Host-side existence check for a candidate dev-folder path (`actor-driver.md`'s "Registration
+	 * validates the path in two layers" bullet): a create-only probe container, never started.
+	 * `fs.existsSync` would test this *runtime process's* filesystem, not the host's (this driver always
+	 * runs against the host's own Docker socket - see the class doc comment); the only Engine API
+	 * surface that validates an arbitrary host path at all is the mount-validation moby runs inside
+	 * `POST /containers/create`. `BindOptions.CreateMountpoint` (the option that would auto-create a
+	 * missing source and defeat this check entirely) is deliberately never set - `@types/dockerode`'s own
 	 * `BindOptions` type doesn't even declare it, so the straightforward, type-safe object literal below
 	 * omits it for free. On success the probe is removed immediately without ever being started; on
 	 * rejection there is nothing to clean up, since creation itself is what failed.
 	 *
 	 * `imageId` is always the Actor's own latest successfully-built image (resolved by
-	 * `services/actors.ts: setDevFolder`), never a self-inspected runtime image or a pulled one - see
-	 * `design.md`'s rejected alternative on self-inspection via `HOSTNAME`, which `selfAttachToNetwork`
-	 * above already documents as unset in bare local dev, exactly where this feature is used.
+	 * `services/actors.ts: setDevFolder`), never a self-inspected runtime image or a pulled one: a
+	 * self-inspected runtime image was rejected as the probe/mount image because `HOSTNAME` is unset in
+	 * bare local dev, which `selfAttachToNetwork` above already documents - exactly the environment this
+	 * feature targets - and a pulled image would break the offline-after-first-build property.
 	 */
 	async probeDevFolder(candidatePath: string, imageId: string): Promise<DevFolderProbeOutcome> {
 		// Known-unavailable short-circuits without ever touching the socket - the same outcome

@@ -209,10 +209,10 @@ export async function runInBackground(
 	const env = buildEnv(record, actor, version, options);
 	// Both-or-neither, enforced by `DevFolderMount`'s type (`driver/types.ts`) - a mount is only ever
 	// added when the Actor actually has a non-empty registered dev folder AND a known, non-empty image
-	// working directory (`design.md`: "No mount is added when either field is missing or the folder is
-	// empty"). An Actor that was never registered (or was cleared) gets `devMount: undefined`, which
-	// `docker-driver.ts`'s `startRun` treats identically to "no `Mounts` key at all" - the regression
-	// guarantee (success criterion 23).
+	// working directory (`actor-driver.md`: "The mount is conditional, applied only when both fields are
+	// present and non-empty"). An Actor that was never registered (or was cleared) gets `devMount:
+	// undefined`, which `docker-driver.ts`'s `startRun` treats identically to "no `Mounts` key at all" -
+	// the regression guarantee that an unregistered/cleared Actor's run container is unaffected.
 	const devMount =
 		actor.localDevFolder && actor.imageWorkingDirectory
 			? { localDevFolder: actor.localDevFolder, imageWorkingDirectory: actor.imageWorkingDirectory }

@@ -1,7 +1,8 @@
 /**
- * Integration coverage for the local dev-folder bind-mount feature's non-Docker-dependent surface
- * (`design.md`): the API endpoint's auth/ownership/shape/build-first/probe-classification contract,
- * that the registered value never leaks into any `/v2` Actor response, and the console's single-field
+ * Integration coverage for the local dev-folder bind-mount feature's non-Docker-dependent surface: the
+ * API endpoint's auth/ownership/shape/build-first/probe-classification contract (`api.md`'s
+ * `/actor-runtime/*` section), that the registered value never leaks into any `/v2` Actor response, and
+ * the console's single-field
  * form (render, submit, clear, redirect, inline error). Every probe outcome is stubbed
  * (`devFolderDriver` below) - there is no Docker daemon in this sandbox (`docker-driver.ts`'s class doc
  * comment); the real-probe accept/reject path and the mount itself are only exercised end-to-end in
@@ -185,6 +186,24 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 
 		const res = await post(server.baseUrl, actor.id, JSON.stringify('/abs/path'), server.token);
 		expect(res.status).toBe(400);
+	});
+
+	it('rejects the same way for an actor whose only successful build is tagged something other than "latest" - no fallback to an arbitrary other tag', async () => {
+		const driver = devFolderDriver({ ok: true });
+		server = await startTestServer(driver);
+		const actor = await server.client.actors().create({ name: 'non-latest-tag-only-actor' });
+		// Mirrors exactly the Actor shape a tag-less `POST /actors/:actorId/runs` would 404 against: a
+		// successful build exists, but not tagged `latest`.
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'staging');
+
+		const res = await post(server.baseUrl, actor.id, JSON.stringify('/abs/path'), server.token);
+		expect(res.status).toBe(400);
+		expect(res.data.error.type).toBe('dev-folder-not-buildable');
+		// The probe must never be reached - there is no image to probe against without a `latest` tag.
+		expect(driver.probeDevFolderCalls).toEqual([]);
+
+		const stored = await getRegistries().actors.get(actor.id);
+		expect(stored?.localDevFolder).toBeUndefined();
 	});
 
 	it('200s and stores the path when the probe reports ok, for an actor with a successful build', async () => {

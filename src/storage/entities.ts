@@ -77,9 +77,11 @@ export interface ActorRecord {
 	 * right after that build (`docker-driver.ts`'s `startBuild`) and persisted in the same `updateActor`
 	 * call that records the tagged build (`services/builds.ts`). Optional: unset until at least one build
 	 * has succeeded and its image could be inspected, and left unset (not overwritten) by a build whose
-	 * inspect failed or whose image's working directory was empty/`/` (`design.md`: mounting over `/`
-	 * would destroy the container). Reflects the *most recent* successful build only - see `design.md`'s
-	 * "Stale working directory" risk. Optional and never exposed on `/v2`, same as `localDevFolder`.
+	 * inspect failed or whose image's working directory was empty/`/` (mounting over `/` would destroy
+	 * the container). Reflects the *most recent* successful build only - running an older, differently
+	 * tagged build whose image had a different working directory is a known staleness gap, accepted for
+	 * the POC (`actor-driver.md`'s "`imageWorkingDirectory` is captured by the driver itself" bullet).
+	 * Optional and never exposed on `/v2`, same as `localDevFolder`.
 	 */
 	imageWorkingDirectory?: string;
 }
