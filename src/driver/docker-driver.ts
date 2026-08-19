@@ -427,22 +427,27 @@ export class DockerDriver implements Driver {
 	 * probe container that outlived its own removal call (`probeDevFolder`'s `PROBE_LABEL`) - the latter
 	 * swept unconditionally, since a leftover probe is never a container anything still needs.
 	 *
-	 * Filters on the label *keys*' presence only, then matches `runIds` against each container's own
-	 * label client-side - deliberately not `{ label: runIds.map(id => \`${RUN_LABEL}=${id}\`) }`. Docker's
-	 * daemon-side label filter ANDs multiple values given for the same key (moby's `api/types/filters`:
-	 * `MatchKVList`), so two or more orphaned run ids in one query would require a single container to
-	 * match both simultaneously - never true, silently matching nothing. Filtering on key presence alone
-	 * (one value per key) and matching client-side avoids depending on that semantics being right.
+	 * Queries once per label *key*, each query carrying exactly one value under `label`, then matches
+	 * `runIds` against each container's own label client-side - deliberately not one query with
+	 * `{ label: [RUN_LABEL, PROBE_LABEL] } }`. Docker's daemon-side label filter ANDs multiple values
+	 * given for the same key (moby's `api/types/filters`: `MatchKVList`), so a single query carrying both
+	 * label keys would require one container to match both simultaneously - never true, silently matching
+	 * nothing. Issuing one single-value query per key and unioning the results client-side (de-duplicated
+	 * by container `Id`, in case a container is ever matched by both queries) avoids depending on that
+	 * cross-key semantics at all.
 	 */
 	async reconcileOrphans(runIds: string[]): Promise<void> {
 		if (!this.available) return;
 		const runIdSet = new Set(runIds);
 
-		const containers = await this.docker.listContainers({
-			all: true,
-			filters: JSON.stringify({ label: [RUN_LABEL, PROBE_LABEL] }),
-		});
-		for (const info of containers) {
+		const [runLabelled, probeLabelled] = await Promise.all([
+			this.docker.listContainers({ all: true, filters: JSON.stringify({ label: [RUN_LABEL] }) }),
+			this.docker.listContainers({ all: true, filters: JSON.stringify({ label: [PROBE_LABEL] }) }),
+		]);
+		const byId = new Map<string, Docker.ContainerInfo>();
+		for (const info of [...runLabelled, ...probeLabelled]) byId.set(info.Id, info);
+
+		for (const info of byId.values()) {
 			const isOrphanedRun = runIdSet.has(info.Labels?.[RUN_LABEL] ?? '');
 			const isLeftoverProbe = info.Labels?.[PROBE_LABEL] !== undefined;
 			if (!isOrphanedRun && !isLeftoverProbe) continue;

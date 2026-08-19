@@ -17,7 +17,12 @@
 import express, { type Express } from 'express';
 
 import { getActorById, listAllActors } from '../services/actors.js';
-import { describeDevFolderFailure, devFolderStatus, setDevFolder } from '../services/dev-folder.js';
+import {
+	describeDevFolderFailure,
+	devFolderStatus,
+	setDevFolder,
+	type DevFolderStatus,
+} from '../services/dev-folder.js';
 import { getBuildById, listAllBuilds } from '../services/builds.js';
 import { getRunById, listAllRuns } from '../services/runs.js';
 import { getFullLog } from '../services/logs.js';
@@ -43,7 +48,7 @@ export interface ConsoleServerDeps {
  * view (`console.md`'s "Local dev-folder registration form" section). `errorMessage` is threaded
  * through from the POST handler's redirect query param below, since a redirect itself carries no state
  * of its own. */
-function devFolderSection(actorId: string, status: ReturnType<typeof devFolderStatus>, errorMessage?: string): string {
+function devFolderSection(actorId: string, status: DevFolderStatus, errorMessage?: string): string {
 	return (
 		'<h2>Local dev folder</h2>' +
 		definitionList([

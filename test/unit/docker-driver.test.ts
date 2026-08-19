@@ -7,13 +7,23 @@ import { DockerDriver } from '../../src/driver/docker-driver.js';
 
 /**
  * A stub `dockerode`-shaped object covering only what `reconcileOrphans` calls - there is no Docker
- * daemon in this sandbox to test against for real (see `DockerDriver`'s class doc comment), so this
- * exercises the filter construction and client-side matching in isolation.
+ * daemon in this sandbox to test against for real (see `DockerDriver`'s class doc comment), so
+ * `listContainers` here models the one piece of real daemon behaviour this bug hinges on: a label
+ * filter only ever returns containers that carry EVERY key given in that single call's `label` array
+ * (moby's `MatchKVList`). Because `reconcileOrphans` now issues one single-value-per-key call per
+ * label, this stub naturally returns a different subset of `containers` for the `RUN_LABEL` call than
+ * for the `PROBE_LABEL` call - exactly the daemon-side semantics a single combined call would get
+ * wrong (it would require one container to carry both keys at once, matching nothing).
  */
 function stubDocker(containers: Array<{ Id: string; Labels: Record<string, string> }>) {
 	const removed: string[] = [];
 	const removeCallOptions: Array<Record<string, unknown> | undefined> = [];
-	const listContainers = vi.fn().mockResolvedValue(containers);
+	const listContainers = vi.fn(async (options?: { all?: boolean; filters?: string }) => {
+		const filters = options?.filters ? (JSON.parse(options.filters) as { label?: string[] }) : {};
+		const labelKeys = filters.label ?? [];
+		if (labelKeys.length === 0) return containers;
+		return containers.filter((c) => labelKeys.every((key) => key in c.Labels));
+	});
 	const getContainer = vi.fn((id: string) => ({
 		remove: vi.fn(async (options?: Record<string, unknown>) => {
 			removed.push(id);
@@ -30,21 +40,36 @@ function stubDocker(containers: Array<{ Id: string; Labels: Record<string, strin
 }
 
 describe('DockerDriver.reconcileOrphans', () => {
-	it("filters on the label KEY's presence only, never multiple key=value pairs in one call", async () => {
+	it('never carries more than one value under `label` in a single listContainers call (the daemon ANDs multiple values for one key, so a combined call would match nothing)', async () => {
 		const { docker, listContainers } = stubDocker([]);
 		const driver = new DockerDriver(docker);
 		driver.available = true;
 
 		await driver.reconcileOrphans(['run-a', 'run-b']);
 
-		expect(listContainers).toHaveBeenCalledTimes(1);
-		const [options] = listContainers.mock.calls[0] as [{ all: boolean; filters: string }];
-		expect(options.all).toBe(true);
-		const filters = JSON.parse(options.filters) as { label: string[] };
-		// Two label filter entries - bare keys, never `key=value` - so two or more orphaned run ids can
-		// never be AND'd together by the daemon's per-key label matching (see the doc comment on
-		// `reconcileOrphans` for the moby `MatchKVList` semantics this sidesteps entirely).
-		expect(filters.label).toEqual(['actor-runtime.runId', 'actor-runtime.devFolderProbe']);
+		expect(listContainers.mock.calls.length).toBeGreaterThanOrEqual(2);
+		const allLabelValues: string[] = [];
+		for (const [options] of listContainers.mock.calls as Array<[{ all: boolean; filters: string }]>) {
+			expect(options.all).toBe(true);
+			const filters = JSON.parse(options.filters) as { label?: string[] };
+			expect(filters.label?.length ?? 0).toBeLessThanOrEqual(1);
+			if (filters.label) allLabelValues.push(...filters.label);
+		}
+		// Both label keys are still queried, just never together in one call.
+		expect(allLabelValues.sort()).toEqual(['actor-runtime.devFolderProbe', 'actor-runtime.runId']);
+	});
+
+	it('removes both an orphaned run container and an unrelated leftover probe container from one reconcileOrphans call', async () => {
+		const { docker, removed } = stubDocker([
+			{ Id: 'run-container', Labels: { 'actor-runtime.runId': 'run-a' } },
+			{ Id: 'probe-container', Labels: { 'actor-runtime.devFolderProbe': 'true' } },
+		]);
+		const driver = new DockerDriver(docker);
+		driver.available = true;
+
+		await driver.reconcileOrphans(['run-a']);
+
+		expect(removed.sort()).toEqual(['probe-container', 'run-container']);
 	});
 
 	it("matches run ids against each returned container's own label client-side, removing only the orphaned ones", async () => {
@@ -94,9 +119,9 @@ describe('DockerDriver.reconcileOrphans', () => {
 		await driver.reconcileOrphans([]);
 
 		// Unlike the "unavailable" case above, an empty `runIds` list must not short-circuit the daemon
-		// call entirely - a probe container that outlived its own removal (`probeDevFolder`) has no run id
-		// at all, so it can only ever be found by actually listing.
-		expect(listContainers).toHaveBeenCalledTimes(1);
+		// calls entirely - a probe container that outlived its own removal (`probeDevFolder`) has no run
+		// id at all, so it can only ever be found by actually listing. Two calls now, one per label key.
+		expect(listContainers).toHaveBeenCalledTimes(2);
 	});
 
 	it('removes a leftover dev-folder probe container even when it matches no orphaned run id', async () => {

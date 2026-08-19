@@ -170,7 +170,9 @@
       detail):
         - `400` `invalid-request` - the body isn't a JSON string, or the string fails the absolute-path
           shape check.
-        - `400` `dev-folder-not-buildable` - the Actor has never had a successful build.
+        - `400` `dev-folder-not-buildable` - the Actor has no build tagged `latest`: either no build has
+          ever succeeded, or its only successful build(s) are tagged something else, with no fallback to
+          an arbitrary other tag.
         - `400` `dev-folder-path-not-found` - the host-side probe's daemon rejection contained the exact
           "bind source path does not exist" substring.
         - `400` `dev-folder-check-failed` - any other mount-validation-shaped rejection; reported as

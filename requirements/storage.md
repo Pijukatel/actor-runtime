@@ -85,9 +85,9 @@
         - `imageWorkingDirectory` - **optional**. Absent until at least one build has succeeded and its
           image's working directory could be captured (`.Config.WorkingDir` via `dockerode`, never by
           shelling out to a `docker` command-line invocation); also absent when the captured value was
-          empty or `/`. Written by
-          the driver in the same `updateActor` call that records a successful build's `taggedBuilds`
-          entry, and reflects only the _most recent_ successful build.
+          empty or `/`. The driver only captures the value on `BuildOutcome`; `services/builds.ts`
+          writes it, folded into the same `updateActor` call that records a successful build's
+          `taggedBuilds` entry, and it reflects only the _most recent_ successful build.
         - Both fields are **absent (or empty) meaning no mount**: `startRun` only adds the dev-folder bind
           mount when both are present and non-empty simultaneously (`actor-driver.md`) - an Actor missing
           either one starts exactly as if the feature did not exist.

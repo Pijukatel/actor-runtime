@@ -579,7 +579,7 @@ describe('console: dev-folder registration form on the Actor detail view', () =>
 		const detail = await axios.get(`${consoleBaseUrl}${submit.headers.location}`);
 		expect(detail.status).toBe(200);
 		expect(detail.data).toContain('Error');
-		expect(detail.data.toLowerCase()).toContain('successful build');
+		expect(detail.data.toLowerCase()).toContain('no build tagged');
 
 		// The rejected submission stored nothing.
 		const stored = await getRegistries().actors.get(actor.id);
@@ -637,7 +637,7 @@ function devMountCapturingDriver(): { driver: Driver; getCapturedDevMount: () =>
 		async startRun(ctx, onLog) {
 			capturedDevMount = ctx.devMount;
 			onLog('done\n');
-			return { exitCode: 0 };
+			return { exitCode: 0, timedOut: false };
 		},
 		async abortRun() {},
 		async reconcileOrphans() {},

@@ -55,10 +55,12 @@
   wire between `apify push` and this runtime ever carries a host filesystem path, so there is no
   build-time signal to "get" it from; the developer supplies it out-of-band, once, after their first
   successful push+build.
-- **Registration requires a prior successful build.** The registration path verifies the candidate
-  folder against the Actor's own latest successfully-built image (see below), so an Actor with no
-  successful build at all is rejected with a clear error at registration time, telling the developer to
-  build first - never a silent accept with nothing to check against.
+- **Registration requires a build tagged `latest`.** The registration path verifies the candidate
+  folder against the image of the Actor's build tagged `latest` (see below), with no fallback to any
+  other tag - an Actor whose only successful build is tagged something else is rejected the same way a
+  tag-less run would be. Either way (no build at all, or a successful build under a different tag), the
+  rejection is a clear error at registration time naming the missing `latest` tag, never a silent accept
+  with nothing to check against.
 - **Registration validates the path in two layers**, not shape alone:
     1. A cheap shape pre-filter: the submitted value must be an absolute POSIX path, contain no newline
        or NUL byte, and stay under a length cap. A leading `~` is never expanded - this runtime never
@@ -79,13 +81,13 @@
       whitespace-only is trimmed and then rejected by the shape check (400), the same as any other value
       that fails to start with `/`.
     - Errors are classified by shape, most specific first, and every non-success branch rejects rather
-      than guessing: no HTTP response at all (Docker itself unreachable) is reported as "could not verify
-        - Docker is unreachable", never as "does not exist"; the probe's own image returning 404 is an
-          operational fault ("could not verify - internal error"), not a bad path; a mount-validation
-          rejection whose message contains the exact substring `bind source path does not exist` is the one
-          case reported as "path does not exist"; every other mount-validation-shaped rejection (not a
-          directory, a permission error, Docker Desktop's file-sharing denial, or anything unrecognized) is
-          reported as a generic "could not verify this path" - never a false "does not exist".
+      than guessing: no HTTP response at all (Docker itself unreachable) is reported as "could not
+      verify - Docker is unreachable", never as "does not exist"; the probe's own image returning 404 is
+      an operational fault ("could not verify - internal error"), not a bad path; a mount-validation
+      rejection whose message contains the exact substring `bind source path does not exist` is the one
+      case reported as "path does not exist"; every other mount-validation-shaped rejection (not a
+      directory, a permission error, Docker Desktop's file-sharing denial, or anything unrecognized) is
+      reported as a generic "could not verify this path" - never a false "does not exist".
 - **`imageWorkingDirectory` is captured by the driver itself**, right after a successful build:
   `docker.getImage(imageId).inspect()` over `dockerode`, reading `.Config.WorkingDir`, then persisted to
   `__ACTORS__` in the same write that records the tagged build. This corrects this section's original

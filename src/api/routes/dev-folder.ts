@@ -1,8 +1,8 @@
 /**
  * `POST /actor-runtime/dev-folder/:actorId` - deliberately outside the emulated `/v2` surface
- * (`api.md`'s `/actor-runtime/*` namespace), so this router is mounted directly on the API `app`
- * (`server.ts`), not nested under the `v2` router - it needs its own `auth()` rather than inheriting
- * `v2`'s.
+ * (`api.md`'s `/actor-runtime/*` namespace). `server.ts` creates its own sub-router, calls
+ * `mountDevFolder` on it, and mounts that sub-router at `/actor-runtime` - not nested under the `v2`
+ * router, so this route needs its own `auth()` rather than inheriting `v2`'s.
  *
  * Canonical body is a JSON string: `'"/abs/path"'` to set, `'""'` to clear (`api.md`). A JSON value that
  * parses but isn't a string is rejected the same way a malformed body is.
@@ -10,7 +10,7 @@
  * Ownership-scoped like every other Actor write on this API port: `resolveOwnedActor`, so a caller can
  * only ever register a dev folder for their own Actor.
  */
-import express, { type Router } from 'express';
+import type { Router } from 'express';
 
 import { auth, requireUser } from '../auth.js';
 import { sendData } from '../envelope.js';
@@ -46,11 +46,12 @@ function toApiError(result: Exclude<SetDevFolderResult, { kind: 'ok' }>): ApiErr
 	}
 }
 
-/** Builds the `/actor-runtime/dev-folder` router - `server.ts` mounts it itself
- * (`app.use('/actor-runtime', devFolderRouter(deps))`), matching every other `mount*` route module's
- * convention of owning its route pattern, not the mount path. */
-export function devFolderRouter(deps: ApiServerDeps): Router {
-	const router = express.Router();
+/** Mounts the `/dev-folder/:actorId` route onto `router`, matching every other route module's
+ * `mount*(router, deps): void` convention - `server.ts` creates the sub-router, calls this on it, and
+ * mounts the result at `/actor-runtime` itself (owning the path prefix the same way it owns `/v2`).
+ * Registers its own `auth()` on `router` rather than inheriting `v2`'s, since this route lives outside
+ * the `v2` router entirely (`api.md`'s `/actor-runtime/*` namespace). */
+export function mountDevFolder(router: Router, deps: ApiServerDeps): void {
 	router.use(auth());
 
 	router.post(
@@ -75,6 +76,4 @@ export function devFolderRouter(deps: ApiServerDeps): Router {
 			sendData(res, devFolderStatus(result.actor));
 		}),
 	);
-
-	return router;
 }

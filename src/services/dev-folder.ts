@@ -109,7 +109,7 @@ export function describeDevFolderFailure(result: Exclude<SetDevFolderResult, { k
 		case 'invalid-path':
 			return result.message;
 		case 'no-successful-build':
-			return 'This Actor has no successful build yet - push and build it before registering a dev folder.';
+			return `This Actor has no build tagged "${DEFAULT_BUILD_TAG}" - build one before registering a dev folder.`;
 		case 'not-found':
 			return 'The submitted path does not exist on the host.';
 		case 'unreachable':
