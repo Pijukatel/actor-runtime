@@ -60,6 +60,28 @@ export interface ActorRecord {
 	versions: ActorVersionRecord[];
 	/** tag -> latest successful build for that tag; `apify push` polls this after a build. */
 	taggedBuilds: Record<string, { buildId: string; buildNumber: string }>;
+	/**
+	 * The host path bind-mounted over the image's working directory at run start, for rapid local dev
+	 * without a rebuild (`actor-driver.md`'s "Bind mount volumes with Actor source code"). Set/cleared
+	 * only through `services/actors.ts: setDevFolder` (the API's `POST /actor-runtime/dev-folder/:actorId`
+	 * and the console's dev-folder form both funnel through it) - never touched by any other Actor write
+	 * (`storage.md`). Absent (never registered) and present-but-empty are not distinguished on this type;
+	 * `setDevFolder` always stores either a non-empty absolute path or clears the key entirely via
+	 * `undefined` (which a JSON round-trip through the KV store drops), so in practice this is only ever
+	 * "absent" or "a real path" - never an empty string at rest. Optional and never exposed on `/v2`
+	 * (`dto/actors.ts: actorDto` is explicit field-by-field).
+	 */
+	localDevFolder?: string;
+	/**
+	 * The Actor's most recently successfully-built image's `Config.WorkingDir`, captured by the driver
+	 * right after that build (`docker-driver.ts`'s `startBuild`) and persisted in the same `updateActor`
+	 * call that records the tagged build (`services/builds.ts`). Optional: unset until at least one build
+	 * has succeeded and its image could be inspected, and left unset (not overwritten) by a build whose
+	 * inspect failed or whose image's working directory was empty/`/` (`design.md`: mounting over `/`
+	 * would destroy the container). Reflects the *most recent* successful build only - see `design.md`'s
+	 * "Stale working directory" risk. Optional and never exposed on `/v2`, same as `localDevFolder`.
+	 */
+	imageWorkingDirectory?: string;
 }
 
 export type JobStatus = 'READY' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'ABORTING' | 'ABORTED' | 'TIMED-OUT';

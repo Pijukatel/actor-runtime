@@ -39,10 +39,95 @@
 - Actor details are saved in `__ACTORS__` internal storage
 
 # Bind mount volumes with Actor source code
-- To enable rapid development of Actors, it is desired to avoid the need to rebuild the Actors. This can be achieved by bind mounting the actor local development folder when starting the container.
-- When building an Actor, get the location where the Actor source code is locally located and save it in `__ACTORS__` under `localDevFolder`
-- Detect the working directory of docker image `docker inspect -f '{{.Config.WorkingDir}}' {DOCKER_IMAGE}` (replace {DOCKER_IMAGE} by the docker image identifier) and save it to `__ACTORS__` under `imageWorkingDirectory` 
-- Each Actor stored by the local Actor runtime is started with bind mounted development folder using these additional arguments `-v {localDevFolder}:{imageWorkingDirectory} -v {imageWorkingDirectory}/node_modules`
+
+- To enable rapid development of Actors, it is desired to avoid the need to rebuild the Actors for
+  every source change. This is achieved by bind mounting the Actor's local development folder over the
+  built image's working directory when starting the container - edit locally, recompile locally
+  (`tsc`, or the language-appropriate equivalent), `apify call` again, with no `apify push`/build in
+  between. Node does not hot-reload a running process, so the recompiled output is picked up by the
+  **next run's container start**, not inside an already-running container - this matches the runtime
+  exactly, since it creates a fresh container per run.
+- `localDevFolder` is **registered explicitly**, not learned automatically from a build: a new
+  local-only endpoint, `POST /actor-runtime/dev-folder/:actorId` (see `api.md`), also exposed as a
+  single-field form on the console's Actor detail view (`console.md`), sets or clears it. Both surfaces
+  funnel through one shared validate-and-persist service function. This is a deliberate correction of
+  this section's original phrasing ("when building an Actor, get the location...") - nothing on the
+  wire between `apify push` and this runtime ever carries a host filesystem path, so there is no
+  build-time signal to "get" it from; the developer supplies it out-of-band, once, after their first
+  successful push+build.
+- **Registration requires a prior successful build.** The registration path verifies the candidate
+  folder against the Actor's own latest successfully-built image (see below), so an Actor with no
+  successful build at all is rejected with a clear error at registration time, telling the developer to
+  build first - never a silent accept with nothing to check against.
+- **Registration validates the path in two layers**, not shape alone:
+    1. A cheap shape pre-filter: the submitted value must be an absolute POSIX path, contain no newline
+       or NUL byte, and stay under a length cap. A leading `~` is never expanded - this runtime never
+       shells out to interpret one.
+    2. A **host-side existence check**. The runtime process's own filesystem is not the host's (this
+       runtime always runs containerized itself, talking to the _host_ Docker socket - `fs.existsSync`
+       here would test the wrong filesystem entirely). The only Docker Engine API surface that validates
+       an arbitrary host path at all is the mount-validation the daemon runs inside `POST
+/containers/create`, so the check is a **create-only probe container, never started**: a container
+       is created with a single `Mounts` entry (`Type: 'bind'`, the candidate path as `Source`, read-only)
+       against the Actor's own latest successfully-built image; success removes it immediately without
+       ever calling `.start()`, and a rejection means creation itself failed, so there is nothing to clean
+       up either way.
+    - Submitting the **empty string clears the registration** and never runs either validation layer -
+      there is no path to check, and clearing must always succeed, including when Docker itself is
+      unreachable.
+    - Errors are classified by shape, most specific first, and every non-success branch rejects rather
+      than guessing: no HTTP response at all (Docker itself unreachable) is reported as "could not verify
+        - Docker is unreachable", never as "does not exist"; the probe's own image returning 404 is an
+          operational fault ("could not verify - internal error"), not a bad path; a mount-validation
+          rejection whose message contains the exact substring `bind source path does not exist` is the one
+          case reported as "path does not exist"; every other mount-validation-shaped rejection (not a
+          directory, a permission error, Docker Desktop's file-sharing denial, or anything unrecognized) is
+          reported as a generic "could not verify this path" - never a false "does not exist".
+- **`imageWorkingDirectory` is captured by the driver itself**, right after a successful build:
+  `docker.getImage(imageId).inspect()` over `dockerode`, reading `.Config.WorkingDir`, then persisted to
+  `__ACTORS__` in the same write that records the tagged build. This corrects this section's original
+  shelled-out-CLI phrasing for detecting an image's working directory - this codebase talks to the host
+  Docker socket exclusively through `dockerode`, never by shelling out to a `docker` command-line
+  invocation, matching every other Docker interaction in `actor-driver.md`. An inspect failure is logged
+  and tolerated - it must
+  never fail an otherwise-successful build - and an empty or `/` working directory is left unset the
+  same way: mounting a dev folder over `/` would destroy the container. This field reflects the Actor's
+  _most recent_ successful build; running an older, differently-tagged build whose image had a
+  different working directory is a known staleness gap, accepted for the POC.
+- **The mount is conditional, applied only when both fields are present and non-empty** -
+  `localDevFolder` and a known, non-`/`, non-empty `imageWorkingDirectory`. An Actor that was never
+  registered (or was cleared) starts exactly as if this feature did not exist: no mount-related entries
+  at all in its container's configuration.
+- **The mount uses `HostConfig.Mounts`, never the legacy `Binds` array or literal `-v` flags.** This
+  corrects the section's original `-v {localDevFolder}:{imageWorkingDirectory} -v
+{imageWorkingDirectory}/node_modules` phrasing: a plain `-v`/`Binds` bind **auto-creates** a missing
+  host source directory silently, which would defeat the whole point of validating existence at
+  registration and would let a folder that vanished between registration and a run start silently mount
+  an empty directory over the image's working directory instead of failing the run. A `Mounts`-type
+  bind **errors** on a missing source instead (unless `BindOptions.CreateMountpoint` is explicitly set,
+  which this runtime never does), giving the same strictness at run start as at registration. One
+  `HostConfig.Mounts` array carries both entries:
+    - `{ Type: 'bind', Source: localDevFolder, Target: imageWorkingDirectory }` - read-write (no
+      `ReadOnly`), matching this section's original plain, unsuffixed mount intent.
+    - `{ Type: 'volume', Source: '', Target: '{imageWorkingDirectory}/node_modules' }` - the
+      `Mounts`-array equivalent of the anonymous-volume, bare-container-path `-v` form. Docker copies the
+      image's existing contents into an anonymous volume before mounting it, which is exactly what
+      preserves the image's own installed `node_modules` underneath a bind that otherwise covers the
+      whole working directory: a _named_ volume would start empty, and a plain bind would erase it
+      entirely. Dependency changes therefore still require a real rebuild - a new package in
+      `package.json` only lands in the image (and so in the preserved `node_modules`) after one.
+- **Every run's container removal passes `{ v: true }`**, on both the normal per-run removal and
+  startup's orphan reconciliation. Without it, the anonymous `node_modules` volume above would leak one
+  volume per run, forever, silently filling the host's disk - introducing the anonymous volume without
+  this fix is not safe.
+- **Observability**: since a folder's existence is verified at registration, a folder that is later
+  deleted, moved, or made unreadable before a run starts is now a residual, not the primary, risk - the
+  run's log opens with an explicit line naming the host path and the container path being mounted, so a
+  run that fails against a since-vanished folder explains why in its very first log line, and the
+  daemon's own `Mounts`-type rejection (see above) fails that run loudly rather than silently mounting
+  an empty auto-created directory.
+- Neither `localDevFolder` nor `imageWorkingDirectory` is ever exposed on the public `/v2` API
+  (`storage.md`).
 
 # Networking
 

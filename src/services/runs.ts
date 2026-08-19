@@ -207,6 +207,16 @@ export async function runInBackground(
 
 	const version = findVersion(actor, build.versionNumber);
 	const env = buildEnv(record, actor, version, options);
+	// Both-or-neither, enforced by `DevFolderMount`'s type (`driver/types.ts`) - a mount is only ever
+	// added when the Actor actually has a non-empty registered dev folder AND a known, non-empty image
+	// working directory (`design.md`: "No mount is added when either field is missing or the folder is
+	// empty"). An Actor that was never registered (or was cleared) gets `devMount: undefined`, which
+	// `docker-driver.ts`'s `startRun` treats identically to "no `Mounts` key at all" - the regression
+	// guarantee (success criterion 23).
+	const devMount =
+		actor.localDevFolder && actor.imageWorkingDirectory
+			? { localDevFolder: actor.localDevFolder, imageWorkingDirectory: actor.imageWorkingDirectory }
+			: undefined;
 
 	// Re-check right before creating the container: an abort issued while the registry/version lookups
 	// above were in flight may have already moved the record to ABORTING. Closing this window is the fix
@@ -229,6 +239,7 @@ export async function runInBackground(
 				env,
 				memoryMbytes: record.options.memoryMbytes,
 				timeoutSecs: record.options.timeoutSecs,
+				devMount,
 			},
 			(chunk) => appendLog(record.id, chunk),
 		);

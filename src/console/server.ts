@@ -4,16 +4,24 @@
  * through the same service layer as the API handlers, so ownership filtering (over on the API side) is
  * shared rather than reimplemented.
  *
- * The console itself has no login of its own - it is a view-only, unauthenticated local dev tool
- * (`console.md`) - so with multiple users it does not scope to any one of them: every list/detail route
+ * The console itself has no login of its own - it is unauthenticated, and view-only except for exactly
+ * one mutation (`console.md`, amended by `design.md`'s Decision #3): the dev-folder form on the Actor
+ * detail view. With multiple users it does not scope reads to any one of them: every list/detail route
  * below reads through the `listAll*`/`get*ById` cross-user service functions (see e.g.
  * `services/actors.ts: listAllActors`), never the API's own per-user `listOwned*`/`getOwned*`, and every
  * list row and detail view shows the object's owner `userId` (`console.md`: "Frontend shows for each
- * object the owner (userId)").
+ * object the owner (userId)"). The dev-folder form writes cross-user the same way - a documented
+ * deviation from the API's own strictly-owner-scoped write, not an accident (`design.md`'s Risks).
  */
 import express, { type Express } from 'express';
 
-import { getActorById, listAllActors } from '../services/actors.js';
+import {
+	describeDevFolderError,
+	devFolderStatus,
+	getActorById,
+	listAllActors,
+	setDevFolder,
+} from '../services/actors.js';
 import { getBuildById, listAllBuilds } from '../services/builds.js';
 import { getRunById, listAllRuns } from '../services/runs.js';
 import { getFullLog } from '../services/logs.js';
@@ -24,15 +32,47 @@ import { pageKeys } from '../services/kv-key-listing.js';
 import { applyDatasetProjection, type DatasetItem } from '../services/dataset-projection.js';
 import { ansiToHtml } from './ansi.js';
 import { definitionList, escapeHtml, layout, table, type LinkedCell } from './templates.js';
+import type { Driver } from '../driver/types.js';
 
 /** A run's default-storage id rendered as a link to that storage's detail view instead of plain text. */
 function storageLink(prefix: '/datasets' | '/key-value-stores' | '/request-queues', id: string): LinkedCell {
 	return { text: id, href: `${prefix}/${encodeURIComponent(id)}` };
 }
 
-export function createConsoleServer(): Express {
+export interface ConsoleServerDeps {
+	driver: Driver;
+}
+
+/** The dev-folder registration form + its three read-only status rows, rendered on the Actor detail
+ * view (`design.md`'s console decisions). `errorMessage` is threaded through from the POST handler's
+ * redirect query param below, since a redirect itself carries no state of its own. */
+function devFolderSection(actorId: string, status: ReturnType<typeof devFolderStatus>, errorMessage?: string): string {
+	const errorHtml = errorMessage
+		? `<p style="color:#b00020"><strong>Error:</strong> ${escapeHtml(errorMessage)}</p>`
+		: '';
+	return (
+		'<h2>Local dev folder</h2>' +
+		definitionList([
+			['localDevFolder', status.localDevFolder ?? '(none registered)'],
+			['imageWorkingDirectory', status.imageWorkingDirectory ?? '(not yet detected - build the Actor first)'],
+			['mount will apply on the next run', String(status.mountWillApply)],
+		]) +
+		errorHtml +
+		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/dev-folder">` +
+		`<input type="text" name="localDevFolder" value="${escapeHtml(status.localDevFolder ?? '')}" ` +
+		'placeholder="/abs/path/to/src" style="width:28rem"> ' +
+		'<button type="submit">Save</button>' +
+		'</form>' +
+		'<p class="empty">Submit an empty value to clear the registration.</p>'
+	);
+}
+
+export function createConsoleServer(deps: ConsoleServerDeps): Express {
 	const app = express();
 	app.disable('x-powered-by');
+	// Only the dev-folder form below posts anything - every other console route is a plain `GET`
+	// (`console.md`'s "view-only except for exactly one mutation").
+	app.use(express.urlencoded({ extended: false }));
 
 	app.get('/', async (_req, res) => {
 		res.send(layout('actor-runtime', '<p>Pick an object type from the navigation above.</p>'));
@@ -59,6 +99,7 @@ export function createConsoleServer(): Express {
 			res.status(404).send(layout('Not found', '<p>Actor not found.</p>'));
 			return;
 		}
+		const devFolderError = typeof req.query.devFolderError === 'string' ? req.query.devFolderError : undefined;
 		const body =
 			definitionList([
 				['id', actor.id],
@@ -79,8 +120,36 @@ export function createConsoleServer(): Express {
 				Object.entries(actor.taggedBuilds).map(([tag, b]) => [tag, b.buildId, b.buildNumber]),
 				1,
 				'/builds',
-			);
+			) +
+			devFolderSection(actor.id, devFolderStatus(actor), devFolderError);
 		res.send(layout(`Actor ${actor.name}`, body));
+	});
+
+	/**
+	 * The console's one mutation (`design.md`'s Decision #3) - funnels through the exact same
+	 * `setDevFolder` the API's `POST /actor-runtime/dev-folder/:actorId` uses, resolving the Actor
+	 * cross-user by the id already in the page URL (no token, matching the console's existing
+	 * unauthenticated reads) rather than through `resolveOwnedActor`. A failure redirects back with the
+	 * classified message in a query param - `describeDevFolderError`'s wording, not a bespoke one - so
+	 * the build-first rejection and the does-not-exist/could-not-verify distinction are surfaced, not
+	 * swallowed (success criterion 27).
+	 */
+	app.post('/actors/:id/dev-folder', async (req, res) => {
+		const actor = await getActorById(req.params.id);
+		if (!actor) {
+			res.status(404).send(layout('Not found', '<p>Actor not found.</p>'));
+			return;
+		}
+		const body = req.body as Record<string, unknown> | undefined;
+		const submitted = typeof body?.localDevFolder === 'string' ? body.localDevFolder.trim() : '';
+
+		const result = await setDevFolder(deps.driver, actor, submitted);
+		if (result.kind !== 'ok') {
+			const info = describeDevFolderError(result);
+			res.redirect(`/actors/${encodeURIComponent(actor.id)}?devFolderError=${encodeURIComponent(info.message)}`);
+			return;
+		}
+		res.redirect(`/actors/${encodeURIComponent(actor.id)}`);
 	});
 
 	// --- Compatibility redirects: stock apify-cli only knows one Console, so it prints links using

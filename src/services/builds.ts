@@ -192,9 +192,21 @@ export async function runBuildInBackground(
 		// `apify call`/`POST .../runs` against that tag even though the build record itself correctly
 		// stayed ABORTED.
 		if (succeeded?.status === 'SUCCEEDED') {
-			await updateActor(actor.id, (current) =>
-				recordTaggedBuild(current, options.tag, record.id, record.buildNumber),
-			);
+			// Folded into the same `updateActor` call that records the tagged build (`design.md`'s
+			// "Capture of `imageWorkingDirectory`"), so it lands in `__ACTORS__` in one write, not two. Only
+			// set when this build's inspect actually produced a value: `outcome.imageWorkingDirectory` is
+			// `undefined` both when the inspect call itself failed and when the image's working directory was
+			// empty/`/` (`docker-driver.ts`'s `inspectWorkingDirectory`) - either way, that must never fail the
+			// (otherwise-successful) build, and it must not clobber a previously known-good value with
+			// `undefined` just because *this* build's inspect happened to come up empty (`design.md`'s "Stale
+			// working directory" risk already accepts the field reflecting an older build; overwriting a known
+			// value with "unset" on a transient inspect hiccup would be strictly worse than that, not better).
+			await updateActor(actor.id, (current) => {
+				const withTag = recordTaggedBuild(current, options.tag, record.id, record.buildNumber);
+				return outcome.imageWorkingDirectory !== undefined
+					? { ...withTag, imageWorkingDirectory: outcome.imageWorkingDirectory }
+					: withTag;
+			});
 		}
 	} catch (error) {
 		const status: JobStatus = error instanceof DriverTimedOutError ? 'TIMED-OUT' : 'FAILED';

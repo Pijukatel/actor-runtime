@@ -1,14 +1,22 @@
 # Frontend
 
-- Console frontend is simple view-only page that allows to inspect each user object.
+- Console frontend is a page that allows inspecting each user's objects across the whole runtime.
 - Server-rendered HTML from the same process that serves the API, on its own fixed port (3000). No
   SPA, no bundler, no build step - plain Express routes returning HTML strings. It reads through the
   same service layer as the API handlers, so storage/build/run access logic is shared rather than
   reimplemented.
 - Frontend shows for each object the owner (`userId`).
-- The console has no login of its own (it is unauthenticated and view-only), so with multiple users it
-  lists and shows every user's objects rather than scoping to one - the API's own endpoints stay
-  strictly scoped to the calling token's user (`storage.md`'s "Users" section).
+- The console has no login of its own, so with multiple users it lists and shows every user's objects
+  rather than scoping to one - the API's own endpoints stay strictly scoped to the calling token's user
+  (`storage.md`'s "Users" section).
+- **The console is unauthenticated, and view-only except for exactly one mutation**: the Actor detail
+  view's local dev-folder registration form (below). This amends the previous blanket "unauthenticated
+  and view-only" statement, which no longer describes the shipped console accurately - it still has no
+  login of its own, and every other route remains a plain read, but that one form genuinely writes
+  state. It writes cross-user the same way the console's reads already are cross-user: resolving the
+  Actor by the id already in the page URL, with no token and no ownership check - a documented deviation
+  from the API's own strictly owner-scoped equivalent write, not an accident (`actor-driver.md`,
+  `api.md`'s `/actor-runtime/*` section).
 - There are three types of objects: key-value store, dataset, request queue.
     - For each object type there must be exactly one widget for inspection.
     - The request-queue widget leads with the authoritative counts from `RequestQueue.getInfo()`
@@ -34,3 +42,21 @@
   list's dataset column), not as plain text.
 - Log views render ANSI colors from actor output as HTML, while the `/v2/logs/:id` API keeps serving logs raw (unconverted) for the CLI to render itself.
 - The console accepts the real Apify Console's URL shapes (as printed by stock apify-cli, e.g. `/actors/:actorId/runs/:runId`, `/storage/datasets/:id`) via redirects to its own pages.
+
+## Local dev-folder registration form (Actor detail view)
+
+- The Actor detail view shows three additional, always-visible values, reflecting the same underlying
+  state the API's `POST /actor-runtime/dev-folder/:actorId` reads and writes (`api.md`): the currently
+  registered local dev folder (or a clear "none registered" state), the detected image working
+  directory (or a clear "not yet detected" state when no build has produced one yet), and an explicit
+  indication of whether a mount will therefore be applied on the Actor's next run.
+- A single-field form submits to a console-local `POST /actors/:id/dev-folder` route (urlencoded, not
+  JSON) - the console's own port, not the API's - resolving the Actor the same cross-user way every
+  other console read does. It funnels into the same validate-and-persist service function the API
+  endpoint uses, so the two surfaces can never observe or produce different outcomes for the same input.
+  Submitting an empty value clears the registration, exactly like the API's empty-JSON-string body.
+- A submission that fails validation (a relative path, an Actor with no successful build, a path the
+  host-side probe could not confirm exists, Docker being unreachable, ...) redirects back to the same
+  detail page with the classified error message shown inline - the build-first rejection and the
+  does-not-exist/could-not-verify distinction are surfaced to whoever is looking at the page, never
+  swallowed by the redirect.

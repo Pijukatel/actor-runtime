@@ -8,17 +8,52 @@ export interface BuildContext {
 	timeoutSecs: number;
 }
 
+/**
+ * Host folder + image working directory, carried together so "both or neither" is enforced by the
+ * type itself (`design.md`'s "Applying the mount") - there is no way to construct a `RunContext` with
+ * one field set and the other missing. `services/runs.ts` builds this only when the Actor's own
+ * `localDevFolder`/`imageWorkingDirectory` are both present and non-empty; `docker-driver.ts`'s
+ * `startRun` adds the `HostConfig.Mounts` entries only when this is present at all.
+ */
+export interface DevFolderMount {
+	localDevFolder: string;
+	imageWorkingDirectory: string;
+}
+
 export interface RunContext {
 	runId: string;
 	imageId: string;
 	env: Record<string, string>;
 	memoryMbytes: number;
 	timeoutSecs: number;
+	devMount?: DevFolderMount;
 }
 
 export interface BuildOutcome {
 	imageId: string;
+	/** `.Config.WorkingDir` of the image `startBuild` just built, captured via
+	 * `docker.getImage(imageId).inspect()` (`design.md`: this codebase talks to the host socket through
+	 * dockerode only, never a shelled-out `docker inspect`). Unset when the inspect call itself failed
+	 * (logged, never fails the build) or when the working directory was empty/`/` (mounting over `/`
+	 * would destroy the container). */
+	imageWorkingDirectory?: string;
 }
+
+/**
+ * Why a candidate dev-folder path was rejected by the host-side existence probe (`design.md`'s
+ * "Registration" section), classified by error shape, most specific first:
+ *  - `unreachable`: no HTTP response at all (raw socket error, or the driver already knows Docker is
+ *    unavailable) - never asserted as "does not exist".
+ *  - `image-missing`: the probe's own image (the Actor's latest successfully-built image) returned 404
+ *    - an operational fault, not a bad path.
+ *  - `not-found`: the daemon's mount-validation rejection message contained the exact substring
+ *    `"bind source path does not exist"` - the one case allowed to say so.
+ *  - `unknown`: any other mount-validation-shaped rejection (not a directory, a Docker Desktop
+ *    file-sharing denial, a permission error, ...) - reported as "could not verify", never as missing.
+ */
+export type DevFolderProbeFailureReason = 'unreachable' | 'image-missing' | 'not-found' | 'unknown';
+
+export type DevFolderProbeOutcome = { ok: true } | { ok: false; reason: DevFolderProbeFailureReason };
 
 export interface RunOutcome {
 	exitCode: number;
@@ -65,4 +100,17 @@ export interface Driver {
 	 * records have no container of their own to reconcile (see `DockerDriver.reconcileOrphans`'s doc
 	 * comment) - orphaned build *records* are still marked `ABORTED` by the caller regardless. */
 	reconcileOrphans(runIds: string[]): Promise<void>;
+
+	/**
+	 * Host-side existence probe for a candidate dev-folder path (`design.md`'s "Registration"), used
+	 * only by `services/actors.ts: setDevFolder` - never by the build/run lifecycle. Deliberately
+	 * **optional**: every pre-existing stub `Driver` throughout the test suite (none of which model a
+	 * real dockerode handle - `test/integration/helpers/test-server.ts` and several integration test
+	 * files construct `Driver` literals directly) keeps compiling unchanged, since only `DockerDriver`
+	 * and drivers built specifically to exercise dev-folder registration need to implement it. A driver
+	 * that doesn't implement this is treated by `setDevFolder` as unable to verify the path (the
+	 * `unreachable` outcome), which is an accurate description of every such stub - none of them talk to
+	 * a real daemon.
+	 */
+	probeDevFolder?(candidatePath: string, imageId: string): Promise<DevFolderProbeOutcome>;
 }

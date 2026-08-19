@@ -12,10 +12,12 @@ import { DockerDriver } from '../../src/driver/docker-driver.js';
  */
 function stubDocker(containers: Array<{ Id: string; Labels: Record<string, string> }>) {
 	const removed: string[] = [];
+	const removeCallOptions: Array<Record<string, unknown> | undefined> = [];
 	const listContainers = vi.fn().mockResolvedValue(containers);
 	const getContainer = vi.fn((id: string) => ({
-		remove: vi.fn(async () => {
+		remove: vi.fn(async (options?: Record<string, unknown>) => {
 			removed.push(id);
+			removeCallOptions.push(options);
 		}),
 	}));
 	return {
@@ -23,6 +25,7 @@ function stubDocker(containers: Array<{ Id: string; Labels: Record<string, strin
 		listContainers,
 		getContainer,
 		removed,
+		removeCallOptions,
 	};
 }
 
@@ -93,6 +96,18 @@ describe('DockerDriver.reconcileOrphans', () => {
 
 		expect(listContainers).not.toHaveBeenCalled();
 	});
+
+	it('removes each matched container with { force: true, v: true } (design.md: Volume cleanup - an orphaned devMount run must not leak its anonymous node_modules volume past a restart)', async () => {
+		const { docker, removeCallOptions } = stubDocker([
+			{ Id: 'container-a', Labels: { 'actor-runtime.runId': 'run-a' } },
+		]);
+		const driver = new DockerDriver(docker);
+		driver.available = true;
+
+		await driver.reconcileOrphans(['run-a']);
+
+		expect(removeCallOptions).toEqual([{ force: true, v: true }]);
+	});
 });
 
 /**
@@ -115,7 +130,7 @@ function stubDockerForRun() {
 		start: vi.fn(async () => undefined),
 		logs: vi.fn(async () => rawLogStream),
 		wait: vi.fn(async () => waitPromise),
-		remove: vi.fn(async () => undefined),
+		remove: vi.fn(async (_options?: Record<string, unknown>) => undefined),
 		stop: vi.fn(async () => undefined),
 	};
 
@@ -131,14 +146,16 @@ function stubDockerForRun() {
 		stream.on('data', (chunk: Buffer) => stdout.write(chunk));
 	});
 
+	const createContainer = vi.fn(async () => container);
 	const docker = {
-		createContainer: vi.fn(async () => container),
+		createContainer,
 		modem: { demuxStream },
 	} as unknown as Docker;
 
 	return {
 		docker,
 		container,
+		createContainer,
 		/** Simulates `container.wait()` resolving - the container process has exited. */
 		triggerContainerExit(statusCode = 0): void {
 			resolveWait({ StatusCode: statusCode });
@@ -236,5 +253,314 @@ describe('DockerDriver.startRun - faithful demuxStream stub (regression: dockero
 		expect(chunks.join('')).toBe('hello from the container\n');
 		// Sub-second, not "eventually, after the 60s timeoutSecs timer fires" - the pre-fix failure mode.
 		expect(elapsedMs).toBeLessThan(1000);
+	});
+});
+
+describe('DockerDriver.startRun - dev-folder mount composition (design.md: "Applying the mount")', () => {
+	it('adds exactly the bind + anonymous-volume Mounts entries when devMount is present, and never a Binds key', async () => {
+		const stub = stubDockerForRun();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		const outcomePromise = driver.startRun(
+			{
+				runId: 'run-mount-1',
+				imageId: 'fake-image',
+				env: {},
+				memoryMbytes: 128,
+				timeoutSecs: 60,
+				devMount: { localDevFolder: '/host/src', imageWorkingDirectory: '/usr/src/app' },
+			},
+			() => {},
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const [options] = stub.createContainer.mock.calls[0] as [{ HostConfig: Record<string, unknown> }];
+		expect(options.HostConfig.Mounts).toEqual([
+			{ Type: 'bind', Source: '/host/src', Target: '/usr/src/app' },
+			{ Type: 'volume', Source: '', Target: '/usr/src/app/node_modules' },
+		]);
+		expect(options.HostConfig.Binds).toBeUndefined();
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
+	it('adds no Mounts key at all when devMount is absent (regression: unregistered Actors unaffected)', async () => {
+		const stub = stubDockerForRun();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-mount-2', imageId: 'fake-image', env: {}, memoryMbytes: 128, timeoutSecs: 60 },
+			() => {},
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const [options] = stub.createContainer.mock.calls[0] as [{ HostConfig: Record<string, unknown> }];
+		expect(options.HostConfig.Mounts).toBeUndefined();
+		expect(options.HostConfig.Binds).toBeUndefined();
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
+	it('logs an explicit mount line naming both the host and container paths, before the container is even created, when devMount is present', async () => {
+		const stub = stubDockerForRun();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+		const chunks: string[] = [];
+
+		const outcomePromise = driver.startRun(
+			{
+				runId: 'run-mount-3',
+				imageId: 'fake-image',
+				env: {},
+				memoryMbytes: 128,
+				timeoutSecs: 60,
+				devMount: { localDevFolder: '/host/src', imageWorkingDirectory: '/usr/src/app' },
+			},
+			(chunk) => chunks.push(chunk),
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		expect(chunks.length).toBeGreaterThan(0);
+		expect(chunks[0]).toContain('/host/src');
+		expect(chunks[0]).toContain('/usr/src/app');
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
+	it('logs nothing extra when devMount is absent', async () => {
+		const stub = stubDockerForRun();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+		const chunks: string[] = [];
+
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-mount-4', imageId: 'fake-image', env: {}, memoryMbytes: 128, timeoutSecs: 60 },
+			(chunk) => chunks.push(chunk),
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		expect(chunks).toEqual([]);
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+});
+
+describe('DockerDriver container removal passes { v: true } (design.md: "Volume cleanup is in this PR")', () => {
+	it("startRun's finally block removes the container with { v: true }, whether or not the run had a devMount", async () => {
+		const stub = stubDockerForRun();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-remove-1', imageId: 'fake-image', env: {}, memoryMbytes: 128, timeoutSecs: 60 },
+			() => {},
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+
+		expect(stub.container.remove).toHaveBeenCalledWith({ v: true });
+	});
+});
+
+describe('DockerDriver.startBuild - imageWorkingDirectory capture (design.md: "Capture of imageWorkingDirectory")', () => {
+	/** A stub covering only what `startBuild` calls: `buildImage`, `modem.followProgress` (invoking its
+	 * `onFinished` callback synchronously, as a successful build with no progress lines), and `getImage`
+	 * for the post-build inspect. */
+	function stubDockerForBuild(inspect: () => Promise<{ Config: { WorkingDir: string } }>) {
+		const followProgress = vi.fn(
+			(
+				_stream: NodeJS.ReadableStream,
+				onFinished: (err: Error | null, res: Array<{ error?: string }>) => void,
+			) => {
+				onFinished(null, []);
+			},
+		);
+		const getImage = vi.fn(() => ({ inspect }));
+		const docker = {
+			buildImage: vi.fn(async () => new PassThrough()),
+			modem: { followProgress },
+			getImage,
+		} as unknown as Docker;
+		return { docker, getImage };
+	}
+
+	it("returns the image's Config.WorkingDir from docker.getImage(imageId).inspect(), never a shelled-out docker inspect", async () => {
+		const stub = stubDockerForBuild(async () => ({ Config: { WorkingDir: '/usr/src/app' } }));
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		const outcome = await driver.startBuild(
+			{ buildId: 'build-1', actorName: 'my-actor', sourceFiles: [], useCache: true, timeoutSecs: 60 },
+			() => {},
+		);
+
+		expect(outcome.imageWorkingDirectory).toBe('/usr/src/app');
+		expect(stub.getImage).toHaveBeenCalledWith(outcome.imageId);
+	});
+
+	it('tolerates an inspect rejection: the build still succeeds, with imageWorkingDirectory left unset', async () => {
+		const stub = stubDockerForBuild(async () => {
+			throw new Error('inspect failed');
+		});
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+		const outcome = await driver.startBuild(
+			{ buildId: 'build-2', actorName: 'my-actor', sourceFiles: [], useCache: true, timeoutSecs: 60 },
+			() => {},
+		);
+
+		expect(outcome.imageId).toBeTruthy();
+		expect(outcome.imageWorkingDirectory).toBeUndefined();
+		expect(warnSpy).toHaveBeenCalled();
+
+		warnSpy.mockRestore();
+	});
+
+	it('leaves imageWorkingDirectory unset when the working directory is "/" (mounting over "/" would destroy the container)', async () => {
+		const stub = stubDockerForBuild(async () => ({ Config: { WorkingDir: '/' } }));
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		const outcome = await driver.startBuild(
+			{ buildId: 'build-3', actorName: 'my-actor', sourceFiles: [], useCache: true, timeoutSecs: 60 },
+			() => {},
+		);
+
+		expect(outcome.imageWorkingDirectory).toBeUndefined();
+	});
+
+	it('leaves imageWorkingDirectory unset when the working directory is empty', async () => {
+		const stub = stubDockerForBuild(async () => ({ Config: { WorkingDir: '' } }));
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		const outcome = await driver.startBuild(
+			{ buildId: 'build-4', actorName: 'my-actor', sourceFiles: [], useCache: true, timeoutSecs: 60 },
+			() => {},
+		);
+
+		expect(outcome.imageWorkingDirectory).toBeUndefined();
+	});
+});
+
+describe('DockerDriver.probeDevFolder (design.md: "The check is a create-only probe container, never started")', () => {
+	it('returns ok and removes the (never-started) probe container on success, without ever calling .start()', async () => {
+		const start = vi.fn();
+		const remove = vi.fn(async () => undefined);
+		const createContainer = vi.fn(async () => ({ remove, start }));
+		const driver = new DockerDriver({ createContainer } as unknown as Docker);
+		driver.available = true;
+
+		const outcome = await driver.probeDevFolder('/abs/path', 'image:tag');
+
+		expect(outcome).toEqual({ ok: true });
+		expect(createContainer).toHaveBeenCalledTimes(1);
+		const [options] = createContainer.mock.calls[0] as [{ Image: string; HostConfig: { Mounts: unknown[] } }];
+		expect(options.Image).toBe('image:tag');
+		expect(options.HostConfig.Mounts).toEqual([
+			{ Type: 'bind', Source: '/abs/path', Target: '/probe', ReadOnly: true },
+		]);
+		expect(remove).toHaveBeenCalledTimes(1);
+		expect(start).not.toHaveBeenCalled();
+	});
+
+	it('never even calls createContainer when the driver already knows Docker is unavailable - short-circuits to unreachable', async () => {
+		const createContainer = vi.fn(async () => ({ remove: vi.fn() }));
+		const driver = new DockerDriver({ createContainer } as unknown as Docker);
+		// driver.available defaults to false - init() never ran.
+
+		const outcome = await driver.probeDevFolder('/abs/path', 'image:tag');
+
+		expect(outcome).toEqual({ ok: false, reason: 'unreachable' });
+		expect(createContainer).not.toHaveBeenCalled();
+	});
+
+	it('classifies a rejection with no .statusCode as unreachable (a raw transport failure), never as "does not exist"', async () => {
+		const createContainer = vi.fn(async () => {
+			throw new Error('connect ECONNREFUSED /var/run/docker.sock');
+		});
+		const driver = new DockerDriver({ createContainer } as unknown as Docker);
+		driver.available = true;
+
+		const outcome = await driver.probeDevFolder('/abs/path', 'image:tag');
+
+		expect(outcome).toEqual({ ok: false, reason: 'unreachable' });
+	});
+
+	it("classifies a 404 rejection as image-missing (the probe's own image is gone, an operational fault)", async () => {
+		const createContainer = vi.fn(async () => {
+			throw Object.assign(new Error('(HTTP code 404) no such image: image:tag'), { statusCode: 404 });
+		});
+		const driver = new DockerDriver({ createContainer } as unknown as Docker);
+		driver.available = true;
+
+		const outcome = await driver.probeDevFolder('/abs/path', 'image:tag');
+
+		expect(outcome).toEqual({ ok: false, reason: 'image-missing' });
+	});
+
+	it('classifies the exact "bind source path does not exist" substring as not-found - the one case allowed to say so', async () => {
+		const createContainer = vi.fn(async () => {
+			throw Object.assign(
+				new Error(
+					'(HTTP code 400) client error - invalid mount config for type "bind": bind source path does not exist: /abs/path ',
+				),
+				{ statusCode: 400 },
+			);
+		});
+		const driver = new DockerDriver({ createContainer } as unknown as Docker);
+		driver.available = true;
+
+		const outcome = await driver.probeDevFolder('/abs/path', 'image:tag');
+
+		expect(outcome).toEqual({ ok: false, reason: 'not-found' });
+	});
+
+	it('classifies "source path must be a directory" as unknown, never as not-found', async () => {
+		const createContainer = vi.fn(async () => {
+			throw Object.assign(
+				new Error(
+					'(HTTP code 400) client error - invalid mount config for type "bind": source path must be a directory',
+				),
+				{ statusCode: 400 },
+			);
+		});
+		const driver = new DockerDriver({ createContainer } as unknown as Docker);
+		driver.available = true;
+
+		const outcome = await driver.probeDevFolder('/abs/path', 'image:tag');
+
+		expect(outcome).toEqual({ ok: false, reason: 'unknown' });
+	});
+
+	it('classifies a Docker Desktop file-sharing denial (a real, existing path) as unknown, never as not-found - the false-negative this design deliberately avoids', async () => {
+		const createContainer = vi.fn(async () => {
+			throw Object.assign(
+				new Error(
+					'(HTTP code 400) client error - Mounts denied: The path /abs/path is not shared from the host and is not known to Docker.',
+				),
+				{ statusCode: 400 },
+			);
+		});
+		const driver = new DockerDriver({ createContainer } as unknown as Docker);
+		driver.available = true;
+
+		const outcome = await driver.probeDevFolder('/abs/path', 'image:tag');
+
+		expect(outcome).toEqual({ ok: false, reason: 'unknown' });
 	});
 });

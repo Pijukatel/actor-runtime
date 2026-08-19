@@ -71,8 +71,27 @@
     - `value` is the metadata of the Actor
         - owner (`userId`)
         - metadata
-        - localDevFolder
-        - imageWorkingDirectory
+        - `localDevFolder` - **optional**. Absent means no dev folder has ever been registered for this
+          Actor. Set/cleared only through `POST /actor-runtime/dev-folder/:actorId` or the console's
+          equivalent form (`api.md`, `console.md`) - never as a side effect of any other Actor write
+          (pushing a version, starting a build, etc.). Submitting the empty string is a distinct,
+          first-class "clear" operation, not a stored empty-string value: it removes the field entirely,
+          the same as if it had never been registered - there is no state that distinguishes "cleared"
+          from "never set". When present, it is always a non-empty absolute host path that passed both
+          the shape check and the host-side existence probe at the time it was registered
+          (`actor-driver.md`).
+        - `imageWorkingDirectory` - **optional**. Absent until at least one build has succeeded and its
+          image's working directory could be captured (`.Config.WorkingDir` via `dockerode`, never by
+          shelling out to a `docker` command-line invocation); also absent when the captured value was
+          empty or `/`. Written by
+          the driver in the same `updateActor` call that records a successful build's `taggedBuilds`
+          entry, and reflects only the _most recent_ successful build.
+        - Both fields are **absent (or empty) meaning no mount**: `startRun` only adds the dev-folder bind
+          mount when both are present and non-empty simultaneously (`actor-driver.md`) - an Actor missing
+          either one starts exactly as if the feature did not exist.
+        - Neither field is ever exposed on the public `/v2` API - `api/dto/actors.ts`'s `actorDto` is
+          explicit field-by-field, so a new `ActorRecord` field cannot leak into a `/v2` response by
+          construction.
 - The system stores Actor runs in dedicated key-value store called `__RUNS__`:
     - `key` is the id of the Actor run `runId`
     - `value` is the metadata of the Actor
