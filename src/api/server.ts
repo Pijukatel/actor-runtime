@@ -13,6 +13,7 @@ import { mountBuilds } from './routes/builds.js';
 import { mountRuns } from './routes/runs.js';
 import { mountLogs } from './routes/logs.js';
 import { mountRunStorageAliases } from './routes/run-storage-aliases.js';
+import { mountDevFolder } from './routes/dev-folder.js';
 import type { Driver } from '../driver/types.js';
 
 export interface ApiServerDeps {
@@ -26,6 +27,26 @@ export function createApiServer(deps: ApiServerDeps): Express {
 	// round-tripping, run/build inputs carry arbitrary content types, and everything else is JSON we
 	// parse ourselves (see `api/handler.ts`).
 	app.use(express.raw({ type: () => true, limit: '256mb' }));
+
+	// `/actor-runtime/*` - a deliberately non-Apify, local-runtime-only namespace (`api.md`), registered
+	// before the `v2` router (and its own `auth()`) below entirely, so it gets its own sub-router with its
+	// own `auth()` (see `mountDevFolder`'s doc comment) rather than inheriting `v2.use(auth())`.
+	const devFolder = express.Router();
+	mountDevFolder(devFolder, deps);
+	app.use('/actor-runtime', devFolder);
+	// Also served at `/v2/actor-runtime/*` - the *same* router instance, no duplicated route logic - solely
+	// because `apify api`'s own URL-building hardcodes a `/v2`-suffixed base (`${baseUrl}/${endpoint}`,
+	// `baseUrl` already ending in `/v2`) and its `normalizePath` only strips a leading `/` and a leading
+	// `v2/`, never `..`: `apify api POST /actor-runtime/dev-folder/<id>` (the clean, documented form, no
+	// `../`) therefore resolves to exactly this path, never the canonical `/actor-runtime/*` one above.
+	// This mount is registered here, before `app.use('/v2', v2)` below - NOT nested under `v2` - so this
+	// request is only ever authenticated once, by this router's own `auth()`; nesting it under `v2` would
+	// mean `v2.use(auth())` runs first and this router's `auth()` runs again right after, on every request.
+	// `/v2/actor-runtime/*` is not part of the emulated Apify API - it is the same deliberately non-Apify
+	// namespace as `/actor-runtime/*`, reachable a second way purely for CLI ergonomics (`api.md`). The
+	// dev-folder fields are still never exposed on any real `/v2` Actor response either way - `actorDto`
+	// is explicit field-by-field regardless of which path reached this router.
+	app.use('/v2/actor-runtime', devFolder);
 
 	const v2 = express.Router();
 	v2.use(auth());

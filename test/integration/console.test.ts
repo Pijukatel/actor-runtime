@@ -20,7 +20,7 @@ describe('console pages (HTTP fetch)', () => {
 
 	beforeEach(async () => {
 		server = await startTestServer();
-		const app = createConsoleServer();
+		const app = createConsoleServer({ driver: server.driver });
 		consoleServer = await new Promise((resolve) => {
 			const s = app.listen(0, () => resolve(s));
 		});

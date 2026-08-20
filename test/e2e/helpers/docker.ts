@@ -31,6 +31,14 @@ export function startRuntimeContainer(tag: string, containerName: string): void 
 			'-d',
 			'--name',
 			containerName,
+			// Host ports are fixed, not derived from `containerName` - only one runtime container can ever
+			// be bound to 3333/3000 at a time. `package.json`'s `test:e2e` script therefore runs
+			// `vitest run test/e2e --no-file-parallelism`: if a second e2e file's `beforeAll` ever raced
+			// this one, the loser's `docker run` would fail with "port is already allocated" and take that
+			// file's whole suite down with it. Adding a third e2e file is safe as long as the suite stays
+			// serialized - do not drop `--no-file-parallelism` (and do not add a `vitest.workspace.ts` or
+			// per-file config that re-enables parallelism for this directory) without also parameterizing
+			// these two ports per container.
 			'-p',
 			'3333:3333',
 			'-p',

@@ -20,7 +20,7 @@ async function main(): Promise<void> {
 	await reconcileOrphanedJobs(driver);
 
 	const apiApp = createApiServer({ driver });
-	const consoleApp = createConsoleServer();
+	const consoleApp = createConsoleServer({ driver });
 
 	const apiServer = apiApp.listen(API_PORT);
 	const consoleServer = consoleApp.listen(CONSOLE_PORT);

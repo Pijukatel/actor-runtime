@@ -2,6 +2,10 @@ import { generateId } from '../storage/ids.js';
 import type { ActorRecord, ActorVersionRecord } from '../storage/entities.js';
 import { getRegistries } from '../storage/registries.js';
 
+/** The tag a build/run resolves to when the caller names none. `api/routes/actors.ts` and
+ * `services/runs.ts` both import this instead of declaring their own `'latest'` literal. */
+export const DEFAULT_BUILD_TAG = 'latest';
+
 export interface CreateActorInput {
 	name: string;
 	title?: string;
@@ -36,10 +40,11 @@ export async function getOwnedActor(userId: string, id: string): Promise<ActorRe
 }
 
 /**
- * Cross-user listing, for the console only (`console.md`: the console is an unauthenticated, view-only
- * local dev tool with no login of its own, so with multiple users it shows every user's objects rather
- * than scoping to one - see `console/server.ts`). The API's own `listOwnedActors` above stays strictly
- * per-user; nothing here is reachable from `api/routes/*`.
+ * Cross-user listing, for the console only (`console.md`: the console is an unauthenticated local dev
+ * tool with no login of its own, and every route is a read except the dev-folder registration form, so
+ * with multiple users it shows every user's objects rather than scoping to one - see
+ * `console/server.ts`). The API's own `listOwnedActors` above stays strictly per-user; nothing here is
+ * reachable from `api/routes/*`.
  */
 export async function listAllActors(): Promise<ActorRecord[]> {
 	return getRegistries().actors.list();

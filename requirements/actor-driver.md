@@ -39,10 +39,45 @@
 - Actor details are saved in `__ACTORS__` internal storage
 
 # Bind mount volumes with Actor source code
-- To enable rapid development of Actors, it is desired to avoid the need to rebuild the Actors. This can be achieved by bind mounting the actor local development folder when starting the container.
-- When building an Actor, get the location where the Actor source code is locally located and save it in `__ACTORS__` under `localDevFolder`
-- Detect the working directory of docker image `docker inspect -f '{{.Config.WorkingDir}}' {DOCKER_IMAGE}` (replace {DOCKER_IMAGE} by the docker image identifier) and save it to `__ACTORS__` under `imageWorkingDirectory` 
-- Each Actor stored by the local Actor runtime is started with bind mounted development folder using these additional arguments `-v {localDevFolder}:{imageWorkingDirectory} -v {imageWorkingDirectory}/node_modules`
+
+- To enable rapid development of Actors, it is desired to avoid the need to rebuild the Actors for
+  every source change. This is achieved by bind mounting the Actor's local development folder over the
+  built image's working directory when starting the container - edit locally, recompile locally
+  (`tsc`, or the language-appropriate equivalent), `apify call` again, with no `apify push`/build in
+  between. A running container never picks up a recompile; only the next run's container start does.
+  Dependency or environment changes still require a real rebuild.
+- `localDevFolder` is **registered explicitly** on a new local-only endpoint,
+  `POST /actor-runtime/dev-folder/:actorId` (see `api.md`), also exposed as a single-field form on the
+  console's Actor detail view (`console.md`), sets or clears it. Both surfaces funnel through one
+  shared validate-and-persist path, so they can never disagree.
+- **Registration validates the path in two layers**, not shape alone:
+    1. A cheap shape check: the submitted value must be an absolute POSIX path.
+    2. A **host-side existence-and-directory check**. The runtime's own filesystem cannot be trusted to
+       judge a host path - it is not necessarily the host's filesystem at all - so this must be verified
+       some other way.
+    - Submitting the **empty string clears the registration** and never runs either validation layer.
+    - Every non-success outcome is classified rather than guessed: being unable to verify the path at
+      all (e.g. Docker is unreachable) is reported as "could not verify", never as "does not exist"; a
+      path confirmed missing is reported as "path does not exist"; a path that exists but is a file is
+      reported as "path is not a directory"; anything else unverifiable is a generic "could not verify".
+- **Registration has no build-first precondition.** It requires no build of the Actor's own to exist,
+  succeeded or otherwise - the host-side check needs only something host-present to validate against,
+  never a build a run would actually use.
+- **`imageWorkingDirectory` is captured by the driver itself, right after a successful build, and is
+  build-specific, not Actor-specific** - it is persisted on that build's own record (see `storage.md`),
+  never on the Actor. The mount a run applies always reads it off _that run's own resolved build_, never
+  off any other build the Actor happens to have.
+- **The mount is applied only when both a registered dev folder and a known working directory exist**
+  for the run's resolved build; either missing means the run starts exactly as if the feature did not
+  exist.
+- The registration status the console and API report is the registered folder alone - it never claims a
+  mount "will apply", since that depends on which build a given run resolves, which an Actor-level status
+  has no way to know in advance.
+- If the registered folder has since been deleted, moved, or made unreadable, the run must **fail
+  visibly** - never silently mount an empty directory in its place.
+- The Actor image's own installed dependencies (e.g. `node_modules`) must remain available to the Actor
+  despite the mount covering the whole working directory.
+- **Registering or clearing a dev folder never bumps the Actor's `modifiedAt`.**
 
 # Networking
 

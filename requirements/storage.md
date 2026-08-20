@@ -71,8 +71,21 @@
     - `value` is the metadata of the Actor
         - owner (`userId`)
         - metadata
-        - localDevFolder
-        - imageWorkingDirectory
+        - `localDevFolder` - **optional**. Absent means no dev folder has ever been registered for this
+          Actor. Set or cleared only through `POST /actor-runtime/dev-folder/:actorId` or the console's
+          equivalent form (`api.md`, `console.md`), never as a side effect of any other Actor write, and
+          never bumping `modifiedAt` (`actor-driver.md`). Submitting the empty string clears it - the
+          field is removed entirely, not stored as an empty string. When present, it is always an
+          absolute host path that has passed registration validation (`actor-driver.md`).
+        - There is **no `imageWorkingDirectory` field on the Actor record.** It lives on the `BuildRecord`
+          instead (`__BUILDS__` below) - build-specific, not Actor-specific: the workdir a run mounts
+          against must be the one for the build that run itself resolved, never whichever tag happened to
+          build most recently.
+        - `localDevFolder`, together with the resolved build's `imageWorkingDirectory`, are **absent (or
+          empty) meaning no mount**: a run only adds the dev-folder bind mount when both are present and
+          non-empty (`actor-driver.md`).
+        - Neither `localDevFolder` nor any build's `imageWorkingDirectory` is ever exposed on the public
+          `/v2` API.
 - The system stores Actor runs in dedicated key-value store called `__RUNS__`:
     - `key` is the id of the Actor run `runId`
     - `value` is the metadata of the Actor
@@ -85,6 +98,10 @@
         - owner (`userId`)
         - Actor (`actorId`)
         - metadata
+        - `imageWorkingDirectory` - **optional**, and specific to this one build. Absent unless this
+          particular build succeeded and its own image's working directory could be captured (also
+          absent when the captured value was empty or `/`) - never on any other build, and never derived
+          from, or copied onto, the Actor record (see `localDevFolder`'s entry above).
 - The system stores logs in dedicated key-value store called `__LOGS__`:
     - `key` is the id of the Actor build (`logId`)
     - `value` is the metadata of the Actor

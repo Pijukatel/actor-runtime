@@ -82,6 +82,12 @@ function timedDriver(resolveAfterMs: number): Driver {
 		},
 		async abortRun() {},
 		async reconcileOrphans() {},
+		async probeDevFolder() {
+			throw new Error('not used by this stub');
+		},
+		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
 	};
 }
 
@@ -223,6 +229,12 @@ describe('CLI log-stream race: apify-cli outputJobLog must always settle (regres
 					},
 					async abortRun() {},
 					async reconcileOrphans() {},
+					async probeDevFolder() {
+						throw new Error('not used by this stub');
+					},
+					async ensureProbeImage() {
+						throw new Error('not used by this stub');
+					},
 				};
 
 				const bg = runInBackground(driver, actor, record, {
@@ -346,6 +358,12 @@ describe('CLI log-stream race: apify-cli outputJobLog must always settle (regres
 					},
 					async abortRun() {},
 					async reconcileOrphans() {},
+					async probeDevFolder() {
+						throw new Error('not used by this stub');
+					},
+					async ensureProbeImage() {
+						throw new Error('not used by this stub');
+					},
 				};
 
 				const bg = runInBackground(driver, actor, record, {

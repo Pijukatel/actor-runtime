@@ -1,14 +1,16 @@
 # Frontend
 
-- Console frontend is simple view-only page that allows to inspect each user object.
+- Console frontend is a page that allows inspecting each user's objects across the whole runtime.
 - Server-rendered HTML from the same process that serves the API, on its own fixed port (3000). No
   SPA, no bundler, no build step - plain Express routes returning HTML strings. It reads through the
   same service layer as the API handlers, so storage/build/run access logic is shared rather than
   reimplemented.
 - Frontend shows for each object the owner (`userId`).
-- The console has no login of its own (it is unauthenticated and view-only), so with multiple users it
-  lists and shows every user's objects rather than scoping to one - the API's own endpoints stay
-  strictly scoped to the calling token's user (`storage.md`'s "Users" section).
+- The console has no login of its own, so with multiple users it lists and shows every user's objects
+  rather than scoping to one - the API's own endpoints stay strictly scoped to the calling token's user
+  (`storage.md`'s "Users" section).
+- The console is unauthenticated. Every route is a read except the dev-folder form below, which is the
+  console's one write - it is no longer strictly view-only.
 - There are three types of objects: key-value store, dataset, request queue.
     - For each object type there must be exactly one widget for inspection.
     - The request-queue widget leads with the authoritative counts from `RequestQueue.getInfo()`
@@ -34,3 +36,16 @@
   list's dataset column), not as plain text.
 - Log views render ANSI colors from actor output as HTML, while the `/v2/logs/:id` API keeps serving logs raw (unconverted) for the CLI to render itself.
 - The console accepts the real Apify Console's URL shapes (as printed by stock apify-cli, e.g. `/actors/:actorId/runs/:runId`, `/storage/datasets/:id`) via redirects to its own pages.
+
+## Local dev-folder registration form (Actor detail view)
+
+- The Actor detail view shows the Actor's registered local dev folder, or that none is registered - the
+  same status the API endpoint reports (`api.md`). It never claims a mount "will apply": that depends on
+  which build a given run resolves, which this Actor-level view has no way to know in advance.
+- A single-field form exposes the same registration capability as the API endpoint, with no build-first
+  precondition either: submitting it sets or clears the dev folder, funnelling into the same
+  validate-and-persist path, so the two surfaces can never observe or produce different outcomes for the
+  same input. Submitting an empty value clears the registration, matching the API; a whitespace-only
+  value is rejected as a malformed path, also matching the API.
+- A submission that fails validation redirects back to the same detail page with the classified error
+  message shown inline, never swallowed by the redirect.

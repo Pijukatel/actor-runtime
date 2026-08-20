@@ -153,9 +153,48 @@ describe('actors / versions / builds / runs (via real apify-client)', () => {
 		expect(run.generalAccess).toBe('FOLLOW_USER_SETTING');
 	});
 
-	it('starting a run against an Actor with no tagged build 404s', async () => {
+	it('starting a run against an Actor with no tagged build 404s, naming the tag that has no build', async () => {
 		const actor = await server.client.actors().create({ name: 'no-build-actor' });
-		await expect(server.client.actor(actor.id).start({})).rejects.toMatchObject({ statusCode: 404 });
+		await expect(server.client.actor(actor.id).start({})).rejects.toMatchObject({
+			statusCode: 404,
+			type: 'record-not-found',
+			message: 'Actor has no build tagged "latest"',
+		});
+	});
+
+	it('starting a run against a tag whose BuildRecord was since deleted 404s the same bare way base did (not the "no build tagged" message, since the tag genuinely still exists)', async () => {
+		const actor = await server.client.actors().create({ name: 'deleted-tagged-build-actor' });
+
+		// Seed a tagged, successful build directly, then delete the underlying BuildRecord without
+		// clearing the tag - the exact state `deleteBuild` (`services/builds.ts`) leaves behind, since it
+		// only removes the build itself and never touches `actor.taggedBuilds`.
+		const { builds } = getRegistries();
+		const fakeBuildId = 'fakeBuildId12345d';
+		await builds.set(fakeBuildId, {
+			id: fakeBuildId,
+			userId: actor.userId,
+			actorId: actor.id,
+			versionNumber: '0.0',
+			buildNumber: '0.0.1',
+			tag: 'latest',
+			status: 'SUCCEEDED',
+			startedAt: new Date().toISOString(),
+			finishedAt: new Date().toISOString(),
+			imageId: 'fake-image:latest',
+		});
+		await updateActor(actor.id, (current) => recordTaggedBuild(current, 'latest', fakeBuildId, '0.0.1'));
+		await builds.delete(fakeBuildId);
+
+		// At base (`9cb32f0:src/api/routes/actors.ts`), a tag whose BuildRecord had been deleted fell
+		// through to a bare `recordNotFound()` - the default "Record was not found" message, distinct from
+		// the "Actor has no build tagged" message the no-such-tag case above gets. This locks in that this
+		// input class stays byte-for-byte base-identical: `resolveTaggedBuild` exists only so this route can
+		// tell the two failure reasons apart internally, not to change what either one reports.
+		await expect(server.client.actor(actor.id).start({})).rejects.toMatchObject({
+			statusCode: 404,
+			type: 'record-not-found',
+			message: 'Record was not found',
+		});
 	});
 
 	it('a run against a (test-seeded) successful build wires storages/env, then fails fast without Docker', async () => {

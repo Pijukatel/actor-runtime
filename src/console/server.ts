@@ -4,16 +4,25 @@
  * through the same service layer as the API handlers, so ownership filtering (over on the API side) is
  * shared rather than reimplemented.
  *
- * The console itself has no login of its own - it is a view-only, unauthenticated local dev tool
- * (`console.md`) - so with multiple users it does not scope to any one of them: every list/detail route
- * below reads through the `listAll*`/`get*ById` cross-user service functions (see e.g.
- * `services/actors.ts: listAllActors`), never the API's own per-user `listOwned*`/`getOwned*`, and every
- * list row and detail view shows the object's owner `userId` (`console.md`: "Frontend shows for each
- * object the owner (userId)").
+ * The console itself has no login of its own - it is unauthenticated, and every route is a read except
+ * exactly one mutation (`console.md`'s "Every route is a read except the dev-folder form below, which is
+ * the console's one write"): the dev-folder form on the Actor detail view. With multiple users it does
+ * not scope reads to any one of them: every list/detail route below reads through the
+ * `listAll*`/`get*ById` cross-user service functions (see e.g. `services/actors.ts: listAllActors`),
+ * never the API's own per-user `listOwned*`/`getOwned*`, and every list row and detail view shows the
+ * object's owner `userId` (`console.md`: "Frontend shows for each object the owner (userId)"). The
+ * dev-folder form writes cross-user the same way - a deliberate deviation from the API's own
+ * strictly-owner-scoped write, not an accident.
  */
 import express, { type Express } from 'express';
 
 import { getActorById, listAllActors } from '../services/actors.js';
+import {
+	describeDevFolderFailure,
+	devFolderStatus,
+	setDevFolder,
+	type DevFolderStatus,
+} from '../services/dev-folder.js';
 import { getBuildById, listAllBuilds } from '../services/builds.js';
 import { getRunById, listAllRuns } from '../services/runs.js';
 import { getFullLog } from '../services/logs.js';
@@ -23,16 +32,40 @@ import { openDataset, openKeyValueStore, openRequestQueue } from '../storage/ope
 import { pageKeys } from '../services/kv-key-listing.js';
 import { applyDatasetProjection, type DatasetItem } from '../services/dataset-projection.js';
 import { ansiToHtml } from './ansi.js';
-import { definitionList, escapeHtml, layout, table, type LinkedCell } from './templates.js';
+import { definitionList, devFolderForm, escapeHtml, layout, table, type LinkedCell } from './templates.js';
+import type { Driver } from '../driver/types.js';
 
 /** A run's default-storage id rendered as a link to that storage's detail view instead of plain text. */
 function storageLink(prefix: '/datasets' | '/key-value-stores' | '/request-queues', id: string): LinkedCell {
 	return { text: id, href: `${prefix}/${encodeURIComponent(id)}` };
 }
 
-export function createConsoleServer(): Express {
+export interface ConsoleServerDeps {
+	driver: Driver;
+}
+
+/** The dev-folder registration form + its one read-only status row, rendered on the Actor detail view
+ * (`console.md`'s "Local dev-folder registration form" section). Deliberately shows only the registered
+ * folder, never a build's working directory or a "mount will apply" claim - whether a mount actually
+ * applies depends on which build a given run resolves, which this Actor-level view has no way to know in
+ * advance (`services/dev-folder.ts: devFolderStatus`'s doc comment). `errorMessage` is threaded through
+ * from the POST handler's redirect query param below, since a redirect itself carries no state of its
+ * own. */
+function devFolderSection(actorId: string, status: DevFolderStatus, errorMessage?: string): string {
+	return (
+		'<h2>Local dev folder</h2>' +
+		definitionList([['localDevFolder', status.localDevFolder ?? '(none registered)']]) +
+		devFolderForm(actorId, status.localDevFolder ?? '', errorMessage)
+	);
+}
+
+export function createConsoleServer(deps: ConsoleServerDeps): Express {
 	const app = express();
 	app.disable('x-powered-by');
+	// Only the dev-folder form below posts anything - every other console route is a plain `GET`
+	// (`console.md`'s "Every route is a read except the dev-folder form below, which is the console's
+	// one write").
+	app.use(express.urlencoded({ extended: false }));
 
 	app.get('/', async (_req, res) => {
 		res.send(layout('actor-runtime', '<p>Pick an object type from the navigation above.</p>'));
@@ -59,6 +92,7 @@ export function createConsoleServer(): Express {
 			res.status(404).send(layout('Not found', '<p>Actor not found.</p>'));
 			return;
 		}
+		const devFolderError = typeof req.query.devFolderError === 'string' ? req.query.devFolderError : undefined;
 		const body =
 			definitionList([
 				['id', actor.id],
@@ -79,8 +113,34 @@ export function createConsoleServer(): Express {
 				Object.entries(actor.taggedBuilds).map(([tag, b]) => [tag, b.buildId, b.buildNumber]),
 				1,
 				'/builds',
-			);
+			) +
+			devFolderSection(actor.id, devFolderStatus(actor), devFolderError);
 		res.send(layout(`Actor ${actor.name}`, body));
+	});
+
+	/** The console's one mutation - funnels through the same `setDevFolder` the API endpoint uses,
+	 * resolving the Actor cross-user by the id already in the page URL (no token) rather than through
+	 * `resolveOwnedActor`. A failure redirects back with `describeDevFolderFailure`'s message in a query
+	 * param, so it's surfaced inline rather than swallowed by the redirect. */
+	app.post('/actors/:id/dev-folder', async (req, res) => {
+		const actor = await getActorById(req.params.id);
+		if (!actor) {
+			res.status(404).send(layout('Not found', '<p>Actor not found.</p>'));
+			return;
+		}
+		const body = req.body as Record<string, unknown> | undefined;
+		// Not trimmed here - `setDevFolder` itself distinguishes an explicit clear (the literal empty
+		// string) from a whitespace-only submission (rejected, not treated as a clear); trimming here
+		// first would collapse that distinction before it ever reaches the service.
+		const submitted = typeof body?.localDevFolder === 'string' ? body.localDevFolder : '';
+
+		const result = await setDevFolder(deps.driver, actor, submitted);
+		if (result.kind !== 'ok') {
+			const message = describeDevFolderFailure(result);
+			res.redirect(`/actors/${encodeURIComponent(actor.id)}?devFolderError=${encodeURIComponent(message)}`);
+			return;
+		}
+		res.redirect(`/actors/${encodeURIComponent(actor.id)}`);
 	});
 
 	// --- Compatibility redirects: stock apify-cli only knows one Console, so it prints links using

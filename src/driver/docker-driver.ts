@@ -1,7 +1,17 @@
 /**
  * The Docker driver: build/run Actor images over the host Docker socket via `dockerode`. Every Actor
  * container joins the `apify-local` network so it can resolve the runtime's own container by the
- * fixed DNS alias `apify-api` - no storage bind mount, HTTP-only storage access (`actor-driver.md`).
+ * fixed DNS alias `apify-api` (`actor-driver.md`). Storage access is HTTP-only; the only filesystem
+ * bind mounts this driver ever adds are the optional local-dev-folder mount on a real run
+ * (`RunContext.devMount`, see `startRun` below) - conditional, never unconditional, on every Actor's
+ * container - and the read-only probe mount `probeDevFolder` creates to validate a candidate dev folder
+ * before it is ever registered (see below), whose container is never started.
+ *
+ * `probeDevFolder`'s container is created against `ensureProbeImage`'s own minimal image, not any
+ * Actor's build - registering a dev folder must work for an Actor that has never been built. That image
+ * is a one-line `FROM scratch` Dockerfile built the same `buildImage`-plus-in-memory-tar way as an Actor
+ * build, so it needs no network access; built lazily on first use and reused after that, never rebuilt
+ * per registration.
  *
  * Genuine cancellation: `docker.buildImage()` accepts an `abortSignal` option that dockerode forwards
  * all the way to Node's `http.request({ signal })` (`docker-modem/lib/modem.js`: `optionsf.signal =
@@ -26,6 +36,9 @@ import {
 	DriverTimedOutError,
 	type BuildContext,
 	type BuildOutcome,
+	type DevFolderMount,
+	type DevFolderProbeFailureReason,
+	type DevFolderProbeOutcome,
 	type Driver,
 	type RunContext,
 	type RunOutcome,
@@ -33,6 +46,62 @@ import {
 
 const NETWORK_NAME = 'apify-local';
 const RUN_LABEL = 'actor-runtime.runId';
+/** Marks a create-only dev-folder-probe container (`probeDevFolder` below) so `reconcileOrphans` can
+ * sweep one that outlived its own removal call. */
+const PROBE_LABEL = 'actor-runtime.devFolderProbe';
+/** Target path for the probe container's mount - arbitrary, since the probe is never started and
+ * nothing ever reads from it. */
+const PROBE_MOUNT_TARGET = '/probe';
+/** Tag for `ensureProbeImage`'s own minimal image - built and owned by this driver, never an Actor's.
+ * An explicit `:probe` suffix, deliberately never `latest` (Docker's own implicit default for an
+ * untagged name) - this image has nothing to do with an Actor's `latest`-tagged build, and an untagged
+ * name would silently print as `...probe:latest` and invite exactly that confusion. */
+const PROBE_IMAGE_TAG = 'actor-runtime/dev-folder-probe:probe';
+/**
+ * `FROM scratch` with nothing else would build fine but fails every `createContainer` against it with
+ * HTTP 400 "no command specified" (moby refuses to create a container for an image with no `Cmd`/
+ * `Entrypoint`) - which would look exactly like a bad candidate path if left undiagnosed. `CMD` fixes
+ * that; the command itself is never exec'd, since `probeDevFolder`'s container is created but never
+ * started. Verified empirically against a real daemon: builds and creates with no network access.
+ */
+const PROBE_DOCKERFILE = 'FROM scratch\nCMD ["/nonexistent"]\n';
+/** The daemon's own fixed error-message substring for a `Mounts`-type bind whose source is missing
+ * (moby's `daemon/volume/mounts/validate.go: errBindSourceDoesNotExist`) - the one rejection shape
+ * `classifyProbeError` reports as "does not exist" rather than a generic "could not verify". */
+const BIND_SOURCE_MISSING_SUBSTRING = 'bind source path does not exist';
+/** The daemon's own fixed error-message substring (moby's mount validation, `stat <path>: not a
+ * directory`) for a bind source that exists but is a regular file, not a directory - reachable only
+ * because the probe below appends `/.` to the candidate path (see `probeDevFolder`'s doc comment): a
+ * trailing `/.` on a file path forces the stat that produces exactly this message, discriminating a file
+ * from a directory in the same create-only call that already discriminates missing from present. The one
+ * rejection shape `classifyProbeError` reports as "not a directory" rather than a generic "could not
+ * verify", and never as "does not exist". */
+const NOT_A_DIRECTORY_SUBSTRING = 'not a directory';
+
+/** Narrows an unknown rejection to the shape `docker-modem` attaches to a daemon HTTP-level error
+ * response (`Modem.prototype.buildPayload`: `msg.statusCode = res.statusCode`) - present only when the
+ * daemon actually answered; a raw transport failure (socket refused/missing) carries no `statusCode` at
+ * all, which is exactly the distinction `classifyProbeError`'s first branch depends on. */
+function hasStatusCode(error: unknown): error is Error & { statusCode: number } {
+	return (
+		typeof error === 'object' &&
+		error !== null &&
+		'statusCode' in error &&
+		typeof (error as { statusCode: unknown }).statusCode === 'number'
+	);
+}
+
+/** Classifies a `createContainer` rejection from `probeDevFolder`, most specific first - see
+ * `DevFolderProbeFailureReason`'s doc comment in `driver/types.ts` for what each outcome means and why
+ * a permission error/Docker Desktop file-sharing denial must never be asserted as "does not exist" or
+ * "not a directory". */
+function classifyProbeError(error: unknown): DevFolderProbeFailureReason {
+	if (!hasStatusCode(error)) return 'unreachable';
+	if (error.statusCode === 404) return 'image-missing';
+	if (error.message.includes(BIND_SOURCE_MISSING_SUBSTRING)) return 'not-found';
+	if (error.message.includes(NOT_A_DIRECTORY_SUBSTRING)) return 'not-a-directory';
+	return 'unknown';
+}
 
 function sourceFileToBuffer(file: SourceFile): Buffer {
 	return file.format === 'BASE64' ? Buffer.from(file.content, 'base64') : Buffer.from(file.content, 'utf8');
@@ -48,6 +117,15 @@ function buildTarball(sourceFiles: SourceFile[]): NodeJS.ReadableStream {
 	return pack;
 }
 
+/** An in-memory tar containing only a `Dockerfile` - the same `buildImage`-plus-tar-stream path an Actor
+ * build uses (`buildTarball` above), reused here to build `ensureProbeImage`'s own image. */
+function dockerfileTarball(contents: string): NodeJS.ReadableStream {
+	const pack = tar.pack();
+	pack.entry({ name: 'Dockerfile' }, Buffer.from(contents, 'utf8'));
+	pack.finalize();
+	return pack;
+}
+
 export class DockerDriver implements Driver {
 	private readonly docker: Docker;
 	/** One `AbortController` per in-flight `startBuild` call, keyed by build id - `abortBuild` aborts it. */
@@ -58,6 +136,13 @@ export class DockerDriver implements Driver {
 	private readonly timedOutBuilds = new Set<string>();
 	private readonly timedOutRuns = new Set<string>();
 	private readonly runContainers = new Map<string, Docker.Container>();
+	/** Set once `ensureProbeImage` has actually built (or found) the probe image - every later call
+	 * returns this without touching the daemon again. */
+	private probeImageId: string | undefined;
+	/** In-flight build, shared by every concurrent `ensureProbeImage` caller so the image is never built
+	 * twice at once; cleared on failure so a later call gets to retry rather than replaying the same
+	 * rejection forever. */
+	private probeImageBuild: Promise<string> | undefined;
 
 	available = false;
 	unavailableReason: string | undefined;
@@ -156,7 +241,11 @@ export class DockerDriver implements Driver {
 		return new Promise<BuildOutcome>((resolve, reject) => {
 			this.docker.modem.followProgress(
 				stream,
-				(err: Error | null, res: Array<{ stream?: string; error?: string; aux?: { ID?: string } }>) => {
+				// Async is fine here: TypeScript allows a `Promise<void>`-returning function where `void` is
+				// expected, and `followProgress` (`docker-modem`) only ever invokes this callback once and
+				// never awaits its result - `resolve`/`reject` below settle the outer Promise whenever this
+				// async function actually gets there.
+				async (err: Error | null, res: Array<{ stream?: string; error?: string; aux?: { ID?: string } }>) => {
 					cleanup();
 					if (this.timedOutBuilds.delete(ctx.buildId)) {
 						reject(new DriverTimedOutError(`Build exceeded its ${ctx.timeoutSecs}s timeout`));
@@ -171,7 +260,8 @@ export class DockerDriver implements Driver {
 						reject(new Error(errorLine.error));
 						return;
 					}
-					resolve({ imageId: imageTag });
+					const imageWorkingDirectory = await this.inspectWorkingDirectory(imageTag);
+					resolve({ imageId: imageTag, imageWorkingDirectory });
 				},
 				(event: { stream?: string; status?: string; error?: string }) => {
 					if (event.stream) onLog(event.stream);
@@ -180,6 +270,21 @@ export class DockerDriver implements Driver {
 				},
 			);
 		});
+	}
+
+	/** `.Config.WorkingDir` of the image just built, via `dockerode`, never a shelled-out
+	 * `docker inspect`. An inspect failure is logged and tolerated - must never fail an otherwise-
+	 * successful build - and an empty or `/` working directory is treated as unknown too: mounting a dev
+	 * folder over `/` would destroy the container. */
+	private async inspectWorkingDirectory(imageId: string): Promise<string | undefined> {
+		try {
+			const info = await this.docker.getImage(imageId).inspect();
+			const workingDir = info.Config.WorkingDir;
+			return workingDir && workingDir !== '/' ? workingDir : undefined;
+		} catch (error) {
+			console.warn(`Could not inspect image ${imageId} for its working directory: ${(error as Error).message}`);
+			return undefined;
+		}
 	}
 
 	/**
@@ -198,6 +303,17 @@ export class DockerDriver implements Driver {
 		}
 
 		const env = Object.entries(ctx.env).map(([key, value]) => `${key}=${value}`);
+
+		// A secondary diagnostic for the residual risk that a folder verified at registration later
+		// vanishes: written before `createContainer` so it is genuinely the first log line even if that
+		// call is what ends up failing.
+		if (ctx.devMount) {
+			onLog(
+				`Mounting local dev folder ${ctx.devMount.localDevFolder} over the image's working directory ` +
+					`${ctx.devMount.imageWorkingDirectory} (node_modules preserved via an anonymous volume).\n`,
+			);
+		}
+
 		const container = await this.docker.createContainer({
 			Image: ctx.imageId,
 			Env: env,
@@ -206,6 +322,7 @@ export class DockerDriver implements Driver {
 				NetworkMode: NETWORK_NAME,
 				Memory: ctx.memoryMbytes * 1024 * 1024,
 				AutoRemove: false,
+				...(ctx.devMount ? { Mounts: this.buildDevMounts(ctx.devMount) } : {}),
 			},
 			Tty: false,
 		});
@@ -288,8 +405,118 @@ export class DockerDriver implements Driver {
 			clearTimeout(timeout);
 			this.timedOutRuns.delete(ctx.runId);
 			this.runContainers.delete(ctx.runId);
-			await container.remove().catch(() => undefined);
+			// `{ v: true }` also removes the container's anonymous volumes - without it, the anonymous
+			// `node_modules` volume `buildDevMounts` adds for a `devMount` run would leak one per run,
+			// forever. Harmless for a run with no `devMount`: no anonymous volumes to remove.
+			await container.remove({ v: true }).catch(() => undefined);
 		}
+	}
+
+	/** The two `HostConfig.Mounts` entries for a `devMount` run: a read-write bind for the dev folder
+	 * itself (`Mounts`, not `Binds` - a `Mounts`-type bind errors on a missing source instead of silently
+	 * auto-creating one), plus an anonymous volume (empty `Source`) over `node_modules` - Docker copies
+	 * the image's existing contents into it before mounting, preserving the image's installed
+	 * dependencies underneath the bind (a *named* volume would start empty; a plain bind would erase it). */
+	private buildDevMounts(devMount: DevFolderMount): Docker.MountSettings[] {
+		return [
+			{ Type: 'bind', Source: devMount.localDevFolder, Target: devMount.imageWorkingDirectory },
+			{ Type: 'volume', Source: '', Target: `${devMount.imageWorkingDirectory}/node_modules` },
+		];
+	}
+
+	/**
+	 * Builds (on first call) and returns the id of this driver's own minimal probe image, reusing it on
+	 * every later call - idempotent, verified empirically against a real daemon: re-building when the
+	 * image already exists succeeds and needs no network access either time. Concurrent callers share
+	 * one in-flight build rather than racing separate `buildImage` calls; a failed build is not cached, so
+	 * the next call gets to retry against a daemon that may have recovered.
+	 *
+	 * `FROM scratch` alone builds fine but leaves the image with no `Cmd`/`Entrypoint`, and moby refuses
+	 * to create a container from one at all (`no command specified`) - which `probeDevFolder` below would
+	 * otherwise misreport as a bad candidate path. The `CMD` fixes that; it is never executed, since the
+	 * probe container this image backs is created but never started.
+	 */
+	async ensureProbeImage(): Promise<string> {
+		if (this.probeImageId) return this.probeImageId;
+		if (!this.available) throw new Error(this.unavailableReason ?? 'Docker is not available');
+
+		this.probeImageBuild ??= this.buildProbeImage().catch((error) => {
+			this.probeImageBuild = undefined;
+			throw error;
+		});
+		const imageId = await this.probeImageBuild;
+		this.probeImageId = imageId;
+		return imageId;
+	}
+
+	private async buildProbeImage(): Promise<string> {
+		const tarball = dockerfileTarball(PROBE_DOCKERFILE);
+		const stream = await this.docker.buildImage(tarball, { t: PROBE_IMAGE_TAG });
+		await new Promise<void>((resolve, reject) => {
+			this.docker.modem.followProgress(stream, (err: Error | null, res: Array<{ error?: string }>) => {
+				if (err) {
+					reject(err);
+					return;
+				}
+				const errorLine = res.find((line) => line.error);
+				if (errorLine) {
+					reject(new Error(errorLine.error));
+					return;
+				}
+				resolve();
+			});
+		});
+		return PROBE_IMAGE_TAG;
+	}
+
+	/**
+	 * Host-side existence-and-directory check for a candidate dev-folder path: a create-only probe
+	 * container, never started. `fs.existsSync` would test this process's own filesystem, not the host's;
+	 * the only Engine API surface that validates an arbitrary host path is the mount-validation moby runs
+	 * inside `POST /containers/create`. `BindOptions.CreateMountpoint` (which would auto-create a missing
+	 * source and defeat this check) is never set. `imageId` is always `ensureProbeImage`'s own image
+	 * above - never an Actor's build (registration must work for an Actor with no build at all), a
+	 * self-inspected runtime image (`HOSTNAME` is unset in bare local dev, per `selfAttachToNetwork`
+	 * above), or a pulled one (would break offline-after-first-build).
+	 *
+	 * The mount `Source` is the candidate path with a literal `/.` appended, never the bare path -
+	 * verified empirically against a real daemon (a `FROM scratch` probe image, no network pull needed):
+	 * appending `/.` forces the same `stat` moby already performs to also reject a regular file (`invalid
+	 * mount config for type "bind": stat <path>/.: not a directory`, classified below as
+	 * `not-a-directory`) while leaving every other outcome unchanged - a real directory (or a symlink
+	 * resolving to one) still succeeds, and a missing path still rejects with the same
+	 * `BIND_SOURCE_MISSING_SUBSTRING` (now trailed by `/.`, which the substring match ignores). Since the
+	 * daemon's rejection message and this call's own `Source` therefore always carry the `/.` suffix, the
+	 * caller (`services/dev-folder.ts`) never echoes either back to the user - only this function's own
+	 * classified `DevFolderProbeFailureReason` crosses that boundary, so the path stored and displayed
+	 * anywhere is always exactly what the caller submitted.
+	 */
+	async probeDevFolder(candidatePath: string, imageId: string): Promise<DevFolderProbeOutcome> {
+		if (!this.available) return { ok: false, reason: 'unreachable' };
+
+		let container: Docker.Container;
+		try {
+			container = await this.docker.createContainer({
+				Image: imageId,
+				Labels: { [PROBE_LABEL]: 'true' },
+				HostConfig: {
+					Mounts: [
+						{ Type: 'bind', Source: `${candidatePath}/.`, Target: PROBE_MOUNT_TARGET, ReadOnly: true },
+					],
+				},
+			});
+		} catch (error) {
+			// Creation itself failed, so there is nothing to clean up.
+			return { ok: false, reason: classifyProbeError(error) };
+		}
+
+		// Creation succeeded, so this container genuinely exists on the daemon now - unlike the rejected
+		// path above, a failed removal here would leak a real container. Logged rather than swallowed so
+		// the leak is discoverable; `PROBE_LABEL` also lets `reconcileOrphans` sweep it on next startup.
+		await container.remove().catch((error: Error) => {
+			console.warn(`Could not remove dev-folder probe container ${container.id}: ${error.message}`);
+		});
+		return { ok: true };
 	}
 
 	async abortRun(runId: string): Promise<void> {
@@ -299,38 +526,41 @@ export class DockerDriver implements Driver {
 	}
 
 	/**
-	 * Cleans up leftover *run* containers from a previous process (builds never create a labelled
-	 * container of their own - `startBuild` calls `dockerode`'s `buildImage` directly, so there is no
-	 * build-side container to reconcile here; orphaned build *records* are still marked `ABORTED` by
-	 * `reconcileOrphanedJobs` in `services/runs.ts`, independent of this method).
+	 * Cleans up two kinds of leftover containers from a previous process: orphaned *run* containers
+	 * (builds never create one of their own - orphaned build *records* are still marked `ABORTED` by
+	 * `reconcileOrphanedJobs` in `services/runs.ts`, independent of this method), and any dev-folder
+	 * probe container that outlived its own removal call (`probeDevFolder`'s `PROBE_LABEL`) - the latter
+	 * swept unconditionally, since a leftover probe is never a container anything still needs.
 	 *
-	 * Filters on the label *key*'s presence only (`{ label: ['actor-runtime.runId'] }`), then matches
-	 * `runIds` against each returned container's own labels client-side - deliberately not
-	 * `{ label: runIds.map(id => \`${RUN_LABEL}=${id}\`) } }`. Docker's daemon-side label filter is a
-	 * `key=value` match *per list entry*, and when a filter key is given multiple values the daemon's
-	 * list-filtering (`MatchKVList` in moby's `api/types/filters`) requires a container to satisfy
-	 * *every* listed `key=value` pair (AND), not any one of them (OR) - the opposite of most other
-	 * filter keys (e.g. `id`/`name`/`ancestor`), which OR their values. A container carries exactly one
-	 * `actor-runtime.runId` label, so with two or more orphaned run ids in one call the AND'd query would
-	 * require a single container to match two different values of the same label simultaneously, which
-	 * is never true - the call would silently match zero containers and leak every one of them past a
-	 * restart. There is no Docker daemon in this sandbox to execute this against, so this is verified
-	 * from documented/known moby filtering semantics, not a live daemon response; filtering on key
-	 * presence (a single value, so the AND/OR distinction cannot bite) and matching client-side avoids
-	 * depending on that semantics being right at all.
+	 * Queries once per label *key*, each query carrying exactly one value under `label`, then matches
+	 * `runIds` against each container's own label client-side - deliberately not one query with
+	 * `{ label: [RUN_LABEL, PROBE_LABEL] } }`. Docker's daemon-side label filter ANDs multiple values
+	 * given for the same key (moby's `api/types/filters`: `MatchKVList`), so a single query carrying both
+	 * label keys would require one container to match both simultaneously - never true, silently matching
+	 * nothing. Issuing one single-value query per key and unioning the results client-side (de-duplicated
+	 * by container `Id`, in case a container is ever matched by both queries) avoids depending on that
+	 * cross-key semantics at all.
 	 */
 	async reconcileOrphans(runIds: string[]): Promise<void> {
-		if (!this.available || runIds.length === 0) return;
+		if (!this.available) return;
 		const runIdSet = new Set(runIds);
 
-		const containers = await this.docker.listContainers({
-			all: true,
-			filters: JSON.stringify({ label: [RUN_LABEL] }),
-		});
-		for (const info of containers) {
-			if (!runIdSet.has(info.Labels?.[RUN_LABEL] ?? '')) continue;
+		const [runLabelled, probeLabelled] = await Promise.all([
+			this.docker.listContainers({ all: true, filters: JSON.stringify({ label: [RUN_LABEL] }) }),
+			this.docker.listContainers({ all: true, filters: JSON.stringify({ label: [PROBE_LABEL] }) }),
+		]);
+		const byId = new Map<string, Docker.ContainerInfo>();
+		for (const info of [...runLabelled, ...probeLabelled]) byId.set(info.Id, info);
+
+		for (const info of byId.values()) {
+			const isOrphanedRun = runIdSet.has(info.Labels?.[RUN_LABEL] ?? '');
+			const isLeftoverProbe = info.Labels?.[PROBE_LABEL] !== undefined;
+			if (!isOrphanedRun && !isLeftoverProbe) continue;
 			const container = this.docker.getContainer(info.Id);
-			await container.remove({ force: true }).catch(() => undefined);
+			// `{ v: true }` alongside `force: true`: an orphaned run's anonymous `node_modules` volume (if
+			// it had a `devMount`) must not survive reconciliation either (mirrors `startRun`'s finally
+			// block's identical fix).
+			await container.remove({ force: true, v: true }).catch(() => undefined);
 		}
 	}
 }

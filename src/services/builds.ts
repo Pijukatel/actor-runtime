@@ -41,6 +41,24 @@ export async function getBuildById(id: string): Promise<BuildRecord | null> {
 	return getRegistries().builds.get(id);
 }
 
+/** The two ways `tag` can fail to resolve on an Actor, kept distinguishable rather than collapsed to one
+ * generic "not found": `no-such-tag` when `tag` was never recorded at all, `build-deleted` when the tag
+ * *is* recorded but its `BuildRecord` is gone (`deleteBuild` below removes the record without clearing
+ * any tag that pointed at it). */
+export type TaggedBuildLookup =
+	{ found: false; reason: 'no-such-tag' | 'build-deleted' } | { found: true; build: BuildRecord };
+
+/** Resolves `tag` on `actor` to its `BuildRecord` - the exact lookup `POST /actors/:actorId/runs`
+ * performs, and the one `services/dev-folder.ts`'s registration probe reuses to find an image to check
+ * against. No fallback to any other tag. */
+export async function resolveTaggedBuild(actor: ActorRecord, tag: string): Promise<TaggedBuildLookup> {
+	const tagged = actor.taggedBuilds[tag];
+	if (!tagged) return { found: false, reason: 'no-such-tag' };
+	const build = await getBuildById(tagged.buildId);
+	if (!build) return { found: false, reason: 'build-deleted' };
+	return { found: true, build };
+}
+
 /** Mirrors `deleteActor` (`services/actors.ts`) - the route layer resolves+authorizes the record (via
  * `getOwnedBuild`) and passes only its id down, same split as every other service-layer mutation. */
 export async function deleteBuild(id: string): Promise<void> {
@@ -180,11 +198,21 @@ export async function runBuildInBackground(
 		await flushLog(record.id);
 		// Guarded: if an abort raced ahead and already moved the record to ABORTING/ABORTED, this write
 		// is refused (`RUNNING` is the only status `SUCCEEDED` is a legal next-state from) rather than
-		// clobbering the abort - see `job-status.ts`.
+		// clobbering the abort - see `job-status.ts`. `imageWorkingDirectory` lands on the *build* record
+		// itself here, not the Actor - build-specific, not Actor-specific (`actor-driver.md`; the human
+		// directed this after a multi-tag Actor's most-recently-built, differently-tagged image could
+		// otherwise silently overwrite the value a same-run, different-tag mount was built from). Omitted
+		// entirely from the patch when the inspect produced nothing (`outcome.imageWorkingDirectory` is
+		// `undefined` on an inspect failure or an empty/`/` working directory) rather than written as
+		// `undefined` - `entities.ts`'s doc comment on the field: "never present on a non-SUCCEEDED build"
+		// stays true for the value too, there is simply nothing to record for this build.
 		const succeeded = await transitionJobStatus(builds, record.id, 'SUCCEEDED', {
 			finishedAt: new Date().toISOString(),
 			imageId: outcome.imageId,
 			exitCode: 0,
+			...(outcome.imageWorkingDirectory !== undefined
+				? { imageWorkingDirectory: outcome.imageWorkingDirectory }
+				: {}),
 		});
 		// Only tag the build against the actor if the SUCCEEDED write actually landed - if an abort won
 		// the race above, `succeeded.status` is `ABORTED` (or the record vanished) and tagging here would

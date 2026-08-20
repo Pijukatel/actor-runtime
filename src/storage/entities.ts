@@ -60,6 +60,12 @@ export interface ActorRecord {
 	versions: ActorVersionRecord[];
 	/** tag -> latest successful build for that tag; `apify push` polls this after a build. */
 	taggedBuilds: Record<string, { buildId: string; buildNumber: string }>;
+	/** Host path bind-mounted over the image's working directory at run start (`actor-driver.md`). Set or
+	 * cleared only through `services/dev-folder.ts: setDevFolder` - via a direct registry write that
+	 * deliberately bypasses `updateActor`, so registering/clearing never bumps `modifiedAt` (which, unlike
+	 * this field, *is* exposed on `/v2`). Never touched by any other Actor write. Optional and never
+	 * exposed on `/v2` itself either (`dto/actors.ts: actorDto` is explicit field-by-field). */
+	localDevFolder?: string;
 }
 
 export type JobStatus = 'READY' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'ABORTING' | 'ABORTED' | 'TIMED-OUT';
@@ -80,6 +86,16 @@ export interface BuildRecord {
 	startedAt: string;
 	finishedAt?: string;
 	imageId?: string;
+	/** This build's own image's `Config.WorkingDir`, captured right after the build succeeds
+	 * (`docker-driver.ts`'s `inspectWorkingDirectory`) and written in the same status-transition write
+	 * that records `SUCCEEDED` (`services/builds.ts`). Build-specific, not Actor-specific: a run derives
+	 * its dev-folder mount target from *this build's own* value (`services/runs.ts`), never from some
+	 * other tag's most-recently-built image - the human-directed fix for the cross-tag staleness a
+	 * single Actor-level field could not avoid (a differently-tagged, more-recently-built image could
+	 * silently overwrite the value a same-run, different-tag mount was built from). Unset when the
+	 * inspect failed or the working directory was empty/`/` (mounting over `/` would destroy the
+	 * container) - never present on a non-`SUCCEEDED` build. */
+	imageWorkingDirectory?: string;
 	exitCode?: number;
 	statusMessage?: string;
 }

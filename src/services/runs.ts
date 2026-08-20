@@ -6,11 +6,10 @@ import { openKeyValueStore } from '../storage/open.js';
 import type { Driver } from '../driver/types.js';
 import { appendLog, flushLog, markLogTerminal } from './logs.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
-import { findVersion } from './actors.js';
+import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
 
 const DEFAULT_MEMORY_MBYTES = 1024;
 const DEFAULT_TIMEOUT_SECS = 300;
-const DEFAULT_BUILD_TAG = 'latest';
 /** No separate platform disk-default constant exists to match exactly (`apify-core` has no
  * `ACTOR_DEFAULT_DISK_MBYTES`-shaped constant alongside `ACTOR_DEFAULT_MEMORY_MBYTES`); this mirrors the
  * 2x ratio `apify-core`'s own OpenAPI examples use for the pair (`packages/consts/src/actors.ts`'s run
@@ -50,9 +49,9 @@ export interface StartRunOptions {
 	memoryMbytes?: number;
 	timeoutSecs?: number;
 	/** Build tag or build number this run should use (the real platform's `options.build`) - defaults to
-	 * `'latest'` when omitted, matching `DEFAULT_TAG` in `api/routes/actors.ts` (the route always resolves
-	 * and passes the actual tag it used; this default only matters for direct service-layer callers, e.g.
-	 * tests). */
+	 * `DEFAULT_BUILD_TAG` (`'latest'`, `services/actors.ts`) when omitted; `api/routes/actors.ts`'s route
+	 * imports that same constant as its local `DEFAULT_TAG` and always resolves and passes the actual tag
+	 * it used, so this default only matters for direct service-layer callers, e.g. tests. */
 	build?: string;
 	proxyPassword?: string;
 	apiBaseUrl: string;
@@ -207,6 +206,22 @@ export async function runInBackground(
 
 	const version = findVersion(actor, build.versionNumber);
 	const env = buildEnv(record, actor, version, options);
+	// Both-or-neither, enforced by `DevFolderMount`'s type (`driver/types.ts`) - a mount is only ever
+	// added when the Actor actually has a non-empty registered dev folder AND this *run's own resolved
+	// build* has a known, non-empty image working directory (`actor-driver.md`: "The mount is applied
+	// only when both a registered dev folder and a known working directory exist"). Deliberately
+	// `build.imageWorkingDirectory` here, never an Actor-level field: the working directory is
+	// build-specific, not Actor-specific - `build` above is already the exact `BuildRecord` this run
+	// resolved (by tag or number, `startRun`'s caller), so a multi-tag Actor's `latest` run always mounts
+	// at `latest`'s own build's working directory, never at some other, more-recently-built tag's. An
+	// Actor that was never registered (or was cleared), or whose resolved build has no known working
+	// directory, gets `devMount: undefined`, which `docker-driver.ts`'s `startRun` treats identically to
+	// "no `Mounts` key at all" - the regression guarantee that an unregistered/cleared Actor's run
+	// container is unaffected.
+	const devMount =
+		actor.localDevFolder && build.imageWorkingDirectory
+			? { localDevFolder: actor.localDevFolder, imageWorkingDirectory: build.imageWorkingDirectory }
+			: undefined;
 
 	// Re-check right before creating the container: an abort issued while the registry/version lookups
 	// above were in flight may have already moved the record to ABORTING. Closing this window is the fix
@@ -229,6 +244,7 @@ export async function runInBackground(
 				env,
 				memoryMbytes: record.options.memoryMbytes,
 				timeoutSecs: record.options.timeoutSecs,
+				devMount,
 			},
 			(chunk) => appendLog(record.id, chunk),
 		);

@@ -124,11 +124,31 @@
       implement. Not built here; both paths are in the vendored spec table (`api/spec-table.ts`) as
       `implemented: false` so they answer `501`, not `404`.
 - All endpoints from the specification that do not have implementation must return response `501 Not Implemented`
-- All endpoints not present in specification must return `404 Not Found`
+- All endpoints not present in specification must return `404 Not Found` - **except** the `/actor-runtime/*`
 
-# Private API
+# Actor runtime API
 
-- Not implemented
+- `/actor-runtime/*` is API that control specifics function of the local Actor runtime
+- **`POST /actor-runtime/dev-folder/:actorId`** - registers (or clears) the Actor's local dev folder for
+  the bind-mount feature (`actor-driver.md`). `:actorId` accepts the same forms as the rest of the API
+  (id, plain name, `username~name`).
+    - **Authenticated** the same way as every `/v2` route, and scoped to the caller's own Actors.
+    - **No build-first precondition** - registration works for an Actor that has never been built at all.
+    - **Request body**: a JSON string - the absolute path to set, or `""` to clear.
+    - **Response**: on success, `{ data: { localDevFolder } }` - the same value the console detail page
+      shows (`console.md`), doubling as the read-back this design has no separate `GET` for.
+    - **Error responses**, by rejection reason:
+        - `400` `invalid-request` - the body isn't a JSON string, or the string isn't a valid absolute
+          path.
+        - `400` `dev-folder-path-not-found` - the path does not exist on the host.
+        - `400` `dev-folder-not-a-directory` - the path exists but is not a directory.
+        - `400` `dev-folder-check-failed` - the path could not be verified, for any other reason.
+        - `503` `dev-folder-check-unavailable` - Docker itself is unreachable.
+        - `500` `internal-error` - an operational fault unrelated to the submitted path.
+- The console's own dev-folder form (`console.md`) does **not** go through this endpoint - it posts to a
+  console-local, unauthenticated route on the console's own port. Both routes funnel into the same
+  underlying validate-and-persist path, so the two surfaces can never drift apart in behavior, only in
+  how they are reached.
 
 ## Upstream fallback (opt-in, off by default, all HTTP methods)
 

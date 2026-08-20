@@ -43,7 +43,7 @@ describe('gracefulShutdown', () => {
 		const user = await getOrCreateUserForToken('shutdown-test-token');
 
 		const apiApp = createApiServer({ driver: unavailableDriver() });
-		const consoleApp = createConsoleServer();
+		const consoleApp = createConsoleServer({ driver: unavailableDriver() });
 		apiServer = await new Promise<Server>((resolve) => {
 			const s = apiApp.listen(0, () => resolve(s));
 		});

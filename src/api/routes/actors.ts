@@ -8,13 +8,20 @@ import { h, jsonBody, paginationParams, queryBoolean, queryNumber, queryString, 
 import {
 	addOrReplaceVersion,
 	createActor,
+	DEFAULT_BUILD_TAG as DEFAULT_TAG,
 	deleteActor,
 	findVersion,
 	listOwnedActors,
 	resolveOwnedActor,
 	updateActor,
 } from '../../services/actors.js';
-import { listOwnedBuilds, startBuild, waitForBuildFinish, type StartBuildOptions } from '../../services/builds.js';
+import {
+	listOwnedBuilds,
+	resolveTaggedBuild,
+	startBuild,
+	waitForBuildFinish,
+	type StartBuildOptions,
+} from '../../services/builds.js';
 import { listOwnedRuns, startRun, waitForRunFinish } from '../../services/runs.js';
 import { getRegistries } from '../../storage/registries.js';
 import { actorDto, buildDto, runDto } from '../dto/actors.js';
@@ -22,8 +29,6 @@ import type { ActorVersionRecord } from '../../storage/entities.js';
 import type { ApiServerDeps } from '../server.js';
 import { CONTAINER_API_BASE_URL } from '../../config.js';
 import { resolveProxyPassword } from '../../services/users.js';
-
-const DEFAULT_TAG = 'latest';
 
 export function mountActors(router: Router, deps: ApiServerDeps): void {
 	router.get(
@@ -274,11 +279,19 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 			if (!actor) throw recordNotFound();
 
 			const tag = queryString(req, 'build') ?? DEFAULT_TAG;
-			const tagged = actor.taggedBuilds[tag];
-			if (!tagged) throw recordNotFound(`Actor has no build tagged "${tag}"`);
-			const { builds } = getRegistries();
-			const build = await builds.get(tagged.buildId);
-			if (!build) throw recordNotFound();
+			const lookup = await resolveTaggedBuild(actor, tag);
+			if (!lookup.found) {
+				// `no-such-tag` names the tag, matching base behavior exactly. `build-deleted` (the tag
+				// exists, but its BuildRecord was removed via `DELETE /actor-builds/:buildId`, which does
+				// not clear the tag pointing at it) throws the same bare `recordNotFound()` base did for
+				// this case too - not a custom message - so run-start stays byte-for-byte base-identical
+				// for every input class; `resolveTaggedBuild` (services/builds.ts) only exists so this
+				// route and the dev-folder probe can each still branch on *which* reason it was, without
+				// duplicating the tag/build lookup itself.
+				if (lookup.reason === 'build-deleted') throw recordNotFound();
+				throw recordNotFound(`Actor has no build tagged "${tag}"`);
+			}
+			const build = lookup.build;
 
 			const body = rawBody(req);
 			const input =

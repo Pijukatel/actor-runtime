@@ -40,6 +40,39 @@ the real platform is reachable, the runtime also adopts that account's real user
 the first time it sees the token; fully offline (or with any other non-empty token) it just keeps using
 the single local user, with no error either way - see `requirements/cli.md`'s User bootstrap section.
 
+## Rapid dev loop: bind-mounting your local source (no rebuild per edit)
+
+After the one push+build above, register your Actor's local source folder so every future run picks up
+local edits without a rebuild:
+
+```bash
+apify api POST /actor-runtime/dev-folder/<actorId> --body '"/abs/path/to/sample_actor_ts"'
+```
+
+`<actorId>` is the id `apify push --json` printed (`.actor.id`); the path must be absolute and must
+already exist on the **host** - the runtime verifies this by actually trying to mount it, and rejects
+the call with a clear error if the Actor has no build tagged `latest` yet (a stock `apify push` always
+tags its build `latest`, so this is normally just "build at least once first") or the path can't be
+confirmed.
+The same thing is also a single-field form on the Actor's page in the console (`http://localhost:3000`).
+
+From then on:
+
+```bash
+# edit src/main.ts, then:
+npm run build        # recompile locally - tsc, no apify push
+apify call --input '{"maxPages":3}'   # picks up the new dist/, no rebuild
+```
+
+Node doesn't hot-reload a running process, so a local recompile is picked up by the **next** run's
+container start, not by any run already in progress. `node_modules` inside the container still comes
+from the built image - an anonymous volume preserves it underneath the bind mount - so a new dependency
+in `package.json` still needs a real `apify push`/build; only source edits skip it. Clear the
+registration with an empty body (`--body '""'`) to go back to running purely from the built image. Full
+mechanics: `requirements/actor-driver.md`'s "Bind mount volumes with Actor source code";
+endpoint/console details: `requirements/api.md`'s `/actor-runtime/*` section and
+`requirements/console.md`.
+
 ## Development
 
 ```bash

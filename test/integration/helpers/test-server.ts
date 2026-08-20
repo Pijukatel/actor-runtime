@@ -28,6 +28,12 @@ export function unavailableDriver(): Driver {
 		},
 		async abortRun() {},
 		async reconcileOrphans() {},
+		async probeDevFolder() {
+			throw new Error('not used by this stub');
+		},
+		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
 	};
 }
 
@@ -49,6 +55,12 @@ export function fixedRunOutcomeDriver(outcome: RunOutcome): Driver {
 		},
 		async abortRun() {},
 		async reconcileOrphans() {},
+		async probeDevFolder() {
+			throw new Error('not used by this stub');
+		},
+		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
 	};
 }
 
@@ -69,6 +81,12 @@ export function fixedBuildOutcomeDriver(outcome: BuildOutcome, error?: Error): D
 		},
 		async abortRun() {},
 		async reconcileOrphans() {},
+		async probeDevFolder() {
+			throw new Error('not used by this stub');
+		},
+		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
 	};
 }
 
@@ -123,6 +141,12 @@ export function deferredRunDriver(): DeferredRunDriver {
 			abortRunCalls.push(runId);
 		},
 		async reconcileOrphans() {},
+		async probeDevFolder() {
+			throw new Error('not used by this stub');
+		},
+		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
 	};
 }
 
@@ -170,6 +194,12 @@ export function deferredBuildDriver(): DeferredBuildDriver {
 		},
 		async abortRun() {},
 		async reconcileOrphans() {},
+		async probeDevFolder() {
+			throw new Error('not used by this stub');
+		},
+		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
 	};
 }
 

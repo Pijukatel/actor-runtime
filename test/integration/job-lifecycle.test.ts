@@ -114,6 +114,12 @@ function neverStartDriver(): Driver & { abortRunCalls: string[]; abortBuildCalls
 			abortRunCalls.push(runId);
 		},
 		async reconcileOrphans() {},
+		async probeDevFolder() {
+			throw new Error('not used by this stub');
+		},
+		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
 	};
 }
 
@@ -314,6 +320,139 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 		});
 	});
 
+	describe('imageWorkingDirectory is build-specific, not Actor-specific (human directive: "the workdir should be build specific, not actor specific")', () => {
+		it('a successful build outcome carrying imageWorkingDirectory lands it on that BUILD record, and the Actor record has no such field at all', async () => {
+			const driver = fixedBuildOutcomeDriver({ imageId: 'x', imageWorkingDirectory: '/usr/src/app' });
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'dev-folder-capture-actor');
+
+			const record: BuildRecord = {
+				id: generateId(),
+				userId: actor.userId,
+				actorId: actor.id,
+				versionNumber: '0.0',
+				buildNumber: '0.0.1',
+				tag: 'latest',
+				status: 'READY',
+				startedAt: new Date().toISOString(),
+			};
+			await getRegistries().builds.set(record.id, record);
+
+			await runBuildInBackground(driver, actor, VERSION, record, { tag: 'latest', useCache: true });
+
+			// The working directory lands on the build record itself...
+			const final = await getRegistries().builds.get(record.id);
+			expect(final?.status).toBe('SUCCEEDED');
+			expect(final?.imageWorkingDirectory).toBe('/usr/src/app');
+
+			// ...the tag still moves in the same background handler...
+			const finalActor = await getRegistries().actors.get(actor.id);
+			expect(finalActor?.taggedBuilds.latest).toEqual({ buildId: record.id, buildNumber: record.buildNumber });
+			// ...but the Actor record itself never carries this field - there is exactly one source of
+			// truth, on the build, not two that could disagree.
+			expect(finalActor).not.toHaveProperty('imageWorkingDirectory');
+		});
+
+		it("a successful build outcome with no imageWorkingDirectory leaves that field absent on this build, and never touches any other build's value", async () => {
+			const driver = fixedBuildOutcomeDriver({ imageId: 'y' });
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'dev-folder-preserve-actor');
+
+			// An earlier, already-`SUCCEEDED` build with its own known-good working directory - this new
+			// build's outcome (no `imageWorkingDirectory` at all - e.g. its inspect failed or came up
+			// empty/`/`) must not touch that earlier build's own record.
+			const earlierBuild: BuildRecord = {
+				id: generateId(),
+				userId: actor.userId,
+				actorId: actor.id,
+				versionNumber: '0.0',
+				buildNumber: '0.0.1',
+				tag: 'latest',
+				status: 'SUCCEEDED',
+				startedAt: new Date().toISOString(),
+				finishedAt: new Date().toISOString(),
+				imageId: 'earlier-image',
+				imageWorkingDirectory: '/usr/src/app',
+			};
+			await getRegistries().builds.set(earlierBuild.id, earlierBuild);
+			await updateActor(actor.id, (current) =>
+				recordTaggedBuild(current, 'latest', earlierBuild.id, earlierBuild.buildNumber),
+			);
+
+			const record: BuildRecord = {
+				id: generateId(),
+				userId: actor.userId,
+				actorId: actor.id,
+				versionNumber: '0.0',
+				buildNumber: '0.0.2',
+				tag: 'latest',
+				status: 'READY',
+				startedAt: new Date().toISOString(),
+			};
+			await getRegistries().builds.set(record.id, record);
+
+			await runBuildInBackground(driver, actor, VERSION, record, { tag: 'latest', useCache: true });
+
+			// The tag now points at the new build...
+			const final = await getRegistries().builds.get(record.id);
+			expect(final?.status).toBe('SUCCEEDED');
+			expect(final).not.toHaveProperty('imageWorkingDirectory');
+			const finalActor = await getRegistries().actors.get(actor.id);
+			expect(finalActor?.taggedBuilds.latest).toEqual({ buildId: record.id, buildNumber: record.buildNumber });
+			// ...but the earlier build's own record is untouched - build-specific storage means one
+			// build's missing value can never be confused with, or clobber, another build's known value.
+			const earlierAfter = await getRegistries().builds.get(earlierBuild.id);
+			expect(earlierAfter?.imageWorkingDirectory).toBe('/usr/src/app');
+		});
+
+		it("a differently-tagged build's more recently captured working directory never affects the latest-tagged build's own value (the cross-tag staleness this fix closes)", async () => {
+			const driver = fixedBuildOutcomeDriver({ imageId: 'staging-image', imageWorkingDirectory: '/app' });
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'cross-tag-staleness-actor');
+
+			// `latest` was built first, with its own working directory.
+			const latestBuild: BuildRecord = {
+				id: generateId(),
+				userId: actor.userId,
+				actorId: actor.id,
+				versionNumber: '0.0',
+				buildNumber: '0.0.1',
+				tag: 'latest',
+				status: 'SUCCEEDED',
+				startedAt: new Date().toISOString(),
+				finishedAt: new Date().toISOString(),
+				imageId: 'latest-image',
+				imageWorkingDirectory: '/usr/src/app',
+			};
+			await getRegistries().builds.set(latestBuild.id, latestBuild);
+			await updateActor(actor.id, (current) =>
+				recordTaggedBuild(current, 'latest', latestBuild.id, latestBuild.buildNumber),
+			);
+
+			// A `staging` build runs afterward, with a different working directory.
+			const stagingRecord: BuildRecord = {
+				id: generateId(),
+				userId: actor.userId,
+				actorId: actor.id,
+				versionNumber: '0.0',
+				buildNumber: '0.0.2',
+				tag: 'staging',
+				status: 'READY',
+				startedAt: new Date().toISOString(),
+			};
+			await getRegistries().builds.set(stagingRecord.id, stagingRecord);
+			await runBuildInBackground(driver, actor, VERSION, stagingRecord, { tag: 'staging', useCache: true });
+
+			// `staging`'s own build record got its own working directory...
+			const stagingFinal = await getRegistries().builds.get(stagingRecord.id);
+			expect(stagingFinal?.imageWorkingDirectory).toBe('/app');
+			// ...but `latest`'s own build record - the one a tag-less run would actually resolve and mount
+			// against - is completely unaffected, exactly as if the `staging` build had never happened.
+			const latestAfter = await getRegistries().builds.get(latestBuild.id);
+			expect(latestAfter?.imageWorkingDirectory).toBe('/usr/src/app');
+		});
+	});
+
 	describe('finding 3: run abort is race-proof end to end', () => {
 		it('abort while running: ABORTED sticks despite the completion write racing in after', async () => {
 			const driver = deferredRunDriver();
@@ -455,6 +594,12 @@ describe('reconcileOrphanedJobs (startup reconciliation)', () => {
 					snapshot[id] = (await getRegistries().runs.get(id))?.status;
 				}
 				statusesAtCallTime.push(snapshot);
+			},
+			async probeDevFolder() {
+				throw new Error('not used by this stub');
+			},
+			async ensureProbeImage() {
+				throw new Error('not used by this stub');
 			},
 		};
 	}
