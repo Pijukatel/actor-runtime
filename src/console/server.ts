@@ -43,7 +43,8 @@ import {
 	table,
 	type LinkedCell,
 } from './templates.js';
-import { getApiFallbackState, setApiFallbackState, upstreamBaseUrl } from '../services/api-fallback.js';
+import { getApiFallbackState, setApiFallbackState } from '../services/api-fallback.js';
+import { upstreamApiBaseUrl } from '../services/identity-resolution.js';
 import type { Driver } from '../driver/types.js';
 
 /** A run's default-storage id rendered as a link to that storage's detail view instead of plain text. */
@@ -416,7 +417,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			definitionList([
 				['fallbackUnimplementedEnabled', state.fallbackUnimplementedEnabled],
 				['fallbackNotFoundEnabled', state.fallbackNotFoundEnabled],
-				['upstreamBaseUrl', upstreamBaseUrl()],
+				['upstreamBaseUrl', upstreamApiBaseUrl()],
 			]) +
 			'<h2>Change settings</h2>' +
 			settingsForm(state);

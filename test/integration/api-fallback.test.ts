@@ -39,9 +39,14 @@ interface StubUpstream {
 /** Stands in for `https://api.apify.com`, generically: `respond` decides the status/body/headers for
  * every request; passing `'hang'` never calls back at all (simulating a stalled upstream past any
  * timeout). Every hit is recorded (method/url/headers/body), so a test can assert what the runtime
- * actually sent upstream, not just what it got back. */
+ * actually sent upstream, not just what it got back. A header value may be a `string[]` (not just a
+ * `string`) so a test can make the stub send the same header name as two separate raw wire lines - e.g.
+ * two `Set-Cookie` lines - rather than one value; `http.ServerResponse.writeHead` sends an array value as
+ * repeated lines for any header name, not only `set-cookie`. */
 function startStubUpstream(
-	respond: (req: CapturedRequest) => { status: number; body?: unknown; headers?: Record<string, string> } | 'hang',
+	respond: (
+		req: CapturedRequest,
+	) => { status: number; body?: unknown; headers?: Record<string, string | string[]> } | 'hang',
 ): Promise<StubUpstream> {
 	const requests: CapturedRequest[] = [];
 	return new Promise((resolveServer) => {
@@ -405,6 +410,26 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 			}
 		});
 
+		it('does NOT relay a genuine local miss inside /v2/actor-runtime/* itself, even though the toggle is on and the error type otherwise maps to "unimplemented" - the path exclusion, not the error type, is what blocks this', async () => {
+			const stub = await startStubUpstream(fixedOkResponse('should-not-be-hit'));
+			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
+			try {
+				// No route inside the `actor-runtime` sub-router matches this sub-path, so it falls through
+				// to the terminal catch-all exactly like a genuine off-spec `/v2/*` path would - the same
+				// local error shape (`not-found`) that the sibling test above confirms *does* relay when
+				// it's outside `/v2/actor-runtime/*`. Here it must not, because `isEligibleUpstreamPath`
+				// excludes this namespace regardless of the error's type.
+				const res = await call('get', '/v2/actor-runtime/does-not-exist-at-all');
+				expect(res.status).toBe(404);
+				expect(res.data.error.type).toBe('not-found');
+				expect(res.headers['x-actor-runtime-fallback']).toBeUndefined();
+				expect(res.headers['x-actor-runtime-fallback-trigger']).toBeUndefined();
+				expect(stub.hitCount()).toBe(0);
+			} finally {
+				await stub.close();
+			}
+		});
+
 		it('relays a write method (POST) against an unbuilt endpoint family', async () => {
 			const stub = await startStubUpstream(fixedOkResponse('actor-tasks-post-marker'));
 			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
@@ -504,6 +529,41 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 			try {
 				await call('get', '/v2/totally-made-up-path?q=a%23b%3Fc');
 				expect(stub.requests()[0]?.url).toBe('/v2/totally-made-up-path?q=a%23b%3Fc');
+			} finally {
+				await stub.close();
+			}
+		});
+
+		// The response-header relay contract, pinned in both directions rather than left incidental
+		// (`api.md`'s "What a successful relay looks like"): `Set-Cookie` is the one repeated header name
+		// this runtime's HTTP client can hand back as genuinely separate entries, and the one name where
+		// comma-joining would corrupt the value (a cookie's own attributes routinely contain a comma, e.g.
+		// `Expires=Wed, 21 Oct 2026 07:28:00 GMT`) - so it is always relayed as one line per cookie. Every
+		// other repeated header name is relayed as a single, comma-joined value, because that is the only
+		// representation the client's `Headers` object exposes for a non-`Set-Cookie` repeat; this is the
+		// RFC 7230-legitimate form for a repeated list-valued field, not a loss of information the caller
+		// needs restored.
+		it('relays a repeated Set-Cookie header as separate lines, one per cookie, and a repeated non-cookie header as a single comma-joined value', async () => {
+			const stub = await startStubUpstream(() => ({
+				status: 200,
+				body: { ok: true },
+				headers: {
+					'set-cookie': ['session=abc123; Path=/', 'theme=dark; Path=/'],
+					'x-multi': ['a', 'b'],
+				},
+			}));
+			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
+			try {
+				const res = await call('get', '/v2/totally-made-up-path');
+				expect(res.status).toBe(200);
+
+				// axios/Node's http client itself always exposes repeated `set-cookie` response lines as an
+				// array (the same special-casing this runtime's own relay code relies on for the inbound
+				// leg) - so an array of exactly the two original cookies, in order, confirms both lines
+				// reached the caller separately, not merged into one.
+				expect(res.headers['set-cookie']).toEqual(['session=abc123; Path=/', 'theme=dark; Path=/']);
+				// The documented contract for any other repeated header name: one value, comma-joined.
+				expect(res.headers['x-multi']).toBe('a, b');
 			} finally {
 				await stub.close();
 			}

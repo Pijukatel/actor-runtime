@@ -1,8 +1,11 @@
 /**
  * Pure-function/state coverage for `services/api-fallback.ts` that needs no HTTP server at all: the
- * default state, the merge-in setter's partiality, the test-reset helper, and `upstreamBaseUrl()`'s
- * env-var override and trailing-slash trim. The eligibility mapping and replay/relay behaviour
- * (`attemptFallback`) need a running server and a stub upstream - covered by
+ * default state, the merge-in setter's partiality, and the test-reset helper. `upstreamApiBaseUrl()`'s
+ * env-var override and trailing-slash trim are covered here too, even though the function itself lives
+ * in `services/identity-resolution.ts` (the fallback module reuses it rather than defining its own) -
+ * this is the fallback-relevant behavior (`<upstreamApiBaseUrl()><req.originalUrl>` never doubling a
+ * `//`), so it stays exercised alongside the rest of this module's state. The eligibility mapping and
+ * replay/relay behaviour (`attemptFallback`) need a running server and a stub upstream - covered by
  * `test/integration/api-fallback.test.ts`.
  */
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,8 +14,8 @@ import {
 	getApiFallbackState,
 	resetApiFallbackStateForTests,
 	setApiFallbackState,
-	upstreamBaseUrl,
 } from '../../src/services/api-fallback.js';
+import { upstreamApiBaseUrl } from '../../src/services/identity-resolution.js';
 
 describe('api-fallback state', () => {
 	afterEach(() => {
@@ -67,21 +70,21 @@ describe('api-fallback state', () => {
 		});
 	});
 
-	it('upstreamBaseUrl defaults to the real Apify platform when no env var is set', () => {
+	it('upstreamApiBaseUrl defaults to the real Apify platform when no env var is set', () => {
 		delete process.env.APIFY_UPSTREAM_API_BASE_URL;
-		expect(upstreamBaseUrl()).toBe('https://api.apify.com');
+		expect(upstreamApiBaseUrl()).toBe('https://api.apify.com');
 	});
 
-	it('upstreamBaseUrl reflects APIFY_UPSTREAM_API_BASE_URL when set', () => {
+	it('upstreamApiBaseUrl reflects APIFY_UPSTREAM_API_BASE_URL when set', () => {
 		process.env.APIFY_UPSTREAM_API_BASE_URL = 'http://127.0.0.1:9999';
-		expect(upstreamBaseUrl()).toBe('http://127.0.0.1:9999');
+		expect(upstreamApiBaseUrl()).toBe('http://127.0.0.1:9999');
 	});
 
-	it('upstreamBaseUrl trims a trailing slash (or several) so replay never doubles it', () => {
+	it('upstreamApiBaseUrl trims a trailing slash (or several) so replay never doubles it', () => {
 		process.env.APIFY_UPSTREAM_API_BASE_URL = 'http://127.0.0.1:9999/';
-		expect(upstreamBaseUrl()).toBe('http://127.0.0.1:9999');
+		expect(upstreamApiBaseUrl()).toBe('http://127.0.0.1:9999');
 
 		process.env.APIFY_UPSTREAM_API_BASE_URL = 'http://127.0.0.1:9999///';
-		expect(upstreamBaseUrl()).toBe('http://127.0.0.1:9999');
+		expect(upstreamApiBaseUrl()).toBe('http://127.0.0.1:9999');
 	});
 });

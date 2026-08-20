@@ -1,10 +1,15 @@
 /**
  * Upstream API fallback (`api.md`'s "Upstream fallback" section): when a call locally misses - either
  * because nothing in this runtime serves the path/method at all, or because it does but the specific
- * record id doesn't exist - and the matching toggle is on, the request is replayed verbatim against the
- * real Apify platform instead of failing. Both toggles default off and reset on every restart; this
- * module is the only place either fact is read or written, by the API route (`api/routes/api-fallback.ts`),
- * the console's `/settings` page, and `console/templates.ts: layout()`'s per-page state indicator alike.
+ * record id doesn't exist - and the matching toggle is on, the request is replayed against the real
+ * Apify platform instead of failing, and a successful reply's status/body/headers are relayed back
+ * (see the response-header note on `attemptFallback` below - not every repeated header line survives
+ * relay byte-for-byte, because the HTTP client this module uses does not hand back every repeated
+ * upstream header as separate entries; `Set-Cookie` is the one name it always keeps separate, and is
+ * the one name this module always preserves as separate lines for exactly that reason). Both toggles
+ * default off and reset on every restart; this module is the only place either fact is read or written,
+ * by the API route (`api/routes/api-fallback.ts`), the console's `/settings` page, and
+ * `console/templates.ts: layout()`'s per-page state indicator alike.
  *
  * `attemptFallback` is the single seam both of `server.ts`'s local-miss sites (the terminal catch-all
  * and the generic error middleware) call through - it alone knows the eligibility mapping below, the
@@ -12,7 +17,7 @@
  */
 import type { Request, Response } from 'express';
 
-import { rawBody } from '../api/handler.js';
+import { upstreamApiBaseUrl } from './identity-resolution.js';
 
 export interface ApiFallbackState {
 	fallbackUnimplementedEnabled: boolean;
@@ -41,14 +46,6 @@ export function setApiFallbackState(patch: Partial<ApiFallbackState>): ApiFallba
  * `resetUsersForTests` convention. Never call this from runtime code. */
 export function resetApiFallbackStateForTests(): void {
 	state = defaultState();
-}
-
-/** Same env var `services/identity-resolution.ts` already established for the identity probe - reused
- * verbatim rather than inventing a second one. Trailing slashes trimmed so `<upstreamApiBaseUrl()>
- * <req.originalUrl>` never produces a doubled `//`. */
-export function upstreamBaseUrl(): string {
-	const configured = process.env.APIFY_UPSTREAM_API_BASE_URL ?? 'https://api.apify.com';
-	return configured.replace(/\/+$/, '');
 }
 
 /** No retries, and short enough that a hanging upstream never leaves the caller waiting indefinitely -
@@ -110,13 +107,20 @@ export interface LocalError {
  * before reaching either seam, so this only ever fails for a request this runtime never authenticated at
  * all, e.g. one outside `/v2` entirely). All HTTP methods are eligible once these hold, writes included.
  *
- * Replay is `<upstreamBaseUrl()><req.originalUrl>` (byte-exact, percent-encoding intact), the caller's
- * own presented token (`req.user.token`, unconditionally - see `services/users.ts`) as the only
+ * Replay is `<upstreamApiBaseUrl()><req.originalUrl>` (byte-exact, percent-encoding intact), the
+ * caller's own presented token (`req.user.token`, unconditionally - see `services/users.ts`) as the only
  * `Authorization` header, `content-type`/`accept` forwarded when the inbound request carried them,
- * nothing else. One attempt, redirects followed, a 30s timeout. Only a final `2xx` is relayed verbatim,
- * with both marker headers added; anything else - non-2xx, timeout, DNS/connect failure - is fail-closed
- * (this function returns `false`, changing nothing about the response), logged at `warn`. A relay is
- * logged at `log`.
+ * nothing else. One attempt, redirects followed, a 30s timeout. Only a final `2xx` is relayed: status
+ * and body unchanged, headers minus the hop-by-hop exclusion set below. `Set-Cookie` is always relayed
+ * as one line per cookie the platform set, via `Headers.getSetCookie()` - the one header name the
+ * platform's HTTP client (`fetch`/undici) guarantees it can hand back as separate entries, which is also
+ * the one name where comma-joining would be wrong (a cookie's own value can contain a comma). Any other
+ * header the platform repeats is relayed as a single, comma-joined value - the RFC 7230-legitimate
+ * representation for a repeated list-valued field, and the only representation `fetch`'s `Headers`
+ * exposes for anything other than `Set-Cookie` (it joins repeated non-cookie header lines together
+ * before this function ever sees them). Anything other than a final `2xx` - non-2xx, timeout, DNS/connect
+ * failure - is fail-closed (this function returns `false`, changing nothing about the response), logged
+ * at `warn`. A relay is logged at `log`.
  */
 export async function attemptFallback(req: Request, res: Response, localError: LocalError): Promise<boolean> {
 	if (res.headersSent) return false;
@@ -139,14 +143,18 @@ export async function attemptFallback(req: Request, res: Response, localError: L
 	const accept = req.header('accept');
 	if (accept) headers['accept'] = accept;
 
-	const target = `${upstreamBaseUrl()}${req.originalUrl}`;
+	const target = `${upstreamApiBaseUrl()}${req.originalUrl}`;
+	// Every body arrives as a raw `Buffer` (`api/server.ts`'s `express.raw({ type: () => true })`), with
+	// no other type ever assigned to `req.body` - same one-line coercion `api/routes/key-value-stores.ts`
+	// inlines at its own call site, kept local here rather than imported from the API layer.
+	const requestBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
 
 	let upstreamResponse: Awaited<ReturnType<typeof fetch>>;
 	try {
 		upstreamResponse = await fetch(target, {
 			method,
 			headers,
-			body: method === 'GET' || method === 'HEAD' ? undefined : rawBody(req),
+			body: method === 'GET' || method === 'HEAD' ? undefined : requestBody,
 			redirect: 'follow',
 			signal: AbortSignal.timeout(FALLBACK_TIMEOUT_MS),
 		});
@@ -170,13 +178,20 @@ export async function attemptFallback(req: Request, res: Response, localError: L
 	const bodyBuffer = Buffer.from(await upstreamResponse.arrayBuffer());
 	res.status(upstreamResponse.status);
 	upstreamResponse.headers.forEach((value, name) => {
-		if (EXCLUDED_RESPONSE_HEADERS.has(name.toLowerCase())) return;
+		const lower = name.toLowerCase();
+		// `set-cookie` is handled separately below, via `getSetCookie()` - skipped here so it is never
+		// also appended from this generic loop, which would double every cookie the platform set.
+		if (lower === 'set-cookie') return;
+		if (EXCLUDED_RESPONSE_HEADERS.has(lower)) return;
 		res.append(name, value);
 	});
-	res.append('x-actor-runtime-fallback', upstreamBaseUrl());
+	for (const cookie of upstreamResponse.headers.getSetCookie()) {
+		res.append('set-cookie', cookie);
+	}
+	res.append('x-actor-runtime-fallback', upstreamApiBaseUrl());
 	res.append('x-actor-runtime-fallback-trigger', trigger);
 	res.send(bodyBuffer);
 
-	console.log(`api-fallback: relayed ${method} ${req.originalUrl} to ${upstreamBaseUrl()} (trigger=${trigger})`);
+	console.log(`api-fallback: relayed ${method} ${req.originalUrl} to ${upstreamApiBaseUrl()} (trigger=${trigger})`);
 	return true;
 }

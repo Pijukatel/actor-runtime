@@ -15,17 +15,13 @@ import type { Router } from 'express';
 import { sendData } from '../envelope.js';
 import { invalidRequest } from '../errors.js';
 import { h, jsonBody } from '../handler.js';
-import {
-	getApiFallbackState,
-	setApiFallbackState,
-	upstreamBaseUrl,
-	type ApiFallbackState,
-} from '../../services/api-fallback.js';
+import { getApiFallbackState, setApiFallbackState, type ApiFallbackState } from '../../services/api-fallback.js';
+import { upstreamApiBaseUrl } from '../../services/identity-resolution.js';
 
 const SETTABLE_FIELDS = new Set<keyof ApiFallbackState>(['fallbackUnimplementedEnabled', 'fallbackNotFoundEnabled']);
 
 function respondWithState(): { data: ApiFallbackState & { upstreamBaseUrl: string } } {
-	return { data: { ...getApiFallbackState(), upstreamBaseUrl: upstreamBaseUrl() } };
+	return { data: { ...getApiFallbackState(), upstreamBaseUrl: upstreamApiBaseUrl() } };
 }
 
 /** Parses and validates a `POST` body into a `setApiFallbackState` patch, throwing `invalid-request` for

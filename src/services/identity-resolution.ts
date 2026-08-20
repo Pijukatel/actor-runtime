@@ -8,9 +8,12 @@
 
 /** Overridable for tests (a tiny local stub server) and for pointing at a non-production platform;
  * defaults to the real Apify API. Read fresh on every call, not frozen at import time, so a test can
- * flip it between cases within the same file/process (see `identity-resolution.test.ts`). */
+ * flip it between cases within the same file/process (see `identity-resolution.test.ts`). Trailing
+ * slashes are trimmed so a caller concatenating a leading-`/` path (as `services/api-fallback.ts`'s
+ * replay does, and as this module's own `/v2/users/me` probe below does) never produces a doubled `//`. */
 export function upstreamApiBaseUrl(): string {
-	return process.env.APIFY_UPSTREAM_API_BASE_URL ?? 'https://api.apify.com';
+	const configured = process.env.APIFY_UPSTREAM_API_BASE_URL ?? 'https://api.apify.com';
+	return configured.replace(/\/+$/, '');
 }
 
 /** Short and non-retried on purpose - this runs lazily, on the first request for a given token, and
