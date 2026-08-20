@@ -39,7 +39,8 @@ Local Actor runtime is an Actor development tool for developing, running, and de
   authenticated the failing call with to the real platform, and - since all HTTP methods are eligible -
   can turn a locally-missing `POST`/`PUT`/`DELETE` into a real write against your real account; only turn
   this on with a token/account you're comfortable with that. A relayed response carries an
-  `x-actor-runtime-fallback` header naming which platform served it.
+  `x-actor-runtime-fallback` header naming which platform served it, and an
+  `x-actor-runtime-fallback-trigger` header naming which toggle let it through.
 
 ## Through direct API calls
 

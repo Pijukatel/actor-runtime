@@ -15,11 +15,20 @@ import { mountLogs } from './routes/logs.js';
 import { mountRunStorageAliases } from './routes/run-storage-aliases.js';
 import { mountDevFolder } from './routes/dev-folder.js';
 import { mountApiFallback } from './routes/api-fallback.js';
-import { attemptFallback } from '../services/api-fallback.js';
+import { attemptFallback, type LocalError } from '../services/api-fallback.js';
 import type { Driver } from '../driver/types.js';
 
 export interface ApiServerDeps {
 	driver: Driver;
+}
+
+/** The one place either local-miss seam below produces its response: try the fallback first (which
+ * never rejects - `services/api-fallback.ts`'s own contract), and only send the local error when the
+ * fallback declines or abandons. Collapsing both seams' identical two-line sequence into this single
+ * helper means there is exactly one place that can get the ordering wrong, not two. */
+async function respondWithLocalError(req: Request, res: Response, localError: LocalError): Promise<void> {
+	if (await attemptFallback(req, res, localError)) return;
+	sendError(res, localError.status, localError.type, localError.message);
 }
 
 export function createApiServer(deps: ApiServerDeps): Express {
@@ -87,8 +96,7 @@ export function createApiServer(deps: ApiServerDeps): Express {
 					}
 				: { status: 404, type: 'not-found', message: `${req.method} ${req.path} was not found` };
 
-		if (await attemptFallback(req, res, localError)) return;
-		sendError(res, localError.status, localError.type, localError.message);
+		await respondWithLocalError(req, res, localError);
 	});
 
 	// The second seam: a route handler under a matched router rejected with an `ApiError` (`handler.ts`'s
@@ -100,8 +108,11 @@ export function createApiServer(deps: ApiServerDeps): Express {
 	// eslint-disable-next-line @typescript-eslint/no-unused-vars
 	app.use(async (err: unknown, req: Request, res: Response, next: NextFunction) => {
 		if (err instanceof ApiError) {
-			if (await attemptFallback(req, res, { status: err.status, type: err.type, message: err.message })) return;
-			sendError(res, err.status, err.type, err.message);
+			await respondWithLocalError(req, res, {
+				status: err.status,
+				type: err.type,
+				message: err.message,
+			});
 			return;
 		}
 

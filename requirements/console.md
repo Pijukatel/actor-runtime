@@ -11,6 +11,11 @@
   (`storage.md`'s "Users" section).
 - The console is unauthenticated. Every route is a read except the dev-folder form below and the
   Settings form below, which are the console's only two writes - it is no longer strictly view-only.
+- Both of those two writes reject a cross-site form submission (a browser sending `Sec-Fetch-Site` with
+  any value other than `same-origin`/`none`) with a plain `403`, so a page from another origin cannot
+  silently drive either write through a visitor's browser. A submission with no `Sec-Fetch-Site` header
+  at all (an older browser, or a non-browser caller) is unaffected - this narrows the console's existing
+  "anyone who can reach it" model by one specific vector, it does not add a login.
 - There are three types of objects: key-value store, dataset, request queue.
     - For each object type there must be exactly one widget for inspection.
     - The request-queue widget leads with the authoritative counts from `RequestQueue.getInfo()`

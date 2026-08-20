@@ -15,7 +15,7 @@
  * runtime-global by nature (`api.md`'s "Upstream fallback" section), so ownership doesn't apply to it at
  * all.
  */
-import express, { type Express } from 'express';
+import express, { type Express, type Request } from 'express';
 
 import { getActorById, listAllActors } from '../services/actors.js';
 import {
@@ -52,6 +52,25 @@ function storageLink(prefix: '/datasets' | '/key-value-stores' | '/request-queue
 	return { text: id, href: `${prefix}/${encodeURIComponent(id)}` };
 }
 
+/** Whether `req` carries positive evidence of being a cross-site form submission, for either of the
+ * console's two mutating `POST` routes. The console is deliberately unauthenticated - anyone who can
+ * reach it can already flip a toggle or register a dev folder (`console.md`) - but a cross-site page
+ * silently POSTing to it is a wider threat model than "reachable", since either mutation can now also
+ * make the caller's real Apify token leave the machine once fallback is enabled. Every modern browser
+ * sends `Sec-Fetch-Site` on a form submission (a same-origin one - the only way a human actually uses
+ * either form - is always `same-origin` or `none`); a request without the header at all (an older
+ * browser, or a non-browser caller like `curl`, which `console.md`'s unauthenticated-by-design model
+ * already has to tolerate) reports `false` here - only a header that positively says otherwise blocks
+ * the request. This closes off the specific cross-site-form vector without adding authentication or
+ * changing either route's documented behaviour for a legitimate same-origin submission. Written as a
+ * plain predicate (checked at the top of each handler) rather than an Express middleware, so it needs no
+ * generic parameter shared across the handler chain - `req.params` keeps the type each route's own path
+ * literal already gives it. */
+function isCrossSiteWrite(req: Request): boolean {
+	const site = req.header('sec-fetch-site');
+	return site !== undefined && site !== 'same-origin' && site !== 'none';
+}
+
 export interface ConsoleServerDeps {
 	driver: Driver;
 }
@@ -74,9 +93,9 @@ function devFolderSection(actorId: string, status: DevFolderStatus, errorMessage
 export function createConsoleServer(deps: ConsoleServerDeps): Express {
 	const app = express();
 	app.disable('x-powered-by');
-	// Only the dev-folder form below posts anything - every other console route is a plain `GET`
-	// (`console.md`'s "Every route is a read except the dev-folder form below, which is the console's
-	// one write").
+	// The dev-folder form and the `/settings` form below are the console's only two writes - every other
+	// route is a plain `GET` (`console.md`'s "Every route is a read except the dev-folder form and the
+	// Settings form below, which are the console's only two writes").
 	app.use(express.urlencoded({ extended: false }));
 
 	app.get('/', async (_req, res) => {
@@ -135,6 +154,10 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 	 * `resolveOwnedActor`. A failure redirects back with `describeDevFolderFailure`'s message in a query
 	 * param, so it's surfaced inline rather than swallowed by the redirect. */
 	app.post('/actors/:id/dev-folder', async (req, res) => {
+		if (isCrossSiteWrite(req)) {
+			res.status(403).send('Cross-site form submissions are not allowed.');
+			return;
+		}
 		const actor = await getActorById(req.params.id);
 		if (!actor) {
 			res.status(404).send(layout('Not found', '<p>Actor not found.</p>'));
@@ -430,6 +453,10 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 	 * same `setApiFallbackState` the API route calls, so the two surfaces can never observe or produce
 	 * different toggle states for the same request. */
 	app.post('/settings', async (req, res) => {
+		if (isCrossSiteWrite(req)) {
+			res.status(403).send('Cross-site form submissions are not allowed.');
+			return;
+		}
 		const body = req.body as Record<string, unknown> | undefined;
 		setApiFallbackState({
 			fallbackUnimplementedEnabled: body?.fallbackUnimplementedEnabled === 'on',

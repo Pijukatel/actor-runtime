@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import axios from 'axios';
 
 import { createConsoleServer } from '../../src/console/server.js';
-import { resetApiFallbackStateForTests, setApiFallbackState } from '../../src/services/api-fallback.js';
+import { setApiFallbackState } from '../../src/services/api-fallback.js';
 import { startTestServer, type TestServerHandle } from './helpers/test-server.js';
 
 describe('console: /settings page and the fallback nav indicator', () => {
@@ -25,11 +25,27 @@ describe('console: /settings page and the fallback nav indicator', () => {
 			const s = app.listen(0, () => resolve(s));
 		});
 		consoleBaseUrl = `http://127.0.0.1:${(consoleServer.address() as AddressInfo).port}`;
+
+		// Several assertions below expect the reported `upstreamBaseUrl` to read as the real,
+		// unconfigured default (`https://api.apify.com`), so this file never points
+		// `APIFY_UPSTREAM_API_BASE_URL` anywhere. But the tests below still authenticate against the API
+		// server with `server.token`, which runs that token's one-time identity probe against whichever
+		// upstream is configured *at the moment it runs* - warm it up now, against a guaranteed-dead
+		// address, and restore the (absent) env var immediately afterward, so the probe fails and caches
+		// instantly with zero real egress.
+		const savedUpstreamUrl = process.env.APIFY_UPSTREAM_API_BASE_URL;
+		process.env.APIFY_UPSTREAM_API_BASE_URL = 'http://127.0.0.1:1';
+		await axios.get(`${server.baseUrl}/v2/users/me`, {
+			headers: { Authorization: `Bearer ${server.token}` },
+			validateStatus: () => true,
+		});
+		if (savedUpstreamUrl === undefined) delete process.env.APIFY_UPSTREAM_API_BASE_URL;
+		else process.env.APIFY_UPSTREAM_API_BASE_URL = savedUpstreamUrl;
 	});
 
 	afterEach(async () => {
-		resetApiFallbackStateForTests();
 		await new Promise<void>((resolve) => consoleServer.close(() => resolve()));
+		// `server.close()` itself resets the toggle state (`helpers/test-server.ts`) - nothing to do here.
 		await server.close();
 	});
 
@@ -84,6 +100,51 @@ describe('console: /settings page and the fallback nav indicator', () => {
 			fallbackNotFoundEnabled: true,
 			upstreamBaseUrl: 'https://api.apify.com',
 		});
+	});
+
+	it('rejects a cross-site form submission (Sec-Fetch-Site: cross-site) with 403, and never changes the toggle state', async () => {
+		const before = await axios.get(`${server.baseUrl}/actor-runtime/api-fallback`, {
+			headers: { Authorization: `Bearer ${server.token}` },
+		});
+
+		const submit = await axios.post(
+			`${consoleBaseUrl}/settings`,
+			'fallbackUnimplementedEnabled=on&fallbackNotFoundEnabled=on',
+			{
+				headers: {
+					'Content-Type': 'application/x-www-form-urlencoded',
+					'Sec-Fetch-Site': 'cross-site',
+				},
+				maxRedirects: 0,
+				validateStatus: () => true,
+			},
+		);
+		expect(submit.status).toBe(403);
+
+		const after = await axios.get(`${server.baseUrl}/actor-runtime/api-fallback`, {
+			headers: { Authorization: `Bearer ${server.token}` },
+		});
+		expect(after.data).toEqual(before.data);
+	});
+
+	it("still accepts the submission when Sec-Fetch-Site is same-origin (the real shape a browser sends for this page's own form) or absent entirely (older browsers, non-browser callers)", async () => {
+		for (const site of ['same-origin', 'none', undefined]) {
+			setApiFallbackState({ fallbackUnimplementedEnabled: false, fallbackNotFoundEnabled: false });
+			const submit = await axios.post(`${consoleBaseUrl}/settings`, 'fallbackUnimplementedEnabled=on', {
+				headers: {
+					'Content-Type': 'application/x-www-form-urlencoded',
+					...(site ? { 'Sec-Fetch-Site': site } : {}),
+				},
+				maxRedirects: 0,
+				validateStatus: () => true,
+			});
+			expect(submit.status).toBe(302);
+
+			const stateRes = await axios.get(`${server.baseUrl}/actor-runtime/api-fallback`, {
+				headers: { Authorization: `Bearer ${server.token}` },
+			});
+			expect(stateRes.data.data.fallbackUnimplementedEnabled).toBe(true);
+		}
 	});
 
 	it('submitting both checkboxes checked turns both on, landing on the shared toggle state (not a console-local copy)', async () => {

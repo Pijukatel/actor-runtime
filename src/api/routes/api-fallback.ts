@@ -20,8 +20,8 @@ import { upstreamApiBaseUrl } from '../../services/identity-resolution.js';
 
 const SETTABLE_FIELDS = new Set<keyof ApiFallbackState>(['fallbackUnimplementedEnabled', 'fallbackNotFoundEnabled']);
 
-function respondWithState(): { data: ApiFallbackState & { upstreamBaseUrl: string } } {
-	return { data: { ...getApiFallbackState(), upstreamBaseUrl: upstreamApiBaseUrl() } };
+function respondWithState(): ApiFallbackState & { upstreamBaseUrl: string } {
+	return { ...getApiFallbackState(), upstreamBaseUrl: upstreamApiBaseUrl() };
 }
 
 /** Parses and validates a `POST` body into a `setApiFallbackState` patch, throwing `invalid-request` for
@@ -63,7 +63,7 @@ export function mountApiFallback(router: Router): void {
 	router.get(
 		'/api-fallback',
 		h(async (_req, res) => {
-			sendData(res, respondWithState().data);
+			sendData(res, respondWithState());
 		}),
 	);
 
@@ -72,7 +72,7 @@ export function mountApiFallback(router: Router): void {
 		h(async (req, res) => {
 			const patch = parsePatch(jsonBody<unknown>(req));
 			setApiFallbackState(patch);
-			sendData(res, respondWithState().data);
+			sendData(res, respondWithState());
 		}),
 	);
 }

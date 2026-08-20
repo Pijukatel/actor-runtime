@@ -49,8 +49,22 @@ export function resetApiFallbackStateForTests(): void {
 }
 
 /** No retries, and short enough that a hanging upstream never leaves the caller waiting indefinitely -
- * this only ever runs after a local miss, on an opt-in toggle. */
-const FALLBACK_TIMEOUT_MS = 30_000;
+ * this only ever runs after a local miss, on an opt-in toggle. Mutable only for tests (see
+ * `setFallbackTimeoutMsForTests` below) - runtime code never changes it. */
+const DEFAULT_FALLBACK_TIMEOUT_MS = 30_000;
+let fallbackTimeoutMs = DEFAULT_FALLBACK_TIMEOUT_MS;
+
+/** Test-only: shrink the upstream timeout so the "hangs past the timeout" fail-closed case can be
+ * asserted in real wall-clock time instead of waiting out the full 30s production value. Never call
+ * from runtime code. */
+export function setFallbackTimeoutMsForTests(ms: number): void {
+	fallbackTimeoutMs = ms;
+}
+
+/** Test-only: restore the production timeout value. Never call from runtime code. */
+export function resetFallbackTimeoutMsForTests(): void {
+	fallbackTimeoutMs = DEFAULT_FALLBACK_TIMEOUT_MS;
+}
 
 /** RFC 7230's hop-by-hop set, plus `content-encoding`/`content-length`: the body handed to `fetch()`
  * already arrives decoded, and Express recomputes framing itself when `res.send()` writes the buffered
@@ -82,9 +96,16 @@ function triggerForErrorType(type: string): FallbackTrigger | null {
 /** `/v2/*` only, and never this runtime's own non-Apify `/v2/actor-runtime/*` namespace (nothing
  * upstream to call for either exclusion - a request that never reached `/v2` at all was never
  * authenticated on this path either, see `server.ts`'s mount order). Read off `req.originalUrl` (never
- * `req.path`), since that is the one representation router mount-prefix-stripping never touches. */
+ * `req.path`), since that is the one representation router mount-prefix-stripping never touches.
+ *
+ * Lower-cased and collapsed to single slashes before either comparison: Express routes case-
+ * insensitively and does not collapse repeated slashes, so `/v2/ACTOR-RUNTIME/...` and
+ * `/v2//actor-runtime/...` both reach this function with the exclusion's casing/spelling intact but
+ * still describe the excluded namespace - a naive string comparison would miss both and relay the
+ * caller's token to `/v2/actor-runtime/*` itself, which has nothing upstream to answer it. Normalising
+ * only affects this eligibility check, never the byte-exact replay URL below. */
 function isEligibleUpstreamPath(originalUrl: string): boolean {
-	const pathname = originalUrl.split('?')[0] ?? originalUrl;
+	const pathname = (originalUrl.split('?')[0] ?? originalUrl).toLowerCase().replace(/\/{2,}/g, '/');
 	if (pathname === '/v2/actor-runtime' || pathname.startsWith('/v2/actor-runtime/')) return false;
 	return pathname === '/v2' || pathname.startsWith('/v2/');
 }
@@ -119,8 +140,15 @@ export interface LocalError {
  * representation for a repeated list-valued field, and the only representation `fetch`'s `Headers`
  * exposes for anything other than `Set-Cookie` (it joins repeated non-cookie header lines together
  * before this function ever sees them). Anything other than a final `2xx` - non-2xx, timeout, DNS/connect
- * failure - is fail-closed (this function returns `false`, changing nothing about the response), logged
- * at `warn`. A relay is logged at `log`.
+ * failure, or the upstream dying *after* a final `2xx` status/headers but before the body finishes -
+ * is fail-closed (this function returns `false`, changing nothing about the response), logged at
+ * `warn`. A relay is logged at `log`.
+ *
+ * This function never rejects: both call sites in `server.ts` are the terminal middleware for their
+ * respective seam, so a rejection here would escape to Express's own `finalhandler` instead of
+ * producing the local error response - everything from the status check onward is therefore wrapped in
+ * its own `try`/`catch` that logs and returns `false` on any throw, exactly like the initial `fetch`
+ * itself already does.
  */
 export async function attemptFallback(req: Request, res: Response, localError: LocalError): Promise<boolean> {
 	if (res.headersSent) return false;
@@ -156,7 +184,7 @@ export async function attemptFallback(req: Request, res: Response, localError: L
 			headers,
 			body: method === 'GET' || method === 'HEAD' ? undefined : requestBody,
 			redirect: 'follow',
-			signal: AbortSignal.timeout(FALLBACK_TIMEOUT_MS),
+			signal: AbortSignal.timeout(fallbackTimeoutMs),
 		});
 	} catch (err) {
 		console.warn(
@@ -175,23 +203,48 @@ export async function attemptFallback(req: Request, res: Response, localError: L
 		return false;
 	}
 
-	const bodyBuffer = Buffer.from(await upstreamResponse.arrayBuffer());
-	res.status(upstreamResponse.status);
-	upstreamResponse.headers.forEach((value, name) => {
-		const lower = name.toLowerCase();
-		// `set-cookie` is handled separately below, via `getSetCookie()` - skipped here so it is never
-		// also appended from this generic loop, which would double every cookie the platform set.
-		if (lower === 'set-cookie') return;
-		if (EXCLUDED_RESPONSE_HEADERS.has(lower)) return;
-		res.append(name, value);
-	});
-	for (const cookie of upstreamResponse.headers.getSetCookie()) {
-		res.append('set-cookie', cookie);
-	}
-	res.append('x-actor-runtime-fallback', upstreamApiBaseUrl());
-	res.append('x-actor-runtime-fallback-trigger', trigger);
-	res.send(bodyBuffer);
+	// From here on, the upstream already committed to a final 2xx status line and headers - but the body
+	// itself can still fail mid-stream (the connection resets, a declared Content-Length is never fully
+	// delivered, ...). That failure surfaces as a rejection from `arrayBuffer()` below, and everything
+	// after it must never let such a rejection escape this function - see the doc comment above.
+	try {
+		const bodyBuffer = Buffer.from(await upstreamResponse.arrayBuffer());
+		res.status(upstreamResponse.status);
+		upstreamResponse.headers.forEach((value, name) => {
+			const lower = name.toLowerCase();
+			// `set-cookie` is handled separately below, via `getSetCookie()` - skipped here so it is never
+			// also appended from this generic loop, which would double every cookie the platform set.
+			if (lower === 'set-cookie') return;
+			if (EXCLUDED_RESPONSE_HEADERS.has(lower)) return;
+			res.append(name, value);
+		});
+		for (const cookie of upstreamResponse.headers.getSetCookie()) {
+			res.append('set-cookie', cookie);
+		}
+		res.append('x-actor-runtime-fallback', upstreamApiBaseUrl());
+		res.append('x-actor-runtime-fallback-trigger', trigger);
+		res.send(bodyBuffer);
 
-	console.log(`api-fallback: relayed ${method} ${req.originalUrl} to ${upstreamApiBaseUrl()} (trigger=${trigger})`);
-	return true;
+		console.log(
+			`api-fallback: relayed ${method} ${req.originalUrl} to ${upstreamApiBaseUrl()} (trigger=${trigger})`,
+		);
+		return true;
+	} catch (err) {
+		console.warn(
+			`api-fallback: upstream response for ${method} ${req.originalUrl} (trigger=${trigger}) failed while ` +
+				`relaying its body: ${err instanceof Error ? err.message : String(err)}; returning the original ` +
+				`local error instead`,
+		);
+		// Nothing has been sent yet (a throw here always happens before `res.send`), but earlier lines in
+		// this same block may have already set the status or appended some headers before the throw -
+		// undo exactly what this function itself could have added, so the caller's local-error response
+		// (which re-sets the status itself) isn't contaminated with a partial relay's leftovers.
+		if (!res.headersSent) {
+			res.removeHeader('x-actor-runtime-fallback');
+			res.removeHeader('x-actor-runtime-fallback-trigger');
+			res.removeHeader('set-cookie');
+			upstreamResponse.headers.forEach((_value, name) => res.removeHeader(name));
+		}
+		return false;
+	}
 }

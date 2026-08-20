@@ -16,7 +16,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import axios from 'axios';
 
 import { startTestServer, type TestServerHandle } from './helpers/test-server.js';
-import { resetApiFallbackStateForTests, setApiFallbackState } from '../../src/services/api-fallback.js';
+import {
+	resetApiFallbackStateForTests,
+	resetFallbackTimeoutMsForTests,
+	setApiFallbackState,
+	setFallbackTimeoutMsForTests,
+} from '../../src/services/api-fallback.js';
 import { getRegistries } from '../../src/storage/registries.js';
 import { generateId } from '../../src/storage/ids.js';
 import type { RunRecord } from '../../src/storage/entities.js';
@@ -79,6 +84,47 @@ function startStubUpstream(
 	});
 }
 
+/** An upstream that completes a final `2xx` status line and headers - the point at which a relay would
+ * normally commit - and then dies before the body finishes: it declares a `content-length` larger than
+ * the bytes it actually writes, then destroys the connection outright. This is the shape the fail-closed
+ * guarantee must also cover, distinct from every other stub above (which all fail before or instead of
+ * ever sending a status line at all). */
+function startHeadersThenDieUpstream(): Promise<StubUpstream> {
+	const requests: CapturedRequest[] = [];
+	return new Promise((resolveServer) => {
+		const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
+			const chunks: Buffer[] = [];
+			req.on('data', (chunk: Buffer) => chunks.push(chunk));
+			req.on('end', () => {
+				requests.push({
+					method: req.method ?? '',
+					url: req.url ?? '',
+					headers: req.headers,
+					body: Buffer.concat(chunks),
+				});
+				res.writeHead(200, { 'content-type': 'application/json', 'content-length': '1000' });
+				res.flushHeaders();
+				res.write('{"neverFinishes":true'); // far fewer bytes than the declared content-length
+				// A short delay before killing the connection, so the client has actually received and
+				// parsed the status line/headers (and its `fetch()` call has settled) before the failure -
+				// without this, a same-tick `destroy()` can reset the connection before the client ever
+				// gets past establishing the response, which would fail inside `fetch()` itself rather
+				// than the later `arrayBuffer()` read this stub exists to exercise.
+				setTimeout(() => res.destroy(), 50);
+			});
+		});
+		server.listen(0, () => {
+			const { port } = server.address() as AddressInfo;
+			resolveServer({
+				baseUrl: `http://127.0.0.1:${port}`,
+				hitCount: () => requests.length,
+				requests: () => requests,
+				close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+			});
+		});
+	});
+}
+
 /** Makes one authenticated request so `services/users.ts: getOrCreateUserForToken()`'s one-time
  * identity probe for `token` runs and gets cached *now*, against whatever upstream is currently
  * configured - before a test points `APIFY_UPSTREAM_API_BASE_URL` at its own fallback stub. Without
@@ -106,10 +152,23 @@ describe('api-fallback: toggle-state endpoint', () => {
 
 	beforeEach(async () => {
 		server = await startTestServer();
+		// Unlike the other two describe blocks in this file, this one never points
+		// `APIFY_UPSTREAM_API_BASE_URL` anywhere - several assertions below expect the endpoint's reported
+		// `upstreamBaseUrl` to read as the real, unconfigured default (`https://api.apify.com`). But every
+		// authenticated request still runs the one-time identity probe first, and that probe targets
+		// whichever upstream is configured *at the moment it runs* - so warm it up now, against a
+		// guaranteed-dead address, and restore the (absent) env var immediately afterward. The probe fails
+		// and caches instantly with zero real egress, and every request the tests below actually make
+		// still sees the true default.
+		const savedUpstreamUrl = process.env.APIFY_UPSTREAM_API_BASE_URL;
+		process.env.APIFY_UPSTREAM_API_BASE_URL = 'http://127.0.0.1:1';
+		await warmUpIdentity(server.baseUrl, server.token);
+		if (savedUpstreamUrl === undefined) delete process.env.APIFY_UPSTREAM_API_BASE_URL;
+		else process.env.APIFY_UPSTREAM_API_BASE_URL = savedUpstreamUrl;
 	});
 
 	afterEach(async () => {
-		resetApiFallbackStateForTests();
+		// `server.close()` itself resets the toggle state (`helpers/test-server.ts`) - nothing to do here.
 		await server.close();
 	});
 
@@ -201,7 +260,9 @@ describe('api-fallback: toggle-state endpoint', () => {
 			upstreamBaseUrl: 'https://api.apify.com',
 		});
 
-		const third = await post('/actor-runtime/api-fallback', { fallbackUnimplementedEnabled: false });
+		const third = await post('/actor-runtime/api-fallback', {
+			fallbackUnimplementedEnabled: false,
+		});
 		expect(third.data.data).toEqual({
 			fallbackUnimplementedEnabled: false,
 			fallbackNotFoundEnabled: true,
@@ -247,7 +308,10 @@ describe('api-fallback: toggle-state endpoint', () => {
 			const res = isJson
 				? await post('/actor-runtime/api-fallback', body)
 				: await axios.post(`${server.baseUrl}/actor-runtime/api-fallback`, body as string, {
-						headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${server.token}` },
+						headers: {
+							'Content-Type': 'application/json',
+							Authorization: `Bearer ${server.token}`,
+						},
 						validateStatus: () => true,
 					});
 			expect(res.status).toBe(400);
@@ -283,16 +347,19 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 	beforeEach(async () => {
 		server = await startTestServer();
 		previousUpstreamUrl = process.env.APIFY_UPSTREAM_API_BASE_URL;
-		// Force the one-time identity probe (`services/identity-resolution.ts`) to happen now, against
-		// whichever upstream is configured *before* any test below points `APIFY_UPSTREAM_API_BASE_URL`
-		// at its own stub - otherwise that very probe would be the first request to land on a per-test
-		// stub, inflating its hit count and logging its own "using local identity" line into a spy meant
-		// to observe only `attemptFallback`'s own logging.
+		// Force the one-time identity probe (`services/identity-resolution.ts`) to happen now, before any
+		// test below points `APIFY_UPSTREAM_API_BASE_URL` at its own stub - otherwise that very probe
+		// would be the first request to land on a per-test stub, inflating its hit count and logging its
+		// own "using local identity" line into a spy meant to observe only `attemptFallback`'s own
+		// logging. Pointed at a guaranteed-dead address first (never the real default
+		// `https://api.apify.com`), so the probe fails instantly with zero real egress - the same pattern
+		// `identity-resolution.test.ts` uses throughout.
+		process.env.APIFY_UPSTREAM_API_BASE_URL = 'http://127.0.0.1:1';
 		await warmUpIdentity(server.baseUrl, server.token);
 	});
 
 	afterEach(async () => {
-		resetApiFallbackStateForTests();
+		// `server.close()` itself resets the toggle state (`helpers/test-server.ts`) - nothing to do here.
 		if (previousUpstreamUrl === undefined) delete process.env.APIFY_UPSTREAM_API_BASE_URL;
 		else process.env.APIFY_UPSTREAM_API_BASE_URL = previousUpstreamUrl;
 		await server.close();
@@ -424,6 +491,40 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 				expect(res.data.error.type).toBe('not-found');
 				expect(res.headers['x-actor-runtime-fallback']).toBeUndefined();
 				expect(res.headers['x-actor-runtime-fallback-trigger']).toBeUndefined();
+				expect(stub.hitCount()).toBe(0);
+			} finally {
+				await stub.close();
+			}
+		});
+
+		it('does NOT relay a case-varied /v2/ACTOR-RUNTIME/* path either - the exclusion must not be case-sensitive even though Express itself routes case-insensitively', async () => {
+			const stub = await startStubUpstream(fixedOkResponse('should-not-be-hit'));
+			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
+			try {
+				// Express's own default mount matching is case-insensitive, so this reaches the same
+				// `actor-runtime` sub-router as the lowercase path above, finds no matching PUT route, and
+				// falls through to the terminal catch-all with the original casing intact in `originalUrl`.
+				const res = await call('put', '/v2/ACTOR-RUNTIME/api-fallback');
+				expect(res.status).toBe(404);
+				expect(res.data.error.type).toBe('not-found');
+				expect(res.headers['x-actor-runtime-fallback']).toBeUndefined();
+				expect(stub.hitCount()).toBe(0);
+			} finally {
+				await stub.close();
+			}
+		});
+
+		it('does NOT relay a duplicate-slash /v2//actor-runtime/* path either', async () => {
+			const stub = await startStubUpstream(fixedOkResponse('should-not-be-hit'));
+			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
+			try {
+				// The doubled slash means Express's own mount matching for `/v2/actor-runtime` misses too,
+				// so this also falls through to the terminal catch-all - exactly the shape that bypassed
+				// the exclusion before it normalised repeated slashes.
+				const res = await call('get', '/v2//actor-runtime/api-fallback');
+				expect(res.status).toBe(404);
+				expect(res.data.error.type).toBe('not-found');
+				expect(res.headers['x-actor-runtime-fallback']).toBeUndefined();
 				expect(stub.hitCount()).toBe(0);
 			} finally {
 				await stub.close();
@@ -579,7 +680,10 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 		}
 
 		it('upstream 404 -> original local error, unchanged, no marker headers', async () => {
-			const stub = await startStubUpstream(() => ({ status: 404, body: { error: 'upstream 404' } }));
+			const stub = await startStubUpstream(() => ({
+				status: 404,
+				body: { error: 'upstream 404' },
+			}));
 			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
 			try {
 				const baseline = await localBothOffResponse('get', '/v2/totally-made-up-path');
@@ -595,7 +699,10 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 		});
 
 		it('upstream 500 -> original local error, unchanged', async () => {
-			const stub = await startStubUpstream(() => ({ status: 500, body: { error: 'upstream 500' } }));
+			const stub = await startStubUpstream(() => ({
+				status: 500,
+				body: { error: 'upstream 500' },
+			}));
 			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
 			try {
 				const baseline = await localBothOffResponse('get', '/v2/schedules');
@@ -609,7 +716,10 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 		});
 
 		it('upstream non-not-found 4xx (401) -> original local error, unchanged', async () => {
-			const stub = await startStubUpstream(() => ({ status: 401, body: { error: 'upstream 401' } }));
+			const stub = await startStubUpstream(() => ({
+				status: 401,
+				body: { error: 'upstream 401' },
+			}));
 			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
 			try {
 				const baseline = await localBothOffResponse('get', '/v2/datasets/does-not-exist-at-all');
@@ -623,7 +733,10 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 		});
 
 		it('upstream non-not-found 4xx (409) -> original local error, unchanged', async () => {
-			const stub = await startStubUpstream(() => ({ status: 409, body: { error: 'upstream 409' } }));
+			const stub = await startStubUpstream(() => ({
+				status: 409,
+				body: { error: 'upstream 409' },
+			}));
 			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
 			try {
 				const baseline = await localBothOffResponse('get', '/v2/datasets/does-not-exist-at-all');
@@ -644,8 +757,30 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 			expect(res.headers['x-actor-runtime-fallback']).toBeUndefined();
 		});
 
-		it('upstream hangs past the timeout -> original local error, unchanged (slow: waits out the real timeout)', async () => {
-			const stub = await startStubUpstream(() => 'hang');
+		it('upstream hangs past the timeout -> original local error, unchanged', async () => {
+			// The production timeout is 30s; shrunk here so this assertion runs in real time instead of
+			// waiting out the full value - the assertion itself (fail-closed on a hang) is unaffected by
+			// how long the timeout actually is.
+			setFallbackTimeoutMsForTests(200);
+			try {
+				const stub = await startStubUpstream(() => 'hang');
+				process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
+				try {
+					const baseline = await localBothOffResponse('get', '/v2/totally-made-up-path');
+					const res = await call('get', '/v2/totally-made-up-path');
+					expect(res.status).toBe(baseline.status);
+					expect(res.data).toEqual(baseline.data);
+					expect(res.headers['x-actor-runtime-fallback']).toBeUndefined();
+				} finally {
+					await stub.close();
+				}
+			} finally {
+				resetFallbackTimeoutMsForTests();
+			}
+		});
+
+		it('upstream sends a final 2xx status line and headers, then dies mid-body (catch-all seam) -> original local error, unchanged, no rejection escapes to finalhandler', async () => {
+			const stub = await startHeadersThenDieUpstream();
 			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
 			try {
 				const baseline = await localBothOffResponse('get', '/v2/totally-made-up-path');
@@ -653,10 +788,28 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 				expect(res.status).toBe(baseline.status);
 				expect(res.data).toEqual(baseline.data);
 				expect(res.headers['x-actor-runtime-fallback']).toBeUndefined();
+				expect(res.headers['x-actor-runtime-fallback-trigger']).toBeUndefined();
+				expect(String(res.headers['content-type'])).toContain('application/json');
 			} finally {
 				await stub.close();
 			}
-		}, 35_000);
+		});
+
+		it('upstream sends a final 2xx status line and headers, then dies mid-body (error-middleware seam) -> original local error, unchanged, no rejection escapes to finalhandler', async () => {
+			const stub = await startHeadersThenDieUpstream();
+			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
+			try {
+				const baseline = await localBothOffResponse('get', '/v2/datasets/does-not-exist-at-all');
+				const res = await call('get', '/v2/datasets/does-not-exist-at-all');
+				expect(res.status).toBe(baseline.status);
+				expect(res.data).toEqual(baseline.data);
+				expect(res.headers['x-actor-runtime-fallback']).toBeUndefined();
+				expect(res.headers['x-actor-runtime-fallback-trigger']).toBeUndefined();
+				expect(String(res.headers['content-type'])).toContain('application/json');
+			} finally {
+				await stub.close();
+			}
+		});
 	});
 
 	describe('never forwards a token the caller did not present', () => {
@@ -705,7 +858,15 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 		it('GET /v2/datasets (a collection route) never hits the stub and never gains upstream items', async () => {
 			const stub = await startStubUpstream(() => ({
 				status: 200,
-				body: { data: { items: [{ id: 'platform-only-dataset' }], total: 1, count: 1, offset: 0, limit: 20 } },
+				body: {
+					data: {
+						items: [{ id: 'platform-only-dataset' }],
+						total: 1,
+						count: 1,
+						offset: 0,
+						limit: 20,
+					},
+				},
 			}));
 			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
 			try {
@@ -873,12 +1034,15 @@ describe('api-fallback: dev-folder-* and internal-error types never forward', ()
 		outcome = { ok: false, reason: 'not-found' };
 		server = await startTestServer(probingDriver);
 		previousUpstreamUrl = process.env.APIFY_UPSTREAM_API_BASE_URL;
+		// Dead address first, so the one-time identity probe fails instantly with zero real egress
+		// (see the sibling `beforeEach` above for the full explanation).
+		process.env.APIFY_UPSTREAM_API_BASE_URL = 'http://127.0.0.1:1';
 		await warmUpIdentity(server.baseUrl, server.token);
 		setApiFallbackState({ fallbackUnimplementedEnabled: true, fallbackNotFoundEnabled: true });
 	});
 
 	afterEach(async () => {
-		resetApiFallbackStateForTests();
+		// `server.close()` itself resets the toggle state (`helpers/test-server.ts`) - nothing to do here.
 		if (previousUpstreamUrl === undefined) delete process.env.APIFY_UPSTREAM_API_BASE_URL;
 		else process.env.APIFY_UPSTREAM_API_BASE_URL = previousUpstreamUrl;
 		await server.close();
