@@ -9,8 +9,8 @@
 - The console has no login of its own, so with multiple users it lists and shows every user's objects
   rather than scoping to one - the API's own endpoints stay strictly scoped to the calling token's user
   (`storage.md`'s "Users" section).
-- The console is unauthenticated. Every route is a read except the dev-folder form below, which is the
-  console's one write - it is no longer strictly view-only.
+- The console is unauthenticated. Every route is a read except the dev-folder form below and the
+  Settings form below, which are the console's only two writes - it is no longer strictly view-only.
 - There are three types of objects: key-value store, dataset, request queue.
     - For each object type there must be exactly one widget for inspection.
     - The request-queue widget leads with the authoritative counts from `RequestQueue.getInfo()`
@@ -28,6 +28,7 @@
         - key-value stores
         - datasets
         - request queues
+    - Settings (a single page, not a list/detail pair - see "Settings page" below)
 
 - List view is a list of objects that can be clicked on to open detail view.
 - Detail view of an object is showing only one object with all the available data
@@ -49,3 +50,26 @@
   value is rejected as a malformed path, also matching the API.
 - A submission that fails validation redirects back to the same detail page with the classified error
   message shown inline, never swallowed by the redirect.
+
+## Settings page
+
+- The last entry in every page's header navigation is "Settings", linking to `/settings` - the one page
+  for the upstream API fallback toggles (`api.md`'s "Upstream fallback" section). Every other page's
+  header nav also shows both toggles' current state next to that link, in the form
+  `Settings — fallback (unimplemented: on|off, not-found: on|off)`, so neither toggle can ever be on
+  without being visible from anywhere in the console; the two states are shown independently, never
+  collapsed into a single word (a mixed state - one on, one off - is visually distinct from both-on and
+  both-off).
+- `/settings` itself shows `fallbackUnimplementedEnabled`, `fallbackNotFoundEnabled`, and
+  `upstreamBaseUrl` (the same values the API's toggle endpoint reports), plus a one-line warning that
+  enabling either toggle forwards the caller's own Apify token to that URL.
+- A single form on the page has two checkboxes, "Fall back for unimplemented endpoints" and "Fall back
+  for not-found records", and one submit. Submitting it always sends both checkboxes' current state
+  together - an unchecked box is read as `false`, not as "leave this toggle unchanged" - and redirects
+  back to `/settings` showing the result. This differs from the API's own partial `POST` (`api.md`),
+  which only touches the field(s) a caller's body actually names; both surfaces write through the same
+  underlying toggle state, so a flip made on one is immediately visible on the other and via the API's
+  own `GET`, with no restart needed either way.
+- Since the console has no login of its own, anyone who can reach it can flip either toggle for every
+  caller of the API - the same unauthenticated, cross-user model the rest of the console already has, not
+  a new exposure specific to this page.

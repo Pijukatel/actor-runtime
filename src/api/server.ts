@@ -14,6 +14,8 @@ import { mountRuns } from './routes/runs.js';
 import { mountLogs } from './routes/logs.js';
 import { mountRunStorageAliases } from './routes/run-storage-aliases.js';
 import { mountDevFolder } from './routes/dev-folder.js';
+import { mountApiFallback } from './routes/api-fallback.js';
+import { attemptFallback } from '../services/api-fallback.js';
 import type { Driver } from '../driver/types.js';
 
 export interface ApiServerDeps {
@@ -30,10 +32,15 @@ export function createApiServer(deps: ApiServerDeps): Express {
 
 	// `/actor-runtime/*` - a deliberately non-Apify, local-runtime-only namespace (`api.md`), registered
 	// before the `v2` router (and its own `auth()`) below entirely, so it gets its own sub-router with its
-	// own `auth()` (see `mountDevFolder`'s doc comment) rather than inheriting `v2.use(auth())`.
-	const devFolder = express.Router();
-	mountDevFolder(devFolder, deps);
-	app.use('/actor-runtime', devFolder);
+	// own `auth()` rather than inheriting `v2.use(auth())`. Registered once here, shared by every route
+	// module mounted on this router (`mountDevFolder`, `mountApiFallback`) rather than each registering
+	// its own - they are the same router instance, so a second registration would just run `auth()`
+	// twice per request for no benefit.
+	const actorRuntime = express.Router();
+	actorRuntime.use(auth());
+	mountDevFolder(actorRuntime, deps);
+	mountApiFallback(actorRuntime);
+	app.use('/actor-runtime', actorRuntime);
 	// Also served at `/v2/actor-runtime/*` - the *same* router instance, no duplicated route logic - solely
 	// because `apify api`'s own URL-building hardcodes a `/v2`-suffixed base (`${baseUrl}/${endpoint}`,
 	// `baseUrl` already ending in `/v2`) and its `normalizePath` only strips a leading `/` and a leading
@@ -46,7 +53,7 @@ export function createApiServer(deps: ApiServerDeps): Express {
 	// namespace as `/actor-runtime/*`, reachable a second way purely for CLI ergonomics (`api.md`). The
 	// dev-folder fields are still never exposed on any real `/v2` Actor response either way - `actorDto`
 	// is explicit field-by-field regardless of which path reached this router.
-	app.use('/v2/actor-runtime', devFolder);
+	app.use('/v2/actor-runtime', actorRuntime);
 
 	const v2 = express.Router();
 	v2.use(auth());
@@ -63,19 +70,37 @@ export function createApiServer(deps: ApiServerDeps): Express {
 
 	app.use('/v2', v2);
 
-	app.use((req: Request, res: Response) => {
+	// The first of the two seams `attemptFallback` (`services/api-fallback.ts`) can serve a response
+	// from instead of this local error: a request that fell through every mounted router without any
+	// route matching at all - a genuinely off-spec path, or a spec-known path this runtime hasn't built
+	// (`spec-table.ts`). Both local error shapes are gated by `fallbackUnimplementedEnabled` - from the
+	// caller's point of view, "nothing local answers this" either way.
+	app.use(async (req: Request, res: Response) => {
 		const path = req.path.replace(/^\/+/, '');
 		const entry = matchSpecPath(req.method, path);
-		if (entry && !entry.implemented) {
-			sendError(res, 501, 'not-implemented', `${req.method} ${req.path} is not implemented by this runtime`);
-			return;
-		}
-		sendError(res, 404, 'not-found', `${req.method} ${req.path} was not found`);
+		const localError =
+			entry?.implemented === false
+				? {
+						status: 501,
+						type: 'not-implemented',
+						message: `${req.method} ${req.path} is not implemented by this runtime`,
+					}
+				: { status: 404, type: 'not-found', message: `${req.method} ${req.path} was not found` };
+
+		if (await attemptFallback(req, res, localError)) return;
+		sendError(res, localError.status, localError.type, localError.message);
 	});
 
+	// The second seam: a route handler under a matched router rejected with an `ApiError` (`handler.ts`'s
+	// `h()` forwards it here via `.catch(next)`). Only a `record-not-found` rejection is ever eligible for
+	// fallback (`fallbackNotFoundEnabled`) - `attemptFallback` itself is what enforces that, from the
+	// error's own `type`, so every other `ApiError` (`invalid-request`, `cannot-remove-running-run`,
+	// `deleting-unfinished-build`, any `dev-folder-*` type, ...) always falls straight through to the
+	// local response below, untouched.
 	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
+	app.use(async (err: unknown, req: Request, res: Response, next: NextFunction) => {
 		if (err instanceof ApiError) {
+			if (await attemptFallback(req, res, { status: err.status, type: err.type, message: err.message })) return;
 			sendError(res, err.status, err.type, err.message);
 			return;
 		}

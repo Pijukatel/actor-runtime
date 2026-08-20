@@ -1,5 +1,7 @@
 /** Minimal server-rendered HTML helpers. No SPA, no bundler, no build step (`console.md`). */
 
+import { getApiFallbackState, type ApiFallbackState } from '../services/api-fallback.js';
+
 export function escapeHtml(value: unknown): string {
 	return String(value ?? '')
 		.replace(/&/g, '&amp;')
@@ -18,8 +20,23 @@ const NAV = [
 	['/request-queues', 'Request queues'],
 ] as const;
 
+function onOff(enabled: boolean): 'on' | 'off' {
+	return enabled ? 'on' : 'off';
+}
+
+/** The final nav entry, present on every page (`console.md`'s "header state indicator") - "Settings"
+ * plus both fallback toggles' current state, so neither toggle can ever be on without being visible from
+ * anywhere in the console. Read fresh on every render, straight from `services/api-fallback.ts` - the
+ * one module both the API route and the `/settings` form write through - never threaded in as an
+ * argument, so this needs no change to `layout()`'s signature or any of its call sites. */
+function fallbackNavEntry(): string {
+	const state = getApiFallbackState();
+	const label = `Settings — fallback (unimplemented: ${onOff(state.fallbackUnimplementedEnabled)}, not-found: ${onOff(state.fallbackNotFoundEnabled)})`;
+	return `<a href="/settings">${label}</a>`;
+}
+
 export function layout(title: string, body: string): string {
-	const nav = NAV.map(([href, label]) => `<a href="${href}">${label}</a>`).join(' | ');
+	const nav = [...NAV.map(([href, label]) => `<a href="${href}">${label}</a>`), fallbackNavEntry()].join(' | ');
 	return `<!doctype html>
 <html>
 <head>
@@ -37,6 +54,7 @@ export function layout(title: string, body: string): string {
 	pre { background: #f5f5f5; padding: 1rem; overflow-x: auto; white-space: pre-wrap; }
 	.empty { color: #777; font-style: italic; }
 	.error { color: #b00020; }
+	.warning { color: #94600b; }
 	.wide-input { width: 28rem; }
 	h1 { margin-top: 0; }
 </style>
@@ -99,6 +117,32 @@ export function devFolderForm(actorId: string, currentValue: string, errorMessag
 		'<button type="submit">Save</button>' +
 		'</form>' +
 		'<p class="empty">Submit an empty value to clear the registration.</p>'
+	);
+}
+
+/** The one-line credential-forwarding warning the `/settings` page shows above its form
+ * (`console.md`'s "Settings page" section) - both toggles forward the caller's own Apify token the
+ * moment either is on, so this is shown unconditionally, not only once a toggle is already on. */
+export function apiFallbackWarning(): string {
+	return '<p class="warning">Enabling either option below forwards the caller\'s own Apify token to the upstream API shown above.</p>';
+}
+
+/** The `/settings` page's one form (`console.md`): two checkboxes, one submit, always submitting both
+ * checkboxes' current state together - an unchecked box is simply absent from the submitted body, which
+ * the POST route (`console/server.ts`) reads as `false` for that field, never as "leave unchanged" (the
+ * console form's own single-submit contract, unlike the API route's genuinely partial `POST`). */
+export function settingsForm(state: ApiFallbackState): string {
+	const checkedAttr = (enabled: boolean) => (enabled ? ' checked' : '');
+	return (
+		'<form method="post" action="/settings">' +
+		'<p><label><input type="checkbox" name="fallbackUnimplementedEnabled"' +
+		checkedAttr(state.fallbackUnimplementedEnabled) +
+		'> Fall back for unimplemented endpoints</label></p>' +
+		'<p><label><input type="checkbox" name="fallbackNotFoundEnabled"' +
+		checkedAttr(state.fallbackNotFoundEnabled) +
+		'> Fall back for not-found records</label></p>' +
+		'<button type="submit">Save</button>' +
+		'</form>'
 	);
 }
 

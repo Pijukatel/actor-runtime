@@ -5,14 +5,15 @@
  * shared rather than reimplemented.
  *
  * The console itself has no login of its own - it is unauthenticated, and every route is a read except
- * exactly one mutation (`console.md`'s "Every route is a read except the dev-folder form below, which is
- * the console's one write"): the dev-folder form on the Actor detail view. With multiple users it does
- * not scope reads to any one of them: every list/detail route below reads through the
- * `listAll*`/`get*ById` cross-user service functions (see e.g. `services/actors.ts: listAllActors`),
- * never the API's own per-user `listOwned*`/`getOwned*`, and every list row and detail view shows the
- * object's owner `userId` (`console.md`: "Frontend shows for each object the owner (userId)"). The
- * dev-folder form writes cross-user the same way - a deliberate deviation from the API's own
- * strictly-owner-scoped write, not an accident.
+ * two mutations (`console.md`): the dev-folder form on the Actor detail view, and the `/settings` form
+ * below. With multiple users it does not scope reads to any one of them: every list/detail route below
+ * reads through the `listAll*`/`get*ById` cross-user service functions (see e.g.
+ * `services/actors.ts: listAllActors`), never the API's own per-user `listOwned*`/`getOwned*`, and every
+ * list row and detail view shows the object's owner `userId` (`console.md`: "Frontend shows for each
+ * object the owner (userId)"). The dev-folder form writes cross-user the same way - a deliberate
+ * deviation from the API's own strictly-owner-scoped write, not an accident; the `/settings` form is
+ * runtime-global by nature (`api.md`'s "Upstream fallback" section), so ownership doesn't apply to it at
+ * all.
  */
 import express, { type Express } from 'express';
 
@@ -32,7 +33,17 @@ import { openDataset, openKeyValueStore, openRequestQueue } from '../storage/ope
 import { pageKeys } from '../services/kv-key-listing.js';
 import { applyDatasetProjection, type DatasetItem } from '../services/dataset-projection.js';
 import { ansiToHtml } from './ansi.js';
-import { definitionList, devFolderForm, escapeHtml, layout, table, type LinkedCell } from './templates.js';
+import {
+	apiFallbackWarning,
+	definitionList,
+	devFolderForm,
+	escapeHtml,
+	layout,
+	settingsForm,
+	table,
+	type LinkedCell,
+} from './templates.js';
+import { getApiFallbackState, setApiFallbackState, upstreamBaseUrl } from '../services/api-fallback.js';
 import type { Driver } from '../driver/types.js';
 
 /** A run's default-storage id rendered as a link to that storage's detail view instead of plain text. */
@@ -390,6 +401,40 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				seen.items.map((i) => [i.id, i.url, i.method, String(i.retryCount)]),
 			);
 		res.send(layout(`Request queue ${record.id}`, body));
+	});
+
+	// --- Settings: the shared upstream-fallback toggle state (`services/api-fallback.ts`), read/written
+	// through the same module the API's `GET`/`POST /actor-runtime/api-fallback` route uses - never
+	// through the API port itself (the dev-folder form's precedent). This is the console's second
+	// mutation alongside the dev-folder form - `console.md`'s "every route is a read except..." now
+	// names both.
+
+	app.get('/settings', async (_req, res) => {
+		const state = getApiFallbackState();
+		const body =
+			apiFallbackWarning() +
+			definitionList([
+				['fallbackUnimplementedEnabled', state.fallbackUnimplementedEnabled],
+				['fallbackNotFoundEnabled', state.fallbackNotFoundEnabled],
+				['upstreamBaseUrl', upstreamBaseUrl()],
+			]) +
+			'<h2>Change settings</h2>' +
+			settingsForm(state);
+		res.send(layout('Settings', body));
+	});
+
+	/** Always submits both checkboxes' current state, per the form's own contract
+	 * (`templates.ts: settingsForm`'s doc comment) - an unchecked box is simply absent from the
+	 * urlencoded body, read as `false` here, never as "leave this field unchanged". Funnels into the
+	 * same `setApiFallbackState` the API route calls, so the two surfaces can never observe or produce
+	 * different toggle states for the same request. */
+	app.post('/settings', async (req, res) => {
+		const body = req.body as Record<string, unknown> | undefined;
+		setApiFallbackState({
+			fallbackUnimplementedEnabled: body?.fallbackUnimplementedEnabled === 'on',
+			fallbackNotFoundEnabled: body?.fallbackNotFoundEnabled === 'on',
+		});
+		res.redirect('/settings');
 	});
 
 	return app;

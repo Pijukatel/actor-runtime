@@ -1,11 +1,13 @@
 /**
  * `POST /actor-runtime/dev-folder/:actorId` - deliberately outside the emulated `/v2` surface
- * (`api.md`'s `/actor-runtime/*` namespace). `server.ts` creates its own sub-router, calls
- * `mountDevFolder` on it once, and mounts that same router instance at both `/actor-runtime` (canonical)
- * and `/v2/actor-runtime` (an alias existing solely because `apify api` hardcodes a `/v2`-suffixed base
- * URL - see `server.ts`'s doc comment). Neither mount is nested under the `v2` router, so this route
- * needs its own `auth()` rather than inheriting `v2`'s - and since only one of the two mounts ever
- * matches a given request, that `auth()` still runs exactly once per request either way.
+ * (`api.md`'s `/actor-runtime/*` namespace). `server.ts` creates one shared sub-router (with its own
+ * `auth()`, registered once there - not by this module) for the whole `/actor-runtime/*` namespace,
+ * calls this and `mountApiFallback` on it, and mounts that same router instance at both
+ * `/actor-runtime` (canonical) and `/v2/actor-runtime` (an alias existing solely because `apify api`
+ * hardcodes a `/v2`-suffixed base URL - see `server.ts`'s doc comment). Neither mount is nested under
+ * the `v2` router, so this namespace needs its own `auth()` rather than inheriting `v2`'s - and since
+ * only one of the two mounts ever matches a given request, that `auth()` still runs exactly once per
+ * request either way.
  *
  * Canonical body is a JSON string: `'"/abs/path"'` to set, `'""'` to clear (`api.md`). A JSON value that
  * parses but isn't a string is rejected the same way a malformed body is.
@@ -15,7 +17,7 @@
  */
 import type { Router } from 'express';
 
-import { auth, requireUser } from '../auth.js';
+import { requireUser } from '../auth.js';
 import { sendData } from '../envelope.js';
 import { ApiError, invalidRequest, recordNotFound } from '../errors.js';
 import { h, jsonBody } from '../handler.js';
@@ -50,13 +52,10 @@ function toApiError(result: Exclude<SetDevFolderResult, { kind: 'ok' }>): ApiErr
 }
 
 /** Mounts the `/dev-folder/:actorId` route onto `router`, matching every other route module's
- * `mount*(router, deps): void` convention - `server.ts` creates the sub-router, calls this on it, and
- * mounts the result at `/actor-runtime` itself (owning the path prefix the same way it owns `/v2`).
- * Registers its own `auth()` on `router` rather than inheriting `v2`'s, since this route lives outside
- * the `v2` router entirely (`api.md`'s `/actor-runtime/*` namespace). */
+ * `mount*(router, deps): void` convention - `server.ts` creates the sub-router (with its own shared
+ * `auth()`, registered by the caller, not here), calls this on it, and mounts the result at
+ * `/actor-runtime` itself (owning the path prefix the same way it owns `/v2`). */
 export function mountDevFolder(router: Router, deps: ApiServerDeps): void {
-	router.use(auth());
-
 	router.post(
 		'/dev-folder/:actorId',
 		h(async (req, res) => {
