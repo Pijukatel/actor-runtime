@@ -36,8 +36,6 @@ function toApiError(result: Exclude<SetDevFolderResult, { kind: 'ok' }>): ApiErr
 	switch (result.kind) {
 		case 'invalid-path':
 			return invalidRequest(message);
-		case 'no-successful-build':
-			return new ApiError(400, 'dev-folder-not-buildable', message);
 		case 'not-found':
 			return new ApiError(400, 'dev-folder-path-not-found', message);
 		case 'not-a-directory':
@@ -77,8 +75,8 @@ export function mountDevFolder(router: Router, deps: ApiServerDeps): void {
 			if (result.kind !== 'ok') throw toApiError(result);
 
 			// The response body doubles as the read-back - there is deliberately no separate `GET` for
-			// this yet - with the same three fields the console detail page shows.
-			sendData(res, await devFolderStatus(result.actor));
+			// this yet - with the same field the console detail page shows.
+			sendData(res, devFolderStatus(result.actor));
 		}),
 	);
 }

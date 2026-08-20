@@ -47,17 +47,17 @@ const CONTAINER_NAME = 'actor-runtime-e2e-devfolder';
 const IMAGE_TAG = 'actor-runtime:e2e-devfolder';
 // `sample_actor_ts/Dockerfile` sets no `WORKDIR` of its own, so it inherits the base image's - the
 // `apify/actor-node` image's own Dockerfile sets `WORKDIR /usr/src/app`. Asserted independently below
-// via the registration response's own `imageWorkingDirectory`, not only assumed here - if the base
-// image ever moves its `WORKDIR`, that assertion (not the mount itself) is what will fail first and
-// explain why.
+// via the run's own mount log line, not only assumed here - if the base image ever moves its
+// `WORKDIR`, that assertion (not the mount itself) is what will fail first and explain why.
 const EXPECTED_IMAGE_WORKING_DIR = '/usr/src/app';
 const ORIGINAL_MARKER = 'Crawl finished.';
 const EDITED_MARKER = 'Crawl finished (dev-folder-edit-marker).';
 
 /** `apify api POST ...`'s printed `{ data: ... }` envelope for this endpoint's response shape
- * (`services/dev-folder.ts: devFolderStatus`). */
+ * (`services/dev-folder.ts: devFolderStatus`) - just the registered folder, nothing about any build:
+ * whether a mount applies is a per-run question this Actor-level status has no way to answer in advance. */
 interface DevFolderApiResult {
-	data: { localDevFolder: string | null; imageWorkingDirectory: string | null; mountWillApply: boolean };
+	data: { localDevFolder: string | null };
 }
 
 function registerDevFolder(actorId: string, path: string, env: NodeJS.ProcessEnv): DevFolderApiResult {
@@ -127,7 +127,8 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 		async () => {
 			const env = apifyEnv(isolatedApifyHome);
 
-			// One real push + build (the build-first precondition) - this is the very first test in the
+			// A real push + build (needed so there is something to run at all - not a precondition of
+			// registration itself, which never requires any build) - this is the very first test in the
 			// file to touch `mainTs`, so the source pushed here (and the image's own baked-in
 			// `dist/main.js`, compiled by the Dockerfile's `RUN npm run build` inside the container) both
 			// still carry `ORIGINAL_MARKER`.
@@ -142,7 +143,7 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 			execFileSync('npm', ['run', 'build'], { cwd: actorDir, stdio: 'inherit' });
 
 			const registered = registerDevFolder(actorId, actorDir, env);
-			expect(registered.data.mountWillApply).toBe(true);
+			expect(registered.data.localDevFolder).toBe(actorDir);
 
 			// Run #1: no edit, no recompile since the push above - the host folder's `dist/` still matches
 			// what the image itself was just built from.
@@ -193,11 +194,11 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 		async () => {
 			const env = apifyEnv(isolatedApifyHome);
 
-			// One real push + build, as the product description requires ("push and build once, then
-			// register") - the build-first precondition (`requirements/api.md`). The pushed source still
-			// carries `ORIGINAL_MARKER`, so the image's own baked-in `dist/main.js` (compiled by the
-			// Dockerfile's own `RUN npm run build`, inside the container) contains `ORIGINAL_MARKER`, not
-			// `EDITED_MARKER` - that distinction is what the log assertions below rely on.
+			// A real push + build - needed so the run below has something to actually execute, not because
+			// registration requires one (it does not). The pushed source still carries `ORIGINAL_MARKER`,
+			// so the image's own baked-in `dist/main.js` (compiled by the Dockerfile's own `RUN npm run
+			// build`, inside the container) contains `ORIGINAL_MARKER`, not `EDITED_MARKER` - that
+			// distinction is what the log assertions below rely on.
 			// `--force`: the previous test's successful build bumped this same remote Actor's
 			// `modifiedAt` (its build recording bumps `updateActor`) to after `actorDir`'s files' mtimes,
 			// which were fixed once when `beforeAll` copied `sample_actor_ts` into the temp dir. Without
@@ -228,8 +229,6 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 
 			const registered = registerDevFolder(actorId, actorDir, env);
 			expect(registered.data.localDevFolder).toBe(actorDir);
-			expect(registered.data.imageWorkingDirectory).toBe(EXPECTED_IMAGE_WORKING_DIR);
-			expect(registered.data.mountWillApply).toBe(true);
 
 			const callOutput = apify(['call', '--input', JSON.stringify({ maxPages: 1 }), '--json'], {
 				cwd: actorDir,
@@ -284,7 +283,6 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 			});
 			const cleared = JSON.parse(clearOutput) as DevFolderApiResult;
 			expect(cleared.data.localDevFolder).toBeNull();
-			expect(cleared.data.mountWillApply).toBe(false);
 
 			const callOutput = apify(['call', '--input', JSON.stringify({ maxPages: 1 }), '--json'], {
 				cwd: actorDir,

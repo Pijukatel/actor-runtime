@@ -39,13 +39,13 @@
 
 ## Local dev-folder registration form (Actor detail view)
 
-- The Actor detail view shows the Actor's registered local dev folder (or that none is registered), the
-  detected image working directory (or that none is known yet), and whether a mount will therefore be
-  applied on the Actor's next run - the same status the API endpoint reports (`api.md`).
-- A single-field form exposes the same registration capability as the API endpoint: submitting it sets
-  or clears the dev folder, funnelling into the same validate-and-persist path, so the two surfaces can
-  never observe or produce different outcomes for the same input. Submitting an empty value clears the
-  registration, matching the API; a whitespace-only value is rejected as a malformed path, also matching
-  the API.
+- The Actor detail view shows the Actor's registered local dev folder, or that none is registered - the
+  same status the API endpoint reports (`api.md`). It never claims a mount "will apply": that depends on
+  which build a given run resolves, which this Actor-level view has no way to know in advance.
+- A single-field form exposes the same registration capability as the API endpoint, with no build-first
+  precondition either: submitting it sets or clears the dev folder, funnelling into the same
+  validate-and-persist path, so the two surfaces can never observe or produce different outcomes for the
+  same input. Submitting an empty value clears the registration, matching the API; a whitespace-only
+  value is rejected as a malformed path, also matching the API.
 - A submission that fails validation redirects back to the same detail page with the classified error
   message shown inline, never swallowed by the redirect.

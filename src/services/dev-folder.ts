@@ -4,17 +4,14 @@
  * `POST /actor-runtime/dev-folder/:actorId` (`api/routes/dev-folder.ts`) and the console's single-field
  * form (`console/server.ts`). Neither caller talks to the registry or the driver's probe directly.
  *
- * This is its own module, separate from `services/actors.ts`, so `resolveProbeImageId` below can resolve
- * the probe's image via `services/builds.ts`'s `resolveTaggedBuild`/`getBuildById` without creating an
- * import cycle: `builds.ts` already imports `recordTaggedBuild`/`updateActor` from `actors.ts`, so
- * `actors.ts` importing back from `builds.ts` would cycle. This module imports both `actors.ts` and
- * `builds.ts`; nothing imports it back.
+ * Registration needs no build of the Actor's own: the host-side existence check runs against the
+ * driver's own probe image (`Driver.ensureProbeImage`), never one of the Actor's builds - nothing about
+ * a probe image's contents matters, only that Docker will accept it, so there is nothing here to resolve
+ * off the Actor record at all. That is also why this module needs no import from `services/builds.ts`.
  */
-import type { ActorRecord, BuildRecord } from '../storage/entities.js';
+import type { ActorRecord } from '../storage/entities.js';
 import { getRegistries } from '../storage/registries.js';
 import type { Driver } from '../driver/types.js';
-import { DEFAULT_BUILD_TAG } from './actors.js';
-import { resolveTaggedBuild } from './builds.js';
 
 /** Upper bound on a candidate path's length - generous enough that no genuine host path would ever hit
  * it, just a guard against pathological input. */
@@ -36,28 +33,11 @@ export function validateDevFolderPathShape(path: string): string | null {
 	return null;
 }
 
-/** Resolves the `BuildRecord` that both the probe and the console/API status display check against: the
- * Actor's `DEFAULT_BUILD_TAG` ('latest') build, the same resolution a tag-less real run performs. No
- * fallback to any other tag - an Actor whose only successful build is tagged something else is rejected
- * (or shown as not-yet-buildable) the same way a tag-less run would be. `resolveTaggedBuild`'s two
- * failure reasons both collapse to `null` here: either way there is no build to check against. */
-async function resolveLatestBuild(actor: ActorRecord): Promise<BuildRecord | null> {
-	const lookup = await resolveTaggedBuild(actor, DEFAULT_BUILD_TAG);
-	return lookup.found ? lookup.build : null;
-}
-
-/** Resolves the image id the probe checks the candidate path against - see `resolveLatestBuild`. */
-async function resolveProbeImageId(actor: ActorRecord): Promise<string | null> {
-	const build = await resolveLatestBuild(actor);
-	return build?.imageId ?? null;
-}
-
 /** Every way `setDevFolder` can end, `ok` included - a discriminated union both the API route and the
  * console form switch on to produce their own presentation. */
 export type SetDevFolderResult =
 	| { kind: 'ok'; actor: ActorRecord }
 	| { kind: 'invalid-path'; message: string }
-	| { kind: 'no-successful-build' }
 	| { kind: 'unreachable' }
 	| { kind: 'image-missing' }
 	| { kind: 'not-found' }
@@ -78,15 +58,16 @@ async function writeLocalDevFolder(actorId: string, localDevFolder: string | und
  * trimming happens here, after distinguishing an explicit clear from a merely-blank submission.
  *
  * Only the literal empty string is a clear: it always succeeds, is a no-op (no registry write at all)
- * when the Actor has nothing registered already, and never runs the shape check, build-first check, or
- * existence probe. A whitespace-only, non-empty string is not a clear - it is trimmed and then rejected
+ * when the Actor has nothing registered already, and never runs the shape check or existence probe. A
+ * whitespace-only, non-empty string is not a clear - it is trimmed and then rejected
  * by the shape check below (an empty string after trimming still fails "must start with /"), so
  * `--body '"   "'` 400s instead of silently clearing a registration.
  *
- * A non-empty path must pass the shape pre-filter, then requires the Actor to have at least one
- * successful build, then must pass the host-side existence probe - in that order, each one
- * short-circuiting the next. A rejected call never writes to the registry, so a previously-registered
- * value survives untouched across a later failed attempt.
+ * A non-empty path must pass the shape pre-filter, then must pass the host-side existence probe - in
+ * that order, short-circuiting on failure. There is no build-first precondition: the probe runs against
+ * the driver's own probe image (`Driver.ensureProbeImage`), never the Actor's, so registration works
+ * for an Actor that has never been built at all. A rejected call never writes to the registry, so a
+ * previously-registered value survives untouched across a later failed attempt.
  */
 export async function setDevFolder(driver: Driver, actor: ActorRecord, rawPath: string): Promise<SetDevFolderResult> {
 	if (rawPath === '') {
@@ -99,8 +80,12 @@ export async function setDevFolder(driver: Driver, actor: ActorRecord, rawPath: 
 	const shapeError = validateDevFolderPathShape(path);
 	if (shapeError) return { kind: 'invalid-path', message: shapeError };
 
-	const imageId = await resolveProbeImageId(actor);
-	if (!imageId) return { kind: 'no-successful-build' };
+	let imageId: string;
+	try {
+		imageId = await driver.ensureProbeImage();
+	} catch {
+		return { kind: 'unreachable' };
+	}
 
 	const probe = await driver.probeDevFolder(path, imageId);
 	if (!probe.ok) return { kind: probe.reason };
@@ -115,8 +100,6 @@ export function describeDevFolderFailure(result: Exclude<SetDevFolderResult, { k
 	switch (result.kind) {
 		case 'invalid-path':
 			return result.message;
-		case 'no-successful-build':
-			return `This Actor has no build tagged "${DEFAULT_BUILD_TAG}" - build one before registering a dev folder.`;
 		case 'not-found':
 			return 'The submitted path does not exist on the host.';
 		case 'not-a-directory':
@@ -124,37 +107,25 @@ export function describeDevFolderFailure(result: Exclude<SetDevFolderResult, { k
 		case 'unreachable':
 			return 'Could not verify the path - Docker is unreachable.';
 		case 'image-missing':
-			return 'Could not verify the path - internal error (the build image is missing).';
+			return 'Could not verify the path - internal error (the probe image is missing).';
 		case 'unknown':
 			return 'Could not verify this path.';
 	}
 }
 
 export interface DevFolderStatus {
+	/** `null` when nothing is registered for this Actor. */
 	localDevFolder: string | null;
-	/** The working directory of the Actor's `DEFAULT_BUILD_TAG` ('latest') build - the same build a
-	 * tag-less run resolves and a run would actually mount against (`resolveLatestBuild` above). Build-
-	 * specific, not Actor-specific: this is never read off the Actor record, so a differently-tagged,
-	 * more-recently-built image can never make this field (or `mountWillApply` below) report a value that
-	 * does not match what `latest` would actually use. `null` when there is no such build yet, or its
-	 * inspect never produced a value. */
-	imageWorkingDirectory: string | null;
-	/** Whether `startRun` will actually add the bind mount on the Actor's next tag-less/`latest` run -
-	 * `true` only when both fields are present and non-empty. */
-	mountWillApply: boolean;
 }
 
-/** The three values both the API's registration response and the console detail page show - one
- * derivation, so they can never drift apart. Async because `imageWorkingDirectory` now comes from the
- * Actor's `latest`-tagged `BuildRecord` (`resolveLatestBuild`), not a field cached on the Actor itself -
- * the fix for the cross-tag staleness a single Actor-level field could not avoid. */
-export async function devFolderStatus(actor: ActorRecord): Promise<DevFolderStatus> {
-	const localDevFolder = actor.localDevFolder ?? null;
-	const build = await resolveLatestBuild(actor);
-	const imageWorkingDirectory = build?.imageWorkingDirectory ?? null;
-	return {
-		localDevFolder,
-		imageWorkingDirectory,
-		mountWillApply: Boolean(localDevFolder) && Boolean(imageWorkingDirectory),
-	};
+/**
+ * The one value both the API's registration response and the console detail page show. Deliberately
+ * just the registered folder, nothing about any build: whether a mount actually applies is a per-run
+ * question - it depends on which build that particular run resolves, which this Actor-level status has
+ * no way to know in advance - so it never claims a mount "will apply" for a build a given run might not
+ * even use. `services/runs.ts`'s own `devMount` derivation, computed fresh from the run's own resolved
+ * build at run start, is the only place that claim is actually made.
+ */
+export function devFolderStatus(actor: ActorRecord): DevFolderStatus {
+	return { localDevFolder: actor.localDevFolder ?? null };
 }

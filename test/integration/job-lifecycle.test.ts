@@ -117,6 +117,9 @@ function neverStartDriver(): Driver & { abortRunCalls: string[]; abortBuildCalls
 		async probeDevFolder() {
 			throw new Error('not used by this stub');
 		},
+		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
 	};
 }
 
@@ -593,6 +596,9 @@ describe('reconcileOrphanedJobs (startup reconciliation)', () => {
 				statusesAtCallTime.push(snapshot);
 			},
 			async probeDevFolder() {
+				throw new Error('not used by this stub');
+			},
+			async ensureProbeImage() {
 				throw new Error('not used by this stub');
 			},
 		};

@@ -133,14 +133,13 @@
   the bind-mount feature (`actor-driver.md`). `:actorId` accepts the same forms as the rest of the API
   (id, plain name, `username~name`).
     - **Authenticated** the same way as every `/v2` route, and scoped to the caller's own Actors.
+    - **No build-first precondition** - registration works for an Actor that has never been built at all.
     - **Request body**: a JSON string - the absolute path to set, or `""` to clear.
-    - **Response**: on success, `{ data: { localDevFolder, imageWorkingDirectory, mountWillApply } }` -
-      the same three values the console detail page shows (`console.md`), doubling as the read-back this
-      design has no separate `GET` for.
+    - **Response**: on success, `{ data: { localDevFolder } }` - the same value the console detail page
+      shows (`console.md`), doubling as the read-back this design has no separate `GET` for.
     - **Error responses**, by rejection reason:
         - `400` `invalid-request` - the body isn't a JSON string, or the string isn't a valid absolute
           path.
-        - `400` `dev-folder-not-buildable` - the Actor has no build tagged `latest`.
         - `400` `dev-folder-path-not-found` - the path does not exist on the host.
         - `400` `dev-folder-not-a-directory` - the path exists but is not a directory.
         - `400` `dev-folder-check-failed` - the path could not be verified, for any other reason.

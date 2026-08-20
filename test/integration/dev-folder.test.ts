@@ -1,12 +1,11 @@
 /**
  * Integration coverage for the local dev-folder bind-mount feature's non-Docker-dependent surface: the
- * API endpoint's auth/ownership/shape/build-first/probe-classification contract (`api.md`'s
- * `/actor-runtime/*` section), that the registered value never leaks into any `/v2` Actor response, and
- * the console's single-field
- * form (render, submit, clear, redirect, inline error). Every probe outcome is stubbed
+ * API endpoint's auth/ownership/shape/probe-classification contract (`api.md`'s `/actor-runtime/*`
+ * section), that the registered value never leaks into any `/v2` Actor response, and the console's
+ * single-field form (render, submit, clear, redirect, inline error). Every probe outcome is stubbed
  * (`devFolderDriver` below) - there is no Docker daemon in this sandbox (`docker-driver.ts`'s class doc
- * comment); the real-probe accept/reject path and the mount itself are only exercised end-to-end in
- * `test/e2e/dev-folder-bind-mount.test.ts`.
+ * comment); the real-probe accept/reject path, `ensureProbeImage`'s real build, and the mount itself are
+ * only exercised end-to-end in `test/e2e/dev-folder-bind-mount.test.ts`.
  */
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
@@ -21,12 +20,18 @@ import { recordTaggedBuild, updateActor } from '../../src/services/actors.js';
 import type { ActorRecord, BuildRecord } from '../../src/storage/entities.js';
 import type { Driver, DevFolderMount, DevFolderProbeOutcome } from '../../src/driver/types.js';
 
+/** The fixed id `devFolderDriver`'s stubbed `ensureProbeImage` reports - stands in for the runtime's own
+ * probe image (`DockerDriver.ensureProbeImage`), never any Actor's build. Assertions below check probe
+ * calls carry exactly this id, proving registration never resolves an Actor build to probe against. */
+const STUB_PROBE_IMAGE_ID = 'stub-probe-image:probe';
+
 /**
  * A `Driver` whose only interesting behaviour is `probeDevFolder`, returning a caller-controlled
  * outcome that can be changed mid-test via `setOutcome` (for the "a prior registration survives a later
  * failed attempt" contract, which needs the same driver to succeed once and then fail). `probeDevFolderCalls`
  * records every `(candidatePath, imageId)` pair it was called with, so a test can assert the probe was -
- * or, for the "clearing never checks" contract, was NOT - invoked at all.
+ * or, for the "clearing never checks" contract, was NOT - invoked at all. `ensureProbeImage` always
+ * resolves to `STUB_PROBE_IMAGE_ID`, regardless of what (if anything) the Actor has built.
  */
 function devFolderDriver(
 	initialOutcome: DevFolderProbeOutcome,
@@ -50,6 +55,9 @@ function devFolderDriver(
 		},
 		async abortRun() {},
 		async reconcileOrphans() {},
+		async ensureProbeImage() {
+			return STUB_PROBE_IMAGE_ID;
+		},
 		async probeDevFolder(candidatePath: string, imageId: string) {
 			probeDevFolderCalls.push([candidatePath, imageId]);
 			return outcome;
@@ -57,10 +65,11 @@ function devFolderDriver(
 	};
 }
 
-/** A SUCCEEDED build with a fake image, tagged against the actor - the build-first precondition's
- * "happy path" state (mirrors `job-lifecycle.test.ts`'s identical helper). `imageWorkingDirectory` lives
- * on this build record itself, never on the Actor (directive: build-specific, not Actor-specific) - pass
- * it here to seed a build whose working directory `devFolderStatus`/`startRun` would resolve. */
+/** A SUCCEEDED build with a fake image, tagged against the actor - used only by the run-start
+ * `devMount`-derivation coverage further down this file (mirrors `job-lifecycle.test.ts`'s identical
+ * helper); registration itself never needs a build at all. `imageWorkingDirectory` lives on this build
+ * record itself, never on the Actor (directive: build-specific, not Actor-specific) - pass it here to
+ * seed a build whose working directory a run would resolve. */
 async function seedSucceededBuild(
 	actor: ActorRecord,
 	tag = 'latest',
@@ -131,7 +140,6 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 	it('resolves the actor by plain name and by username~name, not only by id', async () => {
 		server = await startTestServer(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'name-resolution-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 		const me = await server.client.user('me').get();
 
 		const byName = await post(server.baseUrl, actor.name, JSON.stringify('/abs/path-a'), server.token);
@@ -165,24 +173,22 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 		const driver = devFolderDriver({ ok: true });
 		server = await startTestServer(driver);
 		const actor = await server.client.actors().create({ name: 'whitespace-only-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 		await post(server.baseUrl, actor.id, JSON.stringify('/abs/existing-path'), server.token);
 
 		const res = await post(server.baseUrl, actor.id, JSON.stringify('   '), server.token);
 		expect(res.status).toBe(400);
 		// The probe must never be reached either - a whitespace-only body is rejected by the shape check,
 		// not treated as a candidate path to verify.
-		expect(driver.probeDevFolderCalls).toEqual([['/abs/existing-path', 'fake-image:latest']]);
+		expect(driver.probeDevFolderCalls).toEqual([['/abs/existing-path', STUB_PROBE_IMAGE_ID]]);
 
 		// Not a clear: the prior registration survives untouched.
 		const stored = await getRegistries().actors.get(actor.id);
 		expect(stored?.localDevFolder).toBe('/abs/existing-path');
 	});
 
-	it('400s for a relative path, even for an actor with a successful build, and stores nothing', async () => {
+	it('400s for a relative path, even for an actor that has never been built, and stores nothing', async () => {
 		server = await startTestServer(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'relative-path-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 
 		const res = await post(server.baseUrl, actor.id, JSON.stringify('relative/path'), server.token);
 		expect(res.status).toBe(400);
@@ -190,20 +196,23 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 		expect(stored?.localDevFolder).toBeUndefined();
 	});
 
-	it('400s for a non-empty path when the actor has never had a successful build, and never even calls the probe', async () => {
+	it('200s and stores the path for an actor that has never had any build at all - registration has no build-first precondition', async () => {
 		const driver = devFolderDriver({ ok: true });
 		server = await startTestServer(driver);
 		const actor = await server.client.actors().create({ name: 'never-built-actor' });
 
 		const res = await post(server.baseUrl, actor.id, JSON.stringify('/abs/path'), server.token);
-		expect(res.status).toBe(400);
-		expect(driver.probeDevFolderCalls).toEqual([]);
+		expect(res.status).toBe(200);
+		expect(res.data.data.localDevFolder).toBe('/abs/path');
+		// The probe runs against the runtime's own probe image, never one resolved off the (nonexistent)
+		// Actor build.
+		expect(driver.probeDevFolderCalls).toEqual([['/abs/path', STUB_PROBE_IMAGE_ID]]);
 
 		const stored = await getRegistries().actors.get(actor.id);
-		expect(stored?.localDevFolder).toBeUndefined();
+		expect(stored?.localDevFolder).toBe('/abs/path');
 	});
 
-	it('rejects the same way for an actor whose only build attempt failed (no successful build ever)', async () => {
+	it('200s and stores the path for an actor whose only build attempt failed - a failed build is not a precondition either', async () => {
 		server = await startTestServer(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'failed-build-only-actor' });
 		const actorRecord = (await getRegistries().actors.get(actor.id))!;
@@ -220,59 +229,51 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 		});
 
 		const res = await post(server.baseUrl, actor.id, JSON.stringify('/abs/path'), server.token);
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(200);
 	});
 
-	it('rejects the same way for an actor whose only successful build is tagged something other than "latest" - no fallback to an arbitrary other tag', async () => {
+	it('200s and stores the path for an actor whose only successful build is tagged something other than "latest" - registration never resolves any tag at all', async () => {
 		const driver = devFolderDriver({ ok: true });
 		server = await startTestServer(driver);
 		const actor = await server.client.actors().create({ name: 'non-latest-tag-only-actor' });
-		// Mirrors exactly the Actor shape a tag-less `POST /actors/:actorId/runs` would 404 against: a
-		// successful build exists, but not tagged `latest`.
+		// Mirrors exactly the Actor shape a tag-less `POST /actors/:actorId/runs` would 404 against - and
+		// registration succeeds anyway, unlike that run-start resolution: the two are unrelated.
 		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'staging');
 
 		const res = await post(server.baseUrl, actor.id, JSON.stringify('/abs/path'), server.token);
-		expect(res.status).toBe(400);
-		expect(res.data.error.type).toBe('dev-folder-not-buildable');
-		// The probe must never be reached - there is no image to probe against without a `latest` tag.
-		expect(driver.probeDevFolderCalls).toEqual([]);
+		expect(res.status).toBe(200);
+		// Still probed against the runtime's own probe image, never the "staging"-tagged build's.
+		expect(driver.probeDevFolderCalls).toEqual([['/abs/path', STUB_PROBE_IMAGE_ID]]);
 
 		const stored = await getRegistries().actors.get(actor.id);
-		expect(stored?.localDevFolder).toBeUndefined();
+		expect(stored?.localDevFolder).toBe('/abs/path');
 	});
 
-	it('200s and stores the path when the probe reports ok, for an actor with a successful build', async () => {
+	it('200s and stores the path when the probe reports ok', async () => {
 		const driver = devFolderDriver({ ok: true });
 		server = await startTestServer(driver);
 		const actor = await server.client.actors().create({ name: 'happy-path-actor' });
-		const build = await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 
 		const res = await post(server.baseUrl, actor.id, JSON.stringify('/abs/path/to/src'), server.token);
 		expect(res.status).toBe(200);
 		expect(res.data.data.localDevFolder).toBe('/abs/path/to/src');
-		expect(driver.probeDevFolderCalls).toEqual([['/abs/path/to/src', build.imageId]]);
+		expect(driver.probeDevFolderCalls).toEqual([['/abs/path/to/src', STUB_PROBE_IMAGE_ID]]);
 
 		const stored = await getRegistries().actors.get(actor.id);
 		expect(stored?.localDevFolder).toBe('/abs/path/to/src');
 	});
 
-	it('the response reports the detected imageWorkingDirectory (from the resolved build, not the Actor) and whether a mount will apply', async () => {
+	it('the response reports only the registered localDevFolder - never a build working directory or a global "mount will apply" claim, which only a specific run could make good on', async () => {
 		server = await startTestServer(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'status-fields-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
 
 		const res = await post(server.baseUrl, actor.id, JSON.stringify('/abs/path'), server.token);
-		expect(res.data.data).toEqual({
-			localDevFolder: '/abs/path',
-			imageWorkingDirectory: '/usr/src/app',
-			mountWillApply: true,
-		});
+		expect(res.data.data).toEqual({ localDevFolder: '/abs/path' });
 	});
 
 	it('a second registration replaces the first outright, not merges', async () => {
 		server = await startTestServer(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'replace-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 
 		await post(server.baseUrl, actor.id, JSON.stringify('/abs/first'), server.token);
 		const second = await post(server.baseUrl, actor.id, JSON.stringify('/abs/second'), server.token);
@@ -286,7 +287,6 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 		server = await startTestServer(devFolderDriver({ ok: true }));
 		const actorA = await server.client.actors().create({ name: 'cross-actor-a' });
 		const actorB = await server.client.actors().create({ name: 'cross-actor-b' });
-		await seedSucceededBuild((await getRegistries().actors.get(actorA.id))!);
 
 		await post(server.baseUrl, actorA.id, JSON.stringify('/abs/only-a'), server.token);
 
@@ -297,7 +297,6 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 	it('unrelated Actor writes (e.g. PUT name/title) never touch a previously-registered dev folder', async () => {
 		server = await startTestServer(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'unrelated-write-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 		await post(server.baseUrl, actor.id, JSON.stringify('/abs/untouched'), server.token);
 
 		await server.client.actor(actor.id).update({ title: 'a new title' });
@@ -310,7 +309,6 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 		const driver = devFolderDriver({ ok: true });
 		server = await startTestServer(driver);
 		const actor = await server.client.actors().create({ name: 'clear-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 		await post(server.baseUrl, actor.id, JSON.stringify('/abs/path'), server.token);
 		expect(driver.probeDevFolderCalls.length).toBe(1);
 
@@ -336,7 +334,6 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 		const driver = devFolderDriver({ ok: true });
 		server = await startTestServer(driver);
 		const actor = await server.client.actors().create({ name: 'survive-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 
 		const first = await post(server.baseUrl, actor.id, JSON.stringify('/abs/good-path'), server.token);
 		expect(first.status).toBe(200);
@@ -352,7 +349,6 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 	it('classifies a not-found probe outcome as 400 "does not exist", and stores nothing', async () => {
 		server = await startTestServer(devFolderDriver({ ok: false, reason: 'not-found' }));
 		const actor = await server.client.actors().create({ name: 'not-found-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 
 		const res = await post(server.baseUrl, actor.id, JSON.stringify('/abs/missing'), server.token);
 		expect(res.status).toBe(400);
@@ -365,7 +361,6 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 	it('classifies a not-a-directory probe outcome as 400 "not a directory" (a file candidate), distinguishable from "does not exist"', async () => {
 		server = await startTestServer(devFolderDriver({ ok: false, reason: 'not-a-directory' }));
 		const actor = await server.client.actors().create({ name: 'not-a-directory-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 
 		const res = await post(server.baseUrl, actor.id, JSON.stringify('/abs/a-file'), server.token);
 		expect(res.status).toBe(400);
@@ -380,7 +375,6 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 	it('classifies an unreachable probe outcome as 503, distinguishable from "does not exist"', async () => {
 		server = await startTestServer(devFolderDriver({ ok: false, reason: 'unreachable' }));
 		const actor = await server.client.actors().create({ name: 'unreachable-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 
 		const res = await post(server.baseUrl, actor.id, JSON.stringify('/abs/path'), server.token);
 		expect(res.status).toBe(503);
@@ -390,7 +384,6 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 	it('classifies an image-missing probe outcome as 500 internal error, distinguishable from "does not exist"', async () => {
 		server = await startTestServer(devFolderDriver({ ok: false, reason: 'image-missing' }));
 		const actor = await server.client.actors().create({ name: 'image-missing-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 
 		const res = await post(server.baseUrl, actor.id, JSON.stringify('/abs/path'), server.token);
 		expect(res.status).toBe(500);
@@ -400,7 +393,6 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 	it('classifies an unknown mount-shaped rejection as 400 "could not verify", never "does not exist"', async () => {
 		server = await startTestServer(devFolderDriver({ ok: false, reason: 'unknown' }));
 		const actor = await server.client.actors().create({ name: 'unknown-reason-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 
 		const res = await post(server.baseUrl, actor.id, JSON.stringify('/abs/path'), server.token);
 		expect(res.status).toBe(400);
@@ -410,7 +402,6 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 	it('the registered value never appears in any /v2 Actor response (list or get), and modifiedAt does not move either - closing the timestamp side channel, not just the path string', async () => {
 		server = await startTestServer(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'no-leak-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 		const beforeFetch = await server.client.actor(actor.id).get();
 
 		await post(server.baseUrl, actor.id, JSON.stringify('/abs/should-not-leak'), server.token);
@@ -430,7 +421,6 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 	it("registering a dev folder never bumps the Actor's modifiedAt", async () => {
 		server = await startTestServer(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'modifiedat-set-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 		const before = (await getRegistries().actors.get(actor.id))!.modifiedAt;
 
 		const res = await post(server.baseUrl, actor.id, JSON.stringify('/abs/path'), server.token);
@@ -443,7 +433,6 @@ describe('POST /actor-runtime/dev-folder/:actorId', () => {
 	it("clearing a previously-registered dev folder never bumps the Actor's modifiedAt", async () => {
 		server = await startTestServer(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'modifiedat-clear-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 		await post(server.baseUrl, actor.id, JSON.stringify('/abs/path'), server.token);
 		const before = (await getRegistries().actors.get(actor.id))!.modifiedAt;
 
@@ -497,7 +486,6 @@ describe("POST /v2/actor-runtime/dev-folder/:actorId - the alias apify api's har
 	it('registers and reads back successfully via the alias - the same handler as the canonical path, not a separate implementation', async () => {
 		server = await startTestServer(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'alias-happy-path-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 
 		const res = await postViaV2Alias(server.baseUrl, actor.id, JSON.stringify('/abs/via-alias'), server.token);
 		expect(res.status).toBe(200);
@@ -510,7 +498,6 @@ describe("POST /v2/actor-runtime/dev-folder/:actorId - the alias apify api's har
 	it('a registration made through the canonical path is read back identically through the alias, and vice versa - one piece of state, two paths to it', async () => {
 		server = await startTestServer(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'alias-parity-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 
 		const viaCanonical = await post(
 			server.baseUrl,
@@ -554,7 +541,6 @@ describe("POST /v2/actor-runtime/dev-folder/:actorId - the alias apify api's har
 	it('the dev-folder fields never appear in any real /v2 Actor response, whichever path registered them', async () => {
 		server = await startTestServer(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'alias-no-leak-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 
 		await postViaV2Alias(server.baseUrl, actor.id, JSON.stringify('/abs/should-not-leak-via-alias'), server.token);
 
@@ -599,23 +585,24 @@ describe('console: dev-folder registration form on the Actor detail view', () =>
 		await server.close();
 	});
 
-	it('renders the three status rows and the form for an Actor with no registration yet', async () => {
+	it('renders the one status row and the form for an Actor with no registration yet', async () => {
 		await setUpConsole(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'devfolder-render-actor' });
 
 		const detail = await axios.get(`${consoleBaseUrl}/actors/${actor.id}`);
 		expect(detail.status).toBe(200);
 		expect(detail.data).toContain('(none registered)');
-		expect(detail.data).toContain('not yet detected');
-		expect(detail.data).toContain('mount will apply on the next run');
+		// No build working directory or "mount will apply" claim - registration is Actor-level and has no
+		// per-run build to speak for (`services/dev-folder.ts: devFolderStatus`'s doc comment).
+		expect(detail.data).not.toContain('imageWorkingDirectory');
+		expect(detail.data).not.toContain('mount will apply');
 		expect(detail.data).toContain(`<form method="post" action="/actors/${actor.id}/dev-folder">`);
 	});
 
-	it('submitting the form registers the path and redirects back to the detail page, which then shows it', async () => {
+	it('submitting the form registers the path and redirects back to the detail page, which then shows it - no build required first', async () => {
 		const consoleDriver = devFolderDriver({ ok: true });
 		await setUpConsole(consoleDriver);
 		const actor = await server.client.actors().create({ name: 'devfolder-submit-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 
 		const submit = await axios.post(
 			`${consoleBaseUrl}/actors/${actor.id}/dev-folder`,
@@ -639,7 +626,6 @@ describe('console: dev-folder registration form on the Actor detail view', () =>
 	it('submitting an empty value clears a previously-registered path', async () => {
 		await setUpConsole(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'devfolder-clear-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/old-path' }));
 
 		const submit = await axios.post(`${consoleBaseUrl}/actors/${actor.id}/dev-folder`, 'localDevFolder=', {
@@ -661,7 +647,6 @@ describe('console: dev-folder registration form on the Actor detail view', () =>
 	it('submitting a whitespace-only value does not clear - it redirects with an inline error and the prior path survives', async () => {
 		await setUpConsole(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'devfolder-whitespace-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/existing-path' }));
 
 		const submit = await axios.post(`${consoleBaseUrl}/actors/${actor.id}/dev-folder`, 'localDevFolder=%20%20%20', {
@@ -683,7 +668,6 @@ describe('console: dev-folder registration form on the Actor detail view', () =>
 	it('a submission with the localDevFolder field entirely absent from the body is treated as an empty value (clears), the untested false side of the field-presence guard', async () => {
 		await setUpConsole(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'devfolder-missing-field-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/old-path' }));
 
 		// A urlencoded body with no `localDevFolder` key at all - `body?.localDevFolder` is `undefined`,
@@ -699,9 +683,9 @@ describe('console: dev-folder registration form on the Actor detail view', () =>
 		expect(stored?.localDevFolder).toBeUndefined();
 	});
 
-	it('a rejected submission (no successful build) redirects with the classified error surfaced inline, not swallowed', async () => {
+	it('a submission for an Actor that has never been built succeeds through the console form too - no build-first precondition on either surface', async () => {
 		await setUpConsole(devFolderDriver({ ok: true }));
-		const actor = await server.client.actors().create({ name: 'devfolder-error-actor' });
+		const actor = await server.client.actors().create({ name: 'devfolder-never-built-actor' });
 
 		const submit = await axios.post(
 			`${consoleBaseUrl}/actors/${actor.id}/dev-folder`,
@@ -713,23 +697,16 @@ describe('console: dev-folder registration form on the Actor detail view', () =>
 			},
 		);
 		expect(submit.status).toBe(302);
-		expect(submit.headers.location).toContain('devFolderError=');
+		expect(submit.headers.location).toBe(`/actors/${actor.id}`);
 
-		const detail = await axios.get(`${consoleBaseUrl}${submit.headers.location}`);
-		expect(detail.status).toBe(200);
-		expect(detail.data).toContain('Error');
-		expect(detail.data.toLowerCase()).toContain('no build tagged');
-
-		// The rejected submission stored nothing.
 		const stored = await getRegistries().actors.get(actor.id);
-		expect(stored?.localDevFolder).toBeUndefined();
+		expect(stored?.localDevFolder).toBe('/abs/path');
 	});
 
 	it('the does-not-exist vs. could-not-verify distinction is surfaced on the console too, not collapsed', async () => {
 		const consoleDriver = devFolderDriver({ ok: false, reason: 'not-found' });
 		await setUpConsole(consoleDriver);
 		const actor = await server.client.actors().create({ name: 'devfolder-not-found-console-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!);
 
 		const submit = await axios.post(
 			`${consoleBaseUrl}/actors/${actor.id}/dev-folder`,
@@ -780,6 +757,9 @@ function devMountCapturingDriver(): { driver: Driver; getCapturedDevMount: () =>
 		},
 		async abortRun() {},
 		async reconcileOrphans() {},
+		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
 		async probeDevFolder() {
 			throw new Error('not used by this stub');
 		},

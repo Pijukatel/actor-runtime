@@ -2,6 +2,7 @@ import { PassThrough } from 'node:stream';
 
 import { describe, expect, it, vi } from 'vitest';
 import type Docker from 'dockerode';
+import * as tar from 'tar-stream';
 
 import { DockerDriver } from '../../src/driver/docker-driver.js';
 
@@ -497,6 +498,117 @@ describe('DockerDriver.startBuild - imageWorkingDirectory capture (actor-driver.
 		);
 
 		expect(outcome.imageWorkingDirectory).toBeUndefined();
+	});
+});
+
+describe('DockerDriver.ensureProbeImage (actor-driver.md: registration needs no build of its own)', () => {
+	/** A stub covering only what `ensureProbeImage` calls: `buildImage` and `modem.followProgress`
+	 * (invoking its `onFinished` callback synchronously, as a successful build with no progress lines). */
+	function stubDockerForProbeImageBuild() {
+		const followProgress = vi.fn(
+			(
+				_stream: NodeJS.ReadableStream,
+				onFinished: (err: Error | null, res: Array<{ error?: string }>) => void,
+			) => {
+				onFinished(null, []);
+			},
+		);
+		const buildImage = vi.fn(async () => new PassThrough());
+		const docker = { buildImage, modem: { followProgress } } as unknown as Docker;
+		return { docker, buildImage, followProgress };
+	}
+
+	it('builds a `FROM scratch` + `CMD` Dockerfile via an in-memory tar, and returns the built image id', async () => {
+		const stub = stubDockerForProbeImageBuild();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		const imageId = await driver.ensureProbeImage();
+
+		expect(imageId).toBeTruthy();
+		expect(stub.buildImage).toHaveBeenCalledTimes(1);
+		const [tarball, options] = stub.buildImage.mock.calls[0]!;
+		expect(options).toMatchObject({ t: imageId });
+		// The tarball is a real Dockerfile-only tar stream, not source files - reading it back confirms
+		// both the `FROM scratch` base (no build context/network needed) and the `CMD` that keeps
+		// `createContainer` from rejecting the image with "no command specified".
+		const extract = tar.extract();
+		const entries: Array<{ name: string; content: string }> = [];
+		await new Promise<void>((resolve, reject) => {
+			extract.on('entry', (header, stream, next) => {
+				const chunks: Buffer[] = [];
+				stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+				stream.on('end', () => {
+					entries.push({ name: header.name, content: Buffer.concat(chunks).toString('utf8') });
+					next();
+				});
+				stream.resume();
+			});
+			extract.on('finish', resolve);
+			extract.on('error', reject);
+			(tarball as NodeJS.ReadableStream).pipe(extract);
+		});
+		expect(entries).toEqual([{ name: 'Dockerfile', content: expect.stringContaining('FROM scratch') }]);
+		expect(entries[0]?.content).toContain('CMD');
+	});
+
+	it('builds only once and reuses the same image id on every later call - idempotent, never rebuilt per registration', async () => {
+		const stub = stubDockerForProbeImageBuild();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		const first = await driver.ensureProbeImage();
+		const second = await driver.ensureProbeImage();
+		const third = await driver.ensureProbeImage();
+
+		expect(second).toBe(first);
+		expect(third).toBe(first);
+		expect(stub.buildImage).toHaveBeenCalledTimes(1);
+	});
+
+	it('shares one in-flight build across concurrent callers rather than racing separate buildImage calls', async () => {
+		const stub = stubDockerForProbeImageBuild();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		const [first, second] = await Promise.all([driver.ensureProbeImage(), driver.ensureProbeImage()]);
+
+		expect(second).toBe(first);
+		expect(stub.buildImage).toHaveBeenCalledTimes(1);
+	});
+
+	it('throws (never a hang) when the driver already knows Docker is unavailable, and never calls buildImage', async () => {
+		const stub = stubDockerForProbeImageBuild();
+		const driver = new DockerDriver(stub.docker);
+		// driver.available defaults to false - init() never ran.
+
+		await expect(driver.ensureProbeImage()).rejects.toThrow();
+		expect(stub.buildImage).not.toHaveBeenCalled();
+	});
+
+	it('does not cache a failed build - a later call gets to retry against a daemon that may have recovered', async () => {
+		const followProgress = vi.fn(
+			(
+				_stream: NodeJS.ReadableStream,
+				onFinished: (err: Error | null, res: Array<{ error?: string }>) => void,
+			) => {
+				onFinished(null, [{ error: 'build step failed' }]);
+			},
+		);
+		let callCount = 0;
+		const buildImage = vi.fn(async () => {
+			callCount += 1;
+			return new PassThrough();
+		});
+		const driver = new DockerDriver({ buildImage, modem: { followProgress } } as unknown as Docker);
+		driver.available = true;
+
+		await expect(driver.ensureProbeImage()).rejects.toThrow('build step failed');
+		expect(callCount).toBe(1);
+
+		// Retried, not replayed from a cached rejection.
+		await expect(driver.ensureProbeImage()).rejects.toThrow('build step failed');
+		expect(callCount).toBe(2);
 	});
 });
 

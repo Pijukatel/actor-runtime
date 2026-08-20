@@ -60,15 +60,19 @@
       all (e.g. Docker is unreachable) is reported as "could not verify", never as "does not exist"; a
       path confirmed missing is reported as "path does not exist"; a path that exists but is a file is
       reported as "path is not a directory"; anything else unverifiable is a generic "could not verify".
+- **Registration has no build-first precondition.** It requires no build of the Actor's own to exist,
+  succeeded or otherwise - the host-side check needs only something host-present to validate against,
+  never a build a run would actually use.
 - **`imageWorkingDirectory` is captured by the driver itself, right after a successful build, and is
   build-specific, not Actor-specific** - it is persisted on that build's own record (see `storage.md`),
-  never on the Actor.
-    - Both the mount a run actually applies and the status the console/API report resolve the Actor's
-      `latest`-tagged build (the same resolution a tag-less run performs) and read
-      `imageWorkingDirectory` off _that build_.
+  never on the Actor. The mount a run applies always reads it off _that run's own resolved build_, never
+  off any other build the Actor happens to have.
 - **The mount is applied only when both a registered dev folder and a known working directory exist**
   for the run's resolved build; either missing means the run starts exactly as if the feature did not
   exist.
+- The registration status the console and API report is the registered folder alone - it never claims a
+  mount "will apply", since that depends on which build a given run resolves, which an Actor-level status
+  has no way to know in advance.
 - If the registered folder has since been deleted, moved, or made unreadable, the run must **fail
   visibly** - never silently mount an empty directory in its place.
 - The Actor image's own installed dependencies (e.g. `node_modules`) must remain available to the Actor

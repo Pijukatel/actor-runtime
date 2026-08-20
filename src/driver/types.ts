@@ -91,10 +91,19 @@ export interface Driver {
 	 * comment) - orphaned build *records* are still marked `ABORTED` by the caller regardless. */
 	reconcileOrphans(runIds: string[]): Promise<void>;
 
-	/** Host-side existence probe for a candidate dev-folder path (`actor-driver.md`'s "Registration
-	 * validates the path in two layers" bullet), used only by `services/dev-folder.ts: setDevFolder` -
-	 * never by the build/run lifecycle. Required on every `Driver`, including test stubs that never
-	 * exercise dev-folder registration - keeps this a genuine part of the interface rather than an
-	 * optional method with a permanently-dead, permanently-untested fallback for "not implemented". */
+	/** Host-side existence-and-directory probe for a candidate dev-folder path (`actor-driver.md`'s
+	 * "Registration validates the path in two layers" bullet), used only by
+	 * `services/dev-folder.ts: setDevFolder` - never by the build/run lifecycle. `imageId` is the
+	 * runtime's own probe image (`ensureProbeImage` below) - registration never depends on the Actor
+	 * having any build of its own. Required on every `Driver`, including test stubs that never exercise
+	 * dev-folder registration - keeps this a genuine part of the interface rather than an optional method
+	 * with a permanently-dead, permanently-untested fallback for "not implemented". */
 	probeDevFolder(candidatePath: string, imageId: string): Promise<DevFolderProbeOutcome>;
+
+	/** Builds (on first call) and returns the id of the runtime's own minimal image used only to give
+	 * `probeDevFolder` above something host-present to create its throwaway container against - nothing
+	 * about the image's contents matters, only that Docker will accept it. Idempotent: a later call
+	 * reuses the same image without rebuilding. Never the Actor's own build - registering a dev folder
+	 * must work for an Actor that has never been built at all. */
+	ensureProbeImage(): Promise<string>;
 }

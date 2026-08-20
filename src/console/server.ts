@@ -44,18 +44,17 @@ export interface ConsoleServerDeps {
 	driver: Driver;
 }
 
-/** The dev-folder registration form + its three read-only status rows, rendered on the Actor detail
- * view (`console.md`'s "Local dev-folder registration form" section). `errorMessage` is threaded
- * through from the POST handler's redirect query param below, since a redirect itself carries no state
- * of its own. */
+/** The dev-folder registration form + its one read-only status row, rendered on the Actor detail view
+ * (`console.md`'s "Local dev-folder registration form" section). Deliberately shows only the registered
+ * folder, never a build's working directory or a "mount will apply" claim - whether a mount actually
+ * applies depends on which build a given run resolves, which this Actor-level view has no way to know in
+ * advance (`services/dev-folder.ts: devFolderStatus`'s doc comment). `errorMessage` is threaded through
+ * from the POST handler's redirect query param below, since a redirect itself carries no state of its
+ * own. */
 function devFolderSection(actorId: string, status: DevFolderStatus, errorMessage?: string): string {
 	return (
 		'<h2>Local dev folder</h2>' +
-		definitionList([
-			['localDevFolder', status.localDevFolder ?? '(none registered)'],
-			['imageWorkingDirectory', status.imageWorkingDirectory ?? '(not yet detected - build the Actor first)'],
-			['mount will apply on the next run', String(status.mountWillApply)],
-		]) +
+		definitionList([['localDevFolder', status.localDevFolder ?? '(none registered)']]) +
 		devFolderForm(actorId, status.localDevFolder ?? '', errorMessage)
 	);
 }
@@ -115,7 +114,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				1,
 				'/builds',
 			) +
-			devFolderSection(actor.id, await devFolderStatus(actor), devFolderError);
+			devFolderSection(actor.id, devFolderStatus(actor), devFolderError);
 		res.send(layout(`Actor ${actor.name}`, body));
 	});
 

@@ -7,6 +7,12 @@
  * container - and the read-only probe mount `probeDevFolder` creates to validate a candidate dev folder
  * before it is ever registered (see below), whose container is never started.
  *
+ * `probeDevFolder`'s container is created against `ensureProbeImage`'s own minimal image, not any
+ * Actor's build - registering a dev folder must work for an Actor that has never been built. That image
+ * is a one-line `FROM scratch` Dockerfile built the same `buildImage`-plus-in-memory-tar way as an Actor
+ * build, so it needs no network access; built lazily on first use and reused after that, never rebuilt
+ * per registration.
+ *
  * Genuine cancellation: `docker.buildImage()` accepts an `abortSignal` option that dockerode forwards
  * all the way to Node's `http.request({ signal })` (`docker-modem/lib/modem.js`: `optionsf.signal =
  * options.abortSignal`, then `http[...].request(opts, ...)` in `buildRequest`) - aborting it destroys
@@ -46,6 +52,19 @@ const PROBE_LABEL = 'actor-runtime.devFolderProbe';
 /** Target path for the probe container's mount - arbitrary, since the probe is never started and
  * nothing ever reads from it. */
 const PROBE_MOUNT_TARGET = '/probe';
+/** Tag for `ensureProbeImage`'s own minimal image - built and owned by this driver, never an Actor's.
+ * An explicit `:probe` suffix, deliberately never `latest` (Docker's own implicit default for an
+ * untagged name) - this image has nothing to do with an Actor's `latest`-tagged build, and an untagged
+ * name would silently print as `...probe:latest` and invite exactly that confusion. */
+const PROBE_IMAGE_TAG = 'actor-runtime/dev-folder-probe:probe';
+/**
+ * `FROM scratch` with nothing else would build fine but fails every `createContainer` against it with
+ * HTTP 400 "no command specified" (moby refuses to create a container for an image with no `Cmd`/
+ * `Entrypoint`) - which would look exactly like a bad candidate path if left undiagnosed. `CMD` fixes
+ * that; the command itself is never exec'd, since `probeDevFolder`'s container is created but never
+ * started. Verified empirically against a real daemon: builds and creates with no network access.
+ */
+const PROBE_DOCKERFILE = 'FROM scratch\nCMD ["/nonexistent"]\n';
 /** The daemon's own fixed error-message substring for a `Mounts`-type bind whose source is missing
  * (moby's `daemon/volume/mounts/validate.go: errBindSourceDoesNotExist`) - the one rejection shape
  * `classifyProbeError` reports as "does not exist" rather than a generic "could not verify". */
@@ -98,6 +117,15 @@ function buildTarball(sourceFiles: SourceFile[]): NodeJS.ReadableStream {
 	return pack;
 }
 
+/** An in-memory tar containing only a `Dockerfile` - the same `buildImage`-plus-tar-stream path an Actor
+ * build uses (`buildTarball` above), reused here to build `ensureProbeImage`'s own image. */
+function dockerfileTarball(contents: string): NodeJS.ReadableStream {
+	const pack = tar.pack();
+	pack.entry({ name: 'Dockerfile' }, Buffer.from(contents, 'utf8'));
+	pack.finalize();
+	return pack;
+}
+
 export class DockerDriver implements Driver {
 	private readonly docker: Docker;
 	/** One `AbortController` per in-flight `startBuild` call, keyed by build id - `abortBuild` aborts it. */
@@ -108,6 +136,13 @@ export class DockerDriver implements Driver {
 	private readonly timedOutBuilds = new Set<string>();
 	private readonly timedOutRuns = new Set<string>();
 	private readonly runContainers = new Map<string, Docker.Container>();
+	/** Set once `ensureProbeImage` has actually built (or found) the probe image - every later call
+	 * returns this without touching the daemon again. */
+	private probeImageId: string | undefined;
+	/** In-flight build, shared by every concurrent `ensureProbeImage` caller so the image is never built
+	 * twice at once; cleared on failure so a later call gets to retry rather than replaying the same
+	 * rejection forever. */
+	private probeImageBuild: Promise<string> | undefined;
 
 	available = false;
 	unavailableReason: string | undefined;
@@ -390,14 +425,59 @@ export class DockerDriver implements Driver {
 	}
 
 	/**
+	 * Builds (on first call) and returns the id of this driver's own minimal probe image, reusing it on
+	 * every later call - idempotent, verified empirically against a real daemon: re-building when the
+	 * image already exists succeeds and needs no network access either time. Concurrent callers share
+	 * one in-flight build rather than racing separate `buildImage` calls; a failed build is not cached, so
+	 * the next call gets to retry against a daemon that may have recovered.
+	 *
+	 * `FROM scratch` alone builds fine but leaves the image with no `Cmd`/`Entrypoint`, and moby refuses
+	 * to create a container from one at all (`no command specified`) - which `probeDevFolder` below would
+	 * otherwise misreport as a bad candidate path. The `CMD` fixes that; it is never executed, since the
+	 * probe container this image backs is created but never started.
+	 */
+	async ensureProbeImage(): Promise<string> {
+		if (this.probeImageId) return this.probeImageId;
+		if (!this.available) throw new Error(this.unavailableReason ?? 'Docker is not available');
+
+		this.probeImageBuild ??= this.buildProbeImage().catch((error) => {
+			this.probeImageBuild = undefined;
+			throw error;
+		});
+		const imageId = await this.probeImageBuild;
+		this.probeImageId = imageId;
+		return imageId;
+	}
+
+	private async buildProbeImage(): Promise<string> {
+		const tarball = dockerfileTarball(PROBE_DOCKERFILE);
+		const stream = await this.docker.buildImage(tarball, { t: PROBE_IMAGE_TAG });
+		await new Promise<void>((resolve, reject) => {
+			this.docker.modem.followProgress(stream, (err: Error | null, res: Array<{ error?: string }>) => {
+				if (err) {
+					reject(err);
+					return;
+				}
+				const errorLine = res.find((line) => line.error);
+				if (errorLine) {
+					reject(new Error(errorLine.error));
+					return;
+				}
+				resolve();
+			});
+		});
+		return PROBE_IMAGE_TAG;
+	}
+
+	/**
 	 * Host-side existence-and-directory check for a candidate dev-folder path: a create-only probe
 	 * container, never started. `fs.existsSync` would test this process's own filesystem, not the host's;
 	 * the only Engine API surface that validates an arbitrary host path is the mount-validation moby runs
 	 * inside `POST /containers/create`. `BindOptions.CreateMountpoint` (which would auto-create a missing
-	 * source and defeat this check) is never set. `imageId` is always the Actor's own latest
-	 * successfully-built image (resolved by `services/dev-folder.ts`), never a self-inspected runtime
-	 * image (`HOSTNAME` is unset in bare local dev, per `selfAttachToNetwork` above) or a pulled one
-	 * (would break offline-after-first-build).
+	 * source and defeat this check) is never set. `imageId` is always `ensureProbeImage`'s own image
+	 * above - never an Actor's build (registration must work for an Actor with no build at all), a
+	 * self-inspected runtime image (`HOSTNAME` is unset in bare local dev, per `selfAttachToNetwork`
+	 * above), or a pulled one (would break offline-after-first-build).
 	 *
 	 * The mount `Source` is the candidate path with a literal `/.` appended, never the bare path -
 	 * verified empirically against a real daemon (a `FROM scratch` probe image, no network pull needed):

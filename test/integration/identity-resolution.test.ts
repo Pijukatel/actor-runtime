@@ -202,6 +202,9 @@ function envCapturingDriver(): { driver: Driver; getCapturedEnv: () => Record<st
 		async probeDevFolder() {
 			throw new Error('not used by this stub');
 		},
+		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
 	};
 	return { driver, getCapturedEnv: () => capturedEnv };
 }
