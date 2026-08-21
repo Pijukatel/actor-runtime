@@ -188,14 +188,14 @@
   opting in, not an oversight.
 - **What a successful relay looks like**: the platform's response status and body are returned to the
   caller unchanged. Response headers are relayed too, minus the standard hop-by-hop set
-  (`Connection`, `Keep-Alive`, `Transfer-Encoding`, ...) plus `Content-Encoding`/`Content-Length` (the
-  relayed body is re-framed, not streamed through byte-for-byte). `Set-Cookie` is always relayed as one
-  header line per cookie the platform set - never merged into one, since a cookie's own value can contain
-  a comma. Any other header name the platform repeats is relayed as a single, comma-joined value (the
-  standard representation for a repeated header field), not as separate repeated lines. Two markers are
-  added: `x-actor-runtime-fallback: <upstreamBaseUrl>` (which platform served it) and
-  `x-actor-runtime-fallback-trigger: unimplemented` or `record-not-found` (which toggle let it through).
-  Only a final `2xx` counts as successful.
+  (`Connection`, `Keep-Alive`, `Transfer-Encoding`, ...) plus `Content-Encoding`/`Content-Length` - a
+  caller must not rely on the platform's own `Content-Encoding`/`Content-Length` values being echoed.
+  `Set-Cookie` is always relayed as one header line per cookie the platform set - never merged into one,
+  since a cookie's own value can contain a comma. Any other header name the platform repeats is relayed
+  as a single, comma-joined value (the standard representation for a repeated header field), not as
+  separate repeated lines. Two markers are added: `x-actor-runtime-fallback: <upstreamBaseUrl>`
+  (which platform served it) and `x-actor-runtime-fallback-trigger: unimplemented` or
+  `record-not-found` (which toggle let it through). Only a final `2xx` counts as successful.
 - **Fail-closed guarantee**: anything else - a non-`2xx` response, a timeout, or the platform being
   unreachable - reproduces the exact response the caller would have gotten with both toggles off: the
   original local error, unchanged, with neither marker header present. The platform's own status or body
