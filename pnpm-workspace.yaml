@@ -1,6 +1,7 @@
 # Single-package project - this file exists only to hold pnpm settings (pnpm 10 reads them from
 # here, not from a `pnpm` field in package.json). No `packages` list on purpose: `sample_actor_ts`
-# is a standalone fixture with its own lockfile, never a workspace member.
+# is a standalone npm-based fixture with its own package-lock.json (see the README's "Package
+# manager" section), never a workspace member.
 
 # None of these packages need their build scripts (pnpm 10 blocks dependency build scripts unless
 # approved, and lists anything undeclared in an install-time warning - this list is the explicit
