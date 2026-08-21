@@ -146,9 +146,11 @@ export interface LocalError {
  *
  * This function never rejects: both call sites in `server.ts` are the terminal middleware for their
  * respective seam, so a rejection here would escape to Express's own `finalhandler` instead of
- * producing the local error response - everything from the status check onward is therefore wrapped in
- * its own `try`/`catch` that logs and returns `false` on any throw, exactly like the initial `fetch`
- * itself already does.
+ * producing the local error response - every fallible step between the status check and `res.send()` is
+ * therefore wrapped in its own `try`/`catch` that logs and returns `false` on any throw, exactly like the
+ * initial `fetch` itself already does. The one deliberate exception is the success log and `return true`
+ * that follow `res.send()`: they sit outside that `try` on purpose, and cannot themselves turn a
+ * completed relay back into `false` - see the comment just above them.
  */
 export async function attemptFallback(req: Request, res: Response, localError: LocalError): Promise<boolean> {
 	if (res.headersSent) return false;

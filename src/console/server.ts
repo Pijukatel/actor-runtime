@@ -150,7 +150,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		res.send(layout(`Actor ${actor.name}`, body));
 	});
 
-	/** The console's one mutation - funnels through the same `setDevFolder` the API endpoint uses,
+	/** One of the console's two mutations - funnels through the same `setDevFolder` the API endpoint uses,
 	 * resolving the Actor cross-user by the id already in the page URL (no token) rather than through
 	 * `resolveOwnedActor`. A failure redirects back with `describeDevFolderFailure`'s message in a query
 	 * param, so it's surfaced inline rather than swallowed by the redirect. */
