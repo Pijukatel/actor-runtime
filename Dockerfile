@@ -3,7 +3,14 @@
 # glibc is required, not optional: @crawlee/fs-storage loads a native Rust addon
 # (@crawlee/fs-storage-native) with no musl build, so this image cannot be Alpine-based
 # (see requirements/system.md and file-system-storage.ts:19-27 in the crawlee v4 source).
-FROM node:24-bookworm-slim AS builder
+#
+# linux/amd64 is pinned for the same addon: @crawlee/fs-storage-native publishes bindings only for
+# darwin-arm64/darwin-x64/linux-x64-gnu/win32-x64-msvc - no linux-arm64 build exists on npm at all -
+# so an arm64 image (Docker Desktop's default on Apple Silicon) dies at startup with "Cannot find
+# module '@crawlee/fs-storage-native-linux-arm64-gnu'". Pinning here beats asking every Apple
+# Silicon user to remember `docker build --platform ...`: Docker Desktop runs the amd64 image under
+# Rosetta, and on amd64 hosts (CI included) the pin is a no-op.
+FROM --platform=linux/amd64 node:24-bookworm-slim AS builder
 
 WORKDIR /usr/src/app
 
@@ -21,7 +28,8 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN pnpm run build
 
-FROM node:24-bookworm-slim
+# --platform pinned for the same reason as the builder stage - see the comment at the top.
+FROM --platform=linux/amd64 node:24-bookworm-slim
 
 WORKDIR /usr/src/app
 

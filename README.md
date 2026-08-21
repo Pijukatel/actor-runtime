@@ -24,6 +24,13 @@ docker run --rm -p 3333:3333 -p 3000:3000 \
 This mounts `./data` on the host as the runtime's `/data`, so every storage, build and run record
 lands under `./data` for easy inspection.
 
+On Apple Silicon Macs the image builds and runs as linux/amd64 under Rosetta - deliberately: crawlee
+v4's native storage addon (`@crawlee/fs-storage-native`) publishes no linux-arm64 binding at all, so
+an arm64 image would die at startup with `Cannot find module '@crawlee/fs-storage-native-linux-arm64-gnu'`.
+The Dockerfile pins the platform, so plain `docker build`/`docker run` just work; the
+platform-mismatch warning Docker prints on arm64 hosts is expected and harmless. Actor containers
+are unaffected - the runtime builds those from their own Dockerfiles at the host's native platform.
+
 ```bash
 export APIFY_CLIENT_BASE_URL=http://localhost:3333
 export APIFY_CONSOLE_URL=http://localhost:3000

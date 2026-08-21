@@ -11,6 +11,10 @@
 - The image is glibc-based (e.g. Debian slim), **not Alpine/musl**: `@crawlee/fs-storage` loads a
   native Rust addon (`@crawlee/fs-storage-native`) with no musl build, so an Alpine base would fail to
   load the storage layer entirely.
+- The image is **linux/amd64-only**, for the same addon: `@crawlee/fs-storage-native` publishes no
+  linux-arm64 binding on npm (only darwin-arm64/darwin-x64/linux-x64-gnu/win32-x64-msvc exist), so a
+  linux/arm64 image fails at startup. The Dockerfile pins `--platform=linux/amd64`; on Apple Silicon,
+  Docker Desktop runs the image under Rosetta emulation.
 
 # Components
 
