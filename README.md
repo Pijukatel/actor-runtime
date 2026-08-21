@@ -60,7 +60,7 @@ From then on:
 
 ```bash
 # edit src/main.ts, then:
-npm run build        # recompile locally - tsc, no apify push
+pnpm run build       # recompile locally - tsc, no apify push
 apify call --input '{"maxPages":3}'   # picks up the new dist/, no rebuild
 ```
 
@@ -76,18 +76,41 @@ endpoint/console details: `requirements/api.md`'s `/actor-runtime/*` section and
 ## Development
 
 ```bash
-npm install
-npm run build     # tsc
-npm test          # unit + integration (no Docker needed)
-npm run test:e2e  # full CLI-driven dev loop against a built image (requires Docker)
-npm run dev       # run the server directly against ./data with tsx
+pnpm install
+pnpm run build     # tsc
+pnpm test          # unit + integration (no Docker needed)
+pnpm run test:e2e  # full CLI-driven dev loop against a built image (requires Docker)
+pnpm run dev       # run the server directly against ./data with tsx
 ```
 
-`npm run dev` sets `ACTOR_RUNTIME_DATA_DIR=./data` inline in the script (`DEFAULT_DATA_DIR` otherwise
+`pnpm run dev` sets `ACTOR_RUNTIME_DATA_DIR=./data` inline in the script (`DEFAULT_DATA_DIR` otherwise
 falls back to the container path `/data` - see `src/config.ts`); this only works as written on a
 POSIX shell (Linux/macOS). On Windows, set the env var separately before running `tsx src/index.ts`
 (e.g. in PowerShell: `$env:ACTOR_RUNTIME_DATA_DIR="./data"; tsx src/index.ts`), or use a cross-platform
 env-setter like `cross-env` if you add it as a dependency.
+
+### Package manager
+
+Host-side installs (this repo and `sample_actor_ts`) use **pnpm**, never npm. The reason is
+cross-OS lockfile correctness: npm's `package-lock.json` handling of platform-specific _optional_
+dependencies is broken across operating systems - a lock generated on Linux pins Linux-only native
+binaries (concretely: rollup, pulled in by vitest, optionally depends on
+`@napi-rs/lzma-linux-x64-gnu`, a package with no darwin counterpart at all), and `npm ci`/
+`npm install` from that lock then fails on macOS with `EBADPLATFORM`/missing-binary errors instead
+of skipping the foreign-platform package. `pnpm-lock.yaml` records the full optional-dependency
+matrix for every platform and picks the matching subset at install time, so one committed lockfile
+works on Linux, macOS and Windows alike.
+
+`package.json`'s `packageManager` field pins the pnpm version; `corepack enable` (Corepack ships
+with Node) makes `pnpm` available at exactly that version, or install it any other way you prefer.
+pnpm settings live in `pnpm-workspace.yaml` (one at the repo root, one in `sample_actor_ts` marking
+the sample Actor as its own standalone root - see the comments in those files).
+
+One place intentionally stays on npm: `sample_actor_ts/Dockerfile`. The Actor _image_ build always
+runs on Linux inside Docker (so the macOS problem cannot reach it), and keeping it on the base
+image's stock npm keeps the sample identical to a real user's npm-based Actor - which is exactly
+what the runtime has to be able to build. The runtime's own `Dockerfile` installs with pnpm
+(via the base image's Corepack), pinned by `packageManager` and `pnpm-lock.yaml`.
 
 ## Bumping the pinned Crawlee v4 version
 
@@ -96,11 +119,11 @@ resolves to (both must move in lockstep - `@crawlee/fs-storage` pins its own nat
 `@crawlee/fs-storage-native`). To bump:
 
 ```bash
-npm view @crawlee/core dist-tags.v4
-npm view @crawlee/fs-storage dist-tags.v4   # should match
+pnpm view @crawlee/core dist-tags.v4
+pnpm view @crawlee/fs-storage dist-tags.v4   # should match
 # update both versions in package.json, then:
-npm install
-npm run build && npm test
+pnpm install
+pnpm run build && pnpm test
 ```
 
 ## Apify Proxy

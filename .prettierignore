@@ -1,0 +1,4 @@
+# pnpm's generated lockfiles are pnpm's own output format, not ours to reformat - and the next
+# `pnpm install` would rewrite them in that format anyway (matches at any depth: covers the root's
+# and sample_actor_ts's alike).
+pnpm-lock.yaml

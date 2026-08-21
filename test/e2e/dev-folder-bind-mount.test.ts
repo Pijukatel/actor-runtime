@@ -97,7 +97,7 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 
 			// A throwaway copy of the sample Actor - this suite edits `src/main.ts` and runs local builds
 			// against it, and neither must ever touch the committed `sample_actor_ts` tree. `node_modules`/
-			// `dist` are excluded: they are gitignored and unnecessary to copy, since `npm install`/`npm run
+			// `dist` are excluded: they are gitignored and unnecessary to copy, since `pnpm install`/`pnpm run
 			// build` below regenerate both fresh inside the copy anyway.
 			actorDir = mkdtempSync(join(tmpdir(), 'actor-runtime-e2e-devfolder-actor-'));
 			const EXCLUDED_TOP_LEVEL_DIRS = [join(SAMPLE_ACTOR_DIR, 'node_modules'), join(SAMPLE_ACTOR_DIR, 'dist')];
@@ -110,8 +110,10 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 
 			// A genuine local compile needs the sample Actor's own devDependencies (`typescript`) present on
 			// the *host* - distinct from what `apify push` sends the runtime (source files only; the
-			// runtime's own Docker build installs and compiles them again, inside the image).
-			execFileSync('npm', ['install'], { cwd: actorDir, stdio: 'inherit' });
+			// runtime's own Docker build installs and compiles them again, inside the image). pnpm, not npm:
+			// the host may be macOS, where npm's handling of the lockfile's platform-specific optional
+			// dependencies breaks installs (see the repo README's "Package manager" section).
+			execFileSync('pnpm', ['install'], { cwd: actorDir, stdio: 'inherit' });
 		},
 		10 * 60 * 1000,
 	);
@@ -139,8 +141,8 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 
 			// An initial local compile of the still-pristine source, so the registered host folder has a
 			// real `dist/` for the FIRST of the two runs below - registering a folder never compiles
-			// anything itself, and `beforeAll` only ran `npm install`, never a build.
-			execFileSync('npm', ['run', 'build'], { cwd: actorDir, stdio: 'inherit' });
+			// anything itself, and `beforeAll` only ran `pnpm install`, never a build.
+			execFileSync('pnpm', ['run', 'build'], { cwd: actorDir, stdio: 'inherit' });
 
 			const registered = registerDevFolder(actorId, actorDir, env);
 			expect(registered.data.localDevFolder).toBe(actorDir);
@@ -160,7 +162,7 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 			// The recompile IN BETWEEN the two runs - the entire point of this feature. No `apify
 			// push`/`apify build` anywhere in this test after the one push above.
 			writeFileSync(mainTs, originalMainTs.replace(ORIGINAL_MARKER, EDITED_MARKER));
-			execFileSync('npm', ['run', 'build'], { cwd: actorDir, stdio: 'inherit' });
+			execFileSync('pnpm', ['run', 'build'], { cwd: actorDir, stdio: 'inherit' });
 
 			// Run #2: same registered Actor, same image throughout (asserted below via buildId) - only the
 			// host folder's own compiled output changed.
@@ -213,7 +215,7 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 			// here and the `apify call` below, which is the entire point of the feature. `node_modules`
 			// (installed in `beforeAll`) is still present in `actorDir` at this point, so `tsc` can run.
 			writeFileSync(mainTs, originalMainTs.replace(ORIGINAL_MARKER, EDITED_MARKER));
-			execFileSync('npm', ['run', 'build'], { cwd: actorDir, stdio: 'inherit' });
+			execFileSync('pnpm', ['run', 'build'], { cwd: actorDir, stdio: 'inherit' });
 
 			// Remove `node_modules` from the copied folder now, before registering it as the dev folder -
 			// this is what makes the run below actually discriminate the anonymous volume, rather than

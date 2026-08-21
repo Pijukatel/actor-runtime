@@ -6,9 +6,12 @@ FROM apify/actor-node:24 AS builder
 # Check preinstalled packages
 RUN npm ls @crawlee/core apify puppeteer playwright
 
-# Copy just package.json and package-lock.json
-# to speed up the build using Docker layer cache.
-COPY --chown=myuser:myuser package*.json ./
+# Copy just package.json to speed up the build using Docker layer cache. The image build stays on
+# the base image's stock npm and resolves fresh from package.json: it always runs on Linux inside
+# Docker, so the macOS lockfile problem that moved HOST-side installs to pnpm (see the repo README's
+# "Package manager" section) cannot bite here, and this keeps the sample Actor's image build
+# identical to a real user's npm-based Actor.
+COPY --chown=myuser:myuser package.json ./
 
 # Install all dependencies. Don't audit to speed up the installation.
 RUN npm install --include=dev --audit=false
@@ -27,9 +30,9 @@ FROM apify/actor-node:24
 # Check preinstalled packages
 RUN npm ls @crawlee/core apify puppeteer playwright
 
-# Copy just package.json and package-lock.json
-# to speed up the build using Docker layer cache.
-COPY --chown=myuser:myuser package*.json ./
+# Copy just package.json to speed up the build using Docker layer cache
+# (stock npm on purpose - see the builder stage's comment).
+COPY --chown=myuser:myuser package.json ./
 
 # Install NPM packages, skip optional and development dependencies to
 # keep the image small. Avoid logging too much and print the dependency
