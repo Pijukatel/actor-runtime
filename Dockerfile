@@ -1,3 +1,8 @@
+# check=skip=FromPlatformFlagConstDisallowed
+# ^ BuildKit's linter dislikes a constant `FROM --platform` on principle (it usually defeats
+# multi-arch builds); here single-arch is the whole point - see the linux/amd64 comment below -
+# so the warning is suppressed rather than shown to every Apple Silicon user as false alarm.
+#
 # actor-runtime: a minimal, self-contained local Apify platform.
 #
 # glibc is required, not optional: @crawlee/fs-storage loads a native Rust addon
