@@ -205,8 +205,17 @@ export async function attemptFallback(req: Request, res: Response, localError: L
 
 	// From here on, the upstream already committed to a final 2xx status line and headers - but the body
 	// itself can still fail mid-stream (the connection resets, a declared Content-Length is never fully
-	// delivered, ...). That failure surfaces as a rejection from `arrayBuffer()` below, and everything
-	// after it must never let such a rejection escape this function - see the doc comment above.
+	// delivered, ...). That failure surfaces as a rejection from `arrayBuffer()` below - the *first*
+	// statement of this try, before `res` is touched at all - and everything after it must never let such
+	// a rejection escape this function - see the doc comment above. No cleanup of `res` is needed on catch:
+	// nothing in this block can mutate `res` and then have a *later* statement in the same block throw.
+	// `arrayBuffer()` rejecting is first, so a throw there leaves `res` untouched. Past that point,
+	// `res.status()` only ever receives the already-range-checked 2xx integer above, and every
+	// `res.append()` call relays a header value that already survived the upstream HTTP response parser
+	// (a value that parser wouldn't accept - e.g. a raw control character - fails `fetch()` itself, which
+	// is caught by the earlier `try` around the request, never reaching here) or is one of this module's
+	// own literal strings, neither of which Node's header validation rejects. So the only way into this
+	// `catch` is `arrayBuffer()` rejecting, before any mutation - there is nothing to undo.
 	try {
 		const bodyBuffer = Buffer.from(await upstreamResponse.arrayBuffer());
 		res.status(upstreamResponse.status);
@@ -224,27 +233,18 @@ export async function attemptFallback(req: Request, res: Response, localError: L
 		res.append('x-actor-runtime-fallback', upstreamApiBaseUrl());
 		res.append('x-actor-runtime-fallback-trigger', trigger);
 		res.send(bodyBuffer);
-
-		console.log(
-			`api-fallback: relayed ${method} ${req.originalUrl} to ${upstreamApiBaseUrl()} (trigger=${trigger})`,
-		);
-		return true;
 	} catch (err) {
 		console.warn(
 			`api-fallback: upstream response for ${method} ${req.originalUrl} (trigger=${trigger}) failed while ` +
 				`relaying its body: ${err instanceof Error ? err.message : String(err)}; returning the original ` +
 				`local error instead`,
 		);
-		// Nothing has been sent yet (a throw here always happens before `res.send`), but earlier lines in
-		// this same block may have already set the status or appended some headers before the throw -
-		// undo exactly what this function itself could have added, so the caller's local-error response
-		// (which re-sets the status itself) isn't contaminated with a partial relay's leftovers.
-		if (!res.headersSent) {
-			res.removeHeader('x-actor-runtime-fallback');
-			res.removeHeader('x-actor-runtime-fallback-trigger');
-			res.removeHeader('set-cookie');
-			upstreamResponse.headers.forEach((_value, name) => res.removeHeader(name));
-		}
 		return false;
 	}
+
+	// Deliberately outside the `try`: once `res.send()` above returns without throwing, the relay has
+	// unconditionally happened, and nothing past this point may turn that back into a `false` - logging
+	// the success can't retroactively fail the relay it's merely describing.
+	console.log(`api-fallback: relayed ${method} ${req.originalUrl} to ${upstreamApiBaseUrl()} (trigger=${trigger})`);
+	return true;
 }

@@ -679,7 +679,27 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 			return res;
 		}
 
-		it('upstream 404 -> original local error, unchanged, no marker headers', async () => {
+		/** Criterion 16's "byte-identical (status, body, and header set)" - checked here as the header
+		 * *name* set plus every value except `date`, whose value legitimately differs run-to-run (its
+		 * mere presence on both sides is asserted instead). This is what would have caught the fail-closed
+		 * mid-body-death path silently dropping `date`/`connection`/`keep-alive`: that regression left
+		 * status, body, and the two marker headers alone, so only a full-header-set comparison against the
+		 * same request's both-toggles-off baseline surfaces it. */
+		function expectSameHeaderSet(
+			actual: Record<string, string | string[] | undefined>,
+			baseline: Record<string, string | string[] | undefined>,
+		): void {
+			const withoutDate = (headers: Record<string, string | string[] | undefined>) => {
+				const rest = { ...headers };
+				delete rest.date;
+				return rest;
+			};
+			expect(withoutDate(actual)).toEqual(withoutDate(baseline));
+			expect(actual['date']).toBeDefined();
+			expect(baseline['date']).toBeDefined();
+		}
+
+		it('upstream 404 -> original local error, unchanged, no marker headers, full header set matches the both-toggles-off baseline', async () => {
 			const stub = await startStubUpstream(() => ({
 				status: 404,
 				body: { error: 'upstream 404' },
@@ -692,13 +712,14 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 				expect(res.data).toEqual(baseline.data);
 				expect(res.headers['x-actor-runtime-fallback']).toBeUndefined();
 				expect(res.headers['x-actor-runtime-fallback-trigger']).toBeUndefined();
+				expectSameHeaderSet(res.headers, baseline.headers);
 				expect(stub.hitCount()).toBe(1);
 			} finally {
 				await stub.close();
 			}
 		});
 
-		it('upstream 500 -> original local error, unchanged', async () => {
+		it('upstream 500 -> original local error, unchanged, full header set matches the both-toggles-off baseline', async () => {
 			const stub = await startStubUpstream(() => ({
 				status: 500,
 				body: { error: 'upstream 500' },
@@ -710,12 +731,13 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 				expect(res.status).toBe(baseline.status);
 				expect(res.data).toEqual(baseline.data);
 				expect(res.headers['x-actor-runtime-fallback']).toBeUndefined();
+				expectSameHeaderSet(res.headers, baseline.headers);
 			} finally {
 				await stub.close();
 			}
 		});
 
-		it('upstream non-not-found 4xx (401) -> original local error, unchanged', async () => {
+		it('upstream non-not-found 4xx (401) -> original local error, unchanged, full header set matches the both-toggles-off baseline', async () => {
 			const stub = await startStubUpstream(() => ({
 				status: 401,
 				body: { error: 'upstream 401' },
@@ -727,12 +749,13 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 				expect(res.status).toBe(baseline.status);
 				expect(res.data).toEqual(baseline.data);
 				expect(res.headers['x-actor-runtime-fallback']).toBeUndefined();
+				expectSameHeaderSet(res.headers, baseline.headers);
 			} finally {
 				await stub.close();
 			}
 		});
 
-		it('upstream non-not-found 4xx (409) -> original local error, unchanged', async () => {
+		it('upstream non-not-found 4xx (409) -> original local error, unchanged, full header set matches the both-toggles-off baseline', async () => {
 			const stub = await startStubUpstream(() => ({
 				status: 409,
 				body: { error: 'upstream 409' },
@@ -743,21 +766,23 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 				const res = await call('get', '/v2/datasets/does-not-exist-at-all');
 				expect(res.status).toBe(baseline.status);
 				expect(res.data).toEqual(baseline.data);
+				expectSameHeaderSet(res.headers, baseline.headers);
 			} finally {
 				await stub.close();
 			}
 		});
 
-		it('upstream unreachable (connection refused) -> original local error, unchanged', async () => {
+		it('upstream unreachable (connection refused) -> original local error, unchanged, full header set matches the both-toggles-off baseline', async () => {
 			process.env.APIFY_UPSTREAM_API_BASE_URL = 'http://127.0.0.1:1'; // nothing listens here
 			const baseline = await localBothOffResponse('get', '/v2/totally-made-up-path');
 			const res = await call('get', '/v2/totally-made-up-path');
 			expect(res.status).toBe(baseline.status);
 			expect(res.data).toEqual(baseline.data);
 			expect(res.headers['x-actor-runtime-fallback']).toBeUndefined();
+			expectSameHeaderSet(res.headers, baseline.headers);
 		});
 
-		it('upstream hangs past the timeout -> original local error, unchanged', async () => {
+		it('upstream hangs past the timeout -> original local error, unchanged, full header set matches the both-toggles-off baseline', async () => {
 			// The production timeout is 30s; shrunk here so this assertion runs in real time instead of
 			// waiting out the full value - the assertion itself (fail-closed on a hang) is unaffected by
 			// how long the timeout actually is.
@@ -771,6 +796,7 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 					expect(res.status).toBe(baseline.status);
 					expect(res.data).toEqual(baseline.data);
 					expect(res.headers['x-actor-runtime-fallback']).toBeUndefined();
+					expectSameHeaderSet(res.headers, baseline.headers);
 				} finally {
 					await stub.close();
 				}
@@ -779,7 +805,7 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 			}
 		});
 
-		it('upstream sends a final 2xx status line and headers, then dies mid-body (catch-all seam) -> original local error, unchanged, no rejection escapes to finalhandler', async () => {
+		it('upstream sends a final 2xx status line and headers, then dies mid-body (catch-all seam) -> original local error, unchanged, no rejection escapes to finalhandler, full header set matches the both-toggles-off baseline', async () => {
 			const stub = await startHeadersThenDieUpstream();
 			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
 			try {
@@ -790,12 +816,16 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 				expect(res.headers['x-actor-runtime-fallback']).toBeUndefined();
 				expect(res.headers['x-actor-runtime-fallback-trigger']).toBeUndefined();
 				expect(String(res.headers['content-type'])).toContain('application/json');
+				// The regression this guards against: a prior implementation's cleanup path stripped
+				// `date`/`connection`/`keep-alive` from this response even though it never appended them -
+				// status/body/markers alone don't catch that; the full set comparison does.
+				expectSameHeaderSet(res.headers, baseline.headers);
 			} finally {
 				await stub.close();
 			}
 		});
 
-		it('upstream sends a final 2xx status line and headers, then dies mid-body (error-middleware seam) -> original local error, unchanged, no rejection escapes to finalhandler', async () => {
+		it('upstream sends a final 2xx status line and headers, then dies mid-body (error-middleware seam) -> original local error, unchanged, no rejection escapes to finalhandler, full header set matches the both-toggles-off baseline', async () => {
 			const stub = await startHeadersThenDieUpstream();
 			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
 			try {
@@ -806,6 +836,7 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 				expect(res.headers['x-actor-runtime-fallback']).toBeUndefined();
 				expect(res.headers['x-actor-runtime-fallback-trigger']).toBeUndefined();
 				expect(String(res.headers['content-type'])).toContain('application/json');
+				expectSameHeaderSet(res.headers, baseline.headers);
 			} finally {
 				await stub.close();
 			}
