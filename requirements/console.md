@@ -72,9 +72,8 @@
   for not-found records", and one submit. Submitting it always sends both checkboxes' current state
   together - an unchecked box is read as `false`, not as "leave this toggle unchanged" - and redirects
   back to `/settings` showing the result. This differs from the API's own partial `POST` (`api.md`),
-  which only touches the field(s) a caller's body actually names; both surfaces write through the same
-  underlying toggle state, so a flip made on one is immediately visible on the other and via the API's
-  own `GET`, with no restart needed either way.
+  which only touches the field(s) a caller's body actually names; a flip made on either surface is
+  immediately visible on the other and via the API's own `GET`, with no restart needed either way.
 - Since the console has no login of its own, anyone who can reach it can flip either toggle for every
   caller of the API - the same unauthenticated, cross-user model the rest of the console already has, not
   a new exposure specific to this page.
