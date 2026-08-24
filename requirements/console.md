@@ -35,6 +35,8 @@
     - Settings (a single page, not a list/detail pair - see "Settings page" below)
 
 - List view is a list of objects that can be clicked on to open detail view.
+- The Actor builds list, the Actor runs list, and the combined Logs list all show the most recently
+  started build or run first.
 - Detail view of an object is showing only one object with all the available data
 - A run's default storage ids (`defaultDatasetId`, `defaultKeyValueStoreId`, `defaultRequestQueueId`) are
   rendered as links to the corresponding storage detail views (in the run detail view and in the runs

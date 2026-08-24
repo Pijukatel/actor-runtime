@@ -33,6 +33,7 @@ import { openDataset, openKeyValueStore, openRequestQueue } from '../storage/ope
 import { pageKeys } from '../services/kv-key-listing.js';
 import { applyDatasetProjection, type DatasetItem } from '../services/dataset-projection.js';
 import { ansiToHtml } from './ansi.js';
+import { newestFirst } from './order.js';
 import {
 	apiFallbackWarning,
 	definitionList,
@@ -219,7 +220,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 	});
 
 	app.get('/builds', async (_req, res) => {
-		const builds = await listAllBuilds();
+		const builds = newestFirst(await listAllBuilds());
 		const rows = builds.map((b) => [b.id, b.userId, b.actorId, b.buildNumber, b.status, b.startedAt]);
 		res.send(
 			layout(
@@ -256,7 +257,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 	});
 
 	app.get('/runs', async (_req, res) => {
-		const runs = await listAllRuns();
+		const runs = newestFirst(await listAllRuns());
 		const rows = runs.map((r) => [
 			r.id,
 			r.userId,
@@ -301,10 +302,26 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 
 	app.get('/logs', async (_req, res) => {
 		const [builds, runs] = await Promise.all([listAllBuilds(), listAllRuns()]);
-		const rows = [
-			...builds.map((b) => [b.id, b.userId, 'build', b.status]),
-			...runs.map((r) => [r.id, r.userId, 'run', r.status]),
-		];
+		// Builds and runs share this one list, so they're merged before sorting rather than each sorted on
+		// its own and concatenated - otherwise every build would still render before every run (or vice
+		// versa) regardless of which is actually newer.
+		const entries = newestFirst([
+			...builds.map((b) => ({
+				id: b.id,
+				userId: b.userId,
+				kind: 'build' as const,
+				status: b.status,
+				startedAt: b.startedAt,
+			})),
+			...runs.map((r) => ({
+				id: r.id,
+				userId: r.userId,
+				kind: 'run' as const,
+				status: r.status,
+				startedAt: r.startedAt,
+			})),
+		]);
+		const rows = entries.map((e) => [e.id, e.userId, e.kind, e.status]);
 		res.send(layout('Logs', table(['id', 'userId', 'kind', 'status'], rows, 0, '/logs')));
 	});
 

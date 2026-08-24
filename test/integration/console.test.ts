@@ -78,6 +78,113 @@ describe('console pages (HTTP fetch)', () => {
 		expect(logDetail.data).toContain('Docker');
 	});
 
+	it('builds list renders newest startedAt first (regression: registry list order carries no timestamp guarantee of its own)', async () => {
+		const actor = await server.client.actors().create({ name: 'console-builds-order-actor' });
+		const actorRecord = (await getRegistries().actors.get(actor.id))!;
+		const { builds } = getRegistries();
+
+		const startedAts = ['2024-01-01T00:00:00.000Z', '2024-06-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z'];
+		const seeded: BuildRecord[] = [];
+		for (const startedAt of startedAts) {
+			const record: BuildRecord = {
+				id: generateId(),
+				userId: actorRecord.userId,
+				actorId: actor.id,
+				versionNumber: '0.0',
+				buildNumber: '0.0.1',
+				tag: 'latest',
+				status: 'SUCCEEDED',
+				startedAt,
+				finishedAt: startedAt,
+				imageId: 'fake-image:latest',
+			};
+			await builds.set(record.id, record);
+			seeded.push(record);
+		}
+		const [oldest, middle, newest] = seeded;
+
+		const page = (await axios.get(`${consoleBaseUrl}/builds`)).data as string;
+		const indexOf = (b: BuildRecord) => page.indexOf(b.id);
+		expect(indexOf(newest!)).toBeGreaterThanOrEqual(0);
+		expect(indexOf(newest!)).toBeLessThan(indexOf(middle!));
+		expect(indexOf(middle!)).toBeLessThan(indexOf(oldest!));
+	});
+
+	it('runs list renders newest startedAt first', async () => {
+		const actor = await server.client.actors().create({ name: 'console-runs-order-actor' });
+		const actorRecord = (await getRegistries().actors.get(actor.id))!;
+		const { runs } = getRegistries();
+
+		const startedAts = ['2024-01-01T00:00:00.000Z', '2024-06-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z'];
+		const seeded: RunRecord[] = [];
+		for (const startedAt of startedAts) {
+			const record: RunRecord = {
+				id: generateId(),
+				userId: actorRecord.userId,
+				actorId: actor.id,
+				buildId: generateId(),
+				buildNumber: '0.0.1',
+				status: 'SUCCEEDED',
+				startedAt,
+				finishedAt: startedAt,
+				defaultDatasetId: 'd',
+				defaultKeyValueStoreId: 'k',
+				defaultRequestQueueId: 'r',
+				options: { memoryMbytes: 1024, timeoutSecs: 300 },
+				meta: { origin: 'API' },
+			};
+			await runs.set(record.id, record);
+			seeded.push(record);
+		}
+		const [oldest, middle, newest] = seeded;
+
+		const page = (await axios.get(`${consoleBaseUrl}/runs`)).data as string;
+		const indexOf = (r: RunRecord) => page.indexOf(r.id);
+		expect(indexOf(newest!)).toBeGreaterThanOrEqual(0);
+		expect(indexOf(newest!)).toBeLessThan(indexOf(middle!));
+		expect(indexOf(middle!)).toBeLessThan(indexOf(oldest!));
+	});
+
+	it('logs list interleaves builds and runs by newest startedAt first, rather than grouping all builds before all runs', async () => {
+		const actor = await server.client.actors().create({ name: 'console-logs-order-actor' });
+		const actorRecord = (await getRegistries().actors.get(actor.id))!;
+		const { builds, runs } = getRegistries();
+
+		const olderBuild: BuildRecord = {
+			id: generateId(),
+			userId: actorRecord.userId,
+			actorId: actor.id,
+			versionNumber: '0.0',
+			buildNumber: '0.0.1',
+			tag: 'latest',
+			status: 'SUCCEEDED',
+			startedAt: '2024-01-01T00:00:00.000Z',
+			finishedAt: '2024-01-01T00:00:00.000Z',
+			imageId: 'fake-image:latest',
+		};
+		const newerRun: RunRecord = {
+			id: generateId(),
+			userId: actorRecord.userId,
+			actorId: actor.id,
+			buildId: olderBuild.id,
+			buildNumber: olderBuild.buildNumber,
+			status: 'SUCCEEDED',
+			startedAt: '2025-01-01T00:00:00.000Z',
+			finishedAt: '2025-01-01T00:00:00.000Z',
+			defaultDatasetId: 'd',
+			defaultKeyValueStoreId: 'k',
+			defaultRequestQueueId: 'r',
+			options: { memoryMbytes: 1024, timeoutSecs: 300 },
+			meta: { origin: 'API' },
+		};
+		await builds.set(olderBuild.id, olderBuild);
+		await runs.set(newerRun.id, newerRun);
+
+		const page = (await axios.get(`${consoleBaseUrl}/logs`)).data as string;
+		expect(page.indexOf(newerRun.id)).toBeGreaterThanOrEqual(0);
+		expect(page.indexOf(newerRun.id)).toBeLessThan(page.indexOf(olderBuild.id));
+	});
+
 	it('logs/:id 404s for a nonexistent id and 200s for an owned build or run id (regression: it used to render any id with no ownership/existence check at all, unlike /builds/:id and /runs/:id)', async () => {
 		const missing = await axios.get(`${consoleBaseUrl}/logs/totally-made-up-id-not-in-any-registry`, {
 			validateStatus: () => true,
