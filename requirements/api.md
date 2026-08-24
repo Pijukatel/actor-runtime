@@ -152,64 +152,54 @@
 
 ## Upstream fallback (opt-in, off by default, all HTTP methods)
 
-- Two independent booleans, `fallbackUnimplementedEnabled` and `fallbackNotFoundEnabled`, gate whether a
-  request this runtime cannot satisfy locally is instead relayed to the real Apify platform. Both default
-  to `false` on a fresh process and neither is persisted anywhere - a restart always brings both back to
-  `false`, regardless of how they were last set. Either can be on without the other; all four
-  combinations are valid.
+- Two independent booleans, `fallbackUnimplementedEnabled` and `fallbackNotFoundEnabled`, gate whether
+  a request this runtime cannot satisfy locally is instead relayed to the real Apify platform. Both
+  default to `false`, and a restart always brings both back to `false`, regardless of how they were
+  last set. Either can be on without the other; all four combinations are valid.
 - **`GET /actor-runtime/api-fallback`** (also reachable at `/v2/actor-runtime/api-fallback`, like every
   other endpoint in this namespace) returns
   `{ "data": { "fallbackUnimplementedEnabled": <bool>, "fallbackNotFoundEnabled": <bool>, "upstreamBaseUrl": <string> } }`.
   `upstreamBaseUrl` is the platform this runtime would relay to (default `https://api.apify.com`, or the
   value of `APIFY_UPSTREAM_API_BASE_URL` if set) - reported for visibility, but read-only: no request
   body can change it.
-- **`POST /actor-runtime/api-fallback`** (same two mounts) accepts a **partial** body - either field, or
-  both - and merges it into the existing state, leaving any field the body doesn't mention untouched. The
-  response is the same shape `GET` returns, showing the state immediately after the merge.
+- **`POST /actor-runtime/api-fallback`** (same two mounts) accepts a body naming either field, or both;
+  a field the body doesn't mention keeps its current value. The response is the same shape `GET`
+  returns, showing the state immediately after the change.
     - **Authenticated** the same way as every other route in this namespace: no token is `401`
       `user-not-authenticated`, with no state change.
     - **Error responses**: a body that isn't a JSON object (a JSON array, scalar, or `null`), a body
       present but empty (`{}`), a body containing a key other than the two above, or a body where a
       present key's value isn't a boolean, is `400` `invalid-request`, with no state change.
-- **Which local outcome each toggle covers** (exhaustive - every other error response is never eligible,
-  under any toggle combination):
-    - `fallbackUnimplementedEnabled` covers a request whose path/method this runtime does not serve at
-      all - either an off-spec path (matches no entry in the vendored spec table, `501 vs 404` above) or a
-      spec-known path this runtime hasn't built (the `501` case, same section). From the caller's point of
-      view both are "nothing local answers this", so one toggle covers both.
-    - `fallbackNotFoundEnabled` covers a request that reaches a route this runtime does serve, but whose
-      specific record id doesn't exist locally (`record-not-found`, see "Response envelopes" above).
-    - Every other error type - `invalid-request`, `user-not-authenticated`, `cannot-remove-running-run`,
-      `deleting-unfinished-build`, any `dev-folder-*` type, `internal-error` - is never relayed, regardless
-      of either toggle's state.
-- **All HTTP methods are eligible for both toggles, writes included**: a `POST`/`PUT`/`DELETE` that would
-  otherwise 404/501 locally is relayed exactly like a `GET` when its toggle is on - and, if the platform
-  accepts it, becomes a real write against the caller's real account. This is a deliberate consequence of
-  opting in, not an oversight.
-- **What a successful relay looks like**: the platform's response status and body are returned to the
-  caller unchanged. Response headers are relayed too, minus the standard hop-by-hop set
-  (`Connection`, `Keep-Alive`, `Transfer-Encoding`, ...) plus `Content-Encoding`/`Content-Length` - a
-  caller must not rely on the platform's own `Content-Encoding`/`Content-Length` values being echoed.
-  `Set-Cookie` is always relayed as one header line per cookie the platform set - never merged into one,
-  since a cookie's own value can contain a comma. Any other header name the platform repeats is relayed
-  as a single, comma-joined value (the standard representation for a repeated header field), not as
-  separate repeated lines. Two markers are added: `x-actor-runtime-fallback: <upstreamBaseUrl>`
-  (which platform served it) and `x-actor-runtime-fallback-trigger: unimplemented` or
-  `record-not-found` (which toggle let it through). Only a final `2xx` counts as successful.
+- **Which local outcome each toggle covers** (exhaustive - every other error response is never
+  eligible, under any toggle combination):
+    - `fallbackUnimplementedEnabled` covers a request the runtime does not serve at all: a local `404`
+      or `501` response (see "501 vs 404" above). From the caller's point of view both mean "nothing
+      local answers this", so one toggle covers both.
+    - `fallbackNotFoundEnabled` covers a request that reaches a route this runtime does serve, but
+      whose specific record id doesn't exist locally (`record-not-found`, see "Response envelopes"
+      above).
+    - Every other error type - `invalid-request`, `user-not-authenticated`,
+      `cannot-remove-running-run`, `deleting-unfinished-build`, any `dev-folder-*` type,
+      `internal-error` - is never relayed, regardless of either toggle's state.
+- **All HTTP methods are eligible for both toggles, writes included**: a `POST`/`PUT`/`DELETE` that
+  would otherwise 404/501 locally is relayed exactly like a `GET` when its toggle is on - and, if the
+  platform accepts it, becomes a real write against the caller's real account. This is a deliberate
+  consequence of opting in, not an oversight. An eligible request reaches the platform at most once, so
+  a relayed write is never duplicated.
+- **A successful relay** returns the platform's response status and body to the caller unchanged,
+  marked with two response headers: `x-actor-runtime-fallback: <upstreamBaseUrl>` naming which platform
+  served it, and `x-actor-runtime-fallback-trigger: unimplemented` or `record-not-found` naming which
+  toggle let it through. Only a final `2xx` status counts as successful.
 - **Fail-closed guarantee**: anything else - a non-`2xx` response, a timeout, or the platform being
   unreachable - reproduces the exact response the caller would have gotten with both toggles off: the
-  original local error, unchanged, with neither marker header present. The platform's own status or body
-  is never surfaced to the caller. One attempt is made per request; nothing is retried.
-- **Only the caller's own presented token is ever forwarded.** A relayed request's `Authorization` header
-  is always the exact bearer token the caller themselves sent on that request - never a different or
-  runtime-internal credential, and never sent at all for a request this runtime didn't authenticate.
-  Enabling either toggle therefore means the caller's own Apify token reaches the configured
-  `upstreamBaseUrl` on every eligible request; this is the risk being opted into.
+  original local error, unchanged, with neither marker header present. The platform's own status or
+  body is never surfaced to the caller.
+- **Only the caller's own presented token is ever forwarded.** A relayed request's `Authorization`
+  header is always the exact bearer token the caller themselves sent on that request - never a
+  different or runtime-internal credential, and never sent at all for a request this runtime didn't
+  authenticate. Enabling either toggle therefore means the caller's own Apify token reaches the
+  configured `upstreamBaseUrl` on every eligible request; this is the risk being opted into.
 - **Never enriches a call that already succeeds locally**: a collection/list endpoint (e.g.
   `GET /v2/datasets`) that already returns `200` from local data never consults either toggle and never
   gains platform objects. Fallback only ever resolves an otherwise-failing request; it does not make a
   local listing "complete".
-- One line is logged per fallback attempt: a relayed request logs once at the informational level a
-  successful relay happened; an abandoned attempt (any fail-closed case above) logs once at the warning
-  level, including the platform's status or failure reason. Neither line appears when the relevant
-  toggle is off.

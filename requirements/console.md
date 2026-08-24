@@ -11,11 +11,10 @@
   (`storage.md`'s "Users" section).
 - The console is unauthenticated. Every route is a read except the dev-folder form below and the
   Settings form below, which are the console's only two writes - it is no longer strictly view-only.
-- Both of those two writes reject a cross-site form submission (a browser sending `Sec-Fetch-Site` with
-  any value other than `same-origin`/`none`) with a plain `403`, so a page from another origin cannot
-  silently drive either write through a visitor's browser. A submission with no `Sec-Fetch-Site` header
-  at all (an older browser, or a non-browser caller) is unaffected - this narrows the console's existing
-  "anyone who can reach it" model by one specific vector, it does not add a login.
+- Both of those two writes reject a submission that identifies itself as cross-site (via the
+  `Sec-Fetch-Site` header) with a plain `403`; a submission that does not is unaffected. This
+  narrows the console's existing "anyone who can reach it" model by one specific vector, it does
+  not add a login.
 - There are three types of objects: key-value store, dataset, request queue.
     - For each object type there must be exactly one widget for inspection.
     - The request-queue widget leads with the authoritative counts from `RequestQueue.getInfo()`
@@ -58,22 +57,17 @@
 
 ## Settings page
 
-- The last entry in every page's header navigation is "Settings", linking to `/settings` - the one page
-  for the upstream API fallback toggles (`api.md`'s "Upstream fallback" section). Every other page's
-  header nav also shows both toggles' current state next to that link, in the form
-  `Settings — fallback (unimplemented: on|off, not-found: on|off)`, so neither toggle can ever be on
-  without being visible from anywhere in the console; the two states are shown independently, never
-  collapsed into a single word (a mixed state - one on, one off - is visually distinct from both-on and
-  both-off).
-- `/settings` itself shows `fallbackUnimplementedEnabled`, `fallbackNotFoundEnabled`, and
-  `upstreamBaseUrl` (the same values the API's toggle endpoint reports), plus a one-line warning that
-  enabling either toggle forwards the caller's own Apify token to that URL.
-- A single form on the page has two checkboxes, "Fall back for unimplemented endpoints" and "Fall back
-  for not-found records", and one submit. Submitting it always sends both checkboxes' current state
-  together - an unchecked box is read as `false`, not as "leave this toggle unchanged" - and redirects
-  back to `/settings` showing the result. This differs from the API's own partial `POST` (`api.md`),
-  which only touches the field(s) a caller's body actually names; a flip made on either surface is
-  immediately visible on the other and via the API's own `GET`, with no restart needed either way.
+- Every page's header navigation includes a link to `/settings`, the one page for the upstream API
+  fallback toggles (`api.md`'s "Upstream fallback" section). The link itself shows both toggles'
+  current values, independently of each other, so neither toggle can ever be on without being visible
+  from anywhere in the console.
+- `/settings` shows `fallbackUnimplementedEnabled`, `fallbackNotFoundEnabled`, and `upstreamBaseUrl`
+  (the same values the API's toggle endpoint reports), plus a warning that enabling either toggle
+  forwards the caller's own Apify token to that URL.
+- The Settings page lets a caller set both toggles at once. Unlike the API's partial `POST` (`api.md`),
+  submitting the form always sets both toggles explicitly - leaving one unchecked sets it to `false`,
+  never "leave this toggle unchanged". A change made through either surface is immediately visible on
+  the other, and via the API's own `GET`, with no restart needed either way.
 - Since the console has no login of its own, anyone who can reach it can flip either toggle for every
-  caller of the API - the same unauthenticated, cross-user model the rest of the console already has, not
-  a new exposure specific to this page.
+  caller of the API - the same unauthenticated, cross-user model the rest of the console already has,
+  not a new exposure specific to this page.
