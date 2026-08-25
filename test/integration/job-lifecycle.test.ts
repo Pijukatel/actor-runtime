@@ -764,8 +764,10 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			expect(driver.abortRunCalls).toEqual([]);
 
 			// The second call re-fetches the record first, exactly as the real HTTP route does via
-			// `getOwnedRun` - the reviewer's own repro used a freshly re-fetched record, not the first
-			// call's now-stale local object.
+			// `getOwnedRun`: `abortRun` checks `isTerminalJobStatus(run.status)` on its `run` parameter
+			// before ever touching the registry, so passing the first call's now-stale local object here
+			// (instead of a freshly re-fetched one) would let this call observe a different status than a
+			// genuinely concurrent second request actually would.
 			const secondAbort = abortRun(driver, midWindow!, true);
 			const secondResult = await secondAbort;
 
@@ -898,7 +900,7 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			unsubscribe();
 		});
 
-		it('POST .../abort with no gracefully parameter, over the same real HTTP round trip, still returns immediately with no wait (criterion #23 holds end to end too, not just at the service layer)', async () => {
+		it('POST .../abort with no gracefully parameter, over the same real HTTP round trip, still returns immediately with no wait (matches requirements/api.md\'s "omitted, or false" graceful-abort behavior end to end, not just at the service layer)', async () => {
 			const driver = deferredRunDriver();
 			server = await startTestServer(driver);
 			const actor = await seedActor(server, 'immediate-http-actor');

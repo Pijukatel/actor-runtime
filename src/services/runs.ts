@@ -353,8 +353,9 @@ export async function runInBackground(
  *   is a no-op: it returns the record exactly as it stands (still `ABORTING`) without calling
  *   `driver.abortRun` and without starting a window of its own. The first caller's own window is the only
  *   one that will ever elapse, and its own eventual `driver.abortRun` + `-> ABORTED` write is the only one
- *   that happens - exactly the guarantee criterion #25 makes for "the" caller of a graceful abort, now made
- *   to hold for whichever caller actually started the window still in flight.
+ *   that happens - exactly the guarantee `requirements/api.md`'s "Graceful abort" section makes for the
+ *   caller of a graceful abort, now made to hold for whichever caller actually started the window still in
+ *   flight.
  * - A second `?gracefully=false` (or omitted) call is a deliberate escalation, not a bug: it proceeds
  *   straight to `driver.abortRun` and the terminal `-> ABORTED` write, immediately, exactly like the
  *   pre-graceful-window shape of this function always did for a plain double-abort (a redundant

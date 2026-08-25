@@ -129,7 +129,7 @@ describe('actor version envVars are applied to the run container env', () => {
 
 			// Before this test, only the "absent" arm of `buildEnv`'s `if (options.proxyPassword)` was
 			// ever exercised (grepping the suite for `PROXY_PASSWORD` found zero hits) - this is the
-			// "present" arm, success criterion 15's explicit contract.
+			// "present" arm, covering `requirements/actor-driver.md`'s `APIFY_PROXY_PASSWORD` contract.
 			expect(getCapturedEnv()?.APIFY_PROXY_PASSWORD).toBe('super-secret-proxy-password');
 		} finally {
 			if (previous === undefined) delete process.env.APIFY_PROXY_PASSWORD;
