@@ -96,27 +96,6 @@ POSIX shell (Linux/macOS). On Windows, set the env var separately before running
 (e.g. in PowerShell: `$env:ACTOR_RUNTIME_DATA_DIR="./data"; tsx src/index.ts`), or use a cross-platform
 env-setter like `cross-env` if you add it as a dependency.
 
-### Package manager
-
-The runtime itself installs with **pnpm**, never npm. The reason is cross-OS lockfile correctness:
-npm's `package-lock.json` handling of platform-specific _optional_ dependencies is broken across
-operating systems - a lock generated on Linux pins Linux-only native binaries (concretely: rollup,
-pulled in by vitest, optionally depends on `@napi-rs/lzma-linux-x64-gnu`, a package with no darwin
-counterpart at all), and `npm ci`/`npm install` from that lock then fails on macOS with
-`EBADPLATFORM`/missing-binary errors instead of skipping the foreign-platform package.
-`pnpm-lock.yaml` records the full optional-dependency matrix for every platform and picks the
-matching subset at install time, so one committed lockfile works on Linux, macOS and Windows alike.
-
-`package.json`'s `packageManager` field pins the pnpm version; `corepack enable` (Corepack ships
-with Node) makes `pnpm` available at exactly that version, or install it any other way you prefer.
-pnpm settings live in `pnpm-workspace.yaml` - see the comments there. The runtime's own
-`Dockerfile` installs with pnpm too (via the base image's Corepack), pinned by `packageManager`
-and `pnpm-lock.yaml`.
-
-`sample_actor_ts` deliberately stays on stock npm end to end (its own `package-lock.json`, npm in
-its Dockerfile, `npm install`/`npm run build` on the host): it mirrors a real user's npm-based
-Actor, which is exactly what the runtime has to be able to build and run.
-
 ## Bumping the pinned Crawlee v4 version
 
 `@crawlee/core` and `@crawlee/fs-storage` are pinned to the exact version the npm `v4` dist-tag

@@ -19,14 +19,15 @@ FROM --platform=linux/amd64 node:24-bookworm-slim AS builder
 
 WORKDIR /usr/src/app
 
-# pnpm, not npm - the committed lockfile is pnpm-lock.yaml (see the README's "Package manager"
-# section for why). Corepack ships with the node:24 image and installs the exact pnpm version
-# pinned by package.json's `packageManager` field; the prompt toggle keeps its one-time
-# "download pnpm?" confirmation out of non-interactive builds.
+# pnpm, not npm - the committed lockfile is pnpm-lock.yaml: unlike npm's package-lock.json, it
+# records platform-specific optional dependencies for every platform, so the one lockfile installs
+# correctly on Linux, macOS and Windows hosts alike. Corepack ships with the node:24 image and
+# installs the exact pnpm version pinned by package.json's `packageManager` field; the prompt
+# toggle keeps its one-time "download pnpm?" confirmation out of non-interactive builds.
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack enable pnpm
 
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 COPY tsconfig.json ./
@@ -41,7 +42,7 @@ WORKDIR /usr/src/app
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack enable pnpm
 
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY package.json pnpm-lock.yaml ./
 # The store prune plays the role `npm cache clean` played before: production node_modules keeps
 # hard links into the store, so pruning drops only the unreferenced (dev) packages' disk copies.
 RUN pnpm install --prod --frozen-lockfile && pnpm store prune
