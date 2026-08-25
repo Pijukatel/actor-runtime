@@ -163,20 +163,45 @@ interface CpuUsageSnapshot {
  * cgroup - the exact adjustment `docker stats`' own MEM USAGE column makes
  * (`calculateMemUsageUnixNoCache` in moby's CLI), so this sampler's `memoryBytes` tracks what a human
  * watching `docker stats` for the same container would see, not a raw cgroup counter inflated by cache an
- * Actor doing heavy file/network I/O does not actually need back. cgroup v1 reports the cache figure as
+ * Actor doing heavy file/network I/O does not actually need back. `undefined` when `usage` itself is
+ * missing or not a finite number - the daemon's own stats shape is not guaranteed (a tick landing on an
+ * already-exited or mid-removal container is the plausible trigger) - and `takeSample` (below) skips the
+ * whole tick outright on `undefined` rather than ever emit a partial frame or feed a `NaN`/`undefined`
+ * into `events-channel.ts`'s running accumulators. cgroup v1 reports the cache figure as
  * `total_inactive_file`; cgroup v2 has no such field and reports `inactive_file` instead - checked in that
  * order, first one present wins. Guarded by `< usage` (matching docker's own guard): a cache figure that
  * is somehow not smaller than `usage` (a daemon/cgroup-version inconsistency this driver has no way to
  * verify against, `usage` itself being the daemon's own number) is not subtracted, so this can never
- * produce a negative or zero-when-actually-nonzero result. Absent both fields (an unrecognized stats
- * shape) falls back to the raw `usage` this driver has always reported - "unknown cache" must never be
- * treated as "zero usage".
+ * produce a negative or zero-when-actually-nonzero result. Absent both cache fields (an unrecognized
+ * stats shape) falls back to the raw `usage` this driver has always reported - "unknown cache" must never
+ * be treated as "zero usage".
  */
-function memoryUsageBytesExcludingCache(stats: Docker.ContainerStats): number {
-	const usage = stats.memory_stats.usage;
+function memoryUsageBytesExcludingCache(stats: Docker.ContainerStats): number | undefined {
+	const usage = stats.memory_stats?.usage;
+	if (typeof usage !== 'number' || !Number.isFinite(usage)) return undefined;
 	const memStats = stats.memory_stats.stats as { total_inactive_file?: number; inactive_file?: number } | undefined;
 	const cacheBytes = memStats?.total_inactive_file ?? memStats?.inactive_file;
 	return cacheBytes !== undefined && cacheBytes < usage ? usage - cacheBytes : usage;
+}
+
+/**
+ * Presence-and-finiteness guard for the two `cpu_stats` fields `takeSample`'s delta computation actually
+ * reads (`total_usage`, `system_cpu_usage`) - the CPU-side counterpart to
+ * `memoryUsageBytesExcludingCache`'s guard on `memory_stats.usage` above, for the identical reason: the
+ * daemon's own stats shape is not guaranteed, and a missing/non-finite field here must skip the tick,
+ * never throw (optional chaining throughout - `cpu_stats` itself being absent must not throw a
+ * `TypeError` out of `takeSample` and become an unhandled rejection on the interval's own uncaught
+ * `inFlight` promise) and never produce a `NaN` delta. `online_cpus` is deliberately not part of this
+ * guard: it already degrades to a number via its own `|| 1` fallback at the one call site that reads it
+ * (below), precisely because - unlike `total_usage`/`system_cpu_usage` - a missing or zero `online_cpus`
+ * still has an obviously correct fallback.
+ */
+function cpuUsageSnapshotOf(stats: Docker.ContainerStats): CpuUsageSnapshot | undefined {
+	const totalUsage = stats.cpu_stats?.cpu_usage?.total_usage;
+	const systemUsage = stats.cpu_stats?.system_cpu_usage;
+	if (typeof totalUsage !== 'number' || !Number.isFinite(totalUsage)) return undefined;
+	if (typeof systemUsage !== 'number' || !Number.isFinite(systemUsage)) return undefined;
+	return { totalUsage, systemUsage };
 }
 
 /**
@@ -225,10 +250,18 @@ function startResourceSampler(
 		}
 		if (stopped) return; // `stop()` raced this call to completion - never emit after stop.
 
-		const current: CpuUsageSnapshot = {
-			totalUsage: stats.cpu_stats.cpu_usage.total_usage,
-			systemUsage: stats.cpu_stats.system_cpu_usage,
-		};
+		const current = cpuUsageSnapshotOf(stats);
+		const memoryBytes = memoryUsageBytesExcludingCache(stats);
+		if (!current || memoryBytes === undefined) {
+			// This tick's stats blob is missing (or reports non-finite for) a field a complete eight-field
+			// `systemInfo` frame needs - skipped exactly like the rejecting-stats case above: no emission,
+			// `previous` left untouched. Never emit a partial frame (a frame missing even one field fails
+			// Python-SDK-side pydantic validation and is silently dropped there), and never let a
+			// `NaN`/`undefined` reach `events-channel.ts`'s running avg/max accumulators, which would poison
+			// every later frame of the run, not just this one tick.
+			return;
+		}
+
 		if (emit && previous) {
 			const cpuDelta = current.totalUsage - previous.totalUsage;
 			const systemDelta = current.systemUsage - previous.systemUsage;
@@ -239,7 +272,7 @@ function startResourceSampler(
 			const cpuPercentOfOneCore = systemDelta > 0 ? (cpuDelta / systemDelta) * onlineCpus * 100 : 0;
 			onSample({
 				cpuPercentOfOneCore,
-				memoryBytes: memoryUsageBytesExcludingCache(stats),
+				memoryBytes,
 				memoryLimitBytes,
 				at: new Date(),
 			});

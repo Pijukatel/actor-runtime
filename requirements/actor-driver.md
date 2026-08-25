@@ -139,7 +139,10 @@
   (`api.md`), with all eight fields present on every frame: `memAvgBytes`, `memCurrentBytes`,
   `memMaxBytes`, `cpuAvgUsage`, `cpuMaxUsage`, `cpuCurrentUsage`, `isCpuOverloaded`, `createdAt` - never a
   subset (apify-sdk-python's pydantic model declares every field required with no default, so a frame
-  missing even one is silently dropped there).
+  missing even one is silently dropped there). A tick whose raw stats blob is missing, or reports a
+  non-finite value for, any field a complete frame needs is skipped entirely - no frame emitted, and the
+  running avg/max accumulators are left untouched - rather than ever emit a partial frame or let a bad
+  number poison every later frame of the run.
     - `cpuCurrentUsage` is percent of **one** CPU core - the same convention `docker stats` itself uses -
       never percent of the run's own CPU grant.
     - `memCurrentBytes`/`memAvgBytes` are `memory_stats.usage` with the reclaimable page cache subtracted
@@ -159,14 +162,15 @@
   block that owns container removal, strictly _before_ `container.remove()` is called - a stats call is
   never issued after the sampler has been asked to stop, the same class of cross-connection ordering
   hazard `LOG_DRAIN_GRACE_MS` already guards against for the log stream.
-- Stopping the sampler never blocks on the Docker daemon indefinitely: the one in-flight `stats()` call
-  `stop()` awaits is bounded by a fixed `SAMPLER_STOP_GRACE_MS` grace, for the same reason the daemon
-  connection has no client-side timeout configured anywhere in this codebase - a call that outlives the
-  grace is abandoned (never emitted, per the `isCpuOverloaded`/sample-shape rules above), and removal may
-  then rarely overlap it, which costs nothing worse than one discarded sample. Without this bound, a
-  daemon that never answers a `stats()` call would leave the whole run - its record, its log stream, its
-  events socket - stuck non-terminal forever, since this sampler's own stop is what the run's finalization
-  now waits on.
+- Stopping the sampler never blocks on the Docker daemon indefinitely: the daemon client is built with no
+  options, and its request layer only ever installs a request timeout when one is explicitly supplied - so
+  the one in-flight `stats()` call `stop()` awaits has no client-side ceiling of its own and could
+  otherwise hang forever against a daemon that never answers. `stop()` therefore bounds that wait by a
+  fixed `SAMPLER_STOP_GRACE_MS` grace; a call that outlives it is abandoned, not cancelled - `takeSample`'s
+  own `stopped` check suppresses its result if it ever does resolve, so removal may then rarely overlap it,
+  which costs nothing worse than one discarded sample. Without this bound, a daemon that never answers a
+  `stats()` call would leave the whole run - its record, its log stream, its events socket - stuck
+  non-terminal forever, since this sampler's own stop is what the run's finalization now waits on.
 - The sampler measures only; it never writes to a run's status or log - shaping the raw sample into the
   wire envelope, and fanning it out to whoever is connected, is the events channel's job
   (`services/events-channel.ts`).
