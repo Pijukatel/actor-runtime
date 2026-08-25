@@ -26,8 +26,8 @@
 		"test:watch": "vitest"
 	},
 	"dependencies": {
-		"@crawlee/core": "4.0.0-beta.133",
-		"@crawlee/fs-storage": "4.0.0-beta.133",
+		"@crawlee/core": "4.0.0-beta.145",
+		"@crawlee/fs-storage": "4.0.0-beta.145",
 		"dockerode": "^4.0.5",
 		"express": "^5.1.0",
 		"tar-stream": "^3.1.7"
@@ -55,6 +55,9 @@
 			"esbuild",
 			"protobufjs",
 			"ssh2"
-		]
+		],
+		"overrides": {
+			"@crawlee/fs-storage-native": "0.1.5-beta.19"
+		}
 	}
 }

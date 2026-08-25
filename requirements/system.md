@@ -9,12 +9,12 @@
 - Linux is the officially supported and verified platform for the POC.
 - MacOS and Windows are best-effort for the POC.
 - The image is glibc-based (e.g. Debian slim), **not Alpine/musl**: `@crawlee/fs-storage` loads a
-  native Rust addon (`@crawlee/fs-storage-native`) with no musl build, so an Alpine base would fail to
-  load the storage layer entirely.
-- The image is **linux/amd64-only**, for the same addon: `@crawlee/fs-storage-native` publishes no
-  linux-arm64 binding on npm (only darwin-arm64/darwin-x64/linux-x64-gnu/win32-x64-msvc exist), so a
-  linux/arm64 image fails at startup. The Dockerfile pins `--platform=linux/amd64`; on Apple Silicon,
-  Docker Desktop runs the image under Rosetta emulation.
+  native Rust addon (`@crawlee/fs-storage-native`), and its glibc (gnu) bindings are the ones the
+  runtime is developed and tested against (musl builds only started appearing in `0.1.5-beta.19`).
+- The image supports **linux/amd64 and linux/arm64**: the addon ships linux-arm64 bindings since
+  `0.1.5-beta.19`, which `package.json` pins via a pnpm override (the pinned `@crawlee/fs-storage`
+  release still depends on the older, x64-only `0.1.5-beta.18`). On Apple Silicon, Docker builds and
+  runs the image natively as arm64.
 
 # Components
 
