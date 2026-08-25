@@ -1,0 +1,9 @@
+{
+  "proxyConfiguration": {
+    "useApifyProxy": true,
+    "apifyProxyGroups": [
+      "RESIDENTIAL_STATIC_DE"
+    ]
+  },
+  "startUrl": "https://crawlee.dev"
+}

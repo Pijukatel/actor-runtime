@@ -1,17 +1,3 @@
-"""Sample Actor demonstrating a Parsel-based crawl through Apify Proxy.
-
-Adapted from the Apify SDK's own ParselCrawler guide. Reads ``startUrl`` and
-``proxyConfiguration`` (see ``.actor/input_schema.json``) and passes the
-latter straight to ``Actor.create_proxy_configuration`` with no fallback:
-only an explicit ``{"useApifyProxy": false}`` crawls direct -- an omitted
-``proxyConfiguration`` behaves like ``useApifyProxy: true``, not like
-``false`` -- and either way, ``useApifyProxy: true`` with a missing or
-invalid ``APIFY_PROXY_PASSWORD`` fails the run via the SDK's own live
-proxy-access check. See README.md's "Apify Proxy" section for the full
-explanation.
-"""
-import asyncio
-
 from crawlee.crawlers import ParselCrawler, ParselCrawlingContext
 from crawlee.router import Router
 
@@ -51,7 +37,3 @@ async def main() -> None:
         )
 
         await crawler.run([start_url])
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
