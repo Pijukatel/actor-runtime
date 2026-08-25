@@ -16,7 +16,7 @@ function actorJson(spec: Record<string, unknown> | string): SourceFile {
 }
 
 describe('resolveDockerfileLocation', () => {
-	// --- 2-design.md Example A: sample_actor_crawler - the bug this change fixes. ---
+	// --- A: sample_actor_crawler - the bug this change fixes. ---
 	it('A: resolves the "dockerfile" field to .actor/Dockerfile (sample_actor_crawler layout)', () => {
 		const result = resolveDockerfileLocation([
 			actorJson({ dockerfile: './Dockerfile' }),
@@ -33,7 +33,7 @@ describe('resolveDockerfileLocation', () => {
 		]);
 	});
 
-	// --- 2-design.md Example B: sample_actor_ts / sample_actor_py - the regression guard. ---
+	// --- B: sample_actor_ts / sample_actor_py - the regression guard. ---
 	it('B: resolves "../Dockerfile" to the root Dockerfile (sample_actor_ts/py layout) - byte-identical to today\'s implicit default', () => {
 		const result = resolveDockerfileLocation([
 			actorJson({ dockerfile: '../Dockerfile' }),
@@ -46,7 +46,7 @@ describe('resolveDockerfileLocation', () => {
 		expect(result.dockerfilePath).toBe('Dockerfile');
 	});
 
-	// --- 2-design.md Example C: a "dockerfile" field that names nothing - warn and fall through. ---
+	// --- C: a "dockerfile" field that names nothing - warn and fall through. ---
 	it('C: warns and falls through to .actor/Dockerfile when the "dockerfile" field names no file', () => {
 		const result = resolveDockerfileLocation([
 			actorJson({ dockerfile: './Custom.Dockerfile' }),
@@ -62,7 +62,7 @@ describe('resolveDockerfileLocation', () => {
 		]);
 	});
 
-	// --- 2-design.md Example D: a path that escapes the Actor root. ---
+	// --- D: a path that escapes the Actor root. ---
 	describe('D: an escaping "dockerfile" field fails the build before any daemon call', () => {
 		it('a relative path with enough ".." segments to escape .actor/', () => {
 			const result = resolveDockerfileLocation([actorJson({ dockerfile: '../../evil/Dockerfile' })]);
@@ -97,7 +97,7 @@ describe('resolveDockerfileLocation', () => {
 		});
 	});
 
-	// --- 2-design.md Example E: case-insensitive matching, exact-case tie-break. ---
+	// --- E: case-insensitive matching, exact-case tie-break. ---
 	describe('E: case-insensitive matching', () => {
 		it('matches .actor/Dockerfile against a lowercase .actor/dockerfile source file, returning ITS OWN spelling', () => {
 			const result = resolveDockerfileLocation([text('.actor/dockerfile', 'FROM node:20\n')]);
@@ -128,7 +128,7 @@ describe('resolveDockerfileLocation', () => {
 		});
 	});
 
-	// --- 2-design.md Example F: no Dockerfile at all - the platform-parity default. ---
+	// --- F: no Dockerfile at all - the platform-parity default. ---
 	describe('F: nothing resolves - the bundled default is injected', () => {
 		it('injects the bundled default Dockerfile, verbatim, as an extra Dockerfile-named SourceFile', () => {
 			const result = resolveDockerfileLocation([
@@ -164,7 +164,7 @@ describe('resolveDockerfileLocation', () => {
 		});
 	});
 
-	// --- 2-design.md Example G: a present-but-malformed "dockerfile" field. ---
+	// --- G: a present-but-malformed "dockerfile" field. ---
 	describe('G: malformed "dockerfile" field', () => {
 		it('a non-string value (e.g. true) fails the build immediately, before any candidate is tried', () => {
 			const result = resolveDockerfileLocation([

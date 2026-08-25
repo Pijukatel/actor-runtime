@@ -1,9 +1,9 @@
 /**
  * Resolves which Dockerfile a build should use, from the version's flat, in-memory `SourceFile[]` -
  * mirroring apify-worker's own `ensureDockerfileExists` (`act2_build_job.ts`) so that "builds locally"
- * keeps predicting "builds on the platform" (`2-design.md`). Pure: no filesystem, no Docker. "Does this
- * file exist" is a lookup in a normalized-name index built over `sourceFiles`; "does it escape the
- * root" is POSIX path arithmetic on strings.
+ * keeps predicting "builds on the platform" (`requirements/actor-driver.md`). Pure: no filesystem, no
+ * Docker. "Does this file exist" is a lookup in a normalized-name index built over `sourceFiles`; "does
+ * it escape the root" is POSIX path arithmetic on strings.
  *
  * Candidate order, stopping at the first hit:
  *   1. the `dockerfile` field of `.actor/actor.json`, resolved relative to the `.actor` directory
@@ -20,8 +20,16 @@
 import * as path from 'node:path';
 import JSON5 from 'json5';
 
+import { normalizeEntryName } from '../driver/tar-entry-name.js';
 import type { SourceFile } from '../storage/entities.js';
 import { DEFAULT_DOCKERFILE_CONTENT, DEFAULT_DOCKERFILE_NAME } from './default-dockerfile.js';
+
+/** Re-exported so every caller that needs the tar-entry normalizer alongside the Dockerfile resolver
+ * (e.g. `dockerfile-location.test.ts`) can import both from this module - the implementation itself
+ * lives in the driver layer (`driver/tar-entry-name.ts`), since `docker-driver.ts`'s own tar-building is
+ * what it must stay byte-for-byte consistent with; this module imports it rather than the driver
+ * reaching up into `services/`. */
+export { normalizeEntryName };
 
 const ACTOR_DIR = '.actor';
 const ACTOR_JSON_NAME = `${ACTOR_DIR}/actor.json`;
@@ -43,7 +51,7 @@ export type DockerfileResolutionFailureReason =
  * - `resolved`: a candidate (1, 2, or 3) matched an existing source file. `dockerfilePath` is that
  *   file's own (normalized) name - exactly the string `docker-driver.ts` must hand dockerode as its
  *   `dockerfile` build option, and exactly the tar entry name `buildTarball` will produce for it (both
- *   go through the same normalizer, see `normalizeEntryName` below).
+ *   go through the same normalizer, see `normalizeEntryName` above).
  * - `default`: nothing resolved. `dockerfilePath` is always `'Dockerfile'` (free by construction - see
  *   this module's doc comment), and `extraSourceFile` is the one extra `SourceFile` the caller must
  *   append to `BuildContext.sourceFiles` for this one build only - never written back to the version's
@@ -52,28 +60,13 @@ export type DockerfileResolutionFailureReason =
  *   `dockerfile` field path, a non-string `dockerfile` field, or an unparseable `.actor/actor.json`.
  *
  * Every outcome (including `failure`) carries its own diagnostic text in `logLines`/`message` - the
- * choice is never made silently (`3-success-criteria.md` #14).
+ * choice is never made silently: every build outcome produces a build log entry that identifies which
+ * Dockerfile source was used or which warning/failure applied.
  */
 export type DockerfileResolution =
 	| { outcome: 'resolved'; dockerfilePath: string; logLines: string[] }
 	| { outcome: 'default'; dockerfilePath: string; logLines: string[]; extraSourceFile: SourceFile }
 	| { outcome: 'failure'; reason: DockerfileResolutionFailureReason; message: string };
-
-/**
- * The one name-normalizer shared by this resolver's index and `docker-driver.ts`'s `buildTarball` -
- * the string handed to the daemon as the `dockerfile` option is only ever correct if it is exactly the
- * tar entry name Docker will look for, so both sides must agree on what a `SourceFile.name` (or a
- * candidate path built from `.actor/actor.json`) canonicalizes to. Three steps, in order: backslashes
- * become POSIX separators (a Windows-authored tree's `sourceFiles` names might carry them), a leading
- * `./` is stripped, and the result is run through `path.posix.normalize` (collapses `a/./b` and
- * `a/b/../c`, but deliberately leaves a leading `../` alone - that is exactly what the escape check
- * below looks for).
- */
-export function normalizeEntryName(name: string): string {
-	const posixName = name.replace(/\\/g, '/');
-	const withoutLeadingDotSlash = posixName.replace(/^(?:\.\/)+/, '');
-	return path.posix.normalize(withoutLeadingDotSlash);
-}
 
 /** Decodes a `SourceFile`'s content to text, the same `BASE64`/`TEXT` split `docker-driver.ts`'s
  * `sourceFileToBuffer` uses for the tar - duplicated here (rather than imported) because this module is
@@ -174,7 +167,9 @@ export function resolveDockerfileLocation(sourceFiles: SourceFile[]): Dockerfile
 
 		if (field === '') {
 			// An empty string is a valid string that simply names no file - indistinguishable from a typo
-			// (candidate C below), never the invalid-format failure above (2-design.md, Example G).
+			// (the "names nothing" case below), never the invalid-format failure above: a non-string
+			// value is a shape error rejected outright, while an empty string is a valid string that
+			// simply fails to match anything, so it gets the same warn-and-fall-through treatment.
 			logLines.push(
 				'Warning: "" (from the "dockerfile" field in .actor/actor.json) is not in the pushed source; falling back to the default locations.\n',
 			);
@@ -202,8 +197,8 @@ export function resolveDockerfileLocation(sourceFiles: SourceFile[]): Dockerfile
 			}
 
 			// Names nothing in the pushed source - warn and fall through to candidate 2, never fail the
-			// build on this account (2-design.md, Example C; apify-worker's own would-be-breaking `throw`
-			// stays commented out).
+			// build on this account (matches apify-worker's own would-be-breaking `throw`, which
+			// stays commented out there for the same reason).
 			logLines.push(
 				`Warning: "${joined}" (from the "dockerfile" field in .actor/actor.json) is not in the pushed source; falling back to the default locations.\n`,
 			);
@@ -235,9 +230,10 @@ export function resolveDockerfileLocation(sourceFiles: SourceFile[]): Dockerfile
 		};
 	}
 
-	// Nothing resolved: inject the bundled default (2-design.md, Example F; Decisions #1). Plain
-	// "Dockerfile" at the tar root is free by construction here - reaching this branch already required
-	// that no case-insensitive Dockerfile matched at candidate 2 or 3.
+	// Nothing resolved: inject the bundled default, platform-parity with apify-worker rather than
+	// failing the build. Plain "Dockerfile" at the tar root is free by construction here -
+	// reaching this branch already required that no case-insensitive Dockerfile matched at
+	// candidate 2 or 3.
 	logLines.push(`${DOCKERFILE_BASENAME} not found, using the default one.\n`);
 	return {
 		outcome: 'default',

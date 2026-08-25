@@ -108,8 +108,7 @@ describe('full Actor dev loop via apify-cli (requires Docker)', () => {
 
 	it(
 		'sample_actor_crawler: push -> build succeeds (build-only - its Dockerfile lives at .actor/Dockerfile, ' +
-			'the layout that used to fail with a daemon-side "Cannot locate specified Dockerfile" error; ' +
-			'2-design.md Example A, 3-success-criteria.md #1/#2)',
+			'the layout that used to fail with a daemon-side "Cannot locate specified Dockerfile" error)',
 		() => {
 			const env = apifyEnv(isolatedApifyHome);
 			const actorDir = join(REPO_ROOT, 'sample_actor_crawler');

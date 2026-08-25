@@ -529,7 +529,7 @@ describe('DockerDriver.startBuild - imageWorkingDirectory capture (actor-driver.
 	});
 });
 
-describe('DockerDriver.startBuild - dockerfile option (2-design.md: "the resolved path is handed to dockerode as its `dockerfile` build option")', () => {
+describe('DockerDriver.startBuild - dockerfile option (the resolved path is handed to dockerode as its `dockerfile` build option)', () => {
 	/** A stub covering only what `startBuild` calls, exposing the `buildImage` mock itself so a test can
 	 * read back exactly which options it was called with - unlike `stubDockerForBuild` above, which only
 	 * cares about the post-build inspect. */
@@ -574,7 +574,7 @@ describe('DockerDriver.startBuild - dockerfile option (2-design.md: "the resolve
 		expect(options).toMatchObject({ dockerfile: '.actor/Dockerfile' });
 	});
 
-	it('always sets the "dockerfile" option, even for the plain root-"Dockerfile" case that coincides with Docker\'s own implicit default (2-design.md Example B)', async () => {
+	it('always sets the "dockerfile" option, even for the plain root-"Dockerfile" case that coincides with Docker\'s own implicit default', async () => {
 		const stub = stubDockerCapturingBuildImageOptions();
 		const driver = new DockerDriver(stub.docker);
 		driver.available = true;

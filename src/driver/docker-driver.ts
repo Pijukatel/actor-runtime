@@ -31,7 +31,7 @@ import Docker from 'dockerode';
 import * as tar from 'tar-stream';
 
 import { CONTAINER_API_ALIAS } from '../config.js';
-import { normalizeEntryName } from '../services/dockerfile-location.js';
+import { normalizeEntryName } from './tar-entry-name.js';
 import type { SourceFile } from '../storage/entities.js';
 import {
 	DriverTimedOutError,
@@ -110,9 +110,10 @@ function sourceFileToBuffer(file: SourceFile): Buffer {
 
 /** Entry names go through `normalizeEntryName` - the same normalizer `dockerfile-location.ts`'s
  * resolver indexes `sourceFiles` by - so the `dockerfilePath` `startBuild` hands dockerode as its
- * `dockerfile` option is guaranteed to name exactly the tar entry Docker will find (`2-design.md`'s
- * Risks: "Tar entry names"). A canonicalizing change to what today's tar contains (e.g. `./foo` becomes
- * `foo`), never a semantic one. */
+ * `dockerfile` option is guaranteed to name exactly the tar entry Docker will find. A canonicalizing
+ * change to what today's tar contains (e.g. `./foo` becomes `foo`), never a semantic one, and only
+ * a harmless one: the option only works if the string matches a tar entry exactly, so routing both
+ * the resolver's index and this function through one normalizer removes that class of bug. */
 function buildTarball(sourceFiles: SourceFile[]): NodeJS.ReadableStream {
 	const pack = tar.pack();
 	for (const file of sourceFiles) {

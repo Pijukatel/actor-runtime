@@ -39,7 +39,14 @@ import {
 	waitForRunFinish,
 } from '../../src/services/runs.js';
 import { DriverTimedOutError, type Driver } from '../../src/driver/types.js';
-import type { ActorRecord, ActorVersionRecord, BuildRecord, RunRecord } from '../../src/storage/entities.js';
+import type {
+	ActorRecord,
+	ActorVersionRecord,
+	BuildRecord,
+	RunRecord,
+	SourceFile,
+} from '../../src/storage/entities.js';
+import { DEFAULT_DOCKERFILE_CONTENT, DEFAULT_DOCKERFILE_NAME } from '../../src/services/default-dockerfile.js';
 
 /** Creates an Actor via the real client (so it has a genuine owner) and returns the underlying
  * `ActorRecord` for direct service-layer calls. */
@@ -317,6 +324,126 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 
 			const aborted = await abortBuild(server.driver, build);
 			expect(aborted?.status).toBe('SUCCEEDED');
+		});
+	});
+
+	describe("Dockerfile resolution wiring: runBuildInBackground acts on resolveDockerfileLocation's outcome", () => {
+		it('a "failure" outcome marks the build FAILED with the resolver\'s message as statusMessage, and never calls driver.startBuild', async () => {
+			const driver = neverStartDriver();
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'dockerfile-failure-actor');
+
+			// A "dockerfile" field that escapes the Actor root - resolveDockerfileLocation returns a
+			// `failure` outcome before any candidate is even looked up in sourceFiles.
+			const escapingSourceFiles: SourceFile[] = [
+				{
+					name: '.actor/actor.json',
+					format: 'TEXT',
+					content: JSON.stringify({ dockerfile: '../../evil/Dockerfile' }),
+				},
+			];
+			const version: ActorVersionRecord = { ...VERSION, sourceFiles: escapingSourceFiles };
+
+			const record: BuildRecord = {
+				id: generateId(),
+				userId: actor.userId,
+				actorId: actor.id,
+				versionNumber: '0.0',
+				buildNumber: '0.0.1',
+				tag: 'latest',
+				status: 'READY',
+				startedAt: new Date().toISOString(),
+			};
+			await getRegistries().builds.set(record.id, record);
+
+			await runBuildInBackground(driver, actor, version, record, { tag: 'latest', useCache: true });
+
+			const final = await getRegistries().builds.get(record.id);
+			expect(final?.status).toBe('FAILED');
+			expect(final?.statusMessage).toBe(
+				'Dockerfile path "../../evil/Dockerfile" in .actor/actor.json points outside the Actor root directory.',
+			);
+			// `startBuild` is never called either - if it were, `neverStartDriver` would have thrown and
+			// failed the test.
+		});
+
+		it('a "default" outcome appends the bundled default Dockerfile to the driver\'s ctx.sourceFiles and sets ctx.dockerfilePath to "Dockerfile"', async () => {
+			const driver = fixedBuildOutcomeDriver({ imageId: 'x' });
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'dockerfile-default-actor');
+
+			// No actor.json, and no Dockerfile anywhere in sourceFiles - resolveDockerfileLocation falls
+			// all the way through to the bundled default.
+			const noDockerfileSourceFiles: SourceFile[] = [
+				{ name: 'main.js', format: 'TEXT', content: 'console.log(1);\n' },
+			];
+			const version: ActorVersionRecord = { ...VERSION, sourceFiles: noDockerfileSourceFiles };
+
+			const record: BuildRecord = {
+				id: generateId(),
+				userId: actor.userId,
+				actorId: actor.id,
+				versionNumber: '0.0',
+				buildNumber: '0.0.1',
+				tag: 'latest',
+				status: 'READY',
+				startedAt: new Date().toISOString(),
+			};
+			await getRegistries().builds.set(record.id, record);
+
+			await runBuildInBackground(driver, actor, version, record, { tag: 'latest', useCache: true });
+
+			expect(driver.startBuildContexts).toHaveLength(1);
+			const ctx = driver.startBuildContexts[0]!;
+			expect(ctx.dockerfilePath).toBe('Dockerfile');
+			expect(ctx.dockerfilePath).toBe(DEFAULT_DOCKERFILE_NAME);
+			// The extra, injected Dockerfile SourceFile actually reaches the driver's ctx, alongside the
+			// original sourceFiles - never in place of them.
+			expect(ctx.sourceFiles).toEqual([
+				...noDockerfileSourceFiles,
+				{ name: 'Dockerfile', format: 'TEXT', content: DEFAULT_DOCKERFILE_CONTENT },
+			]);
+			// Never written back to the version's own persisted sourceFiles - only this one build's ctx
+			// gets the extra entry.
+			expect(version.sourceFiles).toEqual(noDockerfileSourceFiles);
+
+			const final = await getRegistries().builds.get(record.id);
+			expect(final?.status).toBe('SUCCEEDED');
+		});
+
+		it('a "resolved" outcome passes the resolved path through to ctx.dockerfilePath, with sourceFiles unchanged', async () => {
+			const driver = fixedBuildOutcomeDriver({ imageId: 'x' });
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'dockerfile-resolved-actor');
+
+			// No actor.json "dockerfile" field, but a .actor/Dockerfile exists - candidate 2 resolves.
+			const resolvedSourceFiles: SourceFile[] = [
+				{ name: '.actor/Dockerfile', format: 'TEXT', content: 'FROM node:20\n' },
+				{ name: 'main.js', format: 'TEXT', content: 'console.log(1);\n' },
+			];
+			const version: ActorVersionRecord = { ...VERSION, sourceFiles: resolvedSourceFiles };
+
+			const record: BuildRecord = {
+				id: generateId(),
+				userId: actor.userId,
+				actorId: actor.id,
+				versionNumber: '0.0',
+				buildNumber: '0.0.1',
+				tag: 'latest',
+				status: 'READY',
+				startedAt: new Date().toISOString(),
+			};
+			await getRegistries().builds.set(record.id, record);
+
+			await runBuildInBackground(driver, actor, version, record, { tag: 'latest', useCache: true });
+
+			expect(driver.startBuildContexts).toHaveLength(1);
+			const ctx = driver.startBuildContexts[0]!;
+			expect(ctx.dockerfilePath).toBe('.actor/Dockerfile');
+			expect(ctx.sourceFiles).toEqual(resolvedSourceFiles);
+
+			const final = await getRegistries().builds.get(record.id);
+			expect(final?.status).toBe('SUCCEEDED');
 		});
 	});
 

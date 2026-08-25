@@ -7,9 +7,10 @@
  * built default-Dockerfile image matches what the real platform would have produced for the same,
  * Dockerfile-less source.
  *
- * A string constant, not a sibling file copied at build/run time: the runtime's build input is already
- * an in-memory `SourceFile[]`/tar, not a working directory on disk, and the codebase has no existing
- * pattern for shipping a non-TS asset file (see `2-design.md`'s Alternatives).
+ * A string constant, not a sibling file copied at build/run time: the runtime's build input is
+ * already an in-memory `SourceFile[]`/tar, not a working directory on disk, and the codebase has no
+ * existing pattern for shipping a non-TS asset file. A string constant produces the identical bytes
+ * with no extra packaging step.
  */
 export const DEFAULT_DOCKERFILE_NAME = 'Dockerfile';
 

@@ -12,7 +12,7 @@ import { resetUsersForTests } from '../../../src/services/users.js';
 import { resetApiFallbackStateForTests } from '../../../src/services/api-fallback.js';
 import { createApiServer } from '../../../src/api/server.js';
 import { resetLogsForTests, stopLogFlusher } from '../../../src/services/logs.js';
-import type { BuildOutcome, Driver, RunOutcome } from '../../../src/driver/types.js';
+import type { BuildContext, BuildOutcome, Driver, RunOutcome } from '../../../src/driver/types.js';
 
 /** A driver that is always unavailable, so build/run creation fails fast and deterministically. */
 export function unavailableDriver(): Driver {
@@ -67,12 +67,22 @@ export function fixedRunOutcomeDriver(outcome: RunOutcome): Driver {
 
 /** Same idea as `fixedRunOutcomeDriver`, but for builds: `startBuild` either resolves with `outcome` or
  * rejects with `error`, whichever the caller supplies (`error` wins if both are given, so a
- * `DriverTimedOutError` can be asserted straight through to a `TIMED-OUT` status). */
-export function fixedBuildOutcomeDriver(outcome: BuildOutcome, error?: Error): Driver {
+ * `DriverTimedOutError` can be asserted straight through to a `TIMED-OUT` status). Every `startBuild`
+ * call's `ctx` is recorded in `startBuildContexts`, in call order - lets a test assert exactly what
+ * `runBuildInBackground` computed and passed through (e.g. `sourceFiles`/`dockerfilePath` after the
+ * Dockerfile resolver ran), not just that some build happened; existing callers that only need `Driver`
+ * itself are unaffected, since this is a strict superset of that interface. */
+export function fixedBuildOutcomeDriver(
+	outcome: BuildOutcome,
+	error?: Error,
+): Driver & { startBuildContexts: BuildContext[] } {
+	const startBuildContexts: BuildContext[] = [];
 	return {
 		available: true,
+		startBuildContexts,
 		async init() {},
-		async startBuild() {
+		async startBuild(ctx) {
+			startBuildContexts.push(ctx);
 			if (error) throw error;
 			return outcome;
 		},
