@@ -772,8 +772,8 @@ describe('DockerDriver.startRun - CFS CPU limit (actor-driver.md: CpuPeriod/CpuQ
 		await new Promise((resolve) => setImmediate(resolve));
 
 		const [options] = stub.createContainer.mock.calls[0]!;
-		// 1024 / 4096 = 0.25 core = 25000us of every 100000us period - the exact worked example in
-		// `2-design.md`.
+		// 1024 / 4096 = 0.25 core = 25000us of every 100000us period - the ratio worked example in
+		// `requirements/actor-driver.md`'s "Resource limits" section.
 		expect(options.HostConfig?.CpuPeriod).toBe(100_000);
 		expect(options.HostConfig?.CpuQuota).toBe(25_000);
 		expect(options.HostConfig?.Memory).toBe(1024 * 1024 * 1024);

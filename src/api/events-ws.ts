@@ -5,8 +5,9 @@
  * in `api/server.ts` and is reachable at exactly one path, never the `/v2/actor-runtime/*` alias the rest
  * of that namespace also answers on.
  *
- * **No authentication** (human-approved decision, `2-design.md` decision 3): a single-operator local dev
- * tool has no user to protect this endpoint from, and the actual hard requirement - one container must
+ * **No authentication** (a deliberate decision, not an oversight - see `requirements/api.md`'s "No
+ * authentication at all" note on this endpoint): a single-operator local dev tool has no user to protect
+ * this endpoint from, and the actual hard requirement - one container must
  * never see another's telemetry - is met structurally, not by a credential. The path's `:runId` is the
  * only thing a connecting container can present, and it is also the only thing this handler scopes on:
  * resolving the run by that id alone and subscribing only to *that run's own* entry in
@@ -25,13 +26,13 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 import { getRunById } from '../services/runs.js';
 import { isTerminalJobStatus } from '../services/job-status.js';
-import { isEventsTerminal, subscribe } from '../services/events-channel.js';
+import { isEventsTerminal, subscribeEvents } from '../services/events-channel.js';
 
 const EVENTS_PATH_PATTERN = /^\/actor-runtime\/events\/([^/]+)\/?$/;
 
 /** Mirrors `api/routes/logs.ts`'s `serveLog` poll cadence, for the same purpose: noticing a run has gone
- * terminal without needing this connection to be the thing `markTerminal` reaches into directly (see
- * `events-channel.ts`'s doc comment on `markTerminal` - it flips a flag, it never touches a socket). */
+ * terminal without needing this connection to be the thing `markEventsTerminal` reaches into directly (see
+ * `events-channel.ts`'s doc comment on `markEventsTerminal` - it flips a flag, it never touches a socket). */
 const TERMINAL_POLL_INTERVAL_MS = 250;
 
 export interface EventsWebSocketServer {
@@ -75,8 +76,9 @@ async function handleConnection(ws: WebSocket, runId: string): Promise<void> {
 	// every other run's container, the console, and the API along with it. Verified directly against the
 	// installed `ws` package: completing a real upgrade and then writing invalid frame bytes over the raw
 	// socket throws `UNCAUGHT_EXCEPTION` with no listener here. This endpoint is deliberately
-	// unauthenticated and reachable by any container on the Docker network (`2-design.md` decision 3), so
-	// a single connection producing one bad frame must never be allowed this blast radius. `ws` itself
+	// unauthenticated and reachable by any container on the Docker network (see `requirements/api.md`'s
+	// "No authentication at all" note on this endpoint), so a single connection producing one bad frame
+	// must never be allowed this blast radius. `ws` itself
 	// still emits `'close'` right after `'error'` (`emitErrorAndClose` in `ws/lib/websocket.js`), so simply
 	// swallowing the error here and letting the existing `'close'` listener below run its normal
 	// unsubscribe/poll-teardown is enough - there is nothing additional to clean up.
@@ -92,7 +94,7 @@ async function handleConnection(ws: WebSocket, runId: string): Promise<void> {
 		return;
 	}
 
-	const unsubscribe = subscribe(runId, (frame) => {
+	const unsubscribe = subscribeEvents(runId, (frame) => {
 		// A frame published between this connection's own terminal check (below) and the socket actually
 		// closing must never be sent to an already-closing/closed socket.
 		if (ws.readyState === ws.OPEN) ws.send(frame);

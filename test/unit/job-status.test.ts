@@ -162,8 +162,9 @@ describe('transitionJobStatus', () => {
 	});
 
 	/**
-	 * Regression for `review-staff-review.md`'s finding 4 (`abortRun`'s `wasRunning` TOCTOU): built on top
-	 * of the REAL `KeyedMutex` (already independently proven FIFO/no-overlap in `mutex.test.ts`), rather
+	 * Regression for `abortRun`'s `wasRunning` TOCTOU (a race between a plain, mutex-bypassing registry
+	 * read and a concurrent mutex-serialized write): built on top of the REAL `KeyedMutex` (already
+	 * independently proven FIFO/no-overlap in `mutex.test.ts`), rather
 	 * than `fakeRegistry` above (whose `update` is synchronous and so never actually races anything). This
 	 * `StatusRegistry` deliberately holds its FIRST `update` call's read+write open behind a gate - mirroring
 	 * `runInBackground`'s own real, slow `@crawlee/fs-storage` I/O not yet having settled - while a SECOND,

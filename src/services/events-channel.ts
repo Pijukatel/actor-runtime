@@ -1,9 +1,10 @@
 /**
  * Fan-out for the per-run events websocket (`api/events-ws.ts`) - the platform's `systemInfo`/`aborting`
  * channel, modelled directly on `services/logs.ts`'s `live` map + `subscribers: Set`. The one structural
- * difference from `logs.ts`: there is no authentication on this endpoint at all (a human-approved
- * decision, see `2-design.md`), so strict per-run isolation has to come from somewhere other than a
- * credential check - it comes from here. A subscriber is only ever added to *its own run's* entry in
+ * difference from `logs.ts`: there is no authentication on this endpoint at all (a deliberate decision,
+ * not an oversight - see `requirements/api.md`'s "No authentication at all" note on this endpoint), so
+ * strict per-run isolation has to come from somewhere other than a credential check - it comes from here.
+ * A subscriber is only ever added to *its own run's* entry in
  * `live`; there is no broadcast/all-runs listener anywhere in this module, so a container that somehow
  * learns another run's id still cannot be handed that other run's frames by anything this module does.
  *
@@ -21,8 +22,9 @@ export interface RunResourceGrant {
 	memoryMbytes: number;
 }
 
-/** Strict `>`, not `>=` - a sample computing exactly the threshold is not overloaded (`3-success-
- * criteria.md` #16, settled decision 2 in `2-design.md`). */
+/** Strict `>`, not `>=` - a sample computing exactly the threshold is not overloaded (see
+ * `requirements/actor-driver.md`'s "Run resource telemetry" section for the full `isCpuOverloaded`
+ * contract). */
 const CPU_OVERLOAD_RATIO_THRESHOLD = 0.95;
 
 interface RunEventsState {
@@ -33,7 +35,7 @@ interface RunEventsState {
 	cpuUsageSum: number;
 	cpuUsageMax: number;
 	memoryUsageSum: number;
-	/** Set by `markTerminal` - `api/events-ws.ts` polls this (mirroring `logs.ts`'s `isLogTerminal`/
+	/** Set by `markEventsTerminal` - `api/events-ws.ts` polls this (mirroring `logs.ts`'s `isLogTerminal`/
 	 * `serveLog` pattern) to decide when to close an open connection with `1000`. */
 	terminal: boolean;
 }
@@ -73,9 +75,10 @@ function broadcast(state: RunEventsState, frame: string): void {
  *   `docker stats` itself uses, never percent of `grant`.
  * - `memMaxBytes` is `sample.memoryLimitBytes` - the container's configured memory LIMIT, constant for the
  *   run's whole lifetime, never a genuine running peak (despite the field's upstream name).
- * - `isCpuOverloaded` is the ratio-only test decided in `2-design.md` (decision 2): `usedCores /
- *   grantedCores > 0.95`, `usedCores` derived from this same sample's `cpuCurrentUsage`, `grantedCores`
- *   from `grant.memoryMbytes` via `dedicatedCpusFor` - no CFS-throttling term, no other input.
+ * - `isCpuOverloaded` is the ratio-only test documented in `requirements/actor-driver.md`'s "Run resource
+ *   telemetry" section: `usedCores / grantedCores > 0.95`, `usedCores` derived from this same sample's
+ *   `cpuCurrentUsage`, `grantedCores` from `grant.memoryMbytes` via `dedicatedCpusFor` - no CFS-throttling
+ *   term, no other input.
  * - `memAvgBytes`/`cpuAvgUsage`/`cpuMaxUsage` are running figures over every sample published for this run
  *   so far (this one included), reset only when the run itself is a new one (a fresh `live` entry).
  */
@@ -114,7 +117,7 @@ export function publishAborting(runId: string): void {
 }
 
 /** Returns an unsubscribe function, mirroring `logs.ts`'s `subscribeLog`. */
-export function subscribe(runId: string, onFrame: (frame: string) => void): () => void {
+export function subscribeEvents(runId: string, onFrame: (frame: string) => void): () => void {
 	const state = getOrCreate(runId);
 	state.subscribers.add(onFrame);
 	return () => state.subscribers.delete(onFrame);
@@ -124,7 +127,7 @@ export function subscribe(runId: string, onFrame: (frame: string) => void): () =
  * poll-and-close shape `api/routes/logs.ts`'s `serveLog` already uses for `?stream=true`) and closes the
  * socket with `1000` once it observes this flip, which is what actually drives the close; this call
  * itself never touches a socket. */
-export function markTerminal(runId: string): void {
+export function markEventsTerminal(runId: string): void {
 	getOrCreate(runId).terminal = true;
 }
 

@@ -1,9 +1,10 @@
 /**
  * `GET /actor-runtime/events/:runId` - the events websocket (`api/events-ws.ts`), end to end against a
  * real `ws` client and a real server (`startTestServer`'s `wsBaseUrl`, `api/events-ws.ts` attached the
- * same way `index.ts` attaches it in production). Covers `3-success-criteria.md` §§5-8: `systemInfo`
- * frame delivery, strict per-run isolation (no global/broadcast channel), the `1008`/`1000` close-code
- * lifecycle, and the `?gracefully=` `aborting` contract riding the same socket.
+ * same way `index.ts` attaches it in production). Covers the events-endpoint contract documented in
+ * `requirements/api.md`: `systemInfo` frame delivery, strict per-run isolation (no global/broadcast
+ * channel), the `1008`/`1000` close-code lifecycle, and the `?gracefully=` `aborting` contract riding the
+ * same socket.
  */
 import { request } from 'node:http';
 import { randomBytes } from 'node:crypto';
@@ -130,8 +131,8 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void
 /**
  * Completes a real HTTP upgrade handshake for `runId` and hands back the raw underlying `net.Socket` -
  * bypassing the `ws` client library entirely, which (being a correct implementation) could never be made
- * to emit an actually-malformed frame. Mirrors `review-staff-review.md`'s own repro for the unhandled
- * `'error'`-event blocker: a real upgrade, then raw invalid bytes written directly onto the wire.
+ * to emit an actually-malformed frame. Used to reproduce an unhandled `'error'` event on an
+ * already-accepted socket: a real upgrade, then raw invalid bytes written directly onto the wire.
  */
 function rawUpgrade(server: TestServerHandle, runId: string): Promise<Socket> {
 	return new Promise((resolve, reject) => {
@@ -403,8 +404,9 @@ describe('events websocket (GET /actor-runtime/events/:runId)', () => {
 		};
 		process.on('uncaughtException', onUncaught);
 		try {
-			// Ten invalid frame bytes (RSV2/RSV3 set) - the exact malformed-frame repro
-			// `review-staff-review.md`'s blocker cites against the installed `ws` package.
+			// Ten invalid frame bytes (RSV2/RSV3 set) - the shape of malformed frame the installed `ws`
+			// package rejects with a synchronous `'error'` emission, per `handleConnection`'s own doc
+			// comment (`api/events-ws.ts`).
 			socket.write(Buffer.from([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]));
 
 			// Give the server a real moment to actually process the bad frame (and, pre-fix, crash).

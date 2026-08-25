@@ -5,7 +5,7 @@ import { createStorage } from './storages.js';
 import { openKeyValueStore } from '../storage/open.js';
 import type { Driver } from '../driver/types.js';
 import { appendLog, flushLog, markLogTerminal } from './logs.js';
-import { markTerminal as markEventsTerminal, publishAborting, publishSystemInfo } from './events-channel.js';
+import { markEventsTerminal, publishAborting, publishSystemInfo } from './events-channel.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
 import { dedicatedCpusFor } from './resources.js';

@@ -1,9 +1,9 @@
 /**
  * `DockerDriver.startRun`'s per-run CPU/memory sampler (`docker-driver.ts`'s `startResourceSampler`,
  * exercised only through `startRun`'s optional third `onSample` parameter - there is no separate exported
- * surface for it). Covers `3-success-criteria.md` §5's sampling-lifetime criteria (#12) and the
- * stop-before-remove ordering `2-design.md`'s "Proposed solution" section calls out as the thing to
- * review hardest.
+ * surface for it). Covers the sampling-lifetime contract documented in `requirements/actor-driver.md`'s
+ * "Run resource telemetry" section: cadence, all-eight-fields shape, and the stop-before-remove ordering
+ * that keeps a stats call from ever racing container removal.
  */
 import { PassThrough } from 'node:stream';
 
@@ -17,8 +17,9 @@ import type { RunResourceSample } from '../../src/driver/types.js';
  * A stub `dockerode`-shaped object covering only what `startRun` calls when a sampler is actually
  * running: `container.stats({stream:false,'one-shot':true})`, controllable per-call either via a queue of
  * canned `ContainerStats`-shaped results, or left pending indefinitely (until the test resolves it itself
- * via `resolvePendingStats`) once the queue is exhausted - the shape `2-design.md` explicitly calls for
- * the "stats() never resolves [until the test says so]" sampler-lifetime test to use. The rest of
+ * via `resolvePendingStats`) once the queue is exhausted - the shape a "stats() never resolves until the
+ * test says so" sampler-lifetime test needs, to prove `stop()` awaits an in-flight call rather than
+ * abandoning it. The rest of
  * `startRun`'s own lifecycle (`start`/`logs`/`wait`/`remove`) mirrors `docker-driver.test.ts`'s
  * `stubDockerForRun`.
  */
@@ -104,8 +105,9 @@ describe('DockerDriver.startRun - per-run resource sampler (onSample)', () => {
 		const driver = new DockerDriver(stub.docker);
 		driver.available = true;
 
-		// An unemitted baseline read, then three ticks - 20%, 40%, 0% of one core, matching `2-design.md`'s
-		// own worked example convention (percent of ONE core, not percent of the grant).
+		// An unemitted baseline read, then three ticks - 20%, 40%, 0% of one core, matching the
+		// percent-of-ONE-core convention `requirements/actor-driver.md` documents (never percent of the
+		// grant).
 		stub.queueStatsResponse(containerStats(0, 0, 100));
 		stub.queueStatsResponse(containerStats(200, 1000, 150));
 		stub.queueStatsResponse(containerStats(600, 2000, 180));

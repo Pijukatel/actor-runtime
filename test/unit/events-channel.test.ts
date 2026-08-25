@@ -1,20 +1,20 @@
 /**
  * `services/events-channel.ts`'s envelope shaping for `systemInfo`/`aborting` - the sample-in,
- * platform-JSON-frame-out mapping `2-design.md` calls out by name: percent-of-one-core (never
- * percent-of-grant), `memMaxBytes` as the configured LIMIT (never a genuine peak), the ratio-only,
- * strict-`>`-0.95 `isCpuOverloaded` test, running avg/max, and the all-eight-fields contract
- * apify-sdk-python's pydantic model requires on every frame.
+ * platform-JSON-frame-out mapping documented in `requirements/actor-driver.md`'s "Run resource
+ * telemetry" section: percent-of-one-core (never percent-of-grant), `memMaxBytes` as the configured
+ * LIMIT (never a genuine peak), the ratio-only, strict-`>`-0.95 `isCpuOverloaded` test, running avg/max,
+ * and the all-eight-fields contract apify-sdk-python's pydantic model requires on every frame.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
 	getSubscriberCount,
 	isEventsTerminal,
-	markTerminal,
+	markEventsTerminal,
 	publishAborting,
 	publishSystemInfo,
 	resetEventsChannelForTests,
-	subscribe,
+	subscribeEvents,
 } from '../../src/services/events-channel.js';
 import type { RunResourceSample } from '../../src/driver/types.js';
 
@@ -31,7 +31,7 @@ function sample(overrides: Partial<RunResourceSample> = {}): RunResourceSample {
 /** Subscribes to `runId` and returns every frame published to it so far, parsed. */
 function captureFrames(runId: string): { frames: Array<{ name: string; data: unknown }>; unsubscribe: () => void } {
 	const frames: Array<{ name: string; data: unknown }> = [];
-	const unsubscribe = subscribe(runId, (frame) => frames.push(JSON.parse(frame)));
+	const unsubscribe = subscribeEvents(runId, (frame) => frames.push(JSON.parse(frame)));
 	return { frames, unsubscribe };
 }
 
@@ -40,7 +40,7 @@ describe('events-channel: publishSystemInfo', () => {
 		resetEventsChannelForTests();
 	});
 
-	it('emits a single "systemInfo" frame with all eight fields present, matching the worked example in 2-design.md verbatim', () => {
+	it('emits a single "systemInfo" frame with all eight fields present, matching the payload shape in requirements/actor-driver.md verbatim', () => {
 		const runId = 'run-1';
 		const { frames } = captureFrames(runId);
 
@@ -66,8 +66,9 @@ describe('events-channel: publishSystemInfo', () => {
 		const runId = 'run-2';
 		const { frames } = captureFrames(runId);
 
-		// A run granted 0.25 core, observed at 20% of one core (0.8 of its own grant) - the exact figures
-		// `2-design.md` uses to distinguish the two conventions.
+		// A run granted 0.25 core, observed at 20% of one core (0.8 of its own grant) - the figures
+		// requirements/actor-driver.md uses to distinguish the two conventions (percent-of-one-core vs
+		// percent-of-grant).
 		publishSystemInfo(runId, sample({ cpuPercentOfOneCore: 20 }), { memoryMbytes: 1024 });
 
 		const data = frames[0]!.data as Record<string, unknown>;
@@ -166,15 +167,15 @@ describe('events-channel: publishAborting', () => {
 	});
 });
 
-describe('events-channel: subscribe/markTerminal/getSubscriberCount', () => {
+describe('events-channel: subscribeEvents/markEventsTerminal/getSubscriberCount', () => {
 	beforeEach(() => {
 		resetEventsChannelForTests();
 	});
 
-	it('subscribe returns an unsubscribe function that stops further frames from reaching that callback', () => {
+	it('subscribeEvents returns an unsubscribe function that stops further frames from reaching that callback', () => {
 		const runId = 'run-unsub';
 		const received: string[] = [];
-		const unsubscribe = subscribe(runId, (frame) => received.push(frame));
+		const unsubscribe = subscribeEvents(runId, (frame) => received.push(frame));
 
 		publishAborting(runId);
 		unsubscribe();
@@ -185,9 +186,9 @@ describe('events-channel: subscribe/markTerminal/getSubscriberCount', () => {
 
 	it('getSubscriberCount reflects additions and removals, per run, independent of other runs', () => {
 		expect(getSubscriberCount('run-count-1')).toBe(0);
-		const unsubscribeA1 = subscribe('run-count-1', () => {});
-		const unsubscribeA2 = subscribe('run-count-1', () => {});
-		subscribe('run-count-2', () => {});
+		const unsubscribeA1 = subscribeEvents('run-count-1', () => {});
+		const unsubscribeA2 = subscribeEvents('run-count-1', () => {});
+		subscribeEvents('run-count-2', () => {});
 
 		expect(getSubscriberCount('run-count-1')).toBe(2);
 		expect(getSubscriberCount('run-count-2')).toBe(1);
@@ -198,10 +199,10 @@ describe('events-channel: subscribe/markTerminal/getSubscriberCount', () => {
 		expect(getSubscriberCount('run-count-1')).toBe(0);
 	});
 
-	it('isEventsTerminal is false until markTerminal is called for that run, and never affects an unrelated run', () => {
+	it('isEventsTerminal is false until markEventsTerminal is called for that run, and never affects an unrelated run', () => {
 		expect(isEventsTerminal('run-terminal-1')).toBe(false);
 
-		markTerminal('run-terminal-1');
+		markEventsTerminal('run-terminal-1');
 
 		expect(isEventsTerminal('run-terminal-1')).toBe(true);
 		expect(isEventsTerminal('run-terminal-2')).toBe(false);

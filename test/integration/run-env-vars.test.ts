@@ -167,9 +167,9 @@ describe('actor version envVars are applied to the run container env', () => {
 		}
 	});
 
-	// 3-success-criteria.md §4 (#9-#11): the five new resource/telemetry env vars, byte-identical pairs,
-	// the run id in the URL path with no query string, present unconditionally (no dev mount involved
-	// anywhere in this describe block).
+	// The five new resource/telemetry env vars (`requirements/actor-driver.md`'s "Environment variables
+	// in every Actor container" list): byte-identical pairs, the run id in the URL path with no query
+	// string, present unconditionally (no dev mount involved anywhere in this describe block).
 	it('sets the five resource/telemetry env vars, byte-identical pairs, run id in the URL path, no query string, present without a dev mount', async () => {
 		const actor = await server.client.actors().create({ name: 'events-and-resources-env-actor' });
 		await server.client

@@ -29,13 +29,9 @@ export interface ShutdownDeps {
 	apiServer: Server;
 	consoleServer: Server;
 	/** Optional so this stays a no-churn addition for every existing caller/test that builds
-	 * `ShutdownDeps` without it. MUST be closed - see `gracefulShutdown`'s own doc comment - BEFORE
-	 * `closeServer(apiServer)` is awaited, never after: unlike a `?stream=true` log response (an ordinary
-	 * HTTP connection `closeServer`'s own `closeAllConnections()` genuinely does forcibly end), an
-	 * already-upgraded websocket socket is not something `closeAllConnections()` reaches at all
-	 * (`attachEventsWebSocket`'s `EventsWebSocketServer.close()` doc comment has the full evidence) - so a
-	 * live events-websocket client left open when `closeServer(apiServer)` is awaited hangs it forever,
-	 * not just delays it. */
+	 * `ShutdownDeps` without it. MUST be closed before `closeServer(apiServer)` is awaited, never after -
+	 * see `EventsWebSocketServer.close()`'s own doc comment (`api/events-ws.ts`) for why
+	 * `closeAllConnections()` cannot do this itself. */
 	eventsWebSocketServer?: { close(): void };
 }
 
@@ -47,15 +43,9 @@ export interface ShutdownDeps {
  * `apify push`/`apify call` log stream was open, which is the common case, not the edge case.
  *
  * `eventsWebSocketServer?.close()` runs BEFORE `closeServer(apiServer)`, deliberately - not after, as an
- * earlier version of this function had it. `closeServer(apiServer)`'s own `server.close()` callback (see
- * its doc comment) waits for every connection the server still holds - including an already-upgraded
- * websocket socket - to actually end; `closeAllConnections()` does not reach those (verified against
- * Node's own source, `EventsWebSocketServer.close()`'s doc comment), so with the old ordering a single
- * still-connected events-websocket client (the ordinary case now that `ACTOR_EVENTS_WEBSOCKET_URL` is set
- * on every run and neither SDK ever disconnects mid-run on its own) hung this function - and therefore the
- * whole shutdown, `shutdownStorage()` included - indefinitely. Terminating those sockets first, before
- * `apiServer`'s own connection count is ever asked to reach zero, is what lets `closeServer(apiServer)`
- * resolve promptly regardless.
+ * earlier version of this function had it - because `closeServer(apiServer)` would otherwise hang
+ * indefinitely on any still-connected events-websocket client. See `EventsWebSocketServer.close()`'s own
+ * doc comment (`api/events-ws.ts`) for why `closeAllConnections()` cannot do this itself.
  */
 export async function gracefulShutdown({
 	apiServer,

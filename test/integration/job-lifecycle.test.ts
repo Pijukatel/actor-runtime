@@ -38,7 +38,7 @@ import {
 	startRun,
 	waitForRunFinish,
 } from '../../src/services/runs.js';
-import { subscribe } from '../../src/services/events-channel.js';
+import { subscribeEvents } from '../../src/services/events-channel.js';
 import { realDelay, waitForPendingTimer } from './helpers/fake-timers.js';
 import { DriverTimedOutError, type Driver } from '../../src/driver/types.js';
 import type { ActorRecord, ActorVersionRecord, BuildRecord, JobStatus, RunRecord } from '../../src/storage/entities.js';
@@ -588,7 +588,7 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 		});
 	});
 
-	describe('finding 4: graceful abort (?gracefully= contract - 2-design.md, GRACEFUL_ABORT_WINDOW_MS = 30000)', () => {
+	describe('finding 4: graceful abort (?gracefully= contract per requirements/api.md "Graceful abort" section, GRACEFUL_ABORT_WINDOW_MS = 30000)', () => {
 		afterEach(() => {
 			vi.useRealTimers();
 		});
@@ -602,7 +602,7 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			await getRegistries().runs.set(record.id, record);
 
 			const frames: string[] = [];
-			const unsubscribe = subscribe(record.id, (frame) => frames.push(frame));
+			const unsubscribe = subscribeEvents(record.id, (frame) => frames.push(frame));
 
 			const bg = runInBackground(driver, actor, record, { apiBaseUrl: server.baseUrl, token: server.token });
 			await driver.started;
@@ -645,7 +645,7 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			await getRegistries().runs.set(record.id, record);
 
 			const frames: string[] = [];
-			const unsubscribe = subscribe(record.id, (frame) => frames.push(frame));
+			const unsubscribe = subscribeEvents(record.id, (frame) => frames.push(frame));
 
 			const bg = runInBackground(driver, actor, record, { apiBaseUrl: server.baseUrl, token: server.token });
 			await driver.started;
@@ -694,7 +694,7 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			const build = await seedSucceededBuild(actor);
 			const record = bareRunRecord(actor, build);
 			await getRegistries().runs.set(record.id, record);
-			// Deliberately no `subscribe(record.id, ...)` call at all - nobody is connected.
+			// Deliberately no `subscribeEvents(record.id, ...)` call at all - nobody is connected.
 
 			const bg = runInBackground(driver, actor, record, { apiBaseUrl: server.baseUrl, token: server.token });
 			await driver.started;
@@ -721,7 +721,7 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			await getRegistries().runs.set(record.id, record);
 
 			const frames: string[] = [];
-			const unsubscribe = subscribe(record.id, (frame) => frames.push(frame));
+			const unsubscribe = subscribeEvents(record.id, (frame) => frames.push(frame));
 
 			const aborted = await abortRun(driver, record, true);
 
@@ -765,7 +765,7 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			expect(driver.startRunCalls).toEqual([started.id]);
 
 			const frames: string[] = [];
-			const unsubscribe = subscribe(started.id, (frame) => frames.push(frame));
+			const unsubscribe = subscribeEvents(started.id, (frame) => frames.push(frame));
 
 			vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 
@@ -816,7 +816,7 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			await driver.started;
 
 			const frames: string[] = [];
-			const unsubscribe = subscribe(started.id, (frame) => frames.push(frame));
+			const unsubscribe = subscribeEvents(started.id, (frame) => frames.push(frame));
 
 			const aborted = await server.client.run(started.id).abort();
 			expect(aborted.status).toBe('ABORTED');
