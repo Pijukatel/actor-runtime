@@ -395,7 +395,6 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 
 			expect(driver.startBuildContexts).toHaveLength(1);
 			const ctx = driver.startBuildContexts[0]!;
-			expect(ctx.dockerfilePath).toBe('Dockerfile');
 			expect(ctx.dockerfilePath).toBe(DEFAULT_DOCKERFILE_NAME);
 			// The extra, injected Dockerfile SourceFile actually reaches the driver's ctx, alongside the
 			// original sourceFiles - never in place of them.

@@ -138,7 +138,6 @@ describe('resolveDockerfileLocation', () => {
 
 			expect(result.outcome).toBe('default');
 			if (result.outcome !== 'default') return;
-			expect(result.dockerfilePath).toBe('Dockerfile');
 			expect(result.dockerfilePath).toBe(DEFAULT_DOCKERFILE_NAME);
 			expect(result.extraSourceFile).toEqual({
 				name: 'Dockerfile',
