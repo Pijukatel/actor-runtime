@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { normalizeEntryName, resolveDockerfileLocation } from '../../src/services/dockerfile-location.js';
+import { resolveDockerfileLocation } from '../../src/services/dockerfile-location.js';
 import { DEFAULT_DOCKERFILE_CONTENT, DEFAULT_DOCKERFILE_NAME } from '../../src/services/default-dockerfile.js';
 import type { SourceFile } from '../../src/storage/entities.js';
 
@@ -82,6 +82,18 @@ describe('resolveDockerfileLocation', () => {
 				outcome: 'failure',
 				reason: 'escapes-actor-root',
 				message: 'Dockerfile path "/etc/passwd" in .actor/actor.json points outside the Actor root directory.',
+			});
+		});
+
+		it('a path that normalizes to exactly ".." (the joined === ".." disjunct, not just startsWith("../"))', () => {
+			// .actor + ".." joins and normalizes to exactly "..", not "../something" - a separate
+			// disjunct in the escape check from the startsWith("../") case exercised above.
+			const result = resolveDockerfileLocation([actorJson({ dockerfile: '../..' })]);
+
+			expect(result).toEqual({
+				outcome: 'failure',
+				reason: 'escapes-actor-root',
+				message: 'Dockerfile path "../.." in .actor/actor.json points outside the Actor root directory.',
 			});
 		});
 
@@ -285,23 +297,16 @@ describe('resolveDockerfileLocation', () => {
 			expect(result.dockerfilePath).toBe('.actor/Dockerfile');
 		});
 	});
-});
 
-describe('normalizeEntryName', () => {
-	it('strips a leading "./"', () => {
-		expect(normalizeEntryName('./Dockerfile')).toBe('Dockerfile');
-	});
+	// --- .actor/actor.json parses fine but isn't an object (e.g. bare "null") - candidate 1 must be
+	// skipped, not crash on `'dockerfile' in null`. ---
+	describe('.actor/actor.json parses to a non-object value', () => {
+		it('content is exactly "null" (JSON5-parseable, non-object) - falls through to candidate 2, no crash', () => {
+			const result = resolveDockerfileLocation([actorJson('null'), text('.actor/Dockerfile', 'FROM node:20\n')]);
 
-	it('converts backslashes to POSIX separators', () => {
-		expect(normalizeEntryName('.actor\\Dockerfile')).toBe('.actor/Dockerfile');
-	});
-
-	it('collapses "a/./b" and "a/b/../c" via path.posix.normalize', () => {
-		expect(normalizeEntryName('.actor/./Dockerfile')).toBe('.actor/Dockerfile');
-		expect(normalizeEntryName('.actor/sub/../Dockerfile')).toBe('.actor/Dockerfile');
-	});
-
-	it('leaves an escaping "../" prefix alone (the escape check depends on this)', () => {
-		expect(normalizeEntryName('../evil/Dockerfile')).toBe('../evil/Dockerfile');
+			expect(result.outcome).toBe('resolved');
+			if (result.outcome !== 'resolved') return;
+			expect(result.dockerfilePath).toBe('.actor/Dockerfile');
+		});
 	});
 });

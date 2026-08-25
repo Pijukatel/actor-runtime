@@ -98,8 +98,10 @@ const VERSION: ActorVersionRecord = {
 	sourceFiles: [],
 };
 
-/** Fails the test immediately (rather than hanging) if the driver is ever asked to start a run/build -
- * used to assert the pre-start abort window really does prevent a container/build from ever starting. */
+/** Fails the test immediately (rather than hanging) if the driver is ever asked to start a run/build.
+ * Used both to assert the pre-start abort window really does prevent a container/build from ever
+ * starting, and - for `startBuild` - to assert that a `resolveDockerfileLocation` "failure" outcome
+ * fails the build without the driver ever being invoked. */
 function neverStartDriver(): Driver & { abortRunCalls: string[]; abortBuildCalls: string[] } {
 	const abortRunCalls: string[] = [];
 	const abortBuildCalls: string[] = [];
@@ -109,7 +111,9 @@ function neverStartDriver(): Driver & { abortRunCalls: string[]; abortBuildCalls
 		abortBuildCalls,
 		async init() {},
 		async startBuild() {
-			throw new Error('startBuild must never be called once the record is already ABORTING');
+			throw new Error(
+				'startBuild must never be called once the build has already been finalised - either the record was already ABORTING, or resolveDockerfileLocation returned a "failure" outcome',
+			);
 		},
 		async abortBuild(buildId) {
 			abortBuildCalls.push(buildId);

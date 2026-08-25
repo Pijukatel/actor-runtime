@@ -1,4 +1,14 @@
 /**
+ * The single source of truth for the basename `dockerfile-location.ts`'s resolver both searches for
+ * (candidates 2 and 3: `.actor/Dockerfile`, root `Dockerfile`) and gives the bundled default below when
+ * it injects one. Collapsing what used to be two separately-declared `'Dockerfile'` string constants
+ * into this one export makes the module's collision-safety invariant - the injected default's name is
+ * exactly the string the candidate-3 search looks for, so it can never collide with a real pushed
+ * Dockerfile - structural rather than a fact that only holds as long as two literals happen to agree.
+ */
+export const DEFAULT_DOCKERFILE_NAME = 'Dockerfile';
+
+/**
  * The bundled default Dockerfile, injected by `dockerfile-location.ts`'s resolver when an Actor's
  * pushed source names no Dockerfile at all (no `dockerfile` field in `.actor/actor.json`, and no
  * case-insensitive `Dockerfile` at `.actor/Dockerfile` or the Actor root). This is apify-worker's own
@@ -12,8 +22,6 @@
  * existing pattern for shipping a non-TS asset file. A string constant produces the identical bytes
  * with no extra packaging step.
  */
-export const DEFAULT_DOCKERFILE_NAME = 'Dockerfile';
-
 export const DEFAULT_DOCKERFILE_CONTENT = `# This is a default Dockerfile is used for Actors that don't have a Dockerfile.
 FROM apify/actor-node:20
 
