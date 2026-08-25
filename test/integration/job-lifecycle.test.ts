@@ -661,10 +661,10 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 
 			const abortPromise = abortRun(driver, record, true);
 
-			// Criterion #28: ABORTING lands immediately - observable well before the 30s window elapses -
-			// and the aborting frame is published before the wait, not after it. Waiting for the wait's own
-			// `setTimeout` to actually be scheduled is what proves both already happened, since both come
-			// strictly before it in `abortRun`'s own code.
+			// requirements/api.md's "Graceful abort" section: ABORTING lands immediately - observable well
+			// before the 30s window elapses - and the aborting frame is published before the wait, not
+			// after it. Waiting for the wait's own `setTimeout` to actually be scheduled is what proves both
+			// already happened, since both come strictly before it in `abortRun`'s own code.
 			await waitForPendingTimer();
 			const midWindow = await getRegistries().runs.get(record.id);
 			expect(midWindow?.status).toBe('ABORTING');
@@ -870,8 +870,9 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			// every other graceful-abort test in "finding 4" above.
 			const abortPromise = server.client.run(started.id).abort({ gracefully: true });
 
-			// Criterion #28: ABORTING lands immediately - observable over the same real HTTP client, well
-			// before the HTTP response itself resolves. Polled in real time (not via `waitForPendingTimer`):
+			// requirements/api.md's "Graceful abort" section: ABORTING lands immediately - observable over
+			// the same real HTTP client, well before the HTTP response itself resolves. Polled in real time
+			// (not via `waitForPendingTimer`):
 			// `apify-client`'s own request pipeline can register an incidental `setTimeout` of its own before
 			// the server has actually processed anything, so "a fake timer now exists somewhere in this
 			// process" is not a reliable signal here the way it is for every other graceful-abort test in
