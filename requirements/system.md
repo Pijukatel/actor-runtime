@@ -2,19 +2,12 @@
 
 - Supported operating systems:
     - Linux (tested)
-    - MacOS (not tested in POC)
-    - Windows. (not tested in POC)
+    - MacOS (adhoc manual tests)
+    - Windows (not tested in POC)
 
 - The system is encapsulated in dedicated docker image.
 - Linux is the officially supported and verified platform for the POC.
 - MacOS and Windows are best-effort for the POC.
-- The image is glibc-based (e.g. Debian slim), **not Alpine/musl**: `@crawlee/fs-storage` loads a
-  native Rust addon (`@crawlee/fs-storage-native`), and its glibc (gnu) bindings are the ones the
-  runtime is developed and tested against (musl builds only started appearing in `0.1.5-beta.19`).
-- The image supports **linux/amd64 and linux/arm64**: the addon ships linux-arm64 bindings since
-  `0.1.5-beta.19`, which `package.json` pins via a pnpm override (the pinned `@crawlee/fs-storage`
-  release still depends on the older, x64-only `0.1.5-beta.18`). On Apple Silicon, Docker builds and
-  runs the image natively as arm64.
 
 # Components
 

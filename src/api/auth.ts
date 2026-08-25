@@ -4,9 +4,6 @@ import type { UserRecord } from '../storage/entities.js';
 import { getOrCreateUserForToken } from '../services/users.js';
 import { sendError } from './envelope.js';
 
-// Augmenting a module makes it a real dependency: `@types/express-serve-static-core` is a direct
-// devDependency (not reached through `@types/express`) because pnpm's isolated node_modules - unlike
-// npm's hoisting - only resolves declared dependencies, and this `declare module` needs to resolve it.
 declare module 'express-serve-static-core' {
 	interface Request {
 		user?: UserRecord;
