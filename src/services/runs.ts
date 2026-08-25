@@ -325,29 +325,65 @@ export async function runInBackground(
  * oversight (an already-terminal run is still handled by the `isTerminalJobStatus` check above, also
  * unaffected by `gracefully`).
  *
- * `wasRunning` is captured from `transitionJobStatus`'s own `onBeforeTransition` hook, INSIDE the same
- * mutex-serialized read-modify-write that performs the `-> ABORTING` write itself - not from a separate,
- * preceding `runs.get(run.id)` read. A plain `get` taken before the guarded write has no ordering
- * relationship with a concurrent `runInBackground` call going through its own `transitionJobStatus`
- * (READY -> RUNNING): the two can interleave so the plain read observes a stale `READY`/`RUNNING` status
- * a moment before the real one lands, silently steering a `?gracefully=true` request onto the wrong path
- * (no `aborting` frame, no window - or the reverse). Reading `current.status` from inside the mutator
- * closure closes that window structurally: by the time this callback runs, the per-id `KeyedMutex`
- * (`storage/registry.ts`) has already serialized it against every other `update` on this same id, so
- * `current` here is the record exactly as it stood the instant before this write decides anything - the
- * freshest status this function could possibly observe. The caller's own `run` parameter is never
- * consulted for this decision either, for the same reason.
+ * `wasRunning`/`alreadyAborting` are both captured from `transitionJobStatus`'s own `onBeforeTransition`
+ * hook, INSIDE the same mutex-serialized read-modify-write that performs (or refuses) the `-> ABORTING`
+ * write itself - not from a separate, preceding `runs.get(run.id)` read. A plain `get` taken before the
+ * guarded write has no ordering relationship with a concurrent `runInBackground` call going through its
+ * own `transitionJobStatus` (READY -> RUNNING): the two can interleave so the plain read observes a stale
+ * `READY`/`RUNNING` status a moment before the real one lands, silently steering a `?gracefully=true`
+ * request onto the wrong path (no `aborting` frame, no window - or the reverse). Reading `current.status`
+ * from inside the mutator closure closes that window structurally: by the time this callback runs, the
+ * per-id `KeyedMutex` (`storage/registry.ts`) has already serialized it against every other `update` on
+ * this same id, so `current` here is the record exactly as it stood the instant before this write decides
+ * anything - the freshest status this function could possibly observe. The caller's own `run` parameter
+ * is never consulted for either decision, for the same reason.
+ *
+ * **Two concurrent `/abort` calls on the same run.** `ALLOWED_NEXT.ABORTING` (`job-status.ts`) has no
+ * `ABORTING` entry, so a second call's own attempt to transition `ABORTING -> ABORTING` is always refused
+ * and returns the record unchanged - `aborting.status === 'ABORTING'` is therefore true whether *this*
+ * call just performed the READY/RUNNING -> ABORTING write, or the record was already `ABORTING` because a
+ * different, concurrent call put it there moments earlier. Those two cases must be told apart before
+ * deciding whether to start (or skip) the graceful window - `onBeforeTransition`'s pre-transition status is
+ * exactly that signal (`alreadyAborting = current?.status === 'ABORTING'`), which a post-transition check
+ * on `aborting.status` alone cannot provide.
+ *
+ * The chosen semantics, once told apart: a graceful window, having started, is only ever cut short by an
+ * explicit non-graceful abort - never by a second graceful one.
+ * - A second `?gracefully=true` call landing while a window (started by a *different* call) is still open
+ *   is a no-op: it returns the record exactly as it stands (still `ABORTING`) without calling
+ *   `driver.abortRun` and without starting a window of its own. The first caller's own window is the only
+ *   one that will ever elapse, and its own eventual `driver.abortRun` + `-> ABORTED` write is the only one
+ *   that happens - exactly the guarantee criterion #25 makes for "the" caller of a graceful abort, now made
+ *   to hold for whichever caller actually started the window still in flight.
+ * - A second `?gracefully=false` (or omitted) call is a deliberate escalation, not a bug: it proceeds
+ *   straight to `driver.abortRun` and the terminal `-> ABORTED` write, immediately, exactly like the
+ *   pre-graceful-window shape of this function always did for a plain double-abort (a redundant
+ *   `driver.abortRun` call is a harmless no-op against an already-stopped/stopping container, matching
+ *   `container.stop()`'s own idempotence). This is the outcome a caller who explicitly asked for a hard
+ *   abort would expect - a graceful window is a courtesy to the Actor, not a hold the caller cannot escalate
+ *   past. The first (graceful) caller's own window still elapses on its own schedule; its later
+ *   `driver.abortRun` call is then just as harmless a no-op, and its final `transitionJobStatus(...,
+ *   'ABORTED', ...)` call finds the record already terminal and is refused rather than erroring or
+ *   double-writing (`transitionJobStatus`'s own terminal check) - the `ABORTING -> ABORTED` guard already
+ *   made this safe before this fix; this fix only stops the *early* stop, not the guard that was already
+ *   protecting the finalisation write.
  */
 export async function abortRun(driver: Driver, run: RunRecord, gracefully = false): Promise<RunRecord | null> {
 	if (isTerminalJobStatus(run.status)) return run;
 	const { runs } = getRegistries();
 	let wasRunning = false;
+	let alreadyAborting = false;
 	const aborting = await transitionJobStatus(runs, run.id, 'ABORTING', {}, (current) => {
 		wasRunning = current?.status === 'RUNNING';
+		alreadyAborting = current?.status === 'ABORTING';
 	});
 	if (!aborting || aborting.status !== 'ABORTING') return aborting;
 
-	if (gracefully && wasRunning) {
+	// A second `?gracefully=true` call joining a window someone else already started: no-op, join it -
+	// never re-trigger the stop early (see the doc comment above).
+	if (alreadyAborting && gracefully) return aborting;
+
+	if (!alreadyAborting && gracefully && wasRunning) {
 		// Best-effort, same no-subscriber tolerance `publishSystemInfo` already has (`events-channel.ts`):
 		// a run with nobody connected still waits out the window and still gets stopped.
 		publishAborting(run.id);

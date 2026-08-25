@@ -857,6 +857,71 @@ describe('DockerDriver host-capacity warning (actor-driver.md: warn, never clamp
 		await outcomePromise;
 	});
 
+	it('warns naming only the over-capacity resource when memory is over capacity but CPU is not', async () => {
+		// NCPU: 16, MemTotal: 8192 MB - a host with plenty of CPU relative to its RAM at the platform's own
+		// ratio. memoryMbytes: 16_384 -> 4 dedicated cores, which fits comfortably under 16; the memory
+		// figure alone (16384 > 8192) is over capacity.
+		const stub = stubDockerForCapacity(async () => ({ NCPU: 16, MemTotal: 8_589_934_592 }));
+		const driver = new DockerDriver(stub.docker);
+		await driver.init();
+
+		const chunks: string[] = [];
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-capacity-mem-only', imageId: 'fake-image', env: {}, memoryMbytes: 16_384, timeoutSecs: 60 },
+			(chunk) => chunks.push(chunk),
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const warning = chunks.join('');
+		expect(warning).toContain('16384 MB');
+		expect(warning).toContain('host has 8192 MB');
+		expect(warning).toMatch(/applying the requested limits anyway/);
+		// The CPU figure must not appear at all - only the over-capacity resource is named.
+		expect(warning).not.toContain('CPU cores');
+		expect(warning).not.toContain('host has 16');
+
+		// Still applied verbatim, unclamped.
+		const [options] = stub.createContainer.mock.calls[0]!;
+		expect(options.HostConfig?.Memory).toBe(16_384 * 1024 * 1024);
+		expect(options.HostConfig?.CpuQuota).toBe(400_000);
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
+	it('warns naming only the over-capacity resource when CPU is over capacity but memory is not', async () => {
+		// NCPU: 1, MemTotal: 1 TiB - a host with plenty of RAM but only a single core. memoryMbytes: 8192 ->
+		// 2 dedicated cores, over the host's single core; the memory figure (8192 MB against ~1,048,576 MB
+		// of host RAM) is comfortably under capacity.
+		const stub = stubDockerForCapacity(async () => ({ NCPU: 1, MemTotal: 1_099_511_627_776 }));
+		const driver = new DockerDriver(stub.docker);
+		await driver.init();
+
+		const chunks: string[] = [];
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-capacity-cpu-only', imageId: 'fake-image', env: {}, memoryMbytes: 8192, timeoutSecs: 60 },
+			(chunk) => chunks.push(chunk),
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const warning = chunks.join('');
+		expect(warning).toContain('2.00 CPU cores');
+		expect(warning).toContain('host has 1');
+		expect(warning).toMatch(/applying the requested limits anyway/);
+		// The memory figure must not appear at all - only the over-capacity resource is named.
+		expect(warning).not.toContain('MB (host has');
+
+		// Still applied verbatim, unclamped.
+		const [options] = stub.createContainer.mock.calls[0]!;
+		expect(options.HostConfig?.Memory).toBe(8192 * 1024 * 1024);
+		expect(options.HostConfig?.CpuQuota).toBe(200_000);
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
 	it('produces no warning at all for an in-capacity request', async () => {
 		const stub = stubDockerForCapacity(async () => ({ NCPU: 4, MemTotal: 8_589_934_592 }));
 		const driver = new DockerDriver(stub.docker);

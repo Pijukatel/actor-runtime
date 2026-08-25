@@ -203,6 +203,11 @@
 - A graceful abort's HTTP response is held open for the full window in the worst case (the response _is_
   the finalized record) - the longest any request in this API is held open, and a deliberate one, since
   it is opt-in and matches the real platform's own worst case.
+- **A second `/abort` call arriving while a graceful window is still open:** a second `?gracefully=true`
+  call is a no-op that joins the existing window rather than starting one of its own or stopping the
+  container early - the run's first caller's window is the only one that elapses, and its own eventual
+  stop is the only one that happens; a second `?gracefully=false` (or omitted) call is a deliberate
+  escalation and stops the container immediately, exactly as a plain double-abort always has.
 
 ## Upstream fallback (opt-in, off by default, all HTTP methods)
 

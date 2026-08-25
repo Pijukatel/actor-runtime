@@ -743,6 +743,99 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			const aborted = await abortRun(server.driver, terminalRecord, true);
 			expect(aborted?.status).toBe('SUCCEEDED');
 		});
+
+		it('a second ?gracefully=true call arriving while a first graceful window is still open does not defeat it: it no-ops (joins, no early stop), and the window still ends in exactly one driver.abortRun call', async () => {
+			const driver = deferredRunDriver();
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'graceful-double-graceful-actor');
+			const build = await seedSucceededBuild(actor);
+			const record = bareRunRecord(actor, build);
+			await getRegistries().runs.set(record.id, record);
+
+			const bg = runInBackground(driver, actor, record, { apiBaseUrl: server.baseUrl, token: server.token });
+			await driver.started;
+
+			vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+			const firstAbort = abortRun(driver, record, true);
+			await waitForPendingTimer();
+			const midWindow = await getRegistries().runs.get(record.id);
+			expect(midWindow?.status).toBe('ABORTING');
+			expect(driver.abortRunCalls).toEqual([]);
+
+			// The second call re-fetches the record first, exactly as the real HTTP route does via
+			// `getOwnedRun` - the reviewer's own repro used a freshly re-fetched record, not the first
+			// call's now-stale local object.
+			const secondAbort = abortRun(driver, midWindow!, true);
+			const secondResult = await secondAbort;
+
+			// The no-op join: the second call must not itself have started a window or called
+			// driver.abortRun - it returns the record exactly as it stood (still ABORTING), immediately,
+			// without waiting.
+			expect(secondResult?.status).toBe('ABORTING');
+			expect(driver.abortRunCalls).toEqual([]);
+
+			// Just under the first call's own window: still not called - the second call did not shorten it.
+			await vi.advanceTimersByTimeAsync(29_999);
+			expect(driver.abortRunCalls).toEqual([]);
+
+			// At the window: exactly one driver.abortRun call - the first caller's own, and only one.
+			await vi.advanceTimersByTimeAsync(1);
+			expect(driver.abortRunCalls).toEqual([record.id]);
+
+			const firstResult = await firstAbort;
+			expect(firstResult?.status).toBe('ABORTED');
+
+			const final = await getRegistries().runs.get(record.id);
+			expect(final?.status).toBe('ABORTED');
+
+			driver.resolveRun({ exitCode: 137, timedOut: false });
+			await bg;
+		});
+
+		it("a second, hard (?gracefully=false) call arriving while a graceful window is still open is a deliberate escalation: it stops the container immediately, and the first caller's own pending window later resolves cleanly (no error, no double-write) once it elapses", async () => {
+			const driver = deferredRunDriver();
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'graceful-then-hard-actor');
+			const build = await seedSucceededBuild(actor);
+			const record = bareRunRecord(actor, build);
+			await getRegistries().runs.set(record.id, record);
+
+			const bg = runInBackground(driver, actor, record, { apiBaseUrl: server.baseUrl, token: server.token });
+			await driver.started;
+
+			vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+			const firstAbort = abortRun(driver, record, true);
+			await waitForPendingTimer();
+			const midWindow = await getRegistries().runs.get(record.id);
+			expect(midWindow?.status).toBe('ABORTING');
+			expect(driver.abortRunCalls).toEqual([]);
+
+			// The escalation: a plain (hard) abort call, re-fetching the record first like the real HTTP
+			// route does, stops the container right away - it does not wait out someone else's window.
+			const secondResult = await abortRun(driver, midWindow!, false);
+			expect(secondResult?.status).toBe('ABORTED');
+			expect(driver.abortRunCalls).toEqual([record.id]);
+
+			const afterEscalation = await getRegistries().runs.get(record.id);
+			expect(afterEscalation?.status).toBe('ABORTED');
+
+			// The first caller's own window still elapses on its own schedule. Its `driver.abortRun` call
+			// is then just a harmless second no-op, and its final `-> ABORTED` write is refused (the
+			// record is already terminal) rather than erroring or clobbering anything - confirmed here by
+			// awaiting the first call's promise all the way through with no exception.
+			await vi.advanceTimersByTimeAsync(30_000);
+			const firstResult = await firstAbort;
+			expect(firstResult?.status).toBe('ABORTED');
+			expect(driver.abortRunCalls).toEqual([record.id, record.id]);
+
+			const final = await getRegistries().runs.get(record.id);
+			expect(final?.status).toBe('ABORTED');
+
+			driver.resolveRun({ exitCode: 137, timedOut: false });
+			await bg;
+		});
 	});
 
 	describe('finding 5: ?gracefully= exercised over a real HTTP round trip, not just direct service-layer calls', () => {

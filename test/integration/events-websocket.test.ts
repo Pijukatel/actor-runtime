@@ -104,7 +104,7 @@ function waitForOpen(ws: WebSocket): Promise<void> {
  * The client's `open` event fires as soon as the HTTP upgrade handshake completes - `api/events-ws.ts`'s
  * own `handleConnection` is still an async function running *after* that (it resolves the run, then
  * subscribes), so a sample/frame published immediately after `waitForOpen` can race ahead of the actual
- * `subscribe()` call and be silently dropped (broadcast to zero subscribers, never replayed). Polling
+ * `subscribeEvents()` call and be silently dropped (broadcast to zero subscribers, never replayed). Polling
  * `getSubscriberCount` - real-exported for exactly this kind of test synchronization (`events-channel.ts`'s
  * own doc comment) - waits out that gap deterministically before a test emits anything.
  */
