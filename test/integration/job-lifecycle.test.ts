@@ -588,7 +588,7 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 		});
 	});
 
-	describe('finding 4: graceful abort (?gracefully= contract per requirements/api.md "Graceful abort" section, GRACEFUL_ABORT_WINDOW_MS = 30000)', () => {
+	describe('graceful abort (?gracefully= contract per requirements/api.md "Graceful abort" section, GRACEFUL_ABORT_WINDOW_MS = 30000)', () => {
 		afterEach(() => {
 			vi.useRealTimers();
 		});
@@ -840,7 +840,7 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 		});
 	});
 
-	describe('finding 5: ?gracefully= exercised over a real HTTP round trip, not just direct service-layer calls', () => {
+	describe('?gracefully= exercised over a real HTTP round trip, not just direct service-layer calls', () => {
 		afterEach(() => {
 			vi.useRealTimers();
 		});
@@ -867,7 +867,7 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			// The real HTTP round trip: `apify-client`'s `RunClient.abort({gracefully:true})` issues
 			// `POST /v2/actor-runs/:runId/abort?gracefully=true`, exercising `api/routes/runs.ts`'s own
 			// `queryBoolean` parsing and its call into `abortRun` - never `abortRun` called directly, unlike
-			// every other graceful-abort test in "finding 4" above.
+			// every other graceful-abort test in the "graceful abort" section above.
 			const abortPromise = server.client.run(started.id).abort({ gracefully: true });
 
 			// requirements/api.md's "Graceful abort" section: ABORTING lands immediately - observable over

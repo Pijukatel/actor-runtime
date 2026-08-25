@@ -101,6 +101,17 @@ describe('events-channel: publishSystemInfo', () => {
 		expect((frames[0]!.data as Record<string, unknown>).isCpuOverloaded).toBe(expected);
 	});
 
+	it('isCpuOverloaded is false when grantedCores is 0 (memoryMbytes: 0), never a division producing Infinity/NaN', () => {
+		const runId = 'run-zero-grant';
+		const { frames } = captureFrames(runId);
+
+		// grantedCores = dedicatedCpusFor(0) = 0 - the `grantedCores > 0 &&` guard must short-circuit before
+		// any `usedCores / grantedCores` division ever happens.
+		publishSystemInfo(runId, sample({ cpuPercentOfOneCore: 20 }), { memoryMbytes: 0 });
+
+		expect((frames[0]!.data as Record<string, unknown>).isCpuOverloaded).toBe(false);
+	});
+
 	it('memAvgBytes/cpuAvgUsage/cpuMaxUsage are running figures across every sample published so far for that run, cpuCurrentUsage/memCurrentBytes are just the latest', () => {
 		const runId = 'run-avg';
 		const { frames } = captureFrames(runId);

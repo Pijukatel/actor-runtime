@@ -5,30 +5,28 @@
  * "Run resource telemetry" section: cadence, all-eight-fields shape, and the stop-before-remove ordering
  * that keeps a stats call from ever racing container removal.
  */
-import { PassThrough } from 'node:stream';
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type Docker from 'dockerode';
 
 import { DockerDriver } from '../../src/driver/docker-driver.js';
 import type { RunResourceSample } from '../../src/driver/types.js';
+import { stubDockerForRun } from './helpers/docker-stubs.js';
 
 /**
- * A stub `dockerode`-shaped object covering only what `startRun` calls when a sampler is actually
- * running: `container.stats({stream:false,'one-shot':true})`, controllable per-call either via a queue of
+ * Extends `helpers/docker-stubs.ts`'s shared `stubDockerForRun` (also used directly by
+ * `docker-driver.test.ts`) with a `container.stats()` mock, controllable per-call either via a queue of
  * canned `ContainerStats`-shaped results, or left pending indefinitely (until the test resolves it itself
  * via `resolvePendingStats`) once the queue is exhausted - the shape a "stats() never resolves until the
- * test says so" sampler-lifetime test needs, to prove `stop()` awaits an in-flight call rather than
- * abandoning it. The rest of
- * `startRun`'s own lifecycle (`start`/`logs`/`wait`/`remove`) mirrors `docker-driver.test.ts`'s
- * `stubDockerForRun`.
+ * test says so" sampler-lifetime test needs, to prove `stop()` bounds its own wait for an in-flight call
+ * rather than either abandoning it instantly or hanging on it forever. Mutating the SAME `container`
+ * object `stubDockerForRun` already hands to `createContainer`'s resolved value - rather than
+ * reimplementing `start`/`logs`/`wait`/`remove`/`stop` a second time here - is the same extend-in-place
+ * pattern `docker-driver.test.ts`'s own `stubDockerForCapacity` already uses for `init()`'s extra surface.
+ * Imported from that neutral helper file, never from `docker-driver.test.ts` directly: a `.test.ts` file
+ * re-runs its own top-level `describe`/`it` registrations as a side effect of being imported by another
+ * test file, which would silently double-execute every one of `docker-driver.test.ts`'s own tests.
  */
 function stubDockerForSampler() {
-	let resolveWait!: (result: { StatusCode: number }) => void;
-	const waitPromise = new Promise<{ StatusCode: number }>((resolve) => {
-		resolveWait = resolve;
-	});
-	const rawLogStream = new PassThrough();
+	const run = stubDockerForRun();
 
 	const statsResponses: unknown[] = [];
 	let nextStatsIndex = 0;
@@ -36,34 +34,19 @@ function stubDockerForSampler() {
 
 	const stats = vi.fn(async () => {
 		if (nextStatsIndex < statsResponses.length) {
-			return statsResponses[nextStatsIndex++];
+			const response = statsResponses[nextStatsIndex++];
+			if (response instanceof Error) throw response;
+			return response;
 		}
 		// The queue is exhausted - this call hangs until `resolvePendingStats` below is called for it.
 		return new Promise((resolve) => {
 			pendingStatsCalls.push(resolve);
 		});
 	});
-
-	const container = {
-		start: vi.fn(async () => undefined),
-		logs: vi.fn(async () => rawLogStream),
-		wait: vi.fn(async () => waitPromise),
-		remove: vi.fn(async (_options?: Record<string, unknown>) => undefined),
-		stop: vi.fn(async () => undefined),
-		stats,
-	};
-
-	// Faithful to the real `docker-modem` `demuxStream` (see `docker-driver.test.ts`'s own stub doc
-	// comment): forwards data, never ends the destinations itself.
-	const demuxStream = vi.fn((stream: NodeJS.ReadableStream, stdout: PassThrough) => {
-		stream.on('data', (chunk: Buffer) => stdout.write(chunk));
-	});
-	const createContainer = vi.fn(async (_options: Docker.ContainerCreateOptions) => container);
-	const docker = { createContainer, modem: { demuxStream } } as unknown as Docker;
+	Object.assign(run.container, { stats });
 
 	return {
-		docker,
-		container,
+		...run,
 		stats,
 		queueStatsResponse(response: unknown): void {
 			statsResponses.push(response);
@@ -74,12 +57,6 @@ function stubDockerForSampler() {
 			if (!resolve) throw new Error('no pending stats() call to resolve');
 			resolve(response);
 		},
-		triggerContainerExit(statusCode = 0): void {
-			resolveWait({ StatusCode: statusCode });
-		},
-		endLogStream(): void {
-			rawLogStream.end();
-		},
 	};
 }
 
@@ -88,6 +65,22 @@ function containerStats(totalUsage: number, systemUsage: number, memoryUsage: nu
 	return {
 		cpu_stats: { cpu_usage: { total_usage: totalUsage }, system_cpu_usage: systemUsage, online_cpus: onlineCpus },
 		memory_stats: { usage: memoryUsage },
+	};
+}
+
+/** A `containerStats` variant that also carries the reclaimable-page-cache field
+ * `memoryUsageBytesExcludingCache` (`docker-driver.ts`) subtracts from `usage` - `cacheField` picks which
+ * of the two real cgroup shapes this sample mimics. */
+function containerStatsWithCache(
+	totalUsage: number,
+	systemUsage: number,
+	memoryUsage: number,
+	cacheField: 'total_inactive_file' | 'inactive_file',
+	cacheBytes: number,
+) {
+	return {
+		...containerStats(totalUsage, systemUsage, memoryUsage),
+		memory_stats: { usage: memoryUsage, stats: { [cacheField]: cacheBytes } },
 	};
 }
 
@@ -195,6 +188,144 @@ describe('DockerDriver.startRun - per-run resource sampler (onSample)', () => {
 		await outcomePromise;
 	});
 
+	it('treats a reported online_cpus of 0 as 1 - `@types/dockerode` declares the field non-optional, but this defends against a daemon that reports it as 0 anyway', async () => {
+		const stub = stubDockerForSampler();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		stub.queueStatsResponse(containerStats(0, 0, 100, 0));
+		// cpuDelta=200, systemDelta=1000 -> ratio 0.2. With the online_cpus=0 -> 1 fallback that's 20%;
+		// without it (multiplying by the raw 0 instead), it would be 0%.
+		stub.queueStatsResponse(containerStats(200, 1000, 150, 0));
+
+		const samples: RunResourceSample[] = [];
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-sampler-online-cpus-0', imageId: 'fake-image', env: {}, memoryMbytes: 1024, timeoutSecs: 60 },
+			() => {},
+			(sample) => samples.push(sample),
+		);
+
+		await vi.advanceTimersByTimeAsync(1000);
+
+		expect(samples).toHaveLength(1);
+		expect(samples[0]?.cpuPercentOfOneCore).toBeCloseTo(20);
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
+	it("subtracts cgroup v1's total_inactive_file from memory_stats.usage - the same adjustment docker stats' own MEM USAGE column makes", async () => {
+		const stub = stubDockerForSampler();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		stub.queueStatsResponse(containerStats(0, 0, 100));
+		stub.queueStatsResponse(containerStatsWithCache(200, 1000, 150_000_000, 'total_inactive_file', 50_000_000));
+
+		const samples: RunResourceSample[] = [];
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-sampler-cache-v1', imageId: 'fake-image', env: {}, memoryMbytes: 1024, timeoutSecs: 60 },
+			() => {},
+			(sample) => samples.push(sample),
+		);
+
+		await vi.advanceTimersByTimeAsync(1000);
+
+		expect(samples).toHaveLength(1);
+		expect(samples[0]?.memoryBytes).toBe(100_000_000); // 150M reported usage minus 50M cache
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
+	it("subtracts cgroup v2's inactive_file when total_inactive_file is absent (cgroup v1 has no such field)", async () => {
+		const stub = stubDockerForSampler();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		stub.queueStatsResponse(containerStats(0, 0, 100));
+		stub.queueStatsResponse(containerStatsWithCache(200, 1000, 150_000_000, 'inactive_file', 60_000_000));
+
+		const samples: RunResourceSample[] = [];
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-sampler-cache-v2', imageId: 'fake-image', env: {}, memoryMbytes: 1024, timeoutSecs: 60 },
+			() => {},
+			(sample) => samples.push(sample),
+		);
+
+		await vi.advanceTimersByTimeAsync(1000);
+
+		expect(samples).toHaveLength(1);
+		expect(samples[0]?.memoryBytes).toBe(90_000_000); // 150M reported usage minus 60M cache
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
+	it('never subtracts a cache figure that is not smaller than the reported usage - falls back to the raw usage rather than going to zero or negative', async () => {
+		const stub = stubDockerForSampler();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		stub.queueStatsResponse(containerStats(0, 0, 100));
+		stub.queueStatsResponse(containerStatsWithCache(200, 1000, 100, 'inactive_file', 100));
+
+		const samples: RunResourceSample[] = [];
+		const outcomePromise = driver.startRun(
+			{
+				runId: 'run-sampler-cache-not-smaller',
+				imageId: 'fake-image',
+				env: {},
+				memoryMbytes: 1024,
+				timeoutSecs: 60,
+			},
+			() => {},
+			(sample) => samples.push(sample),
+		);
+
+		await vi.advanceTimersByTimeAsync(1000);
+
+		expect(samples).toHaveLength(1);
+		expect(samples[0]?.memoryBytes).toBe(100);
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
+	it('skips a tick outright - no throw, no emission, and the previous sample is left untouched - when stats() rejects (the container may have already exited, or be mid-removal)', async () => {
+		const stub = stubDockerForSampler();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		stub.queueStatsResponse(containerStats(0, 0, 100)); // baseline
+		stub.queueStatsResponse(new Error('stats() failed: container is being removed'));
+		stub.queueStatsResponse(containerStats(200, 1000, 150)); // recovers on the next tick
+
+		const samples: RunResourceSample[] = [];
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-sampler-stats-reject', imageId: 'fake-image', env: {}, memoryMbytes: 1024, timeoutSecs: 60 },
+			() => {},
+			(sample) => samples.push(sample),
+		);
+
+		await vi.advanceTimersByTimeAsync(1000); // tick 1: stats() rejects - skipped, not thrown
+		expect(samples).toHaveLength(0);
+
+		// Tick 2 succeeds again, diffed against the BASELINE (the rejected tick returned before ever
+		// updating `previous`, so this is not diffed against anything from the failed tick).
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(samples).toHaveLength(1);
+		expect(samples[0]?.cpuPercentOfOneCore).toBeCloseTo(20);
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
 	it('never starts a sampler at all when no onSample callback is given - no stats() call, ever', async () => {
 		const stub = stubDockerForSampler();
 		const driver = new DockerDriver(stub.docker);
@@ -240,7 +371,7 @@ describe('DockerDriver.startRun - per-run resource sampler (onSample)', () => {
 		expect(stub.stats.mock.calls.length).toBe(callCountAtEnd);
 	});
 
-	it("awaits the one in-flight stats() call before startRun proceeds to container.remove(), and issues no stats() call after stop() - the log-drain bug's shape must not recur on this third Docker connection", async () => {
+	it('awaits the one in-flight stats() call before startRun proceeds to container.remove() when it settles quickly, and issues no further stats() call after stop()', async () => {
 		// Real timers here: nothing queued at all, so every stats() call (the baseline included) stays
 		// pending until this test explicitly resolves it - no simulated time needs to elapse.
 		vi.useRealTimers();
@@ -270,7 +401,8 @@ describe('DockerDriver.startRun - per-run resource sampler (onSample)', () => {
 
 		expect(stub.container.remove).not.toHaveBeenCalled();
 
-		// Only once the in-flight call resolves can `stop()` complete, and only then is `remove()` called.
+		// Once the in-flight call resolves (well inside `SAMPLER_STOP_GRACE_MS`), `stop()` completes and
+		// `remove()` is called.
 		stub.resolvePendingStats(containerStats(0, 0, 100));
 		const outcome = await outcomePromise;
 
@@ -281,7 +413,54 @@ describe('DockerDriver.startRun - per-run resource sampler (onSample)', () => {
 		expect(stub.stats).toHaveBeenCalledTimes(1);
 	});
 
-	it('a container.logs() rejection between container.start() and container.wait() still stops the sampler and removes the container (regression: finding 3 - sampler/container leak window)', async () => {
+	it("bounds stop()'s wait by SAMPLER_STOP_GRACE_MS instead of hanging forever when stats() never resolves - startRun still reaches container.remove(), and the abandoned call resolving later issues no further stats() call and is never emitted", async () => {
+		// Deliberate behavior change from the previous round: `stop()` used to await the in-flight `stats()`
+		// call with no bound at all, which - with no client-side Docker timeout configured anywhere in this
+		// codebase - meant a daemon that never answered left `startRun`'s own `finally`, and therefore the
+		// whole run's finalization, stuck forever. This test is the red->green proof that the hang is now
+		// bounded: `stats()` is never resolved at all here, yet `startRun` still completes.
+		const stub = stubDockerForSampler();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		const samples: RunResourceSample[] = [];
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-sampler-stop-2', imageId: 'fake-image', env: {}, memoryMbytes: 1024, timeoutSecs: 60 },
+			() => {},
+			(sample) => samples.push(sample),
+		);
+
+		// Let `startRun` run past its own setup, far enough that the sampler's baseline `stats()` call has
+		// actually been issued - it is never resolved for the rest of this test.
+		await vi.advanceTimersByTimeAsync(0);
+		expect(stub.stats).toHaveBeenCalledTimes(1);
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+
+		// `startRun`'s `finally` reaches `sampler.stop()`. Just under the grace, `container.remove()` must
+		// not have fired yet - `stop()` is still (bounded-ly) waiting on the never-resolving call.
+		await vi.advanceTimersByTimeAsync(4999);
+		expect(stub.container.remove).not.toHaveBeenCalled();
+
+		// At/after the grace, `stop()` gives up on the still-pending call and `startRun` proceeds to
+		// `container.remove()` and resolves - the hang is bounded, not eliminated by some other means.
+		await vi.advanceTimersByTimeAsync(1);
+		const outcome = await outcomePromise;
+
+		expect(outcome).toEqual({ exitCode: 0, timedOut: false });
+		expect(stub.container.remove).toHaveBeenCalledTimes(1);
+
+		// The abandoned call resolving even later must never be emitted (`stopped` suppresses it, per
+		// `takeSample`'s own doc comment) and must never trigger a further `stats()` call - `stop()` already
+		// cleared the interval before starting its bounded wait.
+		stub.resolvePendingStats(containerStats(999, 999, 999));
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(stub.stats).toHaveBeenCalledTimes(1);
+		expect(samples).toEqual([]);
+	});
+
+	it('a container.logs() rejection between container.start() and container.wait() still stops the sampler and removes the container', async () => {
 		// Real timers, same reason as the test above: nothing queued, so the sampler's own baseline
 		// `stats()` call stays pending until this test resolves it - no simulated time needs to elapse.
 		vi.useRealTimers();

@@ -207,7 +207,7 @@ describe('actor version envVars are applied to the run container env', () => {
 		expect(env?.APIFY_MEMORY_MBYTES).toBe('2048');
 		expect(env?.ACTOR_MEMORY_MBYTES).toBe(env?.APIFY_MEMORY_MBYTES);
 
-		// 2048 / 4096 = 0.5 core - the same ratio the CPU limit itself uses (`services/resources.ts`).
+		// 2048 / 4096 = 0.5 core - the same ratio the CPU limit itself uses (`resources.ts`).
 		expect(env?.APIFY_DEDICATED_CPUS).toBe('0.5');
 		// No `ACTOR_`-prefixed counterpart at all - apify-sdk-js's own `ENV_MAP` has no dedicated-CPU key.
 		expect(Object.hasOwn(env!, 'ACTOR_DEDICATED_CPUS')).toBe(false);

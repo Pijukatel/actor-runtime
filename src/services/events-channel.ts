@@ -13,7 +13,7 @@
  * only ever hands this module a raw `RunResourceSample`; the CPU-percent-of-grant math, the
  * `isCpuOverloaded` threshold, and the avg/max bookkeeping all live here, never in the driver.
  */
-import { dedicatedCpusFor } from './resources.js';
+import { dedicatedCpusFor } from '../resources.js';
 import type { RunResourceSample } from '../driver/types.js';
 
 /** The only part of a run's grant this module needs - `services/runs.ts` passes `record.options`

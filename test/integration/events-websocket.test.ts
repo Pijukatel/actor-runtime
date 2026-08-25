@@ -150,6 +150,29 @@ function rawUpgrade(server: TestServerHandle, runId: string): Promise<Socket> {
 	});
 }
 
+/**
+ * Attempts a websocket upgrade against an arbitrary `path` and resolves with which outcome the raw
+ * `http.request` observed: `'upgrade'` (a 101 response, handed off to `ws`), `'response'` (a normal,
+ * non-101 HTTP response), or `'error'` (the connection failed/reset with no response at all - what a
+ * `socket.destroy()` on the still-pending request produces).
+ */
+function attemptUpgrade(server: TestServerHandle, path: string): Promise<'upgrade' | 'response' | 'error'> {
+	return new Promise((resolve) => {
+		const req = request(`${server.baseUrl}${path}`, {
+			headers: {
+				Connection: 'Upgrade',
+				Upgrade: 'websocket',
+				'Sec-WebSocket-Version': '13',
+				'Sec-WebSocket-Key': randomBytes(16).toString('base64'),
+			},
+		});
+		req.on('upgrade', () => resolve('upgrade'));
+		req.on('response', () => resolve('response'));
+		req.on('error', () => resolve('error'));
+		req.end();
+	});
+}
+
 const SYSTEM_INFO_FIELDS = [
 	'memAvgBytes',
 	'memCurrentBytes',
@@ -383,7 +406,62 @@ describe('events websocket (GET /actor-runtime/events/:runId)', () => {
 		expect(closeEvent.code).toBe(1008);
 	});
 
-	it('an unhandled protocol-level error on a connected socket (a malformed frame) never crashes the process - it is contained to that one connection (regression: blocker - unhandled `error` event)', async () => {
+	it('destroys the raw socket for an upgrade request whose path does not match the events endpoint at all - never upgraded, never left hanging', async () => {
+		server = await startTestServer(unavailableDriver());
+
+		const outcome = await attemptUpgrade(server, '/actor-runtime/not-the-events-path');
+
+		expect(outcome).toBe('error');
+	});
+
+	it('treats a trailing-slash spelling of the events path as a non-match too - reachable at exactly the one documented path (requirements/api.md)', async () => {
+		server = await startTestServer(unavailableDriver());
+
+		const outcome = await attemptUpgrade(server, '/actor-runtime/events/some-run-id/');
+
+		expect(outcome).toBe('error');
+	});
+
+	it("never sends a frame to a socket that has started closing but not yet fully closed - the subscribe callback's readyState guard, not just docker/ws's own no-op-after-close behavior", async () => {
+		const driver = multiRunDriver();
+		server = await startTestServer(driver);
+		const run = await seedRunnableRun(server, driver, 'ws-send-guard-actor');
+
+		const socket = connectEventsSocket(server, run.id);
+		await waitForOpen(socket.ws);
+		await waitForSubscribed(run.id);
+
+		// Spying on the shared `ws.WebSocket` class (the same module both this test's client and the
+		// server's own connection are instances of) is the only way to observe the SERVER's own connection
+		// object from outside - `attachEventsWebSocket` exposes no handle to it. `close()` is called
+		// exactly twice in the sequence below: once by this test (the client), once by the server's own
+		// `ws` instance reacting to the client's close frame (`receiverOnConclude` -> `websocket.close()` in
+		// `ws/lib/websocket.js`) - the second call's `this` is the server-side connection, mid-closing-
+		// handshake, which is the exact window the guard exists for.
+		const closeSpy = vi.spyOn(WebSocket.prototype, 'close');
+		const sendSpy = vi.spyOn(WebSocket.prototype, 'send');
+
+		socket.ws.close();
+		await waitFor(() => closeSpy.mock.contexts.some((ctx) => ctx !== socket.ws));
+		const serverWs = closeSpy.mock.contexts.find((ctx) => ctx !== socket.ws) as WebSocket;
+		expect(serverWs.readyState).not.toBe(WebSocket.OPEN);
+
+		const sendCallsBefore = sendSpy.mock.calls.length;
+		driver.emitSample(run.id, sample());
+		await realDelay(50);
+
+		// The guard skipped the publish entirely - no frame reached this socket, and `ws.send()` was never
+		// even attempted on the server's own (closing) connection object.
+		expect(socket.messages).toHaveLength(0);
+		expect(sendSpy.mock.calls.length).toBe(sendCallsBefore);
+
+		closeSpy.mockRestore();
+		sendSpy.mockRestore();
+		await socket.closed;
+		driver.resolveRun(run.id, { exitCode: 0, timedOut: false });
+	});
+
+	it('an unhandled protocol-level error on a connected socket (a malformed frame) never crashes the process - it is contained to that one connection', async () => {
 		const driver = multiRunDriver();
 		server = await startTestServer(driver);
 		const run = await seedRunnableRun(server, driver, 'ws-malformed-frame-actor');

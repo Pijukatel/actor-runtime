@@ -8,7 +8,7 @@ import { appendLog, flushLog, markLogTerminal } from './logs.js';
 import { markEventsTerminal, publishAborting, publishSystemInfo } from './events-channel.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
-import { dedicatedCpusFor } from './resources.js';
+import { dedicatedCpusFor } from '../resources.js';
 import { CONTAINER_EVENTS_WS_BASE_URL } from '../config.js';
 
 const DEFAULT_MEMORY_MBYTES = 1024;
@@ -309,65 +309,27 @@ export async function runInBackground(
 
 /**
  * Stops the run for real (`driver.abortRun` -> `container.stop()`) and reports `ABORTED` back to the
- * caller. The record is moved to `ABORTING` *before* `driver.abortRun` is even called, which is what
- * makes the result race-proof against `runInBackground`'s own completion write: from that point on, an
- * `ABORTING` record only accepts `ABORTED` as its next status (`job-status.ts`), so whichever of the two
- * writes - this function's final `ABORTED`, or `runInBackground`'s `SUCCEEDED`/`FAILED`/`TIMED-OUT` -
- * reaches the record first, the other is refused rather than clobbering it.
+ * caller. The record moves to `ABORTING` *before* `driver.abortRun` is called, which is what makes the
+ * result race-proof against `runInBackground`'s own completion write: an `ABORTING` record only accepts
+ * `ABORTED` next (`job-status.ts`), so whichever write - this function's, or `runInBackground`'s
+ * `SUCCEEDED`/`FAILED`/`TIMED-OUT` - lands first, the other is refused rather than clobbering it.
  *
- * `gracefully`, when true, inserts the platform's own graceful-abort contract in between - but only when
- * a container is actually running (`run.status === 'RUNNING'` at the moment this was called): a
- * best-effort `publishAborting(run.id)`, then a fixed `GRACEFUL_ABORT_WINDOW_MS` wall-clock wait - before
- * the existing `driver.abortRun` call, itself untouched either way. A `READY`-state abort (no container
- * created yet) keeps today's immediate `ABORTING -> ABORTED` path regardless of `gracefully`: there is no
- * container for an `aborting` frame's SDK-side handler to react to, and no reason to hold the caller's
- * HTTP request open for 30 seconds against nothing running - a settled edge case for this design, not an
- * oversight (an already-terminal run is still handled by the `isTerminalJobStatus` check above, also
- * unaffected by `gracefully`).
+ * `gracefully`, when true and the run is actually `RUNNING` (a container exists), inserts the platform's
+ * graceful-abort contract before the existing `driver.abortRun` call: a best-effort `publishAborting`,
+ * then a fixed `GRACEFUL_ABORT_WINDOW_MS` wall-clock wait. A `READY`-state or already-terminal abort skips
+ * straight to the immediate path regardless of `gracefully` - full contract, including the join-vs-escalate
+ * semantics for a second concurrent `/abort` call below, in `requirements/api.md`'s "Graceful abort"
+ * section.
  *
- * `wasRunning`/`alreadyAborting` are both captured from `transitionJobStatus`'s own `onBeforeTransition`
- * hook, INSIDE the same mutex-serialized read-modify-write that performs (or refuses) the `-> ABORTING`
- * write itself - not from a separate, preceding `runs.get(run.id)` read. A plain `get` taken before the
- * guarded write has no ordering relationship with a concurrent `runInBackground` call going through its
- * own `transitionJobStatus` (READY -> RUNNING): the two can interleave so the plain read observes a stale
- * `READY`/`RUNNING` status a moment before the real one lands, silently steering a `?gracefully=true`
- * request onto the wrong path (no `aborting` frame, no window - or the reverse). Reading `current.status`
- * from inside the mutator closure closes that window structurally: by the time this callback runs, the
- * per-id `KeyedMutex` (`storage/registry.ts`) has already serialized it against every other `update` on
- * this same id, so `current` here is the record exactly as it stood the instant before this write decides
- * anything - the freshest status this function could possibly observe. The caller's own `run` parameter
- * is never consulted for either decision, for the same reason.
- *
- * **Two concurrent `/abort` calls on the same run.** `ALLOWED_NEXT.ABORTING` (`job-status.ts`) has no
- * `ABORTING` entry, so a second call's own attempt to transition `ABORTING -> ABORTING` is always refused
- * and returns the record unchanged - `aborting.status === 'ABORTING'` is therefore true whether *this*
- * call just performed the READY/RUNNING -> ABORTING write, or the record was already `ABORTING` because a
- * different, concurrent call put it there moments earlier. Those two cases must be told apart before
- * deciding whether to start (or skip) the graceful window - `onBeforeTransition`'s pre-transition status is
- * exactly that signal (`alreadyAborting = current?.status === 'ABORTING'`), which a post-transition check
- * on `aborting.status` alone cannot provide.
- *
- * The chosen semantics, once told apart: a graceful window, having started, is only ever cut short by an
- * explicit non-graceful abort - never by a second graceful one.
- * - A second `?gracefully=true` call landing while a window (started by a *different* call) is still open
- *   is a no-op: it returns the record exactly as it stands (still `ABORTING`) without calling
- *   `driver.abortRun` and without starting a window of its own. The first caller's own window is the only
- *   one that will ever elapse, and its own eventual `driver.abortRun` + `-> ABORTED` write is the only one
- *   that happens - exactly the guarantee `requirements/api.md`'s "Graceful abort" section makes for the
- *   caller of a graceful abort, now made to hold for whichever caller actually started the window still in
- *   flight.
- * - A second `?gracefully=false` (or omitted) call is a deliberate escalation, not a bug: it proceeds
- *   straight to `driver.abortRun` and the terminal `-> ABORTED` write, immediately, exactly like the
- *   pre-graceful-window shape of this function always did for a plain double-abort (a redundant
- *   `driver.abortRun` call is a harmless no-op against an already-stopped/stopping container, matching
- *   `container.stop()`'s own idempotence). This is the outcome a caller who explicitly asked for a hard
- *   abort would expect - a graceful window is a courtesy to the Actor, not a hold the caller cannot escalate
- *   past. The first (graceful) caller's own window still elapses on its own schedule; its later
- *   `driver.abortRun` call is then just as harmless a no-op, and its final `transitionJobStatus(...,
- *   'ABORTED', ...)` call finds the record already terminal and is refused rather than erroring or
- *   double-writing (`transitionJobStatus`'s own terminal check) - the `ABORTING -> ABORTED` guard already
- *   made this safe before this fix; this fix only stops the *early* stop, not the guard that was already
- *   protecting the finalisation write.
+ * `wasRunning`/`alreadyAborting` MUST come from `transitionJobStatus`'s `onBeforeTransition` hook - read
+ * from *inside* the same mutex-serialized write that performs the `-> ABORTING` transition, never from a
+ * separate, preceding `get()`. A plain `get()` taken before the guarded write has no ordering relationship
+ * with a concurrent `runInBackground` call (READY -> RUNNING) and could observe a stale status, silently
+ * steering a `?gracefully=true` request onto the wrong path. `onBeforeTransition` also tells apart "this
+ * call just wrote ABORTING" from "it was already ABORTING" - `job-status.ts`'s transition table refuses
+ * every `ABORTING -> ABORTING` attempt, so a post-transition check on the result alone cannot distinguish
+ * the two, and that distinction is exactly what decides whether this call starts a graceful window or
+ * joins one already running.
  */
 export async function abortRun(driver: Driver, run: RunRecord, gracefully = false): Promise<RunRecord | null> {
 	if (isTerminalJobStatus(run.status)) return run;

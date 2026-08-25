@@ -181,9 +181,9 @@
 
 ## Graceful abort (`?gracefully=`)
 
-- `POST /actor-runs/:runId/abort` (and its `/v2` form) accepts an optional `?gracefully=` query
-  parameter, parsed the same way every other boolean query parameter in this API is (`queryBoolean`),
-  mirroring `apify-core`'s own abort route's parameter name and default.
+- `POST /v2/actor-runs/:runId/abort` accepts an optional `?gracefully=` query parameter, parsed the same
+  way every other boolean query parameter in this API is (`queryBoolean`), mirroring `apify-core`'s own
+  abort route's parameter name and default.
 - **Omitted, or `false`:** byte-for-byte identical to the endpoint's behavior without this parameter -
   the container is stopped immediately, no frame is sent on any open events socket, and there is no
   added wait.

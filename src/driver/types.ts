@@ -57,7 +57,9 @@ export interface RunResourceSample {
 	/** CPU usage as percent of ONE core - `docker stats`' own convention, not percent of the run's own
 	 * CPU grant (`APIFY_DEDICATED_CPUS`). */
 	cpuPercentOfOneCore: number;
-	/** Current memory usage, in bytes (`memory_stats.usage`). */
+	/** Current memory usage, in bytes - `memory_stats.usage` with the reclaimable page cache subtracted,
+	 * the same adjustment `docker stats`' own MEM USAGE column makes (`docker-driver.ts`'s
+	 * `memoryUsageBytesExcludingCache`), never the raw cgroup counter. */
 	memoryBytes: number;
 	/** The container's configured memory LIMIT, in bytes - `memoryMbytes * 1024 * 1024`, the same value
 	 * `HostConfig.Memory` was created with. Constant for the lifetime of the run, never an observed peak -

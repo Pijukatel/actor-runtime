@@ -109,7 +109,7 @@ describe('gracefulShutdown', () => {
 		await reader.cancel().catch(() => undefined);
 	});
 
-	it('resolves promptly even while a live events-websocket client is connected to a RUNNING run (blocker: graceful shutdown must not hang on an upgraded socket)', async () => {
+	it('resolves promptly even while a live events-websocket client is connected to a RUNNING run - graceful shutdown must not hang on an upgraded socket', async () => {
 		dataDir = await mkdtemp(join(tmpdir(), 'actor-runtime-shutdown-ws-'));
 		bootstrapStorage(dataDir);
 		await openRegistries();
@@ -152,9 +152,10 @@ describe('gracefulShutdown', () => {
 			ws.once('open', () => resolve());
 			ws.once('error', reject);
 		});
-		// Deliberately never closed by this test before `gracefulShutdown` runs - simulating exactly the
-		// scenario the design's own risk note calls the ordinary case, not an edge case: a live run with a
-		// still-connected SDK socket at the moment `SIGTERM`/`SIGINT` arrives.
+		// Deliberately never closed by this test before `gracefulShutdown` runs - simulating the ordinary
+		// case, not an edge case: `ACTOR_EVENTS_WEBSOCKET_URL` is now set on every run and neither SDK ever
+		// disconnects on its own mid-run, so a live run with a still-connected SDK socket at the moment
+		// `SIGTERM`/`SIGINT` arrives is the common shutdown scenario, not a rare one.
 
 		const timedOut = Symbol('timeout');
 		const result = await Promise.race([

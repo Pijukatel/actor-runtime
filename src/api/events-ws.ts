@@ -27,8 +27,11 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { getRunById } from '../services/runs.js';
 import { isTerminalJobStatus } from '../services/job-status.js';
 import { isEventsTerminal, subscribeEvents } from '../services/events-channel.js';
+import { pollUntilTerminal } from './poll-until-terminal.js';
 
-const EVENTS_PATH_PATTERN = /^\/actor-runtime\/events\/([^/]+)\/?$/;
+// Never matches a trailing-slash spelling (`requirements/api.md`'s "reachable at exactly this one path" -
+// taken literally: `/actor-runtime/events/<id>/` is a different path, not a second spelling of this one).
+const EVENTS_PATH_PATTERN = /^\/actor-runtime\/events\/([^/]+)$/;
 
 /** Mirrors `api/routes/logs.ts`'s `serveLog` poll cadence, for the same purpose: noticing a run has gone
  * terminal without needing this connection to be the thing `markEventsTerminal` reaches into directly (see
@@ -69,19 +72,12 @@ function extractRunId(pathname: string): string | undefined {
  * ever issues are exactly those two.
  */
 async function handleConnection(ws: WebSocket, runId: string): Promise<void> {
-	// MUST be attached before anything else in this function - including before the pre-subscribe
-	// `getRunById`/terminal checks below settle - because `ws` (extending `EventEmitter`) throws
-	// synchronously out of whatever emits it when a protocol-level fault (a malformed frame, a bad
-	// handshake byte) fires `'error'` with zero listeners attached, which crashes this entire process:
-	// every other run's container, the console, and the API along with it. Verified directly against the
-	// installed `ws` package: completing a real upgrade and then writing invalid frame bytes over the raw
-	// socket throws `UNCAUGHT_EXCEPTION` with no listener here. This endpoint is deliberately
-	// unauthenticated and reachable by any container on the Docker network (see `requirements/api.md`'s
-	// "No authentication at all" note on this endpoint), so a single connection producing one bad frame
-	// must never be allowed this blast radius. `ws` itself
-	// still emits `'close'` right after `'error'` (`emitErrorAndClose` in `ws/lib/websocket.js`), so simply
-	// swallowing the error here and letting the existing `'close'` listener below run its normal
-	// unsubscribe/poll-teardown is enough - there is nothing additional to clean up.
+	// MUST be attached before anything else here (including before the `getRunById`/terminal checks below
+	// settle): a protocol-level fault on this unauthenticated, network-reachable socket fires `'error'`
+	// synchronously with no listener otherwise attached, which would crash this whole process (verified
+	// against the installed `ws` package). `ws` emits `'close'` right after `'error'` regardless
+	// (`emitErrorAndClose`, `ws/lib/websocket.js`), so the `'close'` listener below still runs its normal
+	// teardown - there is nothing more to do here than swallow the error itself.
 	ws.on('error', () => undefined);
 
 	const run = await getRunById(runId);
@@ -100,34 +96,18 @@ async function handleConnection(ws: WebSocket, runId: string): Promise<void> {
 		if (ws.readyState === ws.OPEN) ws.send(frame);
 	});
 
-	const finish = (): void => {
-		clearInterval(poll);
-		unsubscribe();
-		if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) ws.close(1000, `Run ${runId} has ended`);
-	};
-
-	// Guarded against overlapping ticks the same way `serveLog`'s poll is: the persisted-record re-check
-	// is async, and a slow read must not let a second tick pile another one on top of it.
-	let checkingRecord = false;
-	const poll = setInterval(() => {
-		if (isEventsTerminal(runId)) {
-			finish();
-			return;
-		}
-		if (checkingRecord) return;
-		checkingRecord = true;
-		getRunById(runId)
-			.then((current) => {
-				if (!current || isTerminalJobStatus(current.status)) finish();
-			})
-			.catch(() => undefined)
-			.finally(() => {
-				checkingRecord = false;
-			});
-	}, TERMINAL_POLL_INTERVAL_MS);
+	const poller = pollUntilTerminal({
+		intervalMs: TERMINAL_POLL_INTERVAL_MS,
+		isTerminal: () => isEventsTerminal(runId),
+		refetch: () => getRunById(runId),
+		onTerminal: () => {
+			unsubscribe();
+			if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) ws.close(1000, `Run ${runId} has ended`);
+		},
+	});
 
 	ws.on('close', () => {
-		clearInterval(poll);
+		poller.stop();
 		unsubscribe();
 	});
 }

@@ -174,7 +174,7 @@ describe('transitionJobStatus', () => {
 	 * `registry.get(id)` taken at the same wall-clock moment (the pre-fix shape of `abortRun`) would have
 	 * returned instead: the stale, pre-transition status.
 	 */
-	it("onBeforeTransition observes the record's true current status under a real concurrent mutex-serialized write, never a stale pre-write snapshot (regression: finding 4 - abortRun's wasRunning TOCTOU)", async () => {
+	it("onBeforeTransition observes the record's true current status under a real concurrent mutex-serialized write, never a stale pre-write snapshot (regression: a plain, mutex-bypassing read taken before the guarded write would return abortRun's wasRunning/alreadyAborting flags stale)", async () => {
 		const mutex = new KeyedMutex();
 		const store = new Map<string, FakeJob>([['a', { id: 'a', status: 'READY' }]]);
 		let callCount = 0;
@@ -207,8 +207,8 @@ describe('transitionJobStatus', () => {
 		// Issued first, but deliberately held open by the gate above.
 		const runningPromise = transitionJobStatus(registry, 'a', 'RUNNING');
 
-		// Issued while the first transition is still in flight - the exact interleaving finding 4
-		// describes.
+		// Issued while the first transition is still in flight - the concurrent-abort-during-a-still-settling
+		// write interleaving this test exists to cover.
 		let observedBeforeAborting: JobStatus | null | undefined;
 		const abortingPromise = transitionJobStatus(registry, 'a', 'ABORTING', {}, (current) => {
 			observedBeforeAborting = current?.status ?? null;

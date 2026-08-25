@@ -101,10 +101,11 @@
   unchanged): the platform's own ratio, `cores = memoryMbytes / 4096`
   (`docs.apify.com/actors/running/usage-and-resources#cpu`), encoded as `HostConfig.CpuPeriod: 100000` and
   `HostConfig.CpuQuota: round(cores * 100000)` - e.g. `memoryMbytes: 1024` (0.25 core) is
-  `CpuPeriod: 100000, CpuQuota: 25000`. The ratio has exactly one home, `services/resources.ts`'s
-  `dedicatedCpusFor`/`cpuQuotaFor` - both the driver's `HostConfig` and the `APIFY_DEDICATED_CPUS` env var
-  below derive from it, so the container's actual limit and what the Actor is told it got can never drift
-  apart.
+  `CpuPeriod: 100000, CpuQuota: 25000`. The ratio has exactly one home, `resources.ts`'s
+  `dedicatedCpusFor`/`cpuQuotaFor` - a neutral, dependency-free module living beside `config.ts`,
+  deliberately outside `services/` so the driver can import it without reaching into the services layer.
+  Both the driver's `HostConfig` and the `APIFY_DEDICATED_CPUS` env var below derive from this one
+  function, so the container's actual limit and what the Actor is told it got can never drift apart.
 - **`CpuPeriod`/`CpuQuota`, never `NanoCpus`.** moby's own container-resource validation
   (`verifyPlatformContainerResources`, `daemon/daemon_unix.go`) hard-rejects a `NanoCpus` above the host's
   own CPU count ("Range of CPUs is from 0.01 to N.NN, as there are only N CPUs available"), but validates
@@ -141,6 +142,11 @@
   missing even one is silently dropped there).
     - `cpuCurrentUsage` is percent of **one** CPU core - the same convention `docker stats` itself uses -
       never percent of the run's own CPU grant.
+    - `memCurrentBytes`/`memAvgBytes` are `memory_stats.usage` with the reclaimable page cache subtracted
+      (cgroup v1's `total_inactive_file`, or cgroup v2's `inactive_file` when the former is absent) -
+      the same adjustment `docker stats`' own MEM USAGE column makes, so an I/O-heavy Actor's page cache
+      is never mistaken for memory pressure against its grant. Falls back to the raw `usage` figure when
+      neither field is present.
     - `memMaxBytes` is the container's configured memory **limit** (`memoryMbytes * 1024 * 1024`),
       constant for the run's whole lifetime - never a genuinely observed peak, despite the field's name.
     - `isCpuOverloaded` is `usedCores / grantedCores > 0.95` (strict `>`, not `>=`), where `usedCores` is
@@ -149,10 +155,18 @@
     - `memAvgBytes`/`cpuAvgUsage`/`cpuMaxUsage` are running figures accumulated over every sample published
       for that run so far (this one included).
 - The sampler's own lifetime is bounded by the container's: started right after `container.start()`,
-  stopped (and awaited) in the same `finally` block that owns container removal, strictly _before_
-  `container.remove()` is called - a stats call is never issued after the sampler has been asked to stop,
-  and removal never races a still-in-flight stats call, the same class of cross-connection ordering hazard
-  `LOG_DRAIN_GRACE_MS` already guards against for the log stream.
+  stopped (and awaited, up to a bounded `SAMPLER_STOP_GRACE_MS` grace - see below) in the same `finally`
+  block that owns container removal, strictly _before_ `container.remove()` is called - a stats call is
+  never issued after the sampler has been asked to stop, the same class of cross-connection ordering
+  hazard `LOG_DRAIN_GRACE_MS` already guards against for the log stream.
+- Stopping the sampler never blocks on the Docker daemon indefinitely: the one in-flight `stats()` call
+  `stop()` awaits is bounded by a fixed `SAMPLER_STOP_GRACE_MS` grace, for the same reason the daemon
+  connection has no client-side timeout configured anywhere in this codebase - a call that outlives the
+  grace is abandoned (never emitted, per the `isCpuOverloaded`/sample-shape rules above), and removal may
+  then rarely overlap it, which costs nothing worse than one discarded sample. Without this bound, a
+  daemon that never answers a `stats()` call would leave the whole run - its record, its log stream, its
+  events socket - stuck non-terminal forever, since this sampler's own stop is what the run's finalization
+  now waits on.
 - The sampler measures only; it never writes to a run's status or log - shaping the raw sample into the
   wire envelope, and fanning it out to whoever is connected, is the events channel's job
   (`services/events-channel.ts`).

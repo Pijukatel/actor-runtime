@@ -5,6 +5,7 @@ import type Docker from 'dockerode';
 import * as tar from 'tar-stream';
 
 import { DockerDriver } from '../../src/driver/docker-driver.js';
+import { stubDockerForRun } from './helpers/docker-stubs.js';
 
 /**
  * A stub `dockerode`-shaped object covering only what `reconcileOrphans` calls - there is no Docker
@@ -151,70 +152,6 @@ describe('DockerDriver.reconcileOrphans', () => {
 		expect(removeCallOptions).toEqual([{ force: true, v: true }]);
 	});
 });
-
-/**
- * A stub `dockerode`-shaped object covering only what `startRun` calls, with `container.wait()` and the
- * `container.logs()` stream each independently controllable - mirrors the real Docker daemon's two
- * genuinely separate API connections (the finding this fixes: nothing guarantees the log stream's final
- * chunk has arrived by the time `container.wait()` resolves).
- */
-function stubDockerForRun() {
-	let resolveWait!: (result: { StatusCode: number }) => void;
-	const waitPromise = new Promise<{ StatusCode: number }>((resolve) => {
-		resolveWait = resolve;
-	});
-
-	// The raw (not-yet-demuxed) combined stdout/stderr stream `container.logs()` would return - a
-	// separate Docker API connection from `container.wait()` above.
-	const rawLogStream = new PassThrough();
-
-	const container = {
-		start: vi.fn(async () => undefined),
-		logs: vi.fn(async () => rawLogStream),
-		wait: vi.fn(async () => waitPromise),
-		remove: vi.fn(async (_options?: Record<string, unknown>) => undefined),
-		stop: vi.fn(async () => undefined),
-	};
-
-	// Real dockerode demuxing splits stdout/stderr apart by frame header; this stub doesn't need that
-	// distinction, it only needs to forward data. Crucially - faithful to the real
-	// `docker-modem` `Modem.prototype.demuxStream` (`node_modules/docker-modem/lib/modem.js`) - it must
-	// NOT end `stdout`/`stderr` when the source stream ends: the real implementation registers only
-	// `streama.on('data', processData)` and never calls `.end()`/`.destroy()` on either destination.
-	// `stdout`/`stderr` ending is entirely `DockerDriver.startRun`'s own responsibility (it derives that
-	// from the SOURCE stream, i.e. `stream` here, ending) - a demux stub that auto-ends the destinations
-	// (as this one previously did) hides exactly the bug that shipped in production.
-	const demuxStream = vi.fn((stream: NodeJS.ReadableStream, stdout: PassThrough) => {
-		stream.on('data', (chunk: Buffer) => stdout.write(chunk));
-	});
-
-	// Typed with the real `dockerode` parameter shape so `mock.calls[0]` is genuinely a
-	// `[Docker.ContainerCreateOptions]` tuple below - no unsound cast needed to read it back.
-	const createContainer = vi.fn(async (_options: Docker.ContainerCreateOptions) => container);
-	const docker = {
-		createContainer,
-		modem: { demuxStream },
-	} as unknown as Docker;
-
-	return {
-		docker,
-		container,
-		createContainer,
-		/** Simulates `container.wait()` resolving - the container process has exited. */
-		triggerContainerExit(statusCode = 0): void {
-			resolveWait({ StatusCode: statusCode });
-		},
-		/** Simulates a trailing chunk still arriving over the separate Docker logs connection. */
-		pushFinalLogChunk(chunk: string): void {
-			rawLogStream.write(chunk);
-		},
-		/** Simulates the logs connection closing - the real daemon does this once the container's full
-		 * output has been delivered. */
-		endLogStream(): void {
-			rawLogStream.end();
-		},
-	};
-}
 
 describe('DockerDriver.startRun - log stream drain ordering (regression: trailing log chunk race)', () => {
 	it("does not resolve until the container's log stream has fully drained, even after container.wait() has already resolved", async () => {
