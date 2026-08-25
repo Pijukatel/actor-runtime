@@ -6,6 +6,12 @@ export const CONSOLE_PORT = 3000;
 export const CONTAINER_API_ALIAS = 'apify-api';
 export const CONTAINER_API_BASE_URL = `http://${CONTAINER_API_ALIAS}:${API_PORT}`;
 
+/** Base for the events-websocket URL every Actor container is given (`ACTOR_EVENTS_WEBSOCKET_URL` /
+ * `APIFY_ACTOR_EVENTS_WS_URL`, `services/runs.ts: buildEnv`) - the same host:port as
+ * `CONTAINER_API_BASE_URL`, just `ws://` instead of `http://`: the events endpoint upgrades on the
+ * existing API server (`api/events-ws.ts`), not a second port (`system.md`'s fixed-ports contract). */
+export const CONTAINER_EVENTS_WS_BASE_URL = `ws://${CONTAINER_API_ALIAS}:${API_PORT}`;
+
 /** Host-facing base URL for the local console UI (fixed port, `system.md`) - used only to build the
  * `consoleUrl` field storage DTOs return (the real platform's equivalent points at
  * `console.apify.com`; this points at the one console this runtime actually serves). The path appended

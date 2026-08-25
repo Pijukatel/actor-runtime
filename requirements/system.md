@@ -31,6 +31,9 @@
   status message, but every other endpoint - storages, actor/build/run records, console - still works).
 - The API port (3333) and the console frontend port (3000) are fixed values and
   are not configurable; they are the same on every start of the container.
+- Port 3333 also serves the per-run events websocket upgrade (`GET /actor-runtime/events/:runId`,
+  `api.md`) - an Actor container dials back to the same `apify-api:3333` it already uses for the rest of
+  the API, so no additional published port is ever needed for this.
 
 # Running the container
 
@@ -66,7 +69,9 @@
   reuse the already-pulled base image and every other push/call/log-stream/storage-access needs no
   outbound network access at all (see `cli.md`'s offline-capability note) - unless the opt-in upstream
   API fallback (`api.md`'s "Upstream fallback" section) has been switched on, in which case a local miss
-  that is eligible for it makes one outbound request per such call.
+  that is eligible for it makes one outbound request per such call. The per-run CPU/memory sampler
+  (`actor-driver.md`'s "Run resource telemetry") uses only the local Docker socket - it never reaches
+  outside the host, so it never affects this guarantee.
 - The bundled sample Actors (`sample_actor_ts`, `sample_actor_py`) are not offline: they crawl a live
   site (`https://crawlee.dev/` by default). Running them needs outbound network access from the Actor
   container, unlike operating the runtime around them (see `test.md`).
@@ -91,6 +96,10 @@ The intended scale of the system is:
 - less than 5 users
 
 The intended scale is not enforced, but the system operating above the intended scale can experience performance or functional issues.
+
+The same "less than 5 running actors at the same time" budget also bounds the per-run CPU/memory sampler
+loops (`actor-driver.md`) and the open events-websocket connections (`api.md`) - each running Actor adds
+at most one of each.
 
 # Tests
 

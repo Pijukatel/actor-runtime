@@ -95,6 +95,68 @@
 - Actor run details are saved in `__RUNS__` internal storage
 - Actor run log is saved in `__LOGS__` internal storage
 
+## Resource limits
+
+- Every run's container carries a hard CPU limit alongside the existing memory limit (`HostConfig.Memory`,
+  unchanged): the platform's own ratio, `cores = memoryMbytes / 4096`
+  (`docs.apify.com/actors/running/usage-and-resources#cpu`), encoded as `HostConfig.CpuPeriod: 100000` and
+  `HostConfig.CpuQuota: round(cores * 100000)` - e.g. `memoryMbytes: 1024` (0.25 core) is
+  `CpuPeriod: 100000, CpuQuota: 25000`. The ratio has exactly one home, `services/resources.ts`'s
+  `dedicatedCpusFor`/`cpuQuotaFor` - both the driver's `HostConfig` and the `APIFY_DEDICATED_CPUS` env var
+  below derive from it, so the container's actual limit and what the Actor is told it got can never drift
+  apart.
+- **`CpuPeriod`/`CpuQuota`, never `NanoCpus`.** moby's own container-resource validation
+  (`verifyPlatformContainerResources`, `daemon/daemon_unix.go`) hard-rejects a `NanoCpus` above the host's
+  own CPU count ("Range of CPUs is from 0.01 to N.NN, as there are only N CPUs available"), but validates
+  `CpuPeriod`/`CpuQuota` only for range (period 1000-1,000,000us, quota >= 1000us), with no host-capacity
+  ceiling - the encoding that keeps "warn, never clamp" (below) actually possible for an over-capacity
+  request, rather than turning it into "cannot run at all".
+- If the computed quota would fall below Docker's own protocol minimum of 1000us (e.g. `memoryMbytes: 32`
+  computes a raw 781.25us), it is raised to 1000us - a floor on the _encoding_, not a host-capacity clamp.
+- **Warn, never clamp.** The driver's `init()` snapshots the host's own capacity once, from
+  `docker.info()`'s `NCPU`/`MemTotal`. A run whose requested memory and/or derived CPU exceeds that
+  snapshot still gets exactly the limits it asked for, applied verbatim to the created container - never a
+  substituted, host-capped value for either `Memory` or the CPU fields. Instead, a warning naming both the
+  requested and host figures for whichever resource(s) are over capacity, and stating that the limits are
+  being applied anyway, is written through the run's own `onLog` callback (so it reaches `apify call`'s
+  output, not only this process's own console) before the container is created. A missing or failing
+  `docker.info()` (or one that omits `NCPU`/`MemTotal`) means capacity is _unknown_, which produces no
+  warning at all - never treated as capacity being zero, which would warn on literally every run.
+- **Disk is not limited.** No `HostConfig` disk-quota field is ever set; `diskMbytes` (`services/runs.ts`)
+  stays a reported number only, matching the real platform field's presence in the API without this
+  system enforcing it - out of scope by design.
+
+## Run resource telemetry
+
+- While a run's container is up, the driver samples that specific container's real CPU and memory once a
+  second (`SAMPLE_INTERVAL_MS = 1000`, a fixed cadence, not tunable via env) over the Docker stats API
+  (`stats({stream: false, 'one-shot': true})` - one round trip per tick. A plain `stream: false` call
+  without `one-shot` would make the daemon wait two collection cycles to fill `precpu_stats`, adding
+  roughly one to two seconds to every run's finalization; this sampler instead computes the CPU delta
+  against its own previous sample, never against the response's own `precpu_stats`).
+- Each sample is shaped into the platform's `systemInfo` envelope and pushed over the events websocket
+  (`api.md`), with all eight fields present on every frame: `memAvgBytes`, `memCurrentBytes`,
+  `memMaxBytes`, `cpuAvgUsage`, `cpuMaxUsage`, `cpuCurrentUsage`, `isCpuOverloaded`, `createdAt` - never a
+  subset (apify-sdk-python's pydantic model declares every field required with no default, so a frame
+  missing even one is silently dropped there).
+    - `cpuCurrentUsage` is percent of **one** CPU core - the same convention `docker stats` itself uses -
+      never percent of the run's own CPU grant.
+    - `memMaxBytes` is the container's configured memory **limit** (`memoryMbytes * 1024 * 1024`),
+      constant for the run's whole lifetime - never a genuinely observed peak, despite the field's name.
+    - `isCpuOverloaded` is `usedCores / grantedCores > 0.95` (strict `>`, not `>=`), where `usedCores` is
+      that same sample's `cpuCurrentUsage / 100` and `grantedCores` is the run's own
+      `dedicatedCpusFor(memoryMbytes)` - a ratio-only test, with no CFS-throttling term.
+    - `memAvgBytes`/`cpuAvgUsage`/`cpuMaxUsage` are running figures accumulated over every sample published
+      for that run so far (this one included).
+- The sampler's own lifetime is bounded by the container's: started right after `container.start()`,
+  stopped (and awaited) in the same `finally` block that owns container removal, strictly _before_
+  `container.remove()` is called - a stats call is never issued after the sampler has been asked to stop,
+  and removal never races a still-in-flight stats call, the same class of cross-connection ordering hazard
+  `LOG_DRAIN_GRACE_MS` already guards against for the log stream.
+- The sampler measures only; it never writes to a run's status or log - shaping the raw sample into the
+  wire envelope, and fanning it out to whoever is connected, is the events channel's job
+  (`services/events-channel.ts`).
+
 # Users
 
 - Users are created adhoc by the runtime for each new token used in the API call (`cli.md`'s User bootstrap).
@@ -126,3 +188,16 @@
   resolved against it (`cli.md`'s User bootstrap). If neither source has a value, the key is absent entirely — never a
   placeholder value. One host-level password (source 1)
   or one harvested-per-account password (source 2) used specifically for each user.
+- `ACTOR_EVENTS_WEBSOCKET_URL` / `APIFY_ACTOR_EVENTS_WS_URL` — the run's own events-websocket URL,
+  `ws://apify-api:3333/actor-runtime/events/<runId>` (`api.md`) — no `token` or any other query
+  parameter, since that endpoint carries no authentication at all; the run id in the path is the only
+  per-run element there is, and also the only thing the endpoint scopes on.
+- `ACTOR_MEMORY_MBYTES` / `APIFY_MEMORY_MBYTES` — the run's own requested `memoryMbytes`.
+- `APIFY_DEDICATED_CPUS` — `memoryMbytes / 4096` (`dedicatedCpusFor`, the same ratio the CPU limit above
+  is encoded from) — no `ACTOR_`-prefixed counterpart: apify-sdk-js's `ENV_MAP` has no dedicated-CPU key
+  at all; this exists solely so apify-sdk-python stops dividing its own CPU-overload ratio by an assumed
+  `1` full core.
+- **Every `ACTOR_*`/`APIFY_*` pair above is set byte-identical, deliberately** — apify-sdk-js's `ENV_MAP`
+  and pydantic's `AliasChoices` resolve which of the two names wins, when both are set, in _opposite_
+  precedence order; letting the pair ever diverge would size a run differently depending on which SDK
+  happens to read it.

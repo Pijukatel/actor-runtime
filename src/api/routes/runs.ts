@@ -4,7 +4,7 @@ import { requireUser } from '../auth.js';
 
 import { paginate, sendData, sortByTimestamp } from '../envelope.js';
 import { cannotRemoveRunningRun, recordNotFound } from '../errors.js';
-import { h, paginationParams } from '../handler.js';
+import { h, paginationParams, queryBoolean } from '../handler.js';
 import { abortRun, deleteRun, getOwnedRun, listOwnedRuns } from '../../services/runs.js';
 import { isTerminalJobStatus } from '../../services/job-status.js';
 import { runDto } from '../dto/actors.js';
@@ -52,7 +52,11 @@ export function mountRuns(router: Router, deps: ApiServerDeps): void {
 		h(async (req, res) => {
 			const run = await getOwnedRun(requireUser(req).id, req.params.runId as string);
 			if (!run) throw recordNotFound();
-			const updated = await abortRun(deps.driver, run);
+			// Mirrors `apify-core`'s own abort route: `parseBooleanParameter(query.gracefully)`, default
+			// `false` - omitted or `false` is byte-identical to the pre-existing immediate-abort behavior
+			// (`services/runs.ts: abortRun`'s doc comment).
+			const gracefully = queryBoolean(req, 'gracefully') ?? false;
+			const updated = await abortRun(deps.driver, run, gracefully);
 			sendData(res, runDto(updated ?? run));
 		}),
 	);

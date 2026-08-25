@@ -38,6 +38,8 @@ import {
 	startRun,
 	waitForRunFinish,
 } from '../../src/services/runs.js';
+import { subscribe } from '../../src/services/events-channel.js';
+import { waitForPendingTimer } from './helpers/fake-timers.js';
 import { DriverTimedOutError, type Driver } from '../../src/driver/types.js';
 import type { ActorRecord, ActorVersionRecord, BuildRecord, RunRecord } from '../../src/storage/entities.js';
 
@@ -554,6 +556,163 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			const final = await getRegistries().runs.get(record.id);
 			expect(final?.status).toBe('SUCCEEDED');
 			expect(final?.exitCode).toBe(0);
+		});
+	});
+
+	describe('finding 4: graceful abort (?gracefully= contract - 2-design.md, GRACEFUL_ABORT_WINDOW_MS = 30000)', () => {
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it('gracefully omitted is byte-identical to today: driver.abortRun is called immediately, no aborting frame, no wait', async () => {
+			const driver = deferredRunDriver();
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'graceful-omitted-actor');
+			const build = await seedSucceededBuild(actor);
+			const record = bareRunRecord(actor, build);
+			await getRegistries().runs.set(record.id, record);
+
+			const frames: string[] = [];
+			const unsubscribe = subscribe(record.id, (frame) => frames.push(frame));
+
+			const bg = runInBackground(driver, actor, record, { apiBaseUrl: server.baseUrl, token: server.token });
+			await driver.started;
+
+			const aborted = await abortRun(driver, record); // gracefully omitted entirely
+			expect(aborted?.status).toBe('ABORTED');
+			expect(driver.abortRunCalls).toEqual([record.id]);
+			expect(frames).toEqual([]);
+
+			driver.resolveRun({ exitCode: 137, timedOut: false });
+			await bg;
+			unsubscribe();
+		});
+
+		it('gracefully: false is explicitly the same as omitted', async () => {
+			const driver = deferredRunDriver();
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'graceful-false-actor');
+			const build = await seedSucceededBuild(actor);
+			const record = bareRunRecord(actor, build);
+			await getRegistries().runs.set(record.id, record);
+
+			const bg = runInBackground(driver, actor, record, { apiBaseUrl: server.baseUrl, token: server.token });
+			await driver.started;
+
+			const aborted = await abortRun(driver, record, false);
+			expect(aborted?.status).toBe('ABORTED');
+			expect(driver.abortRunCalls).toEqual([record.id]);
+
+			driver.resolveRun({ exitCode: 137, timedOut: false });
+			await bg;
+		});
+
+		it('gracefully: true publishes exactly {"name":"aborting","data":{}} before driver.abortRun, moves the run to ABORTING immediately, and only calls driver.abortRun once the full 30000ms window has elapsed', async () => {
+			const driver = deferredRunDriver();
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'graceful-true-actor');
+			const build = await seedSucceededBuild(actor);
+			const record = bareRunRecord(actor, build);
+			await getRegistries().runs.set(record.id, record);
+
+			const frames: string[] = [];
+			const unsubscribe = subscribe(record.id, (frame) => frames.push(frame));
+
+			const bg = runInBackground(driver, actor, record, { apiBaseUrl: server.baseUrl, token: server.token });
+			await driver.started;
+
+			// Faked only from here on, and only `setTimeout`/`clearTimeout` - `abortRun`'s 30s wait is the
+			// only thing this test needs virtual control over. Deliberately NOT `Date` and NOT
+			// `setImmediate`: the registry writes below go through `@crawlee/fs-storage`'s real
+			// (native-addon-backed) storage layer, which this sandbox found does not tolerate a frozen
+			// `Date.now()` - a write can silently read back stale under a fully-fake clock. Leaving `Date`
+			// and `setImmediate` real costs nothing here: nothing in this test asserts on wall-clock time
+			// itself, only on `setTimeout`'s own virtual schedule.
+			vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+			const abortPromise = abortRun(driver, record, true);
+
+			// Criterion #28: ABORTING lands immediately - observable well before the 30s window elapses -
+			// and the aborting frame is published before the wait, not after it. Waiting for the wait's own
+			// `setTimeout` to actually be scheduled is what proves both already happened, since both come
+			// strictly before it in `abortRun`'s own code.
+			await waitForPendingTimer();
+			const midWindow = await getRegistries().runs.get(record.id);
+			expect(midWindow?.status).toBe('ABORTING');
+			expect(frames).toEqual([JSON.stringify({ name: 'aborting', data: {} })]);
+			expect(driver.abortRunCalls).toEqual([]);
+
+			// Just under the window: still not called.
+			await vi.advanceTimersByTimeAsync(29_999);
+			expect(driver.abortRunCalls).toEqual([]);
+
+			// At the window: now called.
+			await vi.advanceTimersByTimeAsync(1);
+			expect(driver.abortRunCalls).toEqual([record.id]);
+
+			const aborted = await abortPromise;
+			expect(aborted?.status).toBe('ABORTED');
+
+			driver.resolveRun({ exitCode: 137, timedOut: false });
+			await bg;
+			unsubscribe();
+		});
+
+		it('gracefully: true with nobody connected to the events socket is still best-effort - the abort request itself still succeeds and the container is still stopped after the window elapses', async () => {
+			const driver = deferredRunDriver();
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'graceful-no-subscriber-actor');
+			const build = await seedSucceededBuild(actor);
+			const record = bareRunRecord(actor, build);
+			await getRegistries().runs.set(record.id, record);
+			// Deliberately no `subscribe(record.id, ...)` call at all - nobody is connected.
+
+			const bg = runInBackground(driver, actor, record, { apiBaseUrl: server.baseUrl, token: server.token });
+			await driver.started;
+
+			vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+			const abortPromise = abortRun(driver, record, true);
+			await waitForPendingTimer();
+			await vi.advanceTimersByTimeAsync(30_000);
+			const aborted = await abortPromise;
+
+			expect(aborted?.status).toBe('ABORTED');
+			expect(driver.abortRunCalls).toEqual([record.id]);
+
+			driver.resolveRun({ exitCode: 137, timedOut: false });
+			await bg;
+		});
+
+		it('gracefully: true against a READY-state abort (no container yet) keeps the immediate ABORTING -> ABORTED path - no 30s wait, no aborting frame', async () => {
+			const driver = neverStartDriver();
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'graceful-ready-state-actor');
+			const build = await seedSucceededBuild(actor);
+			const record = bareRunRecord(actor, build); // status READY, no container ever created
+			await getRegistries().runs.set(record.id, record);
+
+			const frames: string[] = [];
+			const unsubscribe = subscribe(record.id, (frame) => frames.push(frame));
+
+			const aborted = await abortRun(driver, record, true);
+
+			expect(aborted?.status).toBe('ABORTED');
+			expect(driver.abortRunCalls).toEqual([record.id]);
+			expect(frames).toEqual([]); // no container running - no aborting frame, no wait
+
+			unsubscribe();
+		});
+
+		it('gracefully: true is a no-op on an already-terminal run, same as gracefully omitted', async () => {
+			server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
+			const actor = await seedActor(server, 'graceful-terminal-actor');
+			const build = await seedSucceededBuild(actor);
+			const record = bareRunRecord(actor, build);
+			const terminalRecord: RunRecord = { ...record, status: 'SUCCEEDED', finishedAt: new Date().toISOString() };
+			await getRegistries().runs.set(record.id, terminalRecord);
+
+			const aborted = await abortRun(server.driver, terminalRecord, true);
+			expect(aborted?.status).toBe('SUCCEEDED');
 		});
 	});
 });

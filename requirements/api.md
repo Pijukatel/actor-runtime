@@ -25,12 +25,14 @@
   This also protects the runtime's own driver invariant: deleting the record first would permanently
   strand a running Docker container, since its only stop path (`POST .../abort`) requires the record to
   still resolve, and startup reconciliation only ever considers _existing_ run records.
-- Two endpoints are exceptions to the `{data}` envelope:
+- Three endpoints are exceptions to the `{data}` envelope:
     - `GET /v2/logs/:buildOrRunId` (and its `actor-builds`/`actor-runs` aliases): the body is plain text,
       never `{data}`-wrapped, matching apify-client-js's `log().get()`.
     - `GET /v2/datasets/:datasetId/items` (and its `actor-runs/:runId/dataset/items` alias): the body is
       a bare JSON array of items, never `{data}`-wrapped, with pagination metadata carried in
       `x-apify-pagination-*` response headers, matching apify-client-js's `_createPaginationList`.
+    - `GET /actor-runtime/events/:runId`: a websocket upgrade, not a JSON response at all - see "Actor
+      runtime API" below.
 - `*At` timestamp fields are ISO-8601 strings.
 
 # Actor id encoding
@@ -149,6 +151,54 @@
   console-local, unauthenticated route on the console's own port. Both routes funnel into the same
   underlying validate-and-persist path, so the two surfaces can never drift apart in behavior, only in
   how they are reached.
+- **`GET /actor-runtime/events/:runId`** - a websocket upgrade (never `/v2/actor-runtime/*` - reachable
+  at exactly this one path, on the same fixed API port, `system.md`), the run's own platform events
+  channel: `systemInfo` (`actor-driver.md`'s "Run resource telemetry") once a second, plus a one-off
+  `aborting` frame under `?gracefully=` (below). Each frame is a single text message,
+  `{"name": "...", "data": {...}}`, matching apify-sdk-js's/apify-sdk-python's own wire contract.
+    - **No authentication at all** - a deliberate decision, not an oversight. `:runId` alone is what the
+      connecting container can present, and also the only thing the server scopes on: a connection is
+      subscribed only to _that run's own_ frames, and there is no broadcast/all-runs listener anywhere for
+      a mis-scoped subscription to land in - per-run isolation is structural, not a permission check.
+    - An unknown run id, or a run already in a terminal state, still gets a completed upgrade (never a
+      non-101 HTTP status such as `401`) - the socket is then closed immediately with code `1008` and a
+      descriptive reason. Completing the upgrade rather than refusing it matters because
+      apify-sdk-python's event manager treats a failed first connection _attempt_ as fatal (raises out of
+      `Actor.init()`); a post-upgrade `1008` instead leaves the Actor running (one error logged, no
+      further reconnect attempt - `1008`/`POLICY_VIOLATION` is in its own non-retryable close-code set).
+    - A connection to a live run stays open and receives frames until the run reaches a terminal state
+      (including via either an immediate or a graceful abort), at which point the server closes it with
+      code `1000`. The server never drops a healthy, still-live connection for any other reason - the JS
+      SDK's own event manager has no client-side reconnect, so a server-initiated drop would permanently
+      end that run's telemetry.
+    - `persistState` is never sent over this channel, under any circumstance - both SDKs' own base event
+      managers already generate it locally on their own timer; a second, server-originated one would
+      double-fire it.
+
+## Graceful abort (`?gracefully=`)
+
+- `POST /actor-runs/:runId/abort` (and its `/v2` form) accepts an optional `?gracefully=` query
+  parameter, parsed the same way every other boolean query parameter in this API is (`queryBoolean`),
+  mirroring `apify-core`'s own abort route's parameter name and default.
+- **Omitted, or `false`:** byte-for-byte identical to the endpoint's behavior without this parameter -
+  the container is stopped immediately, no frame is sent on any open events socket, and there is no
+  added wait.
+- **`true`, and the run is currently `RUNNING` (a container actually exists):** the record still moves to
+  `ABORTING` immediately (observable via the run's own status right away, well before anything below
+  elapses); a best-effort `{"name": "aborting", "data": {}}` frame - a literal empty object, matching
+  apify-sdk-js's own event-name doc table and crawlee-python's zero-field `EventAbortingData` - is
+  published on that run's events socket (a no-op, not an error, if nobody is currently connected); then a
+  fixed `30000ms` wall-clock window elapses before the container is actually stopped and the record
+  finalized `ABORTED`. The window matches the real platform's own number (apify-sdk-python's
+  `Actor.abort(gracefully=True)` docstring: force-stop after 30 seconds). `persistState` is never sent as
+  part of this - see the events endpoint above.
+- **`true`, but the run is not currently `RUNNING`** (e.g. still `READY`, no container created yet, or
+  already terminal): behaves exactly as if `gracefully` had been omitted - there is no container for an
+  `aborting` frame's SDK-side handler to react to, and no reason to hold the caller's request open for 30
+  seconds against nothing running.
+- A graceful abort's HTTP response is held open for the full window in the worst case (the response _is_
+  the finalized record) - the longest any request in this API is held open, and a deliberate one, since
+  it is opt-in and matches the real platform's own worst case.
 
 ## Upstream fallback (opt-in, off by default, all HTTP methods)
 

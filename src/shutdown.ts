@@ -28,6 +28,11 @@ export function closeServer(server: Server): Promise<void> {
 export interface ShutdownDeps {
 	apiServer: Server;
 	consoleServer: Server;
+	/** Optional so this stays a no-churn addition for every existing caller/test that builds
+	 * `ShutdownDeps` without it (`attachEventsWebSocket`'s own doc comment on why closing it here, rather
+	 * than in `closeServer`, is enough - the actual open sockets are dropped by `closeServer(apiServer)`'s
+	 * `closeAllConnections()`, which explicitly also tears down upgraded connections). */
+	eventsWebSocketServer?: { close(): void };
 }
 
 /**
@@ -37,11 +42,18 @@ export interface ShutdownDeps {
  * behind a listener `close()` that can block indefinitely (the previous bug) meant it never did while a
  * `apify push`/`apify call` log stream was open, which is the common case, not the edge case.
  */
-export async function gracefulShutdown({ apiServer, consoleServer }: ShutdownDeps): Promise<void> {
+export async function gracefulShutdown({
+	apiServer,
+	consoleServer,
+	eventsWebSocketServer,
+}: ShutdownDeps): Promise<void> {
 	stopLogFlusher();
 	await flushAllLogs();
 	await releaseAllBuffersForShutdown();
 	await closeServer(apiServer);
+	// Stops accepting new upgrades; any already-open events socket was just forcibly dropped by
+	// `closeServer(apiServer)` above, exactly as it drops an open `?stream=true` log response.
+	eventsWebSocketServer?.close();
 	await closeServer(consoleServer);
 	await shutdownStorage();
 }
