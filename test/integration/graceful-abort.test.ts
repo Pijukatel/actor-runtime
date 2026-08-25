@@ -7,9 +7,9 @@
  * rather than restarting it; a second hard call escalates past it). The second `describe` below exercises
  * the same contract over a real HTTP round trip (`apify-client`), not just direct `abortRun` calls.
  *
- * Split out of `job-lifecycle.test.ts` (which stayed over the repo's 1k-line ceiling once these two
- * `describe` blocks were added) - every test below is unchanged from that file, byte-for-byte; only the
- * imports and the small set of shared setup helpers the split needs were copied over.
+ * Split out of `job-lifecycle.test.ts` (which had grown past 1000 lines once these two `describe` blocks
+ * were added, making both suites harder to navigate) - every test below is unchanged from that file,
+ * byte-for-byte; only the imports and the small set of shared setup helpers the split needs were copied over.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 

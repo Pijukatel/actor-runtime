@@ -255,10 +255,10 @@ describe('events websocket (GET /actor-runtime/events/:runId)', () => {
 		await Promise.all([waitForOpen(abortedSocket.ws), waitForOpen(unrelatedSocket.ws)]);
 		await Promise.all([waitForSubscribed(runToAbort.id), waitForSubscribed(unrelatedRun.id)]);
 
-		// Calls the service layer directly (mirrors `job-lifecycle.test.ts`'s own graceful-abort tests)
-		// rather than a real HTTP round trip - the route itself is a thin `queryBoolean` pass-through
-		// (`api/routes/runs.ts`) already covered elsewhere; this test's own job is the events-channel
-		// fan-out and per-run isolation, which `abortRun` already exercises for real.
+		// Calls the service layer directly (mirrors `graceful-abort.test.ts`'s own tests) rather than a real
+		// HTTP round trip - the route itself is a thin `queryBoolean` pass-through (`api/routes/runs.ts`)
+		// already covered elsewhere; this test's own job is the events-channel fan-out and per-run
+		// isolation, which `abortRun` already exercises for real.
 		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 		const abortPromise = abortRun(driver, runToAbort, true);
 

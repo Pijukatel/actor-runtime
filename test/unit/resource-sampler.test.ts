@@ -329,11 +329,11 @@ describe('DockerDriver.startRun - per-run resource sampler (onSample)', () => {
 
 	it('skips a tick outright - no frame, accumulators untouched - when memory_stats.usage is missing, and the NEXT good sample emits a full, correct eight-field frame with sane avg/max', async () => {
 		// Drives the real sample-to-envelope path exactly as `services/runs.ts` wires it in production
-		// (`onSample` -> `publishSystemInfo`), reproducing the finding empirically rather than only at the
-		// `RunResourceSample` boundary: pre-fix, this tick's stats blob (`memory_stats: {}`, no `usage`)
-		// produced a 7-key `systemInfo` frame and then a permanent `NaN` (`null` once JSON-serialized)
-		// `memAvgBytes` for every later frame of the run, since `state.memoryUsageSum` had already summed
-		// in a `NaN`. Post-fix, the bad tick never reaches `onSample`/`publishSystemInfo` at all.
+		// (`onSample` -> `publishSystemInfo`), reproducing the pre-fix poisoning end-to-end rather than only
+		// at the `RunResourceSample` boundary: pre-fix, this tick's stats blob (`memory_stats: {}`, no
+		// `usage`) produced a 7-key `systemInfo` frame and then a permanent `NaN` (`null` once
+		// JSON-serialized) `memAvgBytes` for every later frame of the run, since `state.memoryUsageSum` had
+		// already summed in a `NaN`. Post-fix, the bad tick never reaches `onSample`/`publishSystemInfo` at all.
 		resetEventsChannelForTests();
 		const runId = 'run-sampler-missing-usage';
 		const frames: Array<{ name: string; data: Record<string, unknown> }> = [];
@@ -344,7 +344,8 @@ describe('DockerDriver.startRun - per-run resource sampler (onSample)', () => {
 		driver.available = true;
 
 		stub.queueStatsResponse(containerStats(0, 0, 100)); // baseline
-		// BAD: memory_stats present but with no `usage` field at all - the finding's own reproduction shape.
+		// BAD: memory_stats present but with no `usage` field at all - the shape that used to slip past the
+		// guard and reach `onSample` as a partial (7-key) frame.
 		stub.queueStatsResponse({
 			cpu_stats: { cpu_usage: { total_usage: 50 }, system_cpu_usage: 500, online_cpus: 1 },
 			memory_stats: {},
@@ -458,6 +459,87 @@ describe('DockerDriver.startRun - per-run resource sampler (onSample)', () => {
 		expect(samples).toHaveLength(0);
 
 		// Tick 2 is diffed against the BASELINE, not the skipped tick.
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(samples).toHaveLength(1);
+		expect(samples[0]?.cpuPercentOfOneCore).toBeCloseTo(20);
+		expect(samples[0]?.memoryBytes).toBe(180);
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
+	it("skips a tick outright when cpu_stats.system_cpu_usage is missing while total_usage is present and valid - the cgroup v2 rootless daemon shape the guard's second clause exists for", async () => {
+		const stub = stubDockerForSampler();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		stub.queueStatsResponse(containerStats(0, 0, 100)); // baseline
+		// BAD: total_usage present and finite, but system_cpu_usage is absent entirely - the shape a
+		// cgroup-v2 rootless daemon reports (it never populates system_cpu_usage in that mode), distinct
+		// from - and never reaching the same code path as - the already-tested "total_usage missing" case
+		// above, which returns before system_cpu_usage is even read.
+		stub.queueStatsResponse({
+			cpu_stats: { cpu_usage: { total_usage: 250 }, online_cpus: 1 },
+			memory_stats: { usage: 150 },
+		});
+		stub.queueStatsResponse(containerStats(200, 1000, 180)); // recovers on the next tick
+
+		const samples: RunResourceSample[] = [];
+		const outcomePromise = driver.startRun(
+			{
+				runId: 'run-sampler-missing-system-usage',
+				imageId: 'fake-image',
+				env: {},
+				memoryMbytes: 1024,
+				timeoutSecs: 60,
+			},
+			() => {},
+			(sample) => samples.push(sample),
+		);
+
+		await vi.advanceTimersByTimeAsync(1000); // tick 1: missing system_cpu_usage - skipped
+		expect(samples).toHaveLength(0);
+
+		// Tick 2 is diffed against the BASELINE, not the skipped tick - proves `previous` was left untouched.
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(samples).toHaveLength(1);
+		expect(samples[0]?.cpuPercentOfOneCore).toBeCloseTo(20);
+		expect(samples[0]?.memoryBytes).toBe(180);
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
+	it('skips a tick outright when cpu_stats.system_cpu_usage is present but not a finite number (e.g. NaN) - the same guard as a missing field, not just an absent one', async () => {
+		const stub = stubDockerForSampler();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		stub.queueStatsResponse(containerStats(0, 0, 100)); // baseline
+		stub.queueStatsResponse({
+			cpu_stats: { cpu_usage: { total_usage: 250 }, system_cpu_usage: Number.NaN, online_cpus: 1 },
+			memory_stats: { usage: 150 },
+		});
+		stub.queueStatsResponse(containerStats(200, 1000, 180)); // recovers on the next tick
+
+		const samples: RunResourceSample[] = [];
+		const outcomePromise = driver.startRun(
+			{
+				runId: 'run-sampler-nan-system-usage',
+				imageId: 'fake-image',
+				env: {},
+				memoryMbytes: 1024,
+				timeoutSecs: 60,
+			},
+			() => {},
+			(sample) => samples.push(sample),
+		);
+
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(samples).toHaveLength(0);
+
 		await vi.advanceTimersByTimeAsync(1000);
 		expect(samples).toHaveLength(1);
 		expect(samples[0]?.cpuPercentOfOneCore).toBeCloseTo(20);
