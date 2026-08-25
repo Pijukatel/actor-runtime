@@ -37,6 +37,30 @@
 - Actor build details are saved in `__BUILDS__` internal storage
 - Actor build log is saved in `__LOGS__` internal storage
 - Actor details are saved in `__ACTORS__` internal storage
+- **The Dockerfile to build is resolved from the version's `sourceFiles`**, not left to Docker's own
+  implicit "`Dockerfile` at the tar root" default, matching the real platform (apify-worker's
+  `ensureDockerfileExists`) so that "builds locally" keeps predicting "builds on the platform". The
+  resolved (or default) path is always passed explicitly as dockerode's `dockerfile` build option -
+  never omitted. Resolution order, stopping at the first hit:
+    1. the `dockerfile` field of `.actor/actor.json` (parsed as JSON5, matching the platform),
+       interpreted relative to the `.actor` directory. A value that resolves outside the Actor root
+       (e.g. `../../evil/Dockerfile`, or a leading `/`) fails the build before any daemon call. A
+       value that is present but not a string (e.g. `true`) also fails the build immediately, with a
+       `.actor/actor.json has invalid format` message. A value that is a string (including the empty
+       string) but names no file in `sourceFiles` does not fail the build on that account - it warns
+       and falls through to the next candidate.
+    2. `.actor/Dockerfile`
+    3. `Dockerfile` at the Actor root
+  - Matching against `sourceFiles` names is case-insensitive for all three candidates, but the path
+    handed to Docker is always the matched source file's own name, never the candidate's canonical
+    casing (Docker's lookup inside the tar is case-sensitive). An exact-case match wins; otherwise the
+    first match in `sourceFiles` order.
+  - If none of the three candidates resolves, the build does not fail: a bundled default Dockerfile
+    (apify-worker's own `default_Dockerfile`, `FROM apify/actor-node:20` + `npm install`) is injected
+    as an extra in-memory `SourceFile` for that one build only - never written back to the version's
+    persisted `sourceFiles`.
+  - Every outcome (resolved candidate, warn-and-fall-through, or default) is recorded in the build log,
+    so the choice is never silent.
 
 # Bind mount volumes with Actor source code
 

@@ -446,7 +446,14 @@ describe('DockerDriver.startBuild - imageWorkingDirectory capture (actor-driver.
 		driver.available = true;
 
 		const outcome = await driver.startBuild(
-			{ buildId: 'build-1', actorName: 'my-actor', sourceFiles: [], useCache: true, timeoutSecs: 60 },
+			{
+				buildId: 'build-1',
+				actorName: 'my-actor',
+				sourceFiles: [],
+				useCache: true,
+				timeoutSecs: 60,
+				dockerfilePath: 'Dockerfile',
+			},
 			() => {},
 		);
 
@@ -463,7 +470,14 @@ describe('DockerDriver.startBuild - imageWorkingDirectory capture (actor-driver.
 		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
 		const outcome = await driver.startBuild(
-			{ buildId: 'build-2', actorName: 'my-actor', sourceFiles: [], useCache: true, timeoutSecs: 60 },
+			{
+				buildId: 'build-2',
+				actorName: 'my-actor',
+				sourceFiles: [],
+				useCache: true,
+				timeoutSecs: 60,
+				dockerfilePath: 'Dockerfile',
+			},
 			() => {},
 		);
 
@@ -480,7 +494,14 @@ describe('DockerDriver.startBuild - imageWorkingDirectory capture (actor-driver.
 		driver.available = true;
 
 		const outcome = await driver.startBuild(
-			{ buildId: 'build-3', actorName: 'my-actor', sourceFiles: [], useCache: true, timeoutSecs: 60 },
+			{
+				buildId: 'build-3',
+				actorName: 'my-actor',
+				sourceFiles: [],
+				useCache: true,
+				timeoutSecs: 60,
+				dockerfilePath: 'Dockerfile',
+			},
 			() => {},
 		);
 
@@ -493,11 +514,119 @@ describe('DockerDriver.startBuild - imageWorkingDirectory capture (actor-driver.
 		driver.available = true;
 
 		const outcome = await driver.startBuild(
-			{ buildId: 'build-4', actorName: 'my-actor', sourceFiles: [], useCache: true, timeoutSecs: 60 },
+			{
+				buildId: 'build-4',
+				actorName: 'my-actor',
+				sourceFiles: [],
+				useCache: true,
+				timeoutSecs: 60,
+				dockerfilePath: 'Dockerfile',
+			},
 			() => {},
 		);
 
 		expect(outcome.imageWorkingDirectory).toBeUndefined();
+	});
+});
+
+describe('DockerDriver.startBuild - dockerfile option (2-design.md: "the resolved path is handed to dockerode as its `dockerfile` build option")', () => {
+	/** A stub covering only what `startBuild` calls, exposing the `buildImage` mock itself so a test can
+	 * read back exactly which options it was called with - unlike `stubDockerForBuild` above, which only
+	 * cares about the post-build inspect. */
+	function stubDockerCapturingBuildImageOptions() {
+		const followProgress = vi.fn(
+			(
+				_stream: NodeJS.ReadableStream,
+				onFinished: (err: Error | null, res: Array<{ error?: string }>) => void,
+			) => {
+				onFinished(null, []);
+			},
+		);
+		const buildImage = vi.fn(async () => new PassThrough());
+		const getImage = vi.fn(() => ({ inspect: async () => ({ Config: { WorkingDir: '' } }) }));
+		const docker = { buildImage, modem: { followProgress }, getImage } as unknown as Docker;
+		return { docker, buildImage };
+	}
+
+	it('passes ctx.dockerfilePath through verbatim as buildImage\'s "dockerfile" option', async () => {
+		const stub = stubDockerCapturingBuildImageOptions();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		await driver.startBuild(
+			{
+				buildId: 'build-dockerfile-option',
+				actorName: 'my-actor',
+				sourceFiles: [],
+				useCache: true,
+				timeoutSecs: 60,
+				dockerfilePath: '.actor/Dockerfile',
+			},
+			() => {},
+		);
+
+		expect(stub.buildImage).toHaveBeenCalledTimes(1);
+		const [, options] = stub.buildImage.mock.calls[0]!;
+		// Without `ctx.dockerfilePath` being threaded through to this option at all (the pre-fix
+		// behaviour - see `docker-driver.ts`'s old `buildImage(tarball, { t, nocache, abortSignal })`
+		// call, with no `dockerfile` key), this assertion fails: `options.dockerfile` would be
+		// `undefined`, never `'.actor/Dockerfile'`.
+		expect(options).toMatchObject({ dockerfile: '.actor/Dockerfile' });
+	});
+
+	it('always sets the "dockerfile" option, even for the plain root-"Dockerfile" case that coincides with Docker\'s own implicit default (2-design.md Example B)', async () => {
+		const stub = stubDockerCapturingBuildImageOptions();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		await driver.startBuild(
+			{
+				buildId: 'build-dockerfile-option-2',
+				actorName: 'my-actor',
+				sourceFiles: [],
+				useCache: true,
+				timeoutSecs: 60,
+				dockerfilePath: 'Dockerfile',
+			},
+			() => {},
+		);
+
+		const [, options] = stub.buildImage.mock.calls[0]!;
+		expect(options).toMatchObject({ dockerfile: 'Dockerfile' });
+	});
+
+	it('normalizes tar entry names (leading "./" stripped) so a resolved dockerfilePath always names an entry that actually exists in the tar', async () => {
+		const stub = stubDockerCapturingBuildImageOptions();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		await driver.startBuild(
+			{
+				buildId: 'build-dockerfile-option-3',
+				actorName: 'my-actor',
+				sourceFiles: [{ name: './.actor/Dockerfile', format: 'TEXT', content: 'FROM node:20\n' }],
+				useCache: true,
+				timeoutSecs: 60,
+				dockerfilePath: '.actor/Dockerfile',
+			},
+			() => {},
+		);
+
+		const [tarball] = stub.buildImage.mock.calls[0]!;
+		const extract = tar.extract();
+		const entryNames: string[] = [];
+		await new Promise<void>((resolve, reject) => {
+			extract.on('entry', (header, entryStream, next) => {
+				entryNames.push(header.name);
+				entryStream.resume();
+				next();
+			});
+			extract.on('finish', resolve);
+			extract.on('error', reject);
+			(tarball as NodeJS.ReadableStream).pipe(extract);
+		});
+
+		expect(entryNames).toEqual(['.actor/Dockerfile']);
 	});
 });
 

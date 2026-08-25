@@ -31,6 +31,7 @@ import Docker from 'dockerode';
 import * as tar from 'tar-stream';
 
 import { CONTAINER_API_ALIAS } from '../config.js';
+import { normalizeEntryName } from '../services/dockerfile-location.js';
 import type { SourceFile } from '../storage/entities.js';
 import {
 	DriverTimedOutError,
@@ -107,11 +108,16 @@ function sourceFileToBuffer(file: SourceFile): Buffer {
 	return file.format === 'BASE64' ? Buffer.from(file.content, 'base64') : Buffer.from(file.content, 'utf8');
 }
 
+/** Entry names go through `normalizeEntryName` - the same normalizer `dockerfile-location.ts`'s
+ * resolver indexes `sourceFiles` by - so the `dockerfilePath` `startBuild` hands dockerode as its
+ * `dockerfile` option is guaranteed to name exactly the tar entry Docker will find (`2-design.md`'s
+ * Risks: "Tar entry names"). A canonicalizing change to what today's tar contains (e.g. `./foo` becomes
+ * `foo`), never a semantic one. */
 function buildTarball(sourceFiles: SourceFile[]): NodeJS.ReadableStream {
 	const pack = tar.pack();
 	for (const file of sourceFiles) {
 		const buffer = sourceFileToBuffer(file);
-		pack.entry({ name: file.name }, buffer);
+		pack.entry({ name: normalizeEntryName(file.name) }, buffer);
 	}
 	pack.finalize();
 	return pack;
@@ -231,6 +237,7 @@ export class DockerDriver implements Driver {
 			stream = await this.docker.buildImage(tarball, {
 				t: imageTag,
 				nocache: !ctx.useCache,
+				dockerfile: ctx.dockerfilePath,
 				abortSignal: controller.signal,
 			});
 		} catch (error) {
