@@ -64,7 +64,9 @@
   network access because the stock CLI fetches its actor-templates manifest from the internet. Once
   both of those have happened at least once, the runtime itself operates fully offline: repeat builds
   reuse the already-pulled base image and every other push/call/log-stream/storage-access needs no
-  outbound network access at all (see `cli.md`'s offline-capability note).
+  outbound network access at all (see `cli.md`'s offline-capability note) - unless the opt-in upstream
+  API fallback (`api.md`'s "Upstream fallback" section) has been switched on, in which case a local miss
+  that is eligible for it makes one outbound request per such call.
 - The bundled sample Actors (`sample_actor_ts`, `sample_actor_py`) are not offline: they crawl a live
   site (`https://crawlee.dev/` by default). Running them needs outbound network access from the Actor
   container, unlike operating the runtime around them (see `test.md`).

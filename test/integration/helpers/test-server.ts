@@ -9,6 +9,7 @@ import { ApifyClient } from 'apify-client';
 import { bootstrapStorage, resetStorageForTests, shutdownStorage } from '../../../src/storage/bootstrap.js';
 import { openRegistries, resetRegistriesForTests } from '../../../src/storage/registries.js';
 import { resetUsersForTests } from '../../../src/services/users.js';
+import { resetApiFallbackStateForTests } from '../../../src/services/api-fallback.js';
 import { createApiServer } from '../../../src/api/server.js';
 import { resetLogsForTests, stopLogFlusher } from '../../../src/services/logs.js';
 import type { BuildOutcome, Driver, RunOutcome } from '../../../src/driver/types.js';
@@ -253,6 +254,7 @@ export async function startTestServer(
 			resetStorageForTests();
 			resetRegistriesForTests();
 			resetUsersForTests();
+			resetApiFallbackStateForTests();
 			// A background write (late log flush, run-record update) can land while the tree is
 			// being removed, recreating entries under an already-emptied directory — seen in CI as
 			// ENOTEMPTY. fs.rm retries exactly that class of error when maxRetries is set.

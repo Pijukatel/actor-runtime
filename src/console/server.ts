@@ -5,16 +5,17 @@
  * shared rather than reimplemented.
  *
  * The console itself has no login of its own - it is unauthenticated, and every route is a read except
- * exactly one mutation (`console.md`'s "Every route is a read except the dev-folder form below, which is
- * the console's one write"): the dev-folder form on the Actor detail view. With multiple users it does
- * not scope reads to any one of them: every list/detail route below reads through the
- * `listAll*`/`get*ById` cross-user service functions (see e.g. `services/actors.ts: listAllActors`),
- * never the API's own per-user `listOwned*`/`getOwned*`, and every list row and detail view shows the
- * object's owner `userId` (`console.md`: "Frontend shows for each object the owner (userId)"). The
- * dev-folder form writes cross-user the same way - a deliberate deviation from the API's own
- * strictly-owner-scoped write, not an accident.
+ * two mutations (`console.md`): the dev-folder form on the Actor detail view, and the `/settings` form
+ * below. With multiple users it does not scope reads to any one of them: every list/detail route below
+ * reads through the `listAll*`/`get*ById` cross-user service functions (see e.g.
+ * `services/actors.ts: listAllActors`), never the API's own per-user `listOwned*`/`getOwned*`, and every
+ * list row and detail view shows the object's owner `userId` (`console.md`: "Frontend shows for each
+ * object the owner (userId)"). The dev-folder form writes cross-user the same way - a deliberate
+ * deviation from the API's own strictly-owner-scoped write, not an accident; the `/settings` form is
+ * runtime-global by nature (`api.md`'s "Upstream fallback" section), so ownership doesn't apply to it at
+ * all.
  */
-import express, { type Express } from 'express';
+import express, { type Express, type Request } from 'express';
 
 import { getActorById, listAllActors } from '../services/actors.js';
 import {
@@ -32,12 +33,44 @@ import { openDataset, openKeyValueStore, openRequestQueue } from '../storage/ope
 import { pageKeys } from '../services/kv-key-listing.js';
 import { applyDatasetProjection, type DatasetItem } from '../services/dataset-projection.js';
 import { ansiToHtml } from './ansi.js';
-import { definitionList, devFolderForm, escapeHtml, layout, table, type LinkedCell } from './templates.js';
+import { newestFirst } from './order.js';
+import {
+	apiFallbackWarning,
+	definitionList,
+	devFolderForm,
+	escapeHtml,
+	layout,
+	settingsForm,
+	table,
+	type LinkedCell,
+} from './templates.js';
+import { getApiFallbackState, setApiFallbackState } from '../services/api-fallback.js';
+import { upstreamApiBaseUrl } from '../services/identity-resolution.js';
 import type { Driver } from '../driver/types.js';
 
 /** A run's default-storage id rendered as a link to that storage's detail view instead of plain text. */
 function storageLink(prefix: '/datasets' | '/key-value-stores' | '/request-queues', id: string): LinkedCell {
 	return { text: id, href: `${prefix}/${encodeURIComponent(id)}` };
+}
+
+/** Whether `req` carries positive evidence of being a cross-site form submission, for either of the
+ * console's two mutating `POST` routes. The console is deliberately unauthenticated - anyone who can
+ * reach it can already flip a toggle or register a dev folder (`console.md`) - but both routes are
+ * unauthenticated, state-changing form `POST`s reachable from any origin, and a cross-site page silently
+ * driving either one is a wider threat model than "reachable": that's true of both routes on its own, and
+ * one of them (`/settings`) also enables credential egress once fallback is switched on, which raises the
+ * stakes further. Every modern browser sends `Sec-Fetch-Site` on a form submission (a same-origin one -
+ * the only way a human actually uses either form - is always `same-origin` or `none`); a request without
+ * the header at all (an older browser, or a non-browser caller like `curl`, which `console.md`'s
+ * unauthenticated-by-design model already has to tolerate) reports `false` here - only a header that
+ * positively says otherwise blocks the request. This closes off the specific cross-site-form vector
+ * without adding authentication or changing either route's documented behaviour for a legitimate
+ * same-origin submission. Written as a plain predicate (checked at the top of each handler) rather than
+ * an Express middleware, so it needs no generic parameter shared across the handler chain - `req.params`
+ * keeps the type each route's own path literal already gives it. */
+function isCrossSiteWrite(req: Request): boolean {
+	const site = req.header('sec-fetch-site');
+	return site !== undefined && site !== 'same-origin' && site !== 'none';
 }
 
 export interface ConsoleServerDeps {
@@ -62,9 +95,9 @@ function devFolderSection(actorId: string, status: DevFolderStatus, errorMessage
 export function createConsoleServer(deps: ConsoleServerDeps): Express {
 	const app = express();
 	app.disable('x-powered-by');
-	// Only the dev-folder form below posts anything - every other console route is a plain `GET`
-	// (`console.md`'s "Every route is a read except the dev-folder form below, which is the console's
-	// one write").
+	// The dev-folder form and the `/settings` form below are the console's only two writes - every other
+	// route is a plain `GET` (`console.md`'s "Every route is a read except the dev-folder form and the
+	// Settings form below, which are the console's only two writes").
 	app.use(express.urlencoded({ extended: false }));
 
 	app.get('/', async (_req, res) => {
@@ -118,11 +151,15 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		res.send(layout(`Actor ${actor.name}`, body));
 	});
 
-	/** The console's one mutation - funnels through the same `setDevFolder` the API endpoint uses,
+	/** One of the console's two mutations - funnels through the same `setDevFolder` the API endpoint uses,
 	 * resolving the Actor cross-user by the id already in the page URL (no token) rather than through
 	 * `resolveOwnedActor`. A failure redirects back with `describeDevFolderFailure`'s message in a query
 	 * param, so it's surfaced inline rather than swallowed by the redirect. */
 	app.post('/actors/:id/dev-folder', async (req, res) => {
+		if (isCrossSiteWrite(req)) {
+			res.status(403).send('Cross-site form submissions are not allowed.');
+			return;
+		}
 		const actor = await getActorById(req.params.id);
 		if (!actor) {
 			res.status(404).send(layout('Not found', '<p>Actor not found.</p>'));
@@ -183,7 +220,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 	});
 
 	app.get('/builds', async (_req, res) => {
-		const builds = await listAllBuilds();
+		const builds = newestFirst(await listAllBuilds());
 		const rows = builds.map((b) => [b.id, b.userId, b.actorId, b.buildNumber, b.status, b.startedAt]);
 		res.send(
 			layout(
@@ -220,7 +257,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 	});
 
 	app.get('/runs', async (_req, res) => {
-		const runs = await listAllRuns();
+		const runs = newestFirst(await listAllRuns());
 		const rows = runs.map((r) => [
 			r.id,
 			r.userId,
@@ -265,10 +302,26 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 
 	app.get('/logs', async (_req, res) => {
 		const [builds, runs] = await Promise.all([listAllBuilds(), listAllRuns()]);
-		const rows = [
-			...builds.map((b) => [b.id, b.userId, 'build', b.status]),
-			...runs.map((r) => [r.id, r.userId, 'run', r.status]),
-		];
+		// Builds and runs share this one list, so they're merged before sorting rather than each sorted on
+		// its own and concatenated - otherwise every build would still render before every run (or vice
+		// versa) regardless of which is actually newer.
+		const entries = newestFirst([
+			...builds.map((b) => ({
+				id: b.id,
+				userId: b.userId,
+				kind: 'build' as const,
+				status: b.status,
+				startedAt: b.startedAt,
+			})),
+			...runs.map((r) => ({
+				id: r.id,
+				userId: r.userId,
+				kind: 'run' as const,
+				status: r.status,
+				startedAt: r.startedAt,
+			})),
+		]);
+		const rows = entries.map((e) => [e.id, e.userId, e.kind, e.status]);
 		res.send(layout('Logs', table(['id', 'userId', 'kind', 'status'], rows, 0, '/logs')));
 	});
 
@@ -390,6 +443,44 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				seen.items.map((i) => [i.id, i.url, i.method, String(i.retryCount)]),
 			);
 		res.send(layout(`Request queue ${record.id}`, body));
+	});
+
+	// --- Settings: the shared upstream-fallback toggle state (`services/api-fallback.ts`), read/written
+	// through the same module the API's `GET`/`POST /actor-runtime/api-fallback` route uses - never
+	// through the API port itself (the dev-folder form's precedent). This is the console's second
+	// mutation alongside the dev-folder form - `console.md`'s "every route is a read except..." now
+	// names both.
+
+	app.get('/settings', async (_req, res) => {
+		const state = getApiFallbackState();
+		const body =
+			apiFallbackWarning() +
+			definitionList([
+				['fallbackUnimplementedEnabled', state.fallbackUnimplementedEnabled],
+				['fallbackNotFoundEnabled', state.fallbackNotFoundEnabled],
+				['upstreamBaseUrl', upstreamApiBaseUrl()],
+			]) +
+			'<h2>Change settings</h2>' +
+			settingsForm(state);
+		res.send(layout('Settings', body));
+	});
+
+	/** Always submits both checkboxes' current state, per the form's own contract
+	 * (`templates.ts: settingsForm`'s doc comment) - an unchecked box is simply absent from the
+	 * urlencoded body, read as `false` here, never as "leave this field unchanged". Funnels into the
+	 * same `setApiFallbackState` the API route calls, so the two surfaces can never observe or produce
+	 * different toggle states for the same request. */
+	app.post('/settings', async (req, res) => {
+		if (isCrossSiteWrite(req)) {
+			res.status(403).send('Cross-site form submissions are not allowed.');
+			return;
+		}
+		const body = req.body as Record<string, unknown> | undefined;
+		setApiFallbackState({
+			fallbackUnimplementedEnabled: body?.fallbackUnimplementedEnabled === 'on',
+			fallbackNotFoundEnabled: body?.fallbackNotFoundEnabled === 'on',
+		});
+		res.redirect('/settings');
 	});
 
 	return app;

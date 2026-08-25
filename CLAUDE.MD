@@ -30,6 +30,17 @@ Local Actor runtime is an Actor development tool for developing, running, and de
   hardcodes a `/v2`-suffixed base URL). From then on, edit locally, recompile locally (`tsc` or the
   language-appropriate equivalent), and `apify call` again - no `apify push`/build in between. Submitting
   `--body '""'` clears the registration. Dependency changes still need a real rebuild.
+- If a call fails because this runtime doesn't have the Actor/run/build/storage id you're after, or
+  doesn't implement that endpoint at all, you can opt in to having such calls transparently relayed to
+  the real Apify platform instead of failing:
+  `apify api POST /actor-runtime/api-fallback --body '{"fallbackUnimplementedEnabled": true, "fallbackNotFoundEnabled": true}'`
+  (either field alone is also accepted; `apify api GET /actor-runtime/api-fallback` reads the current
+  state). Both default off and reset to off on every restart. Enabling either forwards whatever token you
+  authenticated the failing call with to the real platform, and - since all HTTP methods are eligible -
+  can turn a locally-missing `POST`/`PUT`/`DELETE` into a real write against your real account; only turn
+  this on with a token/account you're comfortable with that. A relayed response carries an
+  `x-actor-runtime-fallback` header naming which platform served it, and an
+  `x-actor-runtime-fallback-trigger` header naming which toggle let it through.
 
 ## Through direct API calls
 

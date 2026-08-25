@@ -36,7 +36,10 @@ const STUB_PROBE_IMAGE_ID = 'stub-probe-image:probe';
 function devFolderDriver(
 	initialOutcome: DevFolderProbeOutcome,
 	available = true,
-): Driver & { probeDevFolderCalls: Array<[string, string]>; setOutcome(next: DevFolderProbeOutcome): void } {
+): Driver & {
+	probeDevFolderCalls: Array<[string, string]>;
+	setOutcome(next: DevFolderProbeOutcome): void;
+} {
 	let outcome = initialOutcome;
 	const probeDevFolderCalls: Array<[string, string]> = [];
 	return {
@@ -623,6 +626,28 @@ describe('console: dev-folder registration form on the Actor detail view', () =>
 		expect(stored?.localDevFolder).toBe('/abs/path');
 	});
 
+	it('rejects a cross-site form submission (Sec-Fetch-Site: cross-site) with 403, and never touches the registration', async () => {
+		await setUpConsole(devFolderDriver({ ok: true }));
+		const actor = await server.client.actors().create({ name: 'devfolder-cross-site-actor' });
+
+		const submit = await axios.post(
+			`${consoleBaseUrl}/actors/${actor.id}/dev-folder`,
+			'localDevFolder=%2Fabs%2Fpath',
+			{
+				headers: {
+					'Content-Type': 'application/x-www-form-urlencoded',
+					'Sec-Fetch-Site': 'cross-site',
+				},
+				maxRedirects: 0,
+				validateStatus: () => true,
+			},
+		);
+		expect(submit.status).toBe(403);
+
+		const stored = await getRegistries().actors.get(actor.id);
+		expect(stored?.localDevFolder).toBeUndefined();
+	});
+
 	it('submitting an empty value clears a previously-registered path', async () => {
 		await setUpConsole(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'devfolder-clear-actor' });
@@ -647,7 +672,10 @@ describe('console: dev-folder registration form on the Actor detail view', () =>
 	it('submitting a whitespace-only value does not clear - it redirects with an inline error and the prior path survives', async () => {
 		await setUpConsole(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'devfolder-whitespace-actor' });
-		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/existing-path' }));
+		await updateActor(actor.id, (current) => ({
+			...current,
+			localDevFolder: '/abs/existing-path',
+		}));
 
 		const submit = await axios.post(`${consoleBaseUrl}/actors/${actor.id}/dev-folder`, 'localDevFolder=%20%20%20', {
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -741,7 +769,10 @@ describe('console: dev-folder registration form on the Actor detail view', () =>
  * so `services/runs.ts`'s actor-fields -> `RunContext.devMount` derivation can be exercised end to end
  * through the real `startRun` service path, without a real Docker socket.
  */
-function devMountCapturingDriver(): { driver: Driver; getCapturedDevMount: () => DevFolderMount | undefined } {
+function devMountCapturingDriver(): {
+	driver: Driver;
+	getCapturedDevMount: () => DevFolderMount | undefined;
+} {
 	let capturedDevMount: DevFolderMount | undefined;
 	const driver: Driver = {
 		available: true,
