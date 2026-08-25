@@ -512,61 +512,72 @@ export class DockerDriver implements Driver {
 		});
 		this.runContainers.set(ctx.runId, container);
 
-		await container.start();
-
-		// Only started when someone is actually listening - an unconditional sampler would issue
-		// `container.stats()` calls no caller asked for (and against a stub `dockerode` in tests that
-		// never mocks `.stats()` at all, a hard failure).
-		const sampler = onSample
-			? startResourceSampler(container, ctx.memoryMbytes * 1024 * 1024, onSample)
-			: undefined;
-
-		const logStream = (await container.logs({
-			follow: true,
-			stdout: true,
-			stderr: true,
-		})) as NodeJS.ReadableStream;
-		const stdout = new PassThrough();
-		const stderr = new PassThrough();
-		stdout.on('data', (chunk: Buffer) => onLog(chunk.toString('utf8')));
-		stderr.on('data', (chunk: Buffer) => onLog(chunk.toString('utf8')));
-		this.docker.modem.demuxStream(logStream, stdout, stderr);
-
-		// `container.logs({follow:true})` is a separate Docker API connection from `container.wait()` -
-		// the two settle independently, with no ordering guarantee between "the container process exited"
-		// and "every byte of its stdout/stderr has actually arrived over the logs connection". Without
-		// this, `startRun` could resolve (and its caller could write a terminal run status) before the
-		// run's trailing log output had even reached `onLog` yet: a client that polls status, sees it turn
-		// terminal, and immediately does a non-stream `GET /v2/logs/:id` could read the log before its
-		// final chunk landed.
-		//
-		// "Logs drained" MUST be derived from `logStream` (the SOURCE multiplexed stream) ending, not from
-		// `stdout`/`stderr` (the demuxed destinations) ending - `docker-modem`'s `demuxStream` only ever
-		// copies frames: it registers exactly `streama.on('data', processData)` on the source
-		// (`node_modules/docker-modem/lib/modem.js`, `Modem.prototype.demuxStream`) and never calls
-		// `.end()`/`.destroy()` on `stdout`/`stderr` itself. Awaiting the destinations' own `'end'` (the
-		// previous fix) therefore never resolves against a real daemon, which never ends them on its own -
-		// the run stayed RUNNING until its `timeoutSecs` finalized it as TIMED-OUT, exactly the CI
-		// regression this closes. So this driver ends them itself, once the source stream ends.
-		let sourceEnded = false;
-		const sourceEndedPromise = new Promise<void>((resolve) => {
-			const finish = (): void => {
-				if (sourceEnded) return;
-				sourceEnded = true;
-				stdout.end();
-				stderr.end();
-				resolve();
-			};
-			logStream.once('end', finish);
-			logStream.once('close', finish);
-		});
-
-		const timeout = setTimeout(() => {
-			this.timedOutRuns.add(ctx.runId);
-			void container.stop().catch(() => undefined);
-		}, ctx.timeoutSecs * 1000);
+		// Both declared outside the `try` below (so the `finally` can always see them) but only ever
+		// assigned inside it - `sampler` stays `undefined` if `container.start()` itself throws, and
+		// `timeout` stays `undefined` if anything before its own `setTimeout` call throws; `finally` guards
+		// each accordingly.
+		let sampler: { stop(): Promise<void> } | undefined;
+		let timeout: ReturnType<typeof setTimeout> | undefined;
 
 		try {
+			await container.start();
+
+			// Only started when someone is actually listening - an unconditional sampler would issue
+			// `container.stats()` calls no caller asked for (and against a stub `dockerode` in tests that
+			// never mocks `.stats()` at all, a hard failure). Created (and the log stream opened, below)
+			// INSIDE this `try` - not before it - so that a failure anywhere between `container.start()` and
+			// `container.wait()` (e.g. `container.logs()` itself throwing) still reaches the `finally` below
+			// and stops the sampler / removes the container, rather than leaking both. A sampler (or
+			// container) created before this `try` began would leak on exactly that path - the shape of bug
+			// this design calls out as the thing to review hardest for the sampler's own third Docker
+			// connection.
+			sampler = onSample ? startResourceSampler(container, ctx.memoryMbytes * 1024 * 1024, onSample) : undefined;
+
+			const logStream = (await container.logs({
+				follow: true,
+				stdout: true,
+				stderr: true,
+			})) as NodeJS.ReadableStream;
+			const stdout = new PassThrough();
+			const stderr = new PassThrough();
+			stdout.on('data', (chunk: Buffer) => onLog(chunk.toString('utf8')));
+			stderr.on('data', (chunk: Buffer) => onLog(chunk.toString('utf8')));
+			this.docker.modem.demuxStream(logStream, stdout, stderr);
+
+			// `container.logs({follow:true})` is a separate Docker API connection from `container.wait()` -
+			// the two settle independently, with no ordering guarantee between "the container process exited"
+			// and "every byte of its stdout/stderr has actually arrived over the logs connection". Without
+			// this, `startRun` could resolve (and its caller could write a terminal run status) before the
+			// run's trailing log output had even reached `onLog` yet: a client that polls status, sees it turn
+			// terminal, and immediately does a non-stream `GET /v2/logs/:id` could read the log before its
+			// final chunk landed.
+			//
+			// "Logs drained" MUST be derived from `logStream` (the SOURCE multiplexed stream) ending, not from
+			// `stdout`/`stderr` (the demuxed destinations) ending - `docker-modem`'s `demuxStream` only ever
+			// copies frames: it registers exactly `streama.on('data', processData)` on the source
+			// (`node_modules/docker-modem/lib/modem.js`, `Modem.prototype.demuxStream`) and never calls
+			// `.end()`/`.destroy()` on `stdout`/`stderr` itself. Awaiting the destinations' own `'end'` (the
+			// previous fix) therefore never resolves against a real daemon, which never ends them on its own -
+			// the run stayed RUNNING until its `timeoutSecs` finalized it as TIMED-OUT, exactly the CI
+			// regression this closes. So this driver ends them itself, once the source stream ends.
+			let sourceEnded = false;
+			const sourceEndedPromise = new Promise<void>((resolve) => {
+				const finish = (): void => {
+					if (sourceEnded) return;
+					sourceEnded = true;
+					stdout.end();
+					stderr.end();
+					resolve();
+				};
+				logStream.once('end', finish);
+				logStream.once('close', finish);
+			});
+
+			timeout = setTimeout(() => {
+				this.timedOutRuns.add(ctx.runId);
+				void container.stop().catch(() => undefined);
+			}, ctx.timeoutSecs * 1000);
+
 			const result = (await container.wait()) as { StatusCode: number };
 			// `container.wait()` resolves the same way whether the process exited on its own or was
 			// stopped by our own timeout timer - the timer having fired is the only signal that
@@ -593,10 +604,12 @@ export class DockerDriver implements Driver {
 
 			return { exitCode: result.StatusCode, timedOut };
 		} finally {
-			clearTimeout(timeout);
+			if (timeout) clearTimeout(timeout);
 			// Awaited BEFORE `container.remove()` below: `sampler.stop()` guarantees no `stats()` call is
 			// ever issued (or still outstanding) once this line resolves, so the removal below can never
-			// race a live sampler call the way the log-drain bug once raced `container.wait()`/`logs()`.
+			// race a live sampler call the way the log-drain bug once raced `container.wait()`/`logs()`. Now
+			// reached on EVERY path out of the `try` above, including `container.start()`/`container.logs()`
+			// themselves throwing - not just a normal `container.wait()` settlement.
 			await sampler?.stop();
 			this.timedOutRuns.delete(ctx.runId);
 			this.runContainers.delete(ctx.runId);

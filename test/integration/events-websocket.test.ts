@@ -5,6 +5,10 @@
  * frame delivery, strict per-run isolation (no global/broadcast channel), the `1008`/`1000` close-code
  * lifecycle, and the `?gracefully=` `aborting` contract riding the same socket.
  */
+import { request } from 'node:http';
+import { randomBytes } from 'node:crypto';
+import type { Socket } from 'node:net';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 
@@ -121,6 +125,28 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void
 		if (Date.now() > deadline) throw new Error('waitFor: condition never became true in time');
 		await realDelay(10);
 	}
+}
+
+/**
+ * Completes a real HTTP upgrade handshake for `runId` and hands back the raw underlying `net.Socket` -
+ * bypassing the `ws` client library entirely, which (being a correct implementation) could never be made
+ * to emit an actually-malformed frame. Mirrors `review-staff-review.md`'s own repro for the unhandled
+ * `'error'`-event blocker: a real upgrade, then raw invalid bytes written directly onto the wire.
+ */
+function rawUpgrade(server: TestServerHandle, runId: string): Promise<Socket> {
+	return new Promise((resolve, reject) => {
+		const req = request(`${server.baseUrl}/actor-runtime/events/${runId}`, {
+			headers: {
+				Connection: 'Upgrade',
+				Upgrade: 'websocket',
+				'Sec-WebSocket-Version': '13',
+				'Sec-WebSocket-Key': randomBytes(16).toString('base64'),
+			},
+		});
+		req.on('upgrade', (_res, socket) => resolve(socket));
+		req.on('error', reject);
+		req.end();
+	});
 }
 
 const SYSTEM_INFO_FIELDS = [
@@ -354,5 +380,54 @@ describe('events websocket (GET /actor-runtime/events/:runId)', () => {
 		await waitForOpen(reconnectSocket.ws);
 		const closeEvent = await reconnectSocket.closed;
 		expect(closeEvent.code).toBe(1008);
+	});
+
+	it('an unhandled protocol-level error on a connected socket (a malformed frame) never crashes the process - it is contained to that one connection (regression: blocker - unhandled `error` event)', async () => {
+		const driver = multiRunDriver();
+		server = await startTestServer(driver);
+		const run = await seedRunnableRun(server, driver, 'ws-malformed-frame-actor');
+
+		const socket = await rawUpgrade(server, run.id);
+
+		// If `handleConnection` ever again omits an `'error'` listener on the accepted `WebSocket`, `ws`
+		// throws this synchronously out of its own internal socket-data handler - with nothing up that
+		// call stack to catch it, Node turns it into a process-wide `'uncaughtException'`, which (with no
+		// listener of our own) would otherwise crash this entire test worker, not just fail an assertion.
+		// Registering a listener here doesn't just observe that outcome; per Node's own documented
+		// semantics, adding an `'uncaughtException'` listener is what prevents the default crash-and-exit,
+		// which is exactly why this test is able to make a red/green assertion here at all instead of
+		// taking the whole process down with it pre-fix.
+		const uncaughtErrors: unknown[] = [];
+		const onUncaught = (error: unknown): void => {
+			uncaughtErrors.push(error);
+		};
+		process.on('uncaughtException', onUncaught);
+		try {
+			// Ten invalid frame bytes (RSV2/RSV3 set) - the exact malformed-frame repro
+			// `review-staff-review.md`'s blocker cites against the installed `ws` package.
+			socket.write(Buffer.from([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]));
+
+			// Give the server a real moment to actually process the bad frame (and, pre-fix, crash).
+			await new Promise((resolve) => setTimeout(resolve, 200));
+
+			expect(uncaughtErrors).toEqual([]);
+		} finally {
+			process.removeListener('uncaughtException', onUncaught);
+		}
+
+		// Not just "didn't throw synchronously" - the server is still alive and still serving every other
+		// run: a fresh connection to an unrelated, healthy run still gets its frames normally.
+		const otherRun = await seedRunnableRun(server, driver, 'ws-malformed-frame-survivor-actor');
+		const otherSocket = connectEventsSocket(server, otherRun.id);
+		await waitForOpen(otherSocket.ws);
+		await waitForSubscribed(otherRun.id);
+		driver.emitSample(otherRun.id, sample());
+		await waitFor(() => otherSocket.messages.length > 0);
+		expect(otherSocket.messages[0]?.name).toBe('systemInfo');
+
+		socket.destroy();
+		otherSocket.ws.close();
+		driver.resolveRun(run.id, { exitCode: 0, timedOut: false });
+		driver.resolveRun(otherRun.id, { exitCode: 0, timedOut: false });
 	});
 });

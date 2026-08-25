@@ -351,10 +351,15 @@ export async function startTestServer(
 		dataDir,
 		driver,
 		async close() {
+			// MUST run before `server.close()` below, not after - `eventsWebSocketServer.close()` is what
+			// actually terminates any still-open events-websocket client; an ordinary HTTP
+			// `closeAllConnections()` call (below) does not reach an already-upgraded socket at all (see
+			// `api/events-ws.ts`'s `EventsWebSocketServer.close()` doc comment for the full evidence). A
+			// test that forgets to close its own `ws` client - or one asserting the server itself never
+			// drops a healthy connection - would otherwise hang this teardown indefinitely on
+			// `server.close()`'s own callback, exactly the bug `shutdown.ts: gracefulShutdown` guards
+			// against in production (same ordering, same reason).
 			eventsWebSocketServer.close();
-			// `closeAllConnections()` (mirroring `shutdown.ts: closeServer`) so a test that forgets to close
-			// its own `ws` client - or one asserting the server itself never drops a healthy connection -
-			// still lets teardown proceed instead of hanging on `server.close()`'s callback.
 			await new Promise<void>((resolve) => {
 				server.close(() => resolve());
 				server.closeAllConnections();

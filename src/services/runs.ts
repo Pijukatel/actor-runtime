@@ -324,19 +324,27 @@ export async function runInBackground(
  * HTTP request open for 30 seconds against nothing running - a settled edge case for this design, not an
  * oversight (an already-terminal run is still handled by the `isTerminalJobStatus` check above, also
  * unaffected by `gracefully`).
+ *
+ * `wasRunning` is captured from `transitionJobStatus`'s own `onBeforeTransition` hook, INSIDE the same
+ * mutex-serialized read-modify-write that performs the `-> ABORTING` write itself - not from a separate,
+ * preceding `runs.get(run.id)` read. A plain `get` taken before the guarded write has no ordering
+ * relationship with a concurrent `runInBackground` call going through its own `transitionJobStatus`
+ * (READY -> RUNNING): the two can interleave so the plain read observes a stale `READY`/`RUNNING` status
+ * a moment before the real one lands, silently steering a `?gracefully=true` request onto the wrong path
+ * (no `aborting` frame, no window - or the reverse). Reading `current.status` from inside the mutator
+ * closure closes that window structurally: by the time this callback runs, the per-id `KeyedMutex`
+ * (`storage/registry.ts`) has already serialized it against every other `update` on this same id, so
+ * `current` here is the record exactly as it stood the instant before this write decides anything - the
+ * freshest status this function could possibly observe. The caller's own `run` parameter is never
+ * consulted for this decision either, for the same reason.
  */
 export async function abortRun(driver: Driver, run: RunRecord, gracefully = false): Promise<RunRecord | null> {
 	if (isTerminalJobStatus(run.status)) return run;
 	const { runs } = getRegistries();
-	// A fresh read, not the caller's own `run` snapshot: `run` can be stale by the time this executes
-	// (e.g. fetched moments before `runInBackground`'s own READY -> RUNNING transition landed), and
-	// whether a container is actually running right now is exactly what decides if the graceful window
-	// applies. The transition immediately below is still the sole guarded writer - a race between this
-	// read and that write only ever means the window decision itself was made a moment early or late, not
-	// that an illegal transition slips through: `transitionJobStatus` refuses on its own timeline anyway.
-	const current = await runs.get(run.id);
-	const wasRunning = current?.status === 'RUNNING';
-	const aborting = await transitionJobStatus(runs, run.id, 'ABORTING');
+	let wasRunning = false;
+	const aborting = await transitionJobStatus(runs, run.id, 'ABORTING', {}, (current) => {
+		wasRunning = current?.status === 'RUNNING';
+	});
 	if (!aborting || aborting.status !== 'ABORTING') return aborting;
 
 	if (gracefully && wasRunning) {

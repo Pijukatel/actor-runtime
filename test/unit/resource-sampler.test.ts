@@ -278,4 +278,45 @@ describe('DockerDriver.startRun - per-run resource sampler (onSample)', () => {
 		// baseline read is unemitted either way - exactly one `stats()` call total, none after `stop()`.
 		expect(stub.stats).toHaveBeenCalledTimes(1);
 	});
+
+	it('a container.logs() rejection between container.start() and container.wait() still stops the sampler and removes the container (regression: finding 3 - sampler/container leak window)', async () => {
+		// Real timers, same reason as the test above: nothing queued, so the sampler's own baseline
+		// `stats()` call stays pending until this test resolves it - no simulated time needs to elapse.
+		vi.useRealTimers();
+		const stub = stubDockerForSampler();
+		stub.container.logs = vi.fn(async () => {
+			throw new Error('container.logs failed');
+		});
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-sampler-leak-1', imageId: 'fake-image', env: {}, memoryMbytes: 1024, timeoutSecs: 60 },
+			() => {},
+			() => {},
+		);
+
+		// Let `startRun` run far enough that the sampler's own baseline `stats()` call has actually been
+		// issued - proof a sampler genuinely existed at the moment `container.logs()` rejects, not just
+		// that nothing crashed.
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(stub.stats).toHaveBeenCalledTimes(1);
+
+		// Resolve that one in-flight baseline read so `sampler.stop()` - awaited inside the now-widened
+		// `finally` - can actually complete once `container.logs()`'s rejection unwinds `startRun` into it.
+		stub.resolvePendingStats(containerStats(0, 0, 100));
+
+		await expect(outcomePromise).rejects.toThrow('container.logs failed');
+
+		// The container is never leaked, on this path either - `container.remove()` still runs, even though
+		// `container.start()` succeeded but everything after it (the sampler, the log stream) never got to
+		// `container.wait()` at all.
+		expect(stub.container.remove).toHaveBeenCalledTimes(1);
+
+		// The sampler was genuinely stopped, not merely abandoned mid-flight: no further `stats()` call
+		// ever arrives.
+		const statsCallsAtRejection = stub.stats.mock.calls.length;
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(stub.stats.mock.calls.length).toBe(statsCallsAtRejection);
+	});
 });

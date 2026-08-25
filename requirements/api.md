@@ -170,7 +170,11 @@
       (including via either an immediate or a graceful abort), at which point the server closes it with
       code `1000`. The server never drops a healthy, still-live connection for any other reason - the JS
       SDK's own event manager has no client-side reconnect, so a server-initiated drop would permanently
-      end that run's telemetry.
+      end that run's telemetry. A graceful runtime shutdown (`SIGTERM`/`SIGINT`) is the one sanctioned
+      exception: every still-open events connection is forcibly terminated as part of shutdown, the same
+      way an open `GET /v2/logs/:id?stream=true` response is - any run still non-terminal at that point
+      keeps its container running (this runtime does not stop it), and is swept as an orphan (marked
+      `ABORTED`, its container removed) the next time the runtime starts (`reconcileOrphanedJobs`).
     - `persistState` is never sent over this channel, under any circumstance - both SDKs' own base event
       managers already generate it locally on their own timer; a second, server-originated one would
       double-fire it.

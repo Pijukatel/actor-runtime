@@ -39,9 +39,9 @@ import {
 	waitForRunFinish,
 } from '../../src/services/runs.js';
 import { subscribe } from '../../src/services/events-channel.js';
-import { waitForPendingTimer } from './helpers/fake-timers.js';
+import { realDelay, waitForPendingTimer } from './helpers/fake-timers.js';
 import { DriverTimedOutError, type Driver } from '../../src/driver/types.js';
-import type { ActorRecord, ActorVersionRecord, BuildRecord, RunRecord } from '../../src/storage/entities.js';
+import type { ActorRecord, ActorVersionRecord, BuildRecord, JobStatus, RunRecord } from '../../src/storage/entities.js';
 
 /** Creates an Actor via the real client (so it has a genuine owner) and returns the underlying
  * `ActorRecord` for direct service-layer calls. */
@@ -123,6 +123,35 @@ function neverStartDriver(): Driver & { abortRunCalls: string[]; abortBuildCalls
 			throw new Error('not used by this stub');
 		},
 	};
+}
+
+/**
+ * Real-time polling (never gated by a fake `setTimeout`) for a run's status as observed over a real HTTP
+ * `GET`, via `apify-client`. Needed instead of `waitForPendingTimer` when the trigger being awaited is a
+ * real HTTP round trip (`server.client.run(id).abort(...)`): `apify-client`'s own request pipeline (e.g.
+ * its HTTP agent's keep-alive bookkeeping) can register an incidental `setTimeout` of its own well before
+ * the server has actually processed the request, so "some fake timer now exists anywhere in this process"
+ * is not a reliable proxy for "the server's own `ABORTING` write has landed" once a real client is in the
+ * mix - unlike every other graceful-abort test in this file, which calls `abortRun` directly and has no
+ * such incidental timer source to race against.
+ */
+async function pollForRunStatus(
+	server: TestServerHandle,
+	runId: string,
+	status: JobStatus,
+	timeoutMs = 3000,
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		const current = await server.client.run(runId).get();
+		if (current?.status === status) return;
+		if (Date.now() > deadline) {
+			throw new Error(
+				`timed out waiting for run ${runId} to reach status ${status} (last seen: ${current?.status})`,
+			);
+		}
+		await realDelay(10);
+	}
 }
 
 describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', () => {
@@ -713,6 +742,89 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 
 			const aborted = await abortRun(server.driver, terminalRecord, true);
 			expect(aborted?.status).toBe('SUCCEEDED');
+		});
+	});
+
+	describe('finding 5: ?gracefully= exercised over a real HTTP round trip, not just direct service-layer calls', () => {
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it("POST .../abort?gracefully=true (via apify-client, the actors-builds-runs.test.ts .abort() pattern) gets the full graceful contract: ABORTING immediately, the HTTP response itself only resolving after the 30s window, and the aborting frame emitted on the run's own events channel", async () => {
+			const driver = deferredRunDriver();
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'graceful-http-actor');
+			const build = await seedSucceededBuild(actor);
+			await updateActor(actor.id, (current) => recordTaggedBuild(current, 'latest', build.id, build.buildNumber));
+
+			// A genuine run started through the real client - not a hand-seeded record - so the run id below
+			// is one the HTTP abort route's own ownership check (`getOwnedRun`) actually resolves, exactly as
+			// a real caller's request would.
+			const started = await server.client.actor(actor.id).start({});
+			await driver.started;
+			expect(driver.startRunCalls).toEqual([started.id]);
+
+			const frames: string[] = [];
+			const unsubscribe = subscribe(started.id, (frame) => frames.push(frame));
+
+			vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+			// The real HTTP round trip: `apify-client`'s `RunClient.abort({gracefully:true})` issues
+			// `POST /v2/actor-runs/:runId/abort?gracefully=true`, exercising `api/routes/runs.ts`'s own
+			// `queryBoolean` parsing and its call into `abortRun` - never `abortRun` called directly, unlike
+			// every other graceful-abort test in "finding 4" above.
+			const abortPromise = server.client.run(started.id).abort({ gracefully: true });
+
+			// Criterion #28: ABORTING lands immediately - observable over the same real HTTP client, well
+			// before the HTTP response itself resolves. Polled in real time (not via `waitForPendingTimer`):
+			// `apify-client`'s own request pipeline can register an incidental `setTimeout` of its own before
+			// the server has actually processed anything, so "a fake timer now exists somewhere in this
+			// process" is not a reliable signal here the way it is for every other graceful-abort test in
+			// this file, none of which go through a real HTTP client.
+			await pollForRunStatus(server, started.id, 'ABORTING');
+			expect(frames).toEqual([JSON.stringify({ name: 'aborting', data: {} })]);
+			expect(driver.abortRunCalls).toEqual([]);
+
+			let responded = false;
+			void abortPromise.then(() => {
+				responded = true;
+			});
+
+			// Just under the window: the HTTP response is still being held open server-side.
+			await vi.advanceTimersByTimeAsync(29_999);
+			expect(responded).toBe(false);
+			expect(driver.abortRunCalls).toEqual([]);
+
+			// At the window: `driver.abortRun` fires and the HTTP response finally resolves.
+			await vi.advanceTimersByTimeAsync(1);
+			const aborted = await abortPromise;
+			expect(aborted.status).toBe('ABORTED');
+			expect(driver.abortRunCalls).toEqual([started.id]);
+
+			driver.resolveRun({ exitCode: 137, timedOut: false });
+			unsubscribe();
+		});
+
+		it('POST .../abort with no gracefully parameter, over the same real HTTP round trip, still returns immediately with no wait (criterion #23 holds end to end too, not just at the service layer)', async () => {
+			const driver = deferredRunDriver();
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'immediate-http-actor');
+			const build = await seedSucceededBuild(actor);
+			await updateActor(actor.id, (current) => recordTaggedBuild(current, 'latest', build.id, build.buildNumber));
+
+			const started = await server.client.actor(actor.id).start({});
+			await driver.started;
+
+			const frames: string[] = [];
+			const unsubscribe = subscribe(started.id, (frame) => frames.push(frame));
+
+			const aborted = await server.client.run(started.id).abort();
+			expect(aborted.status).toBe('ABORTED');
+			expect(driver.abortRunCalls).toEqual([started.id]);
+			expect(frames).toEqual([]);
+
+			driver.resolveRun({ exitCode: 137, timedOut: false });
+			unsubscribe();
 		});
 	});
 });

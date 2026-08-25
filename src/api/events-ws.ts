@@ -35,10 +35,24 @@ const EVENTS_PATH_PATTERN = /^\/actor-runtime\/events\/([^/]+)\/?$/;
 const TERMINAL_POLL_INTERVAL_MS = 250;
 
 export interface EventsWebSocketServer {
-	/** Stops accepting new upgrades. Deliberately does not touch already-open sockets - `shutdown.ts`'s
-	 * `closeServer(apiServer)` (via Node's `closeAllConnections()`, which explicitly also tears down
-	 * upgraded connections) is what forcibly drops those on a graceful shutdown, exactly as it already
-	 * drops any open `?stream=true` log response (`2-design.md`'s risk note on this). */
+	/**
+	 * Stops accepting new upgrades AND forcibly drops every currently-open connection this server is
+	 * holding, via `.terminate()` on each of `wss.clients`.
+	 *
+	 * This is NOT redundant with `shutdown.ts`'s `closeServer(apiServer)` - Node's own
+	 * `server.closeAllConnections()` does not reach an already-upgraded websocket socket at all. Verified
+	 * against Node 22's actual `http.Server.prototype.closeAllConnections` source and against a live
+	 * `ws`/`http` repro: once `wss.handleUpgrade` completes, the socket is handed off to `ws` and is no
+	 * longer one `closeAllConnections()` destroys, so it also stays open when `ws`'s own
+	 * `WebSocketServer.close()` (in `noServer` mode) is called - that method only waits for `clients.size`
+	 * to reach 0, it never forces a client closed either. Left unfixed, a single still-connected
+	 * events-websocket client (the ordinary case, since `ACTOR_EVENTS_WEBSOCKET_URL` is now set on every
+	 * run and neither SDK ever disconnects on its own mid-run) hangs `closeServer(apiServer)` indefinitely -
+	 * its `server.close()` callback waits for every connection the server still holds, upgraded ones
+	 * included, to actually end. Calling THIS method - which is what actually ends them - before awaiting
+	 * `closeServer(apiServer)` is what makes that promise resolve promptly instead (`shutdown.ts`'s
+	 * `gracefulShutdown`).
+	 */
 	close(): void;
 }
 
@@ -54,6 +68,20 @@ function extractRunId(pathname: string): string | undefined {
  * ever issues are exactly those two.
  */
 async function handleConnection(ws: WebSocket, runId: string): Promise<void> {
+	// MUST be attached before anything else in this function - including before the pre-subscribe
+	// `getRunById`/terminal checks below settle - because `ws` (extending `EventEmitter`) throws
+	// synchronously out of whatever emits it when a protocol-level fault (a malformed frame, a bad
+	// handshake byte) fires `'error'` with zero listeners attached, which crashes this entire process:
+	// every other run's container, the console, and the API along with it. Verified directly against the
+	// installed `ws` package: completing a real upgrade and then writing invalid frame bytes over the raw
+	// socket throws `UNCAUGHT_EXCEPTION` with no listener here. This endpoint is deliberately
+	// unauthenticated and reachable by any container on the Docker network (`2-design.md` decision 3), so
+	// a single connection producing one bad frame must never be allowed this blast radius. `ws` itself
+	// still emits `'close'` right after `'error'` (`emitErrorAndClose` in `ws/lib/websocket.js`), so simply
+	// swallowing the error here and letting the existing `'close'` listener below run its normal
+	// unsubscribe/poll-teardown is enough - there is nothing additional to clean up.
+	ws.on('error', () => undefined);
+
 	const run = await getRunById(runId);
 	if (!run) {
 		ws.close(1008, `Unknown run id: ${runId}`);
@@ -122,12 +150,27 @@ export function attachEventsWebSocket(server: Server): EventsWebSocketServer {
 		}
 
 		wss.handleUpgrade(req, socket, head, (ws) => {
-			void handleConnection(ws, runId);
+			// `handleConnection` already contains every *expected* failure mode itself (unknown/terminal
+			// run both resolve normally, into a `ws.close(1008, ...)`); this `.catch()` is only for a
+			// genuinely unexpected rejection (e.g. a transient storage error out of `getRunById`), which
+			// would otherwise become an unhandled promise rejection - fatal to the whole process under
+			// Node's default `--unhandled-rejections` mode, the same class of process-wide blast radius as
+			// the unhandled `'error'`-event case above, just via a different mechanism. `.terminate()`
+			// (not `.close()`) because whatever broke here means this connection cannot be trusted to still
+			// be in a state where a clean close handshake is possible - it contains the fault to this one
+			// connection, never the process.
+			void handleConnection(ws, runId).catch(() => {
+				ws.terminate();
+			});
 		});
 	});
 
 	return {
 		close() {
+			// Forcibly drops every client this server is still holding - see this interface's own doc
+			// comment on `close()` for why this, not `wss.close()` alone or `shutdown.ts`'s
+			// `closeAllConnections()`, is what actually ends an upgraded socket.
+			for (const client of wss.clients) client.terminate();
 			wss.close();
 		},
 	};
