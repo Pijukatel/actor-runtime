@@ -1,10 +1,9 @@
 /**
- * The single source of truth for the basename `dockerfile-location.ts`'s resolver both searches for
- * (candidates 2 and 3: `.actor/Dockerfile`, root `Dockerfile`) and gives the bundled default below when
- * it injects one. Collapsing what used to be two separately-declared `'Dockerfile'` string constants
- * into this one export makes the module's collision-safety invariant - the injected default's name is
- * exactly the string the candidate-3 search looks for, so it can never collide with a real pushed
- * Dockerfile - structural rather than a fact that only holds as long as two literals happen to agree.
+ * The single source of truth for both the basename `dockerfile-location.ts`'s resolver searches for
+ * (candidates 2 and 3: `.actor/Dockerfile`, root `Dockerfile`) and the tar-entry name given to the
+ * bundled default below when it is injected. Because the injected default's name is exactly the string
+ * the candidate-3 search looks for, it can never collide with a real pushed Dockerfile: the `default`
+ * outcome is only reachable after that search has already missed.
  */
 export const DEFAULT_DOCKERFILE_NAME = 'Dockerfile';
 

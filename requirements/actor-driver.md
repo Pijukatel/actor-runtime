@@ -45,13 +45,13 @@
   tried; a file that fails to parse at all fails the build immediately, before any daemon call, with
   `Could not parse .actor/actor.json: <parse error message>` - a third build-ending failure mode,
   alongside the two below. Resolution order, stopping at the first hit:
-    1. the `dockerfile` field of `.actor/actor.json` (parsed as JSON5, matching the platform),
-       interpreted relative to the `.actor` directory. A value that resolves outside the Actor root
-       (e.g. `../../evil/Dockerfile`, or a leading `/`) fails the build before any daemon call. A
-       value that is present but not a string (e.g. `true`) also fails the build immediately, with a
-       `.actor/actor.json has invalid format` message. A value that is a string (including the empty
-       string) but names no file in `sourceFiles` does not fail the build on that account - it warns
-       and falls through to the next candidate.
+    1. the `dockerfile` field of `.actor/actor.json`, interpreted relative to the `.actor`
+       directory. A value that resolves outside the Actor root (e.g. `../../evil/Dockerfile`, or a
+       leading `/`) fails the build before any daemon call. A value that is present but not a string
+       (e.g. `true`) also fails the build immediately, with a `.actor/actor.json has invalid format`
+       message. A value that is a string (including the empty string) but names no file in
+       `sourceFiles` does not fail the build on that account - it warns and falls through to the
+       next candidate.
     2. `.actor/Dockerfile`
     3. `Dockerfile` at the Actor root
     - Matching against `sourceFiles` names is case-insensitive for all three candidates, but the path

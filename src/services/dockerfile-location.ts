@@ -43,7 +43,7 @@ export type DockerfileResolutionFailureReason =
  * - `resolved`: a candidate (1, 2, or 3) matched an existing source file. `dockerfilePath` is that
  *   file's own (normalized) name - exactly the string `docker-driver.ts` must hand dockerode as its
  *   `dockerfile` build option, and exactly the tar entry name `buildTarball` will produce for it (both
- *   go through the same normalizer, see `normalizeEntryName` above).
+ *   go through the same normalizer, see `normalizeEntryName` in `driver/tar-entry-name.ts`).
  * - `default`: nothing resolved. `dockerfilePath` is always `'Dockerfile'` (free by construction - see
  *   this module's doc comment), and `extraSourceFile` is the one extra `SourceFile` the caller must
  *   append to `BuildContext.sourceFiles` for this one build only - never written back to the version's
