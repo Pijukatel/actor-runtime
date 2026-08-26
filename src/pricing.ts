@@ -23,9 +23,16 @@ export const CHARGEABLE_SERVICE_PRICING = {
 	PAID_ACTORS_PER_EVENT: 1,
 } as const;
 
+/** Reserved prefix for synthetic, platform-owned charge events - matches apify-core's
+ * `APIFY_EVENTS_PREFIX` (`src/api/src/lib/paid_actors_helpers.ts:32`). Which event names are reserved
+ * for the platform is a pricing-domain fact, not an HTTP-routing one, hence living here rather than in
+ * `api/routes/runs.ts` (the only other place that reads it). */
+export const APIFY_EVENT_PREFIX = 'apify-';
+
 /** The synthetic per-run charge event the real platform charges automatically at run start - the SDK
  * never POSTs `apify-`-prefixed events itself, so this runtime applies it
- * server-side, the same as apify-core's `getInitialChargedEventCounts`. */
+ * server-side, the same as apify-core's `getInitialChargedEventCounts`. Satisfies
+ * `APIFY_EVENT_PREFIX` by construction. */
 export const SYNTHETIC_ACTOR_START_EVENT = 'apify-actor-start';
 
 const MS_PER_HOUR = 3_600_000;

@@ -181,8 +181,8 @@
   rest of the run (`ChargingManager.init()`/`__aenter__` is the sole caller of
   `fetchPricingInfo()`/`_fetch_pricing_info()`; `charge()` itself never reads the run record at all, it
   only mutates the in-memory charging state built from that one read, then `POST`s). Setting both env
-  vars would not change that - a charge issued mid-run is invisible to nothing either way, because
-  neither path re-reads. What the two env vars actually gate is _where that single read comes from_: set,
+  vars would not change that - a charge issued mid-run is invisible either way, because neither path
+  re-reads. What the two env vars actually gate is _where that single read comes from_: set,
   `fetchPricingInfo()` parses them directly as a frozen snapshot and skips the network call entirely;
   unset (and `APIFY_IS_AT_HOME=1`, which this runtime always sets), it falls through to a real
   `run(id).get()` against `GET /v2/actor-runs/:runId` - the same route, and the same `runDto` shape, any

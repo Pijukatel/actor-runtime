@@ -59,7 +59,8 @@ function formatUsd(amountUsd: number): string {
 	return `$${amountUsd.toFixed(3)}`;
 }
 
-/** The run detail view's one cost row (`requirements/console.md`'s "Run detail" section), e.g.
+/** The run detail view's one cost row (`requirements/console.md`'s "run detail view has one `cost`
+ * row" bullet, under `# Frontend`), e.g.
  * `$0.177 (0.100 CU $0.020 + events $0.157)` - the same projection `runDto` uses (`pricing.ts`), read
  * straight off the record rather than threaded through the API layer. The "+ events $..." breakdown
  * only appears for a PPE run - `usageUsd.PAID_ACTORS_PER_EVENT` is absent entirely for a non-PPE one

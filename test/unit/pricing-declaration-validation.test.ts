@@ -27,7 +27,7 @@ describe('validatePricingInfoShape', () => {
 	// `eventDescription` is required, not optional - it mirrors apify-core's real
 	// `ActorChargeDefinitionCommon` and the Python SDK's pydantic model, both of which require it
 	// (`ChargeEventDefinition`'s own doc comment in `src/pricing.ts`).
-	it('rejects an event definition missing eventDescription (now required)', () => {
+	it('rejects an event definition missing eventDescription', () => {
 		expect(
 			validatePricingInfoShape({
 				pricingModel: 'PAY_PER_EVENT',

@@ -125,8 +125,8 @@ function chargeViaHttp(
 /** Same endpoint, but sends `rawBody` verbatim as the request body (already-serialized JSON text) instead
  * of letting axios `JSON.stringify` a plain object - needed for a `count` value JSON itself can represent
  * but a JS object literal cannot (e.g. `1e400`, a valid JSON number token that parses to `Infinity`), so
- * the request-shape guard's `!Number.isFinite(count)` arm is reachable rather than always failing earlier
- * at JSON-parse time. */
+ * the request-shape guard's `!Number.isInteger(count)` arm rejects an actual `Infinity` rather than the
+ * request failing earlier at JSON-parse time. */
 function chargeViaHttpRaw(
 	baseUrl: string,
 	runId: string,
@@ -232,7 +232,7 @@ describe('POST|GET /actor-runtime/pricing/:actorId', () => {
 		expect(read.data.data.pricingInfo).toBeNull();
 	});
 
-	it('rejects a pricing declaration missing eventDescription (now required, mirroring apify-core and the Python SDK contract) and writes nothing', async () => {
+	it('rejects a pricing declaration missing eventDescription (mirroring apify-core and the Python SDK contract) and writes nothing', async () => {
 		server = await startTestServer();
 		const actor = await server.client.actors().create({ name: 'missing-description-actor' });
 
@@ -751,6 +751,34 @@ describe('POST /v2/actor-runs/:runId/charge', () => {
 		expect(otherUser.data.error.type).toBe('record-not-found');
 	});
 
+	it("charging an apify--prefixed event on a nonexistent run, or another user's run, is 405 cannot-charge-apify-event, not 404", async () => {
+		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
+		const { runId } = await seedPpeRun('charge-apify-prefix-ownership-actor');
+
+		// The `apify-` prefix guard runs ahead of the "owned record" lookup (`api/routes/runs.ts`,
+		// mirroring apify-core's own guard order, `run_charging_service.ts:566-569`), so it fires - and
+		// answers `405`, not `404` - even for a run id that doesn't resolve at all.
+		const missing = await chargeViaHttp(
+			server.baseUrl,
+			'does-not-exist',
+			server.token,
+			{ eventName: 'apify-actor-start' },
+			'k-apify-missing-1',
+		);
+		expect(missing.status).toBe(405);
+		expect(missing.data.error.type).toBe('cannot-charge-apify-event');
+
+		const otherUser = await chargeViaHttp(
+			server.baseUrl,
+			runId,
+			'a-completely-different-token',
+			{ eventName: 'apify-actor-start' },
+			'k-apify-other-1',
+		);
+		expect(otherUser.status).toBe(405);
+		expect(otherUser.data.error.type).toBe('cannot-charge-apify-event');
+	});
+
 	it('a charge with no idempotency-key header is rejected (400) and never applied', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const { runId } = await seedPpeRun('charge-missing-key-actor');
@@ -977,8 +1005,9 @@ describe('POST /v2/actor-runs/:runId/charge - request-shape validation', () => {
 		// silently coerced to `null` by `JSON.stringify` before it ever reaches the server (exercising the
 		// "missing" arm, not this one). `1e400` is a valid JSON number token that overflows to `Infinity`
 		// once parsed (`JSON.parse('1e400') === Infinity`, verified directly) - sent as a raw already-JSON
-		// string so it survives the wire as `count: Infinity`, landing on the `!Number.isFinite(count)` arm
-		// specifically rather than the JSON-parse-error or typeof-mismatch arms.
+		// string so it survives the wire as `count: Infinity`, landing on the `!Number.isInteger(count)`
+		// arm (`Number.isInteger(Infinity)` is `false`) rather than the JSON-parse-error or
+		// typeof-mismatch arms.
 		const res = await chargeViaHttpRaw(
 			server.baseUrl,
 			runId,

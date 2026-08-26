@@ -32,29 +32,29 @@ export async function chargeRun(
 	idempotencyKey: string,
 ): Promise<ChargeOutcome> {
 	const { runs } = getRegistries();
-	// A plain object (rather than a re-assigned `let`) so the mutator's writes are read back reliably -
-	// `outcome.kind` is never narrowed by the closure's own control flow the way a captured `let` would
-	// be.
-	const outcome: { kind: ChargeOutcome['kind'] } = { kind: 'not-found' };
+	// The mutator assigns the full outcome (run included, for the two arms that have one) as it goes,
+	// so the caller just returns whatever it last set - no recombining `runs.update()`'s own return
+	// value with a separately tracked `kind` afterwards.
+	let outcome: ChargeOutcome = { kind: 'not-found' };
 
-	const updated = await runs.update(runId, (current) => {
+	await runs.update(runId, (current) => {
 		if (!current) {
-			outcome.kind = 'not-found';
+			outcome = { kind: 'not-found' };
 			return current;
 		}
 		if (!current.pricingInfo || current.pricingInfo.pricingModel !== 'PAY_PER_EVENT') {
-			outcome.kind = 'not-pay-per-event';
+			outcome = { kind: 'not-pay-per-event' };
 			return current;
 		}
 		if (!current.pricingInfo.pricingPerEvent.actorChargeEvents[eventName]) {
-			outcome.kind = 'undeclared-event';
+			outcome = { kind: 'undeclared-event' };
 			return current;
 		}
 		// Idempotency: a replay of the exact same key is a no-op (same status, no second increment,
 		// `chargeLog` unchanged) - this file-backed log is what makes the dedupe survive a restart,
 		// unlike apify-core's 180s Redis TTL.
 		if (current.chargeLog?.some((entry) => entry.idempotencyKey === idempotencyKey)) {
-			outcome.kind = 'replayed';
+			outcome = { kind: 'replayed', run: current };
 			return current;
 		}
 
@@ -65,21 +65,10 @@ export async function chargeRun(
 		const entry: ChargeLogEntry = { idempotencyKey, eventName, count, chargedAt: new Date().toISOString() };
 		const chargeLog = [...(current.chargeLog ?? []), entry].slice(-MAX_CHARGE_LOG_ENTRIES);
 
-		outcome.kind = 'charged';
-		return { ...current, chargedEventCounts, chargeLog };
+		const next = { ...current, chargedEventCounts, chargeLog };
+		outcome = { kind: 'charged', run: next };
+		return next;
 	});
 
-	if ((outcome.kind === 'charged' || outcome.kind === 'replayed') && updated) {
-		return { kind: outcome.kind, run: updated };
-	}
-	switch (outcome.kind) {
-		case 'not-found':
-		case 'not-pay-per-event':
-		case 'undeclared-event':
-			return { kind: outcome.kind };
-		default:
-			// Unreachable: `updated` is only falsy when `current` was `null`, which only ever sets
-			// `outcome.kind` to `'not-found'` above.
-			return { kind: 'not-found' };
-	}
+	return outcome;
 }
