@@ -181,6 +181,14 @@
 - The sampler measures only; it never writes to a run's status or log - shaping the raw sample into the
   wire envelope, and fanning it out to whoever is connected, is the events channel's job
   (`services/events-channel.ts`).
+- Two bundled sample Actors exercise this contract from the Actor's own side, one per SDK:
+  `sample_actor_resources_ts` and `sample_actor_resources_py`. Each prints the grant it was given
+  (from the SDK's environment/configuration view of the variables listed below) and then one line per
+  `systemInfo` event its SDK's event manager relays, so the whole path - limits, sampler, events
+  websocket, env vars - is observable from a single `apify call`. They differ in one respect worth
+  knowing: the JS SDK re-emits the frame verbatim, so a JS Actor reads `memMaxBytes` straight off the
+  event, while the Python SDK maps the frame onto a usage-only structure that carries no total, so a
+  Python Actor takes the grant from `Actor.configuration.memory_mbytes` instead.
 
 # Users
 

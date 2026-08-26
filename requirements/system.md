@@ -69,9 +69,11 @@
   that is eligible for it makes one outbound request per such call. The per-run CPU/memory sampler
   (`actor-driver.md`'s "Run resource telemetry") uses only the local Docker socket - it never reaches
   outside the host, so it never affects this guarantee.
-- The bundled sample Actors (`sample_actor_ts`, `sample_actor_py`) are not offline: they crawl a live
-  site (`https://crawlee.dev/` by default). Running them needs outbound network access from the Actor
-  container, unlike operating the runtime around them (see `test.md`).
+- The crawling sample Actors (`sample_actor_ts`, `sample_actor_py`, `sample_actor_crawler`) are not
+  offline: they crawl a live site (`https://crawlee.dev/` by default). Running them needs outbound
+  network access from the Actor container, unlike operating the runtime around them (see `test.md`).
+  The resource-reporting samples (`sample_actor_resources_ts`, `sample_actor_resources_py`) make no
+  outbound requests of their own - once their base image is pulled they run fully offline.
 - The runtime's one-time, per-token, real-console identity check (`cli.md`'s User bootstrap) is
   best-effort online with a silent offline fallback.
 

@@ -1,0 +1,26 @@
+{
+	"name": "my-resources-actor",
+	"version": "0.0.1",
+	"type": "module",
+	"description": "Prints the resources the runtime granted this run and the usage its systemInfo events report.",
+	"engines": {
+		"node": ">=18.0.0"
+	},
+	"dependencies": {
+		"apify": "^3.7.0"
+	},
+	"devDependencies": {
+		"@apify/tsconfig": "^0.2.0",
+		"@types/node": "^24.0.0",
+		"tsx": "^4.20.3",
+		"typescript": "^6.0.0"
+	},
+	"scripts": {
+		"start": "npm run start:dev",
+		"start:prod": "node dist/main.js",
+		"start:dev": "tsx src/main.ts",
+		"build": "tsc"
+	},
+	"author": "It's not you it's me",
+	"license": "ISC"
+}

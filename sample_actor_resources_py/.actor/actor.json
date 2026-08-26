@@ -1,0 +1,12 @@
+{
+	"actorSpecification": 1,
+	"name": "my-python-resources-actor",
+	"title": "Python resource-reporting sample actor for actor-runtime",
+	"description": "Prints the memory and CPU granted to the run (SDK configuration) and the usage reported by each systemInfo event (SDK event manager).",
+	"version": "0.0",
+	"buildTag": "latest",
+	"meta": {
+		"templateId": "python-empty"
+	},
+	"dockerfile": "../Dockerfile"
+}

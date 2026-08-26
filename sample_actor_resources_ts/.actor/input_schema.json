@@ -1,0 +1,15 @@
+{
+	"title": "Resource-reporting actor input",
+	"type": "object",
+	"schemaVersion": 1,
+	"properties": {
+		"samples": {
+			"title": "Samples",
+			"type": "integer",
+			"description": "How many systemInfo events to report before the run exits. The runtime publishes one per second.",
+			"default": 5,
+			"minimum": 1
+		}
+	},
+	"required": []
+}
