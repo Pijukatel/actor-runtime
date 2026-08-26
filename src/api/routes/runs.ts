@@ -104,8 +104,8 @@ export function mountRuns(router: Router, deps: ApiServerDeps): void {
 				case 'charged':
 				case 'replayed':
 					// Raw `{}`, never the usual `{data: ...}` envelope - byte-identical to the real
-					// platform's charge response (`docs.apify.com/api/v2/post-charge-run`, fact ledger
-					// claim 5/6) and to what apify-client-js's `run().charge()` itself expects back.
+					// platform's charge response (`docs.apify.com/api/v2/post-charge-run`)
+					// and to what apify-client-js's `run().charge()` itself expects back.
 					res.status(201).json({});
 					return;
 			}

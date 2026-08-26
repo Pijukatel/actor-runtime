@@ -59,11 +59,11 @@ function formatUsd(amountUsd: number): string {
 	return `$${amountUsd.toFixed(3)}`;
 }
 
-/** The run detail view's one cost row (`console.md`'s "Run detail" section, `.shepherd/2-design.md`'s
- * "Cost: $0.177 (0.1 CU $0.02 + events $0.157)" worked example) - the same projection `runDto` uses
- * (`pricing.ts`), read straight off the record rather than threaded through the API layer. The "+
- * events $..." breakdown only appears for a PPE run - `usageUsd.PAID_ACTORS_PER_EVENT` is absent
- * entirely for a non-PPE one (`pricing.ts: projectUsage`'s doc comment). */
+/** The run detail view's one cost row (`requirements/console.md`'s "Run detail" section), e.g.
+ * `$0.177 (0.100 CU $0.020 + events $0.157)` - the same projection `runDto` uses (`pricing.ts`), read
+ * straight off the record rather than threaded through the API layer. The "+ events $..." breakdown
+ * only appears for a PPE run - `usageUsd.PAID_ACTORS_PER_EVENT` is absent entirely for a non-PPE one
+ * (`pricing.ts: projectUsage`'s doc comment). */
 function runCostSummary(run: RunRecord): string {
 	const stats = computeRunStats(run.options.memoryMbytes, run.startedAt, run.finishedAt, run.resourceStats);
 	const { usageUsd, usageTotalUsd } = projectUsage(stats.computeUnits, run.pricingInfo, run.chargedEventCounts);

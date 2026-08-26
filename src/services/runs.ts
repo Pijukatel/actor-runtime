@@ -13,10 +13,10 @@ import { initialChargedEventCounts } from '../pricing.js';
 import { CONTAINER_EVENTS_WS_BASE_URL } from '../config.js';
 
 /** Every terminal `RunRecord` write in this module goes through this helper so `resourceStats` is
- * snapshotted identically at every one of the nine terminal-status code paths below - design section 1:
- * "populate the same way for any run carrying a `finishedAt`, with no per-status special-casing." Reads
- * whatever `events-channel.ts` has accumulated for `runId` so far (all-zero if nothing was ever
- * published - e.g. a run that never got a container). */
+ * snapshotted identically at every one of the nine terminal-status code paths below - populated the
+ * same way for any run carrying a `finishedAt`, with no per-status special-casing. Reads whatever
+ * `events-channel.ts` has accumulated for `runId` so far (all-zero if nothing was ever published - e.g.
+ * a run that never got a container). */
 function runTerminalPatch(runId: string, patch: Partial<RunRecord> = {}): Partial<RunRecord> {
 	return { ...patch, finishedAt: new Date().toISOString(), resourceStats: getResourceStatsSnapshot(runId) };
 }
@@ -127,11 +127,10 @@ function buildEnv(
 	// Deliberately NOT set: `APIFY_ACTOR_PRICING_INFO` / `APIFY_CHARGED_ACTOR_EVENT_COUNTS`. Setting
 	// both makes the SDK's `ChargingManager.fetchPricingInfo()` short-circuit onto this frozen
 	// container-start snapshot and never read the run record again for the rest of the run - which
-	// would mean a charge made mid-run is invisible to a later `Actor.charge()` call in the *same* run
-	// (success criterion 31) and would freeze charge state at container start (design section 3's
-	// "Risks: Env-var trap"). Leaving both unset is what makes `fetchPricingInfo()` fall through to its
-	// `run(id).get()` branch instead, which re-reads `pricingInfo`/`chargedEventCounts` from `runDto`
-	// fresh on every `charge()` call.
+	// would mean a charge made mid-run is invisible to a later `Actor.charge()` call in the *same* run,
+	// and would freeze charge state at container start. Leaving both unset is what makes
+	// `fetchPricingInfo()` fall through to its `run(id).get()` branch instead, which re-reads
+	// `pricingInfo`/`chargedEventCounts` from `runDto` fresh on every `charge()` call.
 	return env;
 }
 
@@ -156,8 +155,8 @@ export async function startRun(
 
 	const memoryMbytes = options.memoryMbytes ?? DEFAULT_MEMORY_MBYTES;
 	// Snapshotted onto the run *now*, at start - never re-resolved later. This is what makes editing an
-	// Actor's declared pricing never retroactively change an already-started run's cost (design section
-	// 3, success criteria 24/25): `actor.pricingInfo` is read exactly once, right here.
+	// Actor's declared pricing never retroactively change an already-started run's cost:
+	// `actor.pricingInfo` is read exactly once, right here.
 	const pricingInfo = actor.pricingInfo;
 	const record: RunRecord = {
 		id: generateId(),

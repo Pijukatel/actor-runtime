@@ -70,7 +70,7 @@ export interface ActorRecord {
 	localDevFolder?: string;
 	/** PPE pricing declared via `POST /actor-runtime/pricing/:actorId` (`api.md`). Snapshotted onto
 	 * `RunRecord.pricingInfo` at the moment a run using this Actor starts, so editing this later never
-	 * retroactively changes an already-started run's pricing (design section 3). Absent = no PPE
+	 * retroactively changes an already-started run's pricing. Absent = no PPE
 	 * pricing declared - a run for this Actor is not PPE. */
 	pricingInfo?: PricingInfo;
 }
@@ -134,7 +134,7 @@ export interface RunRecord {
 		 * always sets it for real runs, and `runDto` backfills a sensible default when absent. */
 		diskMbytes?: number;
 		/** apify-client's `maxTotalChargeUsd` query param (only meaningful for PPE runs), echoed back
-		 * verbatim on `runDto`'s `options` (design section 2) - absent when the caller didn't supply
+		 * verbatim on `runDto`'s `options` - absent when the caller didn't supply
 		 * one. **Not enforced server-side**: the real platform's cap is enforced client-side by the
 		 * SDK's `ChargingManager`, never by this field alone - see `pricingInfo` below and `api.md`. */
 		maxTotalChargeUsd?: number;
@@ -155,7 +155,7 @@ export interface RunRecord {
 	 * `POST .../charge` (`api.md`). Present iff `pricingInfo` is. */
 	chargedEventCounts?: Record<string, number>;
 	/** Charge-idempotency audit trail - `POST .../charge`'s dedupe check. Capped at 1000 entries (oldest
-	 * evicted); never exposed on `/v2` (success criterion 21). */
+	 * evicted); never exposed on `/v2`. */
 	chargeLog?: ChargeLogEntry[];
 	/** Sampler-derived `memAvgBytes`/`cpuAvgUsage`/`cpuMaxUsage`, snapshotted from
 	 * `events-channel.ts`'s in-memory accumulator in the same terminal-transition write that sets

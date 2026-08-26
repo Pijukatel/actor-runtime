@@ -1,8 +1,8 @@
 /**
  * Pure-math coverage for `src/pricing.ts` - the arithmetic, not the clock: every `computeUnitsFor`
- * assertion below uses fixed ISO strings (`.shepherd/2-design.md`'s testing strategy - "test the
- * arithmetic, not the clock"), never `Date.now()`/fake timers, matching the repo's stated absence of an
- * injectable-clock seam (`_codebase_map.md`'s "Testing conventions").
+ * assertion below uses fixed ISO strings, never `Date.now()`/fake timers - `pricing.ts` itself takes no
+ * injectable clock, so a still-`RUNNING` run's figure is meant to grow simply because `finishedAt ??
+ * Date.now()` grows between two reads (see `computeUnitsFor`'s own doc comment).
  */
 import { describe, expect, it } from 'vitest';
 

@@ -48,8 +48,8 @@ export function deletingUnfinishedBuild(): ApiError {
 /**
  * Matches the real Apify platform exactly: `POST /v2/actor-runs/:runId/charge` on a run whose Actor has
  * no `PAY_PER_EVENT` pricing declared (`apify-core`'s `ensurePricingInfoCanBeCharged`,
- * `src/api/src/lib/paid_actors_helpers.ts:89-101` - `errors.paidActors.cannotChargeNonPayPerEventActor()`,
- * fact ledger claim 5). A charge naming an event that *is* declared just not in this pricing (or in no
+ * `src/api/src/lib/paid_actors_helpers.ts:89-101` - `errors.paidActors.cannotChargeNonPayPerEventActor()`).
+ * A charge naming an event that *is* declared just not in this pricing (or in no
  * pricing at all) still gets this type; an event name that isn't a key in an otherwise-PPE run's
  * declared events is `recordNotFound()` instead (`api.md`).
  */

@@ -92,7 +92,7 @@ export function runDto(run: RunRecord) {
 		stats,
 		// `usage`/`usageUsd` are computed here, at read time, from persisted counters x the local price
 		// table (`pricing.ts`) - never stored, so a charge landing after `finishedAt` is still reflected
-		// on the next read (design section 2's "Risks": "Charges after `finishedAt`"). `eventUsage` and
+		// on the next read. `eventUsage` and
 		// `pricingInfo`/`chargedEventCounts` below are only ever present for a PPE run - `projectUsage`
 		// leaves `eventUsage` `undefined` (dropped by `JSON.stringify`, never an empty object) for a
 		// non-PPE one.

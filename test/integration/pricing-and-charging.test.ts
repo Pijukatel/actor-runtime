@@ -1,11 +1,11 @@
 /**
- * Integration coverage for per-run cost estimation (`.shepherd/2-design.md`): the
- * `POST|GET /actor-runtime/pricing/:actorId` declaration endpoint, `runDto`'s
+ * Integration coverage for per-run cost estimation (`requirements/api.md`'s "Run cost estimation and
+ * PPE charging" section): the `POST|GET /actor-runtime/pricing/:actorId` declaration endpoint, `runDto`'s
  * `stats`/`usage`/`usageUsd`/`eventUsage`/`usageTotalUsd`/`pricingInfo`/`chargedEventCounts` projection,
  * and the `POST /v2/actor-runs/:runId/charge` route - all driven through the real `apify-client` (or raw
  * `axios` where the exact HTTP contract, not just the client's parsed view of it, is what's under test)
- * against `startTestServer`, per the design's own testing strategy: test the arithmetic (covered
- * separately, clock-free, in `test/unit/pricing.test.ts`), and here assert the DTO's values against the
+ * against `startTestServer`. Testing strategy: test the arithmetic (covered separately, clock-free, in
+ * `test/unit/pricing.test.ts`), and here assert the DTO's values against the
  * formula applied to the record's own timestamps - never against a fixed/injected clock.
  */
 import { afterEach, describe, expect, it } from 'vitest';

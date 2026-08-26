@@ -1,5 +1,5 @@
 /**
- * `POST /v2/actor-runs/:runId/charge`'s dedupe + increment (`api.md`, design section 4). The dedupe
+ * `POST /v2/actor-runs/:runId/charge`'s dedupe + increment (`requirements/api.md`). The dedupe
  * check and the increment happen inside one `runs.update()` mutator, so `storage/mutex.ts`'s
  * `KeyedMutex` (already used by every `Registry.update()`) serialises concurrent charges for the same
  * run - no second lock, no Redis, nothing else to add.
@@ -8,8 +8,8 @@ import type { ChargeLogEntry, RunRecord } from '../storage/entities.js';
 import { getRegistries } from '../storage/registries.js';
 
 /** Capped, oldest evicted first - a replay of an evicted key would double-charge, which is still
- * stricter than apify-core's own 180-second Redis idempotency window (fact ledger claim 5). Never
- * exposed on `/v2` - `dto/actors.ts: runDto` never reads `chargeLog`. */
+ * stricter than apify-core's own 180-second Redis idempotency window. Never exposed on `/v2` -
+ * `dto/actors.ts: runDto` never reads `chargeLog`. */
 const MAX_CHARGE_LOG_ENTRIES = 1000;
 
 export type ChargeOutcome =
@@ -21,9 +21,9 @@ export type ChargeOutcome =
 
 /**
  * `runId` must already be resolved+owned by the caller (`api/routes/runs.ts`'s `getOwnedRun`, the same
- * check every other run route uses - design section 4's "Authorization" note). `count` is added as-is
- * (the caller validates it is a positive number); `maxTotalChargeUsd` is never consulted here -
- * deliberately not enforced server-side (design section 4 / success criterion 30).
+ * check every other run route uses). `count` is added as-is (the caller validates it is a positive
+ * number); `maxTotalChargeUsd` is never consulted here - deliberately not enforced server-side, matching
+ * apify-core where the cap is enforced client-side by the SDK.
  */
 export async function chargeRun(
 	runId: string,
@@ -52,7 +52,7 @@ export async function chargeRun(
 		}
 		// Idempotency: a replay of the exact same key is a no-op (same status, no second increment,
 		// `chargeLog` unchanged) - this file-backed log is what makes the dedupe survive a restart,
-		// unlike apify-core's 180s Redis TTL (fact ledger claim 5, success criterion 16).
+		// unlike apify-core's 180s Redis TTL.
 		if (current.chargeLog?.some((entry) => entry.idempotencyKey === idempotencyKey)) {
 			outcome.kind = 'replayed';
 			return current;

@@ -1,5 +1,5 @@
 /**
- * PPE pricing declaration (`api.md`'s `/actor-runtime/*` section, design section 3): one
+ * PPE pricing declaration (`requirements/api.md`'s `/actor-runtime/*` section): one
  * validate-and-persist entry point, `setActorPricing`, mirrored by `api/routes/pricing.ts`'s
  * `POST /actor-runtime/pricing/:actorId` exactly the way `services/dev-folder.ts`'s `setDevFolder`
  * is mirrored by its own route - same "canonical body is a JSON value; the literal empty string
@@ -7,7 +7,7 @@
  *
  * This is the *only* way an Actor's PPE pricing is ever set in this runtime - there is no
  * `.actor/pay_per_event.json` (or any other Actor-source file) reading or fallback anywhere in this
- * module or its caller (design section 3's "Decisions", success criterion 26).
+ * module or its caller.
  */
 import type { ActorRecord } from '../storage/entities.js';
 import type { ChargeEventDefinition, PricingInfo } from '../pricing.js';
