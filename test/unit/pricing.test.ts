@@ -18,7 +18,7 @@ import {
 } from '../../src/pricing.js';
 
 describe('computeUnitsFor', () => {
-	it('matches the design doc worked example: 4096 MB for 90s = 0.1 CU', () => {
+	it("matches requirements/api.md's worked example: 4096 MB for 90s = 0.1 CU", () => {
 		const cu = computeUnitsFor(4096, '2026-01-01T12:00:00.000Z', '2026-01-01T12:01:30.000Z');
 		expect(cu).toBeCloseTo(0.1, 10);
 	});
@@ -28,7 +28,7 @@ describe('computeUnitsFor', () => {
 		expect(cu).toBeCloseTo(1, 10);
 	});
 
-	it('is linear in duration for a fixed memory grant (success criterion 2)', () => {
+	it('is linear in duration for a fixed memory grant', () => {
 		const short = computeUnitsFor(2048, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:30.000Z');
 		const long = computeUnitsFor(2048, '2026-01-01T00:00:00.000Z', '2026-01-01T00:01:00.000Z');
 		// Double the duration -> double the compute units, same ratio.
@@ -70,7 +70,7 @@ describe('actorStartEventCount', () => {
 	it('1024 MB -> 1 (exactly one GB)', () => {
 		expect(actorStartEventCount(1024)).toBe(1);
 	});
-	it("4096 MB -> 4 (success criterion 9's worked example)", () => {
+	it('4096 MB -> 4', () => {
 		expect(actorStartEventCount(4096)).toBe(4);
 	});
 });
@@ -86,7 +86,7 @@ const SAMPLE_PRICING_INFO: PricingInfo = {
 };
 
 describe('initialChargedEventCounts', () => {
-	it('seeds every declared event at 0, except the synthetic apify-actor-start (design worked example)', () => {
+	it('seeds every declared event at 0, except the synthetic apify-actor-start', () => {
 		expect(initialChargedEventCounts(SAMPLE_PRICING_INFO, 4096)).toEqual({
 			'apify-actor-start': 4,
 			'page-scraped': 0,
@@ -105,7 +105,7 @@ describe('initialChargedEventCounts', () => {
 });
 
 describe('computeRunStats', () => {
-	it('emits every ActorJobPublishedStats key (success criterion 6), zeroing every field this runtime never measures', () => {
+	it('emits every ActorJobPublishedStats key, zeroing every field this runtime never measures', () => {
 		const stats = computeRunStats(4096, '2026-01-01T12:00:00.000Z', '2026-01-01T12:01:30.000Z', undefined);
 		expect(Object.keys(stats).sort()).toEqual(
 			[
@@ -164,14 +164,14 @@ describe('computeRunStats', () => {
 });
 
 describe('projectUsage', () => {
-	it('ACTOR_COMPUTE_UNITS is always present and usageUsd = usage x 0.2 (success criterion 4)', () => {
+	it('ACTOR_COMPUTE_UNITS is always present and usageUsd = usage x 0.2', () => {
 		const { usage, usageUsd } = projectUsage(0.5, undefined, undefined);
 		expect(usage.ACTOR_COMPUTE_UNITS).toBe(0.5);
 		expect(usageUsd.ACTOR_COMPUTE_UNITS).toBeCloseTo(0.5 * CHARGEABLE_SERVICE_PRICING.ACTOR_COMPUTE_UNITS, 10);
 		expect(CHARGEABLE_SERVICE_PRICING.ACTOR_COMPUTE_UNITS).toBe(0.2);
 	});
 
-	it('a non-PPE run (no pricingInfo) omits PAID_ACTORS_PER_EVENT and eventUsage entirely - never zeroed (success criterion 44)', () => {
+	it('a non-PPE run (no pricingInfo) omits PAID_ACTORS_PER_EVENT and eventUsage entirely - never zeroed', () => {
 		const projection = projectUsage(0.1, undefined, undefined);
 		expect('PAID_ACTORS_PER_EVENT' in projection.usage).toBe(false);
 		expect('PAID_ACTORS_PER_EVENT' in projection.usageUsd).toBe(false);
@@ -180,13 +180,13 @@ describe('projectUsage', () => {
 		expect(projection.usageTotalUsd).toBeCloseTo(projection.usageUsd.ACTOR_COMPUTE_UNITS ?? -1, 10);
 	});
 
-	it('never emits a PROXY_* key, zeroed or otherwise (success criterion 33)', () => {
+	it('never emits a PROXY_* key, zeroed or otherwise', () => {
 		const projection = projectUsage(0.1, SAMPLE_PRICING_INFO, { 'apify-actor-start': 4, 'page-scraped': 137 });
 		for (const key of Object.keys(projection.usage)) expect(key).not.toMatch(/^PROXY_/);
 		for (const key of Object.keys(projection.usageUsd)) expect(key).not.toMatch(/^PROXY_/);
 	});
 
-	it('a PPE run: usage/usageUsd/eventUsage/usageTotalUsd all match hand-computed values (success criterion 10)', () => {
+	it('a PPE run: usage/usageUsd/eventUsage/usageTotalUsd all match hand-computed values', () => {
 		const chargedEventCounts = { 'apify-actor-start': 4, 'page-scraped': 137 };
 		const computeUnits = 0.1;
 		const projection = projectUsage(computeUnits, SAMPLE_PRICING_INFO, chargedEventCounts);

@@ -129,7 +129,7 @@ describe('POST|GET /actor-runtime/pricing/:actorId', () => {
 		await server.close();
 	});
 
-	it('declares pricing, then reads it back exactly - via the endpoint and via a fresh run snapshot (success criterion 22)', async () => {
+	it('declares pricing, then reads it back exactly - via the endpoint and via a fresh run snapshot', async () => {
 		server = await startTestServer();
 		const actor = await server.client.actors().create({ name: 'pricing-actor' });
 
@@ -185,7 +185,7 @@ describe('POST|GET /actor-runtime/pricing/:actorId', () => {
 		expect(read.data.data.pricingInfo).toBeNull();
 	});
 
-	it('POST "" clears a declared pricing (mirrors the dev-folder endpoint\'s clear convention, success criterion 23)', async () => {
+	it('POST "" clears a declared pricing (mirrors the dev-folder endpoint\'s clear convention)', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const actor = await seedRunnableActor(server, 'clearable-pricing-actor');
 		await declarePricing(server.baseUrl, actor.id, SAMPLE_PRICING_BODY, server.token);
@@ -209,7 +209,7 @@ describe('POST|GET /actor-runtime/pricing/:actorId', () => {
 		expect(chargeAttempt.data.error.type).toBe('cannot-charge-non-pay-per-event-actor');
 	});
 
-	it("editing pricing between two runs changes only the later run's pricingInfo, never the earlier one's (success criteria 24/25)", async () => {
+	it("editing pricing between two runs changes only the later run's pricingInfo, never the earlier one's", async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const actor = await seedRunnableActor(server, 'sequential-pricing-actor');
 
@@ -236,7 +236,7 @@ describe('POST|GET /actor-runtime/pricing/:actorId', () => {
 		expect(secondRun.pricingInfo).toEqual(revisedPricing);
 	});
 
-	it('no pay_per_event.json (or similarly named) Actor-source file is ever read as a pricing fallback (success criterion 26)', async () => {
+	it('no pay_per_event.json (or similarly named) Actor-source file is ever read as a pricing fallback', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const actor = await server.client.actors().create({ name: 'file-fallback-actor' });
 		await server.client
@@ -301,7 +301,7 @@ describe('runDto: stats/usage projection (compute units)', () => {
 		['FAILED', { exitCode: 1, timedOut: false }],
 		['TIMED-OUT', { exitCode: 137, timedOut: true }],
 	] as const) {
-		it(`a ${label} run reports a real, non-zero computeUnits matching (memoryMbytes/1024) x (durationMs/3600000) (success criteria 1, 4, 5)`, async () => {
+		it(`a ${label} run reports a real, non-zero computeUnits matching (memoryMbytes/1024) x (durationMs/3600000)`, async () => {
 			server = await startTestServer(fixedRunOutcomeDriver(outcome));
 			const actor = await seedRunnableActor(server, `stats-${label.toLowerCase()}-actor`);
 			const run = await server.client.actor(actor.id).start({}, { memory: 4096, waitForFinish: 5 });
@@ -310,7 +310,7 @@ describe('runDto: stats/usage projection (compute units)', () => {
 		});
 	}
 
-	it('an ABORTED run also reports real stats/computeUnits, not a placeholder zero (success criterion 1)', async () => {
+	it('an ABORTED run also reports real stats/computeUnits, not a placeholder zero', async () => {
 		const driver = deferredRunDriver();
 		server = await startTestServer(driver);
 		const actor = await seedRunnableActor(server, 'stats-aborted-actor');
@@ -326,7 +326,7 @@ describe('runDto: stats/usage projection (compute units)', () => {
 		expect(run!.stats!.computeUnits).toBeGreaterThanOrEqual(0);
 	});
 
-	it("stats carries exactly apify-core's ActorJobPublishedStats key set (success criterion 6)", async () => {
+	it("stats carries exactly apify-core's ActorJobPublishedStats key set", async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const actor = await seedRunnableActor(server, 'stats-shape-actor');
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
@@ -355,7 +355,7 @@ describe('runDto: stats/usage projection (compute units)', () => {
 		);
 	});
 
-	it('two runs of the same Actor/memory but different durations produce computeUnits in the same ratio as their durations (success criterion 2)', async () => {
+	it('two runs of the same Actor/memory but different durations produce computeUnits in the same ratio as their durations', async () => {
 		// `bootstrapStorage()`/its registries are process-wide singletons (see `storage/bootstrap.ts`'s
 		// own doc comment), so two runs are driven sequentially through ONE server/driver here, not two
 		// concurrent `startTestServer()`s.
@@ -387,7 +387,7 @@ describe('runDto: stats/usage projection (compute units)', () => {
 		expect(longFinal!.stats!.durationMillis).toBeGreaterThan(shortFinal!.stats!.durationMillis);
 	});
 
-	it("a still-RUNNING run's computeUnits strictly increases between two polls seconds apart (success criterion 3)", async () => {
+	it("a still-RUNNING run's computeUnits strictly increases between two polls seconds apart", async () => {
 		const driver = deferredRunDriver();
 		server = await startTestServer(driver);
 		const actor = await seedRunnableActor(server, 'stats-running-actor');
@@ -408,7 +408,7 @@ describe('runDto: stats/usage projection (compute units)', () => {
 		await server.client.run(started.id).waitForFinish();
 	});
 
-	it('a plain (non-PPE) run has no pricingInfo/chargedEventCounts/eventUsage/usage.PAID_ACTORS_PER_EVENT (success criterion 44)', async () => {
+	it('a plain (non-PPE) run has no pricingInfo/chargedEventCounts/eventUsage/usage.PAID_ACTORS_PER_EVENT', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const actor = await seedRunnableActor(server, 'plain-run-actor');
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
@@ -418,11 +418,11 @@ describe('runDto: stats/usage projection (compute units)', () => {
 		expect(run.eventUsage).toBeUndefined();
 		expect((run.usage as Record<string, number>).PAID_ACTORS_PER_EVENT).toBeUndefined();
 		expect((run.usageUsd as Record<string, number>).PAID_ACTORS_PER_EVENT).toBeUndefined();
-		// Never a PROXY_* key either (success criteria 33-34).
+		// Never a PROXY_* key either.
 		for (const key of Object.keys(run.usage ?? {})) expect(key).not.toMatch(/^PROXY_/);
 	});
 
-	it('options.maxTotalChargeUsd is echoed back when supplied and absent when not (success criterion 11)', async () => {
+	it('options.maxTotalChargeUsd is echoed back when supplied and absent when not', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const actor = await seedRunnableActor(server, 'max-total-charge-actor');
 
@@ -441,7 +441,7 @@ describe('PPE run start: pricingInfo/chargedEventCounts seeding', () => {
 		await server.close();
 	});
 
-	it('pricingInfo is present only for a run of an Actor with PPE pricing declared before start (success criterion 7)', async () => {
+	it('pricingInfo is present only for a run of an Actor with PPE pricing declared before start', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const actor = await seedRunnableActor(server, 'ppe-presence-actor');
 
@@ -458,7 +458,7 @@ describe('PPE run start: pricingInfo/chargedEventCounts seeding', () => {
 		[1024, 1],
 		[4096, 4],
 	])(
-		'chargedEventCounts is seeded, keyed by every declared event, apify-actor-start = Math.max(1, floor(mem/1024)) for %i MB -> %i (success criteria 8/9)',
+		'chargedEventCounts is seeded, keyed by every declared event, apify-actor-start = Math.max(1, floor(mem/1024)) for %i MB -> %i',
 		async (memoryMbytes, expectedStartCount) => {
 			server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 			const actor = await seedRunnableActor(server, `ppe-seed-actor-${memoryMbytes}`);
@@ -484,7 +484,7 @@ describe('POST /v2/actor-runs/:runId/charge', () => {
 		return { actor, runId: run.id };
 	}
 
-	it('a successful charge returns raw 201 {} - not the {data: ...} envelope (success criterion 13)', async () => {
+	it('a successful charge returns raw 201 {} - not the {data: ...} envelope', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const { runId } = await seedPpeRun('charge-envelope-actor');
 
@@ -499,7 +499,7 @@ describe('POST /v2/actor-runs/:runId/charge', () => {
 		expect(res.data).toEqual({});
 	});
 
-	it('increases chargedEventCounts by exactly count (success criterion 14)', async () => {
+	it('increases chargedEventCounts by exactly count', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const { runId } = await seedPpeRun('charge-increment-actor');
 
@@ -519,7 +519,7 @@ describe('POST /v2/actor-runs/:runId/charge', () => {
 		expect(after?.chargedEventCounts?.['page-scraped']).toBe(5);
 	});
 
-	it('replaying the identical idempotency key leaves the count unchanged after the first application (success criterion 15)', async () => {
+	it('replaying the identical idempotency key leaves the count unchanged after the first application', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const { runId } = await seedPpeRun('charge-replay-actor');
 
@@ -546,7 +546,7 @@ describe('POST /v2/actor-runs/:runId/charge', () => {
 		expect(after?.chargedEventCounts?.['page-scraped']).toBe(5);
 	});
 
-	it('idempotency survives a simulated runtime restart against the same on-disk data (success criterion 16)', async () => {
+	it('idempotency survives a simulated runtime restart against the same on-disk data', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const { runId } = await seedPpeRun('charge-restart-actor');
 
@@ -582,7 +582,7 @@ describe('POST /v2/actor-runs/:runId/charge', () => {
 		expect(after?.chargedEventCounts?.['page-scraped']).toBe(3);
 	});
 
-	it('charging an undeclared event returns 404 record-not-found and does not alter chargedEventCounts (success criterion 17)', async () => {
+	it('charging an undeclared event returns 404 record-not-found and does not alter chargedEventCounts', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const { runId } = await seedPpeRun('charge-undeclared-actor');
 
@@ -601,7 +601,7 @@ describe('POST /v2/actor-runs/:runId/charge', () => {
 		expect(after?.chargedEventCounts).toEqual(before?.chargedEventCounts);
 	});
 
-	it('charging a run of a non-PPE Actor returns 405 cannot-charge-non-pay-per-event-actor (success criterion 18)', async () => {
+	it('charging a run of a non-PPE Actor returns 405 cannot-charge-non-pay-per-event-actor', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const actor = await seedRunnableActor(server, 'charge-non-ppe-actor');
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
@@ -617,7 +617,7 @@ describe('POST /v2/actor-runs/:runId/charge', () => {
 		expect(res.data.error.type).toBe('cannot-charge-non-pay-per-event-actor');
 	});
 
-	it("charging a nonexistent run, or another user's run, is 404 record-not-found (success criteria 19/20)", async () => {
+	it("charging a nonexistent run, or another user's run, is 404 record-not-found", async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const { runId } = await seedPpeRun('charge-ownership-actor');
 
@@ -659,7 +659,7 @@ describe('POST /v2/actor-runs/:runId/charge', () => {
 		expect(after?.chargedEventCounts?.['page-scraped']).toBe(0);
 	});
 
-	it('chargeLog is never exposed on any /v2 run response (success criterion 21)', async () => {
+	it('chargeLog is never exposed on any /v2 run response', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const { runId } = await seedPpeRun('charge-log-hidden-actor');
 		await chargeViaHttp(server.baseUrl, runId, server.token, { eventName: 'page-scraped', count: 2 }, 'k-hidden-1');
@@ -670,7 +670,7 @@ describe('POST /v2/actor-runs/:runId/charge', () => {
 		expect(JSON.stringify(res.data)).not.toContain('chargeLog');
 	});
 
-	it('a charge landing after the run has already turned SUCCEEDED is still reflected on the next GET (success criterion 12)', async () => {
+	it('a charge landing after the run has already turned SUCCEEDED is still reflected on the next GET', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const { runId } = await seedPpeRun('charge-post-finish-actor');
 
@@ -696,7 +696,7 @@ describe('POST /v2/actor-runs/:runId/charge', () => {
 		);
 	});
 
-	it('full usage/usageUsd/eventUsage/usageTotalUsd match hand-computed values for a known set of charges (success criterion 10)', async () => {
+	it('full usage/usageUsd/eventUsage/usageTotalUsd match hand-computed values for a known set of charges', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const { runId } = await seedPpeRun('charge-full-usage-actor');
 
@@ -718,7 +718,7 @@ describe('POST /v2/actor-runs/:runId/charge', () => {
 		);
 	});
 
-	it("apify-client's own run(id).charge() call completes without throwing, and its response carries no envelope (regression for the unmodified-SDK HTTP contract, success criteria 27/28 groundwork)", async () => {
+	it("apify-client's own run(id).charge() call completes without throwing, and its response carries no envelope (regression for the unmodified-SDK HTTP contract)", async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const { runId } = await seedPpeRun('charge-via-client-actor');
 
@@ -729,7 +729,7 @@ describe('POST /v2/actor-runs/:runId/charge', () => {
 		expect(after?.chargedEventCounts?.['page-scraped']).toBe(2);
 	});
 
-	it('two sequential charges for the same event build on each other within one run (success criterion 31 groundwork - no per-call reset)', async () => {
+	it('two sequential charges for the same event build on each other within one run (no per-call reset)', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const { runId } = await seedPpeRun('charge-sequential-actor');
 
