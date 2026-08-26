@@ -41,6 +41,11 @@
 - A run's default storage ids (`defaultDatasetId`, `defaultKeyValueStoreId`, `defaultRequestQueueId`) are
   rendered as links to the corresponding storage detail views (in the run detail view and in the runs
   list's dataset column), not as plain text.
+- The run detail view has one `cost` row, e.g. `$0.177 (0.1 CU $0.02 + events $0.157)` - the same
+  `stats.computeUnits`/`usage`/`usageUsd`/`usageTotalUsd` projection `GET /v2/actor-runs/:runId` returns
+  (`api.md`'s "Run cost estimation and PPE charging"), computed straight off the record rather than
+  through the API layer. The `+ events $...` breakdown only appears for a PPE run - a plain run's row is
+  just the compute-unit cost. The runs _list_ view gains no new column for this - only the detail view.
 - Log views render ANSI colors from actor output as HTML, while the `/v2/logs/:id` API keeps serving logs raw (unconverted) for the CLI to render itself.
 - The console accepts the real Apify Console's URL shapes (as printed by stock apify-cli, e.g. `/actors/:actorId/runs/:runId`, `/storage/datasets/:id`) via redirects to its own pages.
 

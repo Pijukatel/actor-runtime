@@ -5,6 +5,7 @@
  */
 import { dedicatedCpusFor } from '../resources.js';
 import type { RunResourceSample } from '../driver/types.js';
+import type { ResourceStatsSnapshot } from '../pricing.js';
 
 /** The only part of a run's grant this module needs. */
 export interface RunResourceGrant {
@@ -100,6 +101,25 @@ export function isEventsTerminal(runId: string): boolean {
 /** Live subscriber count for `runId`, so a leaked subscriber is observable. */
 export function getSubscriberCount(runId: string): number {
 	return live.get(runId)?.subscribers.size ?? 0;
+}
+
+/**
+ * The three sampler-derived aggregates this run has accumulated so far - `services/runs.ts` snapshots
+ * this onto `RunRecord.resourceStats` in the same terminal-transition write that sets `finishedAt`
+ * (`pricing.ts`'s doc comment explains why these can't be derived after the fact the way `computeUnits`
+ * can). All-zero for a run that never published a sample (e.g. one that never got a container, or one
+ * this process never received samples for after a restart) - never throws, never `undefined`.
+ */
+export function getResourceStatsSnapshot(runId: string): ResourceStatsSnapshot {
+	const state = live.get(runId);
+	if (!state || state.sampleCount === 0) {
+		return { memAvgBytes: 0, cpuAvgUsage: 0, cpuMaxUsage: 0 };
+	}
+	return {
+		memAvgBytes: state.memoryUsageSum / state.sampleCount,
+		cpuAvgUsage: state.cpuUsageSum / state.sampleCount,
+		cpuMaxUsage: state.cpuUsageMax,
+	};
 }
 
 /** Test-only: drop all in-memory events state. */

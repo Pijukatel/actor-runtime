@@ -25,7 +25,7 @@
   This also protects the runtime's own driver invariant: deleting the record first would permanently
   strand a running Docker container, since its only stop path (`POST .../abort`) requires the record to
   still resolve, and startup reconciliation only ever considers _existing_ run records.
-- Three endpoints are exceptions to the `{data}` envelope:
+- Four endpoints are exceptions to the `{data}` envelope:
     - `GET /v2/logs/:buildOrRunId` (and its `actor-builds`/`actor-runs` aliases): the body is plain text,
       never `{data}`-wrapped, matching apify-client-js's `log().get()`.
     - `GET /v2/datasets/:datasetId/items` (and its `actor-runs/:runId/dataset/items` alias): the body is
@@ -33,6 +33,10 @@
       `x-apify-pagination-*` response headers, matching apify-client-js's `_createPaginationList`.
     - `GET /actor-runtime/events/:runId`: a websocket upgrade, not a JSON response at all - see "Actor
       runtime API" below.
+    - `POST /v2/actor-runs/:runId/charge`: a successful response body is raw `{}` on HTTP `201`, never
+      `{data}`-wrapped - matching the real platform and apify-client-js's `run().charge()` byte for byte
+      (see "Actor runs" under "Public API" below). Its error responses still use the ordinary
+      `{error: {type, message}}` shape.
 - `*At` timestamp fields are ISO-8601 strings.
 
 # Actor id encoding
@@ -70,6 +74,7 @@
         - v2/actor-runs/:runId
         - v2/actor-runs/:runId/abort
         - v2/actor-runs/:runId/log
+        - v2/actor-runs/:runId/charge
     - Datasets
         - v2/datasets
         - v2/datasets/:datasetId
@@ -151,6 +156,34 @@
   console-local, unauthenticated route on the console's own port. Both routes funnel into the same
   underlying validate-and-persist path, so the two surfaces can never drift apart in behavior, only in
   how they are reached.
+- **`POST|GET /actor-runtime/pricing/:actorId`** - declares (or clears/reads back) the Actor's
+  pay-per-event (PPE) pricing. Exactly one mechanism: there is no `.actor/pay_per_event.json` (or any
+  other Actor-source-file) reading or fallback anywhere in this runtime - this endpoint is the only way
+  PPE pricing is ever set. `:actorId` accepts the same forms as the rest of the API.
+    - **Authenticated** the same way as every `/v2` route, and scoped to the caller's own Actors.
+    - **`POST` request body**: a JSON `PricingInfo` object - `{ pricingModel: "PAY_PER_EVENT",
+pricingPerEvent: { actorChargeEvents: { "<eventName>": { eventTitle, eventDescription?,
+eventPriceUsd }, ... } } }` - or the JSON string `""` to clear, matching the dev-folder endpoint's
+      clear convention exactly.
+    - **`POST` response**: on success, `{ data: { pricingInfo } }` - `pricingInfo` is `null` when
+      cleared/never declared. Doubles as the read-back the same way the dev-folder endpoint's response
+      does.
+    - **`GET` response**: `{ data: { pricingInfo } }`, same shape - reads the Actor's currently declared
+      pricing without changing anything.
+    - **Error responses**: `404` `record-not-found` for an unknown/not-owned Actor id; `400`
+      `invalid-request` for a body that is neither `""` nor a well-shaped `PricingInfo` object (missing
+      `pricingModel: "PAY_PER_EVENT"`, a non-object `pricingPerEvent.actorChargeEvents`, or an event
+      definition missing a non-empty `eventTitle`/non-negative numeric `eventPriceUsd`).
+    - **Snapshotted onto the run, not resolved live**: the Actor's `pricingInfo` at the moment a run
+      starts is copied onto that run's own record (`RunRecord.pricingInfo`) and never re-read afterward.
+      Editing an Actor's declared pricing later never retroactively changes an already-started run's
+      cost - each run keeps exactly the pricing that was current when it started. The synthetic
+      `apify-actor-start` event (when declared) is additionally seeded into that run's
+      `chargedEventCounts` at `Math.max(1, Math.floor(memoryMbytes / 1024))` - one charge per full GB of
+      granted memory, minimum one - mirroring the real platform's own synthetic start charge; every
+      other declared event starts at `0`. `maxTotalChargeUsd` arrives as the `?maxTotalChargeUsd=` query
+      param on run start (where `apify-client` already sends it) and is echoed on the run's
+      `options.maxTotalChargeUsd` - see "Run cost estimation and PPE charging" below.
 - **`GET /actor-runtime/events/:runId`** - a websocket upgrade, reachable at exactly this one path on
   the fixed API port (`system.md`). It carries the run's platform events: `systemInfo` once a second
   (`actor-driver.md`), plus a one-off `aborting` frame under `?gracefully=` (below). Each frame is a
@@ -175,6 +208,93 @@
 - `true` on a run with no container (still `READY`, or already terminal): behaves as if omitted.
 - A second abort arriving during an open window: another `?gracefully=true` joins that window and neither
   restarts it nor stops the container early; a non-graceful one escalates and stops the container at once.
+
+## Run cost estimation and PPE charging
+
+- `GET /v2/actor-runs/:runId` and the list form `GET /v2/actor-runs` no longer return an empty,
+  hard-coded `stats` object. `stats` is exactly apify-core's `ActorJobPublishedStats` allow-list -
+  `inputBodyLen`,
+  `migrationCount`, `rebootCount`, `restartCount`, `resurrectCount`, `durationMillis`, `runTimeSecs`,
+  `metamorph`, `computeUnits`, `memAvgBytes`, `memMaxBytes`, `memCurrentBytes`, `cpuAvgUsage`,
+  `cpuMaxUsage`, `cpuCurrentUsage`, `netRxBytes`, `netTxBytes`, `imageSizeBytes` - every key always
+  present, with every field this runtime never measures set to `0` rather than omitted (the same
+  convention `storage.md`'s storage `stats` already uses).
+    - `computeUnits` is **derived, never accumulated**: `(memoryMbytes / 1024) x (durationMs /
+3600000)`, computed at read time from the run's own `startedAt` and `finishedAt` (or `now` for a
+      still-`RUNNING` run - its `computeUnits` figure grows on every poll, it is never frozen). This
+      applies to any run carrying a `finishedAt` (`SUCCEEDED`, `FAILED`, `ABORTED`, `TIMED-OUT` alike) -
+      an aborted run still shows the real compute it used, not a placeholder zero.
+    - `memAvgBytes`/`cpuAvgUsage`/`cpuMaxUsage` are the only three fields that cannot be derived after
+      the fact; they are snapshotted from the run's own events-channel sample accumulator
+      (`actor-driver.md`'s "Run resource telemetry") onto the run record in the same write that sets
+      `finishedAt`, so they read `0` for a run that never received a sample (e.g. one that failed before
+      its container ever started).
+    - `netRxBytes`/`netTxBytes`/`imageSizeBytes`/`inputBodyLen`/`migrationCount`/`rebootCount`/
+      `restartCount`/`resurrectCount`/`metamorph` are always `0` - genuinely unmeasured by this runtime.
+- `usage`/`usageUsd` are `Partial<Record<"ACTOR_COMPUTE_UNITS" | "PAID_ACTORS_PER_EVENT", number>>`,
+  computed at read time from persisted counters x a local price table (mirroring apify-core's own
+  `CHARGEABLE_SERVICE_PRICING`: `ACTOR_COMPUTE_UNITS` at `$0.20`/CU, `PAID_ACTORS_PER_EVENT` at `$1` per
+  USD-denominated unit) - **never stored**, so a charge landing after the run's terminal transition is
+  still reflected on the next `GET`.
+    - `ACTOR_COMPUTE_UNITS` is always present on any run carrying a `finishedAt`.
+    - `PAID_ACTORS_PER_EVENT` (and `eventUsage`, `pricingInfo`, `chargedEventCounts` below) are present
+      **only** for a PPE run (one whose owning Actor had pricing declared when it started) - absent
+      entirely, never zeroed, for a plain run.
+    - No `PROXY_SERPS`/`PROXY_RESIDENTIAL_TRANSFER_GBYTES`/`PROXY_UNBLOCKER_UNITS` key is ever emitted,
+      zeroed or otherwise - proxy cost estimation is out of scope; this runtime cannot meter real proxy
+      traffic locally (containers reach the real `proxy.apify.com` directly), and a fabricated number
+      would assert something false. No `DATASET_*`/`KEY_VALUE_STORE_*`/`REQUEST_QUEUE_*` storage-usage
+      key is emitted either - storage resource cost is likewise out of scope (`storage.md`).
+    - Deliberate deviation from apify-core: there, an Actor's own owner is never billed for that Actor's
+      events. This runtime always shows and sums PPE cost regardless of ownership, since the local user
+      is always both author and renter of their own Actor - zeroing it here would zero PPE cost on every
+      single local run.
+- `eventUsage` (PPE runs only) breaks the PPE total down per event name: `{ "<eventName>": { eventTitle,
+eventTotalUsd }, ... }`.
+- `usageTotalUsd` is `usageUsd.ACTOR_COMPUTE_UNITS + (usageUsd.PAID_ACTORS_PER_EVENT ?? 0)`.
+- `pricingInfo` (the run's own snapshot - see "Actor runtime API" above) and `chargedEventCounts` (see
+  below) appear together, only on a PPE run.
+- `options.maxTotalChargeUsd` echoes whatever value was supplied at run start (the `?maxTotalChargeUsd=`
+  query param `apify-client` sends), or is absent when none was supplied. **It is not enforced
+  server-side** - mirroring the real platform exactly, where the cap is enforced client-side by the
+  SDK's `ChargingManager` (which deliberately overcharges by one event so the _platform_ terminates the
+  run). Nothing in this runtime aborts or otherwise penalizes a run for exceeding its cap; the charge
+  route below stays free of any run-lifecycle side effect.
+
+### `POST /v2/actor-runs/:runId/charge`
+
+- **Request**: body `{ eventName: string, count?: number }` (`count` defaults to `1`, matching
+  apify-client-js); required header `idempotency-key`.
+- **Response**: on success, HTTP `201` with a **raw `{}` body** - not the usual `{data: ...}` envelope
+  (see "Response envelopes" above) - byte-identical to the real platform and to what apify-client-js's
+  `run().charge()` itself sends/expects.
+- **Authorization**: the same "owned record" check every other `/v2/actor-runs/:runId/*` route uses
+  (`getOwnedRun`) - a run that doesn't exist, or belongs to someone else, is `404` `record-not-found`.
+  This is the one deliberate deviation from apify-core, which instead only allows the run's own
+  run-scoped token to charge itself: this runtime hands the container the run owner's _own_ `APIFY_TOKEN`
+  rather than minting a separate run-scoped identity, so there is no narrower token to check against.
+- **Effect**: increments `chargedEventCounts[eventName]` by `count` and appends an entry to an
+  idempotency audit log, all inside one atomic read-modify-write - concurrent charges on the same run
+  are serialized, never racing. The audit log (`chargeLog`) is capped at 1000 entries (oldest evicted
+  first) and is **never** exposed on any `/v2` response.
+- **Idempotency**: replaying the identical `idempotency-key` on the same run any number of times is a
+  no-op after the first application - `chargedEventCounts` is unaffected by a replay. This is
+  file-backed (not an in-memory/Redis TTL), so it survives a runtime restart - a documented improvement
+  over the real platform's 180-second Redis idempotency window. A replay of a key old enough to have
+  been evicted from the 1000-entry log would double-charge; this is still stricter than the real
+  platform's own window.
+- **Errors**:
+    - `404` `record-not-found` - the run doesn't exist/isn't owned by the caller, **or** `eventName`
+      isn't a key in the run's own `pricingInfo.pricingPerEvent.actorChargeEvents` (an undeclared
+      event).
+    - `405` `cannot-charge-non-pay-per-event-actor` - the run's owning Actor has no PPE pricing declared
+      at all (no `pricingInfo`, or a `pricingModel` other than `PAY_PER_EVENT`).
+    - `400` `invalid-request` - a missing/malformed `idempotency-key` header, a missing/empty
+      `eventName`, or a non-positive/non-numeric `count`.
+- This is exactly the HTTP contract both official SDKs' `Actor.charge()` calls against
+  (`apify-client`'s `run(id).charge({eventName, count})`, `POST` to this same path, same header, same
+  body) - an unmodified SDK Actor run against this runtime with `pricingInfo` correctly declared
+  beforehand charges successfully with no code changes and no shim.
 
 ## Upstream fallback (opt-in, off by default, all HTTP methods)
 

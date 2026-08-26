@@ -26,6 +26,7 @@ import {
 } from '../services/dev-folder.js';
 import { getBuildById, listAllBuilds } from '../services/builds.js';
 import { getRunById, listAllRuns } from '../services/runs.js';
+import { computeRunStats, projectUsage } from '../pricing.js';
 import { getFullLog } from '../services/logs.js';
 import { getStorageById, listAllStorages } from '../services/storages.js';
 import { listRequests } from '../services/request-queues.js';
@@ -47,10 +48,29 @@ import {
 import { getApiFallbackState, setApiFallbackState } from '../services/api-fallback.js';
 import { upstreamApiBaseUrl } from '../services/identity-resolution.js';
 import type { Driver } from '../driver/types.js';
+import type { RunRecord } from '../storage/entities.js';
 
 /** A run's default-storage id rendered as a link to that storage's detail view instead of plain text. */
 function storageLink(prefix: '/datasets' | '/key-value-stores' | '/request-queues', id: string): LinkedCell {
 	return { text: id, href: `${prefix}/${encodeURIComponent(id)}` };
+}
+
+function formatUsd(amountUsd: number): string {
+	return `$${amountUsd.toFixed(3)}`;
+}
+
+/** The run detail view's one cost row (`console.md`'s "Run detail" section, `.shepherd/2-design.md`'s
+ * "Cost: $0.177 (0.1 CU $0.02 + events $0.157)" worked example) - the same projection `runDto` uses
+ * (`pricing.ts`), read straight off the record rather than threaded through the API layer. The "+
+ * events $..." breakdown only appears for a PPE run - `usageUsd.PAID_ACTORS_PER_EVENT` is absent
+ * entirely for a non-PPE one (`pricing.ts: projectUsage`'s doc comment). */
+function runCostSummary(run: RunRecord): string {
+	const stats = computeRunStats(run.options.memoryMbytes, run.startedAt, run.finishedAt, run.resourceStats);
+	const { usageUsd, usageTotalUsd } = projectUsage(stats.computeUnits, run.pricingInfo, run.chargedEventCounts);
+	const computeUnitsPart = `${stats.computeUnits.toFixed(3)} CU ${formatUsd(usageUsd.ACTOR_COMPUTE_UNITS ?? 0)}`;
+	const eventsPart =
+		usageUsd.PAID_ACTORS_PER_EVENT === undefined ? '' : ` + events ${formatUsd(usageUsd.PAID_ACTORS_PER_EVENT)}`;
+	return `${formatUsd(usageTotalUsd)} (${computeUnitsPart}${eventsPart})`;
 }
 
 /** Whether `req` carries positive evidence of being a cross-site form submission, for either of the
@@ -290,6 +310,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				['status', run.status],
 				['startedAt', run.startedAt],
 				['finishedAt', run.finishedAt ?? ''],
+				['cost', runCostSummary(run)],
 				['defaultDatasetId', storageLink('/datasets', run.defaultDatasetId)],
 				['defaultKeyValueStoreId', storageLink('/key-value-stores', run.defaultKeyValueStoreId)],
 				['defaultRequestQueueId', storageLink('/request-queues', run.defaultRequestQueueId)],

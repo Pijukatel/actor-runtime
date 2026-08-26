@@ -1,5 +1,7 @@
 /** Domain record shapes stored in the `__*__` internal registries (see `storage.md`). */
 
+import type { PricingInfo, ResourceStatsSnapshot } from '../pricing.js';
+
 export type StorageType = 'dataset' | 'keyValueStore' | 'requestQueue';
 
 export interface StorageRecord {
@@ -66,6 +68,11 @@ export interface ActorRecord {
 	 * this field, *is* exposed on `/v2`). Never touched by any other Actor write. Optional and never
 	 * exposed on `/v2` itself either (`dto/actors.ts: actorDto` is explicit field-by-field). */
 	localDevFolder?: string;
+	/** PPE pricing declared via `POST /actor-runtime/pricing/:actorId` (`api.md`). Snapshotted onto
+	 * `RunRecord.pricingInfo` at the moment a run using this Actor starts, so editing this later never
+	 * retroactively changes an already-started run's pricing (design section 3). Absent = no PPE
+	 * pricing declared - a run for this Actor is not PPE. */
+	pricingInfo?: PricingInfo;
 }
 
 export type JobStatus = 'READY' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'ABORTING' | 'ABORTED' | 'TIMED-OUT';
@@ -126,6 +133,11 @@ export interface RunRecord {
 		 * default). Optional here for the same test-fixture-compatibility reason as `build`; `startRun`
 		 * always sets it for real runs, and `runDto` backfills a sensible default when absent. */
 		diskMbytes?: number;
+		/** apify-client's `maxTotalChargeUsd` query param (only meaningful for PPE runs), echoed back
+		 * verbatim on `runDto`'s `options` (design section 2) - absent when the caller didn't supply
+		 * one. **Not enforced server-side**: the real platform's cap is enforced client-side by the
+		 * SDK's `ChargingManager`, never by this field alone - see `pricingInfo` below and `api.md`. */
+		maxTotalChargeUsd?: number;
 	};
 	exitCode?: number;
 	statusMessage?: string;
@@ -135,4 +147,29 @@ export interface RunRecord {
 	 * sets it for real runs (`FOLLOW_USER_SETTING`, the platform's run-creation default), and `runDto`
 	 * backfills the same default when absent. */
 	generalAccess?: RunGeneralAccess;
+	/** Snapshot of `ActorRecord.pricingInfo` as of this run's start - see that field's doc comment.
+	 * Absent iff the owning Actor had no PPE pricing declared when this run started. */
+	pricingInfo?: PricingInfo;
+	/** Every event declared in `pricingInfo`'s running total charged so far, keyed by event name -
+	 * seeded at run start by `pricing.ts: initialChargedEventCounts` and incremented only by
+	 * `POST .../charge` (`api.md`). Present iff `pricingInfo` is. */
+	chargedEventCounts?: Record<string, number>;
+	/** Charge-idempotency audit trail - `POST .../charge`'s dedupe check. Capped at 1000 entries (oldest
+	 * evicted); never exposed on `/v2` (success criterion 21). */
+	chargeLog?: ChargeLogEntry[];
+	/** Sampler-derived `memAvgBytes`/`cpuAvgUsage`/`cpuMaxUsage`, snapshotted from
+	 * `events-channel.ts`'s in-memory accumulator in the same terminal-transition write that sets
+	 * `finishedAt` (`pricing.ts`'s doc comment explains why these three - unlike `computeUnits` - are
+	 * not derivable after the fact). Absent for a run that never received a sample (e.g. one that failed
+	 * before its container ever started); `runDto` treats an absent snapshot as all-zero. */
+	resourceStats?: ResourceStatsSnapshot;
+}
+
+/** One successful (deduped) charge, appended to `RunRecord.chargeLog` - see that field's doc comment /
+ * `api.md`'s charge route section. */
+export interface ChargeLogEntry {
+	idempotencyKey: string;
+	eventName: string;
+	count: number;
+	chargedAt: string;
 }

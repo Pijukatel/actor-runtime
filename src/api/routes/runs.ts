@@ -3,13 +3,17 @@ import type { Router } from 'express';
 import { requireUser } from '../auth.js';
 
 import { paginate, sendData, sortByTimestamp } from '../envelope.js';
-import { cannotRemoveRunningRun, recordNotFound } from '../errors.js';
-import { h, paginationParams, queryBoolean } from '../handler.js';
+import { cannotChargeNonPayPerEventActor, cannotRemoveRunningRun, invalidRequest, recordNotFound } from '../errors.js';
+import { h, jsonBody, paginationParams, queryBoolean } from '../handler.js';
 import { abortRun, deleteRun, getOwnedRun, listOwnedRuns } from '../../services/runs.js';
+import { chargeRun } from '../../services/charging.js';
 import { isTerminalJobStatus } from '../../services/job-status.js';
 import { runDto } from '../dto/actors.js';
 import type { ApiServerDeps } from '../server.js';
 import { serveLog } from './logs.js';
+
+/** `RUN_CHARGE_IDEMPOTENCY_HEADER` in apify-client-js - the one header this route requires. */
+const IDEMPOTENCY_KEY_HEADER = 'idempotency-key';
 
 export function mountRuns(router: Router, deps: ApiServerDeps): void {
 	router.get(
@@ -64,5 +68,47 @@ export function mountRuns(router: Router, deps: ApiServerDeps): void {
 	router.get(
 		'/actor-runs/:runId/log',
 		h(async (req, res) => serveLog(req, res, req.params.runId as string)),
+	);
+
+	router.post(
+		'/actor-runs/:runId/charge',
+		h(async (req, res) => {
+			// Same "owned record" check every other `/v2/actor-runs/:runId/*` route uses - a run that
+			// doesn't exist, or belongs to someone else, is `404 record-not-found` either way (design
+			// section 4's "Authorization" note: this runtime hands the container the owner's own token,
+			// so there is no separate run-scoped-token check to mirror from apify-core here).
+			const run = await getOwnedRun(requireUser(req).id, req.params.runId as string);
+			if (!run) throw recordNotFound();
+
+			const idempotencyKey = req.header(IDEMPOTENCY_KEY_HEADER);
+			if (!idempotencyKey) throw invalidRequest(`Missing required "${IDEMPOTENCY_KEY_HEADER}" header`);
+
+			const body = jsonBody<{ eventName?: unknown; count?: unknown }>(req);
+			if (typeof body.eventName !== 'string' || body.eventName.length === 0) {
+				throw invalidRequest('"eventName" must be a non-empty string');
+			}
+			// `apify-client`'s own default when `count` is omitted (`run.ts: charge()`).
+			const count = body.count === undefined ? 1 : body.count;
+			if (typeof count !== 'number' || !Number.isFinite(count) || count <= 0) {
+				throw invalidRequest('"count" must be a positive number');
+			}
+
+			const outcome = await chargeRun(run.id, body.eventName, count, idempotencyKey);
+			switch (outcome.kind) {
+				case 'not-found':
+					throw recordNotFound();
+				case 'not-pay-per-event':
+					throw cannotChargeNonPayPerEventActor();
+				case 'undeclared-event':
+					throw recordNotFound(`Event "${body.eventName}" is not declared in this run's pricing`);
+				case 'charged':
+				case 'replayed':
+					// Raw `{}`, never the usual `{data: ...}` envelope - byte-identical to the real
+					// platform's charge response (`docs.apify.com/api/v2/post-charge-run`, fact ledger
+					// claim 5/6) and to what apify-client-js's `run().charge()` itself expects back.
+					res.status(201).json({});
+					return;
+			}
+		}),
 	);
 }

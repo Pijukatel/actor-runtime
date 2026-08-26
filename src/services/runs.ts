@@ -5,11 +5,21 @@ import { createStorage } from './storages.js';
 import { openKeyValueStore } from '../storage/open.js';
 import type { Driver } from '../driver/types.js';
 import { appendLog, flushLog, markLogTerminal } from './logs.js';
-import { markEventsTerminal, publishAborting, publishSystemInfo } from './events-channel.js';
+import { getResourceStatsSnapshot, markEventsTerminal, publishAborting, publishSystemInfo } from './events-channel.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
 import { dedicatedCpusFor } from '../resources.js';
+import { initialChargedEventCounts } from '../pricing.js';
 import { CONTAINER_EVENTS_WS_BASE_URL } from '../config.js';
+
+/** Every terminal `RunRecord` write in this module goes through this helper so `resourceStats` is
+ * snapshotted identically at every one of the nine terminal-status code paths below - design section 1:
+ * "populate the same way for any run carrying a `finishedAt`, with no per-status special-casing." Reads
+ * whatever `events-channel.ts` has accumulated for `runId` so far (all-zero if nothing was ever
+ * published - e.g. a run that never got a container). */
+function runTerminalPatch(runId: string, patch: Partial<RunRecord> = {}): Partial<RunRecord> {
+	return { ...patch, finishedAt: new Date().toISOString(), resourceStats: getResourceStatsSnapshot(runId) };
+}
 
 const DEFAULT_MEMORY_MBYTES = 1024;
 const DEFAULT_TIMEOUT_SECS = 300;
@@ -61,6 +71,10 @@ export interface StartRunOptions {
 	 * it used, so this default only matters for direct service-layer callers, e.g. tests. */
 	build?: string;
 	proxyPassword?: string;
+	/** apify-client's `maxTotalChargeUsd` query param (`api/routes/actors.ts`'s run-start route) -
+	 * echoed onto `RunRecord.options.maxTotalChargeUsd` and, from there, `runDto`'s `options`. Not
+	 * enforced server-side - see that field's doc comment (`storage/entities.ts`). */
+	maxTotalChargeUsd?: number;
 	apiBaseUrl: string;
 	token: string;
 }
@@ -110,6 +124,14 @@ function buildEnv(
 		APIFY_DEDICATED_CPUS: String(dedicatedCpusFor(run.options.memoryMbytes)),
 	};
 	if (options.proxyPassword) env.APIFY_PROXY_PASSWORD = options.proxyPassword;
+	// Deliberately NOT set: `APIFY_ACTOR_PRICING_INFO` / `APIFY_CHARGED_ACTOR_EVENT_COUNTS`. Setting
+	// both makes the SDK's `ChargingManager.fetchPricingInfo()` short-circuit onto this frozen
+	// container-start snapshot and never read the run record again for the rest of the run - which
+	// would mean a charge made mid-run is invisible to a later `Actor.charge()` call in the *same* run
+	// (success criterion 31) and would freeze charge state at container start (design section 3's
+	// "Risks: Env-var trap"). Leaving both unset is what makes `fetchPricingInfo()` fall through to its
+	// `run(id).get()` branch instead, which re-reads `pricingInfo`/`chargedEventCounts` from `runDto`
+	// fresh on every `charge()` call.
 	return env;
 }
 
@@ -133,6 +155,10 @@ export async function startRun(
 	}
 
 	const memoryMbytes = options.memoryMbytes ?? DEFAULT_MEMORY_MBYTES;
+	// Snapshotted onto the run *now*, at start - never re-resolved later. This is what makes editing an
+	// Actor's declared pricing never retroactively change an already-started run's cost (design section
+	// 3, success criteria 24/25): `actor.pricingInfo` is read exactly once, right here.
+	const pricingInfo = actor.pricingInfo;
 	const record: RunRecord = {
 		id: generateId(),
 		userId: actor.userId,
@@ -149,12 +175,16 @@ export async function startRun(
 			memoryMbytes,
 			timeoutSecs: options.timeoutSecs ?? DEFAULT_TIMEOUT_SECS,
 			diskMbytes: memoryMbytes * DISK_MBYTES_PER_MEMORY_MBYTE,
+			maxTotalChargeUsd: options.maxTotalChargeUsd,
 		},
 		meta: { origin: 'API' },
 		// The real platform's run-creation default (`RUN_GENERAL_ACCESS.FOLLOW_USER_SETTING`,
 		// `apify-core`'s `actor_jobs.server.ts`) - this runtime has no per-user "make runs public by
 		// default" setting to follow, so every run gets this fixed default.
 		generalAccess: 'FOLLOW_USER_SETTING',
+		...(pricingInfo
+			? { pricingInfo, chargedEventCounts: initialChargedEventCounts(pricingInfo, memoryMbytes) }
+			: {}),
 	};
 	await runs.set(record.id, record);
 
@@ -167,10 +197,14 @@ export async function startRun(
 		// see a permanently "running" run.
 		console.error(`run ${record.id}: unexpected error escaped runInBackground`, error);
 		try {
-			await transitionJobStatus(runs, record.id, 'FAILED', {
-				finishedAt: new Date().toISOString(),
-				statusMessage: `Unexpected internal error: ${error instanceof Error ? error.message : String(error)}`,
-			});
+			await transitionJobStatus(
+				runs,
+				record.id,
+				'FAILED',
+				runTerminalPatch(record.id, {
+					statusMessage: `Unexpected internal error: ${error instanceof Error ? error.message : String(error)}`,
+				}),
+			);
 		} catch (innerError) {
 			console.error(`run ${record.id}: failed to mark FAILED after unexpected error`, innerError);
 		}
@@ -206,7 +240,7 @@ export async function runInBackground(
 		// `return` below is correct. If the record simply vanished, same thing.
 		if (afterStart?.status === 'ABORTING') {
 			await driver.abortRun(record.id).catch(() => undefined);
-			await transitionJobStatus(runs, record.id, 'ABORTED', { finishedAt: new Date().toISOString() });
+			await transitionJobStatus(runs, record.id, 'ABORTED', runTerminalPatch(record.id));
 		}
 		return;
 	}
@@ -218,10 +252,7 @@ export async function runInBackground(
 		await flushLog(record.id);
 		markLogTerminal(record.id);
 		markEventsTerminal(record.id);
-		await transitionJobStatus(runs, record.id, 'FAILED', {
-			finishedAt: new Date().toISOString(),
-			statusMessage: reason,
-		});
+		await transitionJobStatus(runs, record.id, 'FAILED', runTerminalPatch(record.id, { statusMessage: reason }));
 		return;
 	}
 
@@ -252,7 +283,7 @@ export async function runInBackground(
 	if (!preStart || preStart.status !== 'RUNNING') {
 		if (preStart?.status === 'ABORTING') {
 			await driver.abortRun(record.id).catch(() => undefined);
-			await transitionJobStatus(runs, record.id, 'ABORTED', { finishedAt: new Date().toISOString() });
+			await transitionJobStatus(runs, record.id, 'ABORTED', runTerminalPatch(record.id));
 		}
 		return;
 	}
@@ -283,16 +314,15 @@ export async function runInBackground(
 		// (from an in-flight `abortRun`) and the container exiting on its own race off the same
 		// underlying Docker event with no ordering guarantee. If `abortRun` already moved the record to
 		// ABORTING/ABORTED, this write is refused rather than clobbering the abort - see `job-status.ts`.
-		await transitionJobStatus(runs, record.id, status, {
-			finishedAt: new Date().toISOString(),
-			exitCode: outcome.exitCode,
-		});
+		await transitionJobStatus(runs, record.id, status, runTerminalPatch(record.id, { exitCode: outcome.exitCode }));
 	} catch (error) {
 		await flushLog(record.id);
-		await transitionJobStatus(runs, record.id, 'FAILED', {
-			finishedAt: new Date().toISOString(),
-			statusMessage: (error as Error).message,
-		});
+		await transitionJobStatus(
+			runs,
+			record.id,
+			'FAILED',
+			runTerminalPatch(record.id, { statusMessage: (error as Error).message }),
+		);
 	} finally {
 		markLogTerminal(record.id);
 		// Also what actually drives the events websocket's `1000` close (`api/events-ws.ts` polls this
@@ -337,7 +367,7 @@ export async function abortRun(driver: Driver, run: RunRecord, gracefully = fals
 	}
 
 	await driver.abortRun(run.id);
-	return transitionJobStatus(runs, run.id, 'ABORTED', { finishedAt: new Date().toISOString() });
+	return transitionJobStatus(runs, run.id, 'ABORTED', runTerminalPatch(run.id));
 }
 
 export async function waitForRunFinish(runId: string, seconds: number): Promise<RunRecord | null> {
@@ -364,10 +394,12 @@ export async function reconcileOrphanedJobs(driver: Driver): Promise<void> {
 
 	await Promise.all(
 		orphanedRuns.map((r) =>
-			transitionJobStatus(runs, r.id, 'ABORTED', {
-				finishedAt: new Date().toISOString(),
-				statusMessage: 'Orphaned by a runtime restart',
-			}),
+			transitionJobStatus(
+				runs,
+				r.id,
+				'ABORTED',
+				runTerminalPatch(r.id, { statusMessage: 'Orphaned by a runtime restart' }),
+			),
 		),
 	);
 	await Promise.all(

@@ -44,3 +44,19 @@ export function cannotRemoveRunningRun(): ApiError {
 export function deletingUnfinishedBuild(): ApiError {
 	return new ApiError(400, 'deleting-unfinished-build', 'Deleting unfinished build while running is not allowed');
 }
+
+/**
+ * Matches the real Apify platform exactly: `POST /v2/actor-runs/:runId/charge` on a run whose Actor has
+ * no `PAY_PER_EVENT` pricing declared (`apify-core`'s `ensurePricingInfoCanBeCharged`,
+ * `src/api/src/lib/paid_actors_helpers.ts:89-101` - `errors.paidActors.cannotChargeNonPayPerEventActor()`,
+ * fact ledger claim 5). A charge naming an event that *is* declared just not in this pricing (or in no
+ * pricing at all) still gets this type; an event name that isn't a key in an otherwise-PPE run's
+ * declared events is `recordNotFound()` instead (`api.md`).
+ */
+export function cannotChargeNonPayPerEventActor(): ApiError {
+	return new ApiError(
+		405,
+		'cannot-charge-non-pay-per-event-actor',
+		'This Actor run does not have pay-per-event pricing, so it cannot be charged.',
+	);
+}

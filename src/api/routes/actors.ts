@@ -308,6 +308,9 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 				timeoutSecs: queryNumber(req, 'timeout'),
 				build: tag,
 				proxyPassword: resolveProxyPassword(requireUser(req)),
+				// The exact query param `apify-client`'s `actor().start()` sends (`ActorClient.start`) -
+				// echoed back on `runDto`'s `options.maxTotalChargeUsd`, never enforced here.
+				maxTotalChargeUsd: queryNumber(req, 'maxTotalChargeUsd'),
 				apiBaseUrl: CONTAINER_API_BASE_URL,
 				token: requireUser(req).token,
 			});

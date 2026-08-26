@@ -128,6 +128,15 @@
   before the container is removed, and it never delays a run from reaching a terminal state.
 - The bundled sample Actors log their granted resources and each `systemInfo` event they receive, so the
   contract is observable from a single `apify call`.
+- **Persistence**: samples are accumulated in memory only, for the life of the process (lost on a
+  restart, same as the `systemInfo` events themselves) - except for three aggregates,
+  `memAvgBytes`/`cpuAvgUsage`/`cpuMaxUsage`, which are snapshotted onto the run's own record in the same
+  write that sets `finishedAt` when the run reaches a terminal status, and from there are exposed as
+  `stats.memAvgBytes`/`stats.cpuAvgUsage`/`stats.cpuMaxUsage` on `GET /v2/actor-runs/:runId` (`api.md`'s
+  "Run cost estimation and PPE charging"). A run that never received a sample (e.g. one that failed
+  before its container ever started) reports `0` for all three, not a missing field. Every other `stats`
+  field on that same response - `computeUnits` in particular - is derived from `startedAt`/`finishedAt`
+  x `memoryMbytes` at read time and needs no sampler data at all.
 
 # Users
 
@@ -167,3 +176,10 @@
   Python SDK reads it.
 - Every `ACTOR_*`/`APIFY_*` pair above is set to an identical value: the two SDKs disagree on which name
   wins, so a divergent pair would size the same run differently depending on which one reads it.
+- **Deliberately NOT set: `APIFY_ACTOR_PRICING_INFO` / `APIFY_CHARGED_ACTOR_EVENT_COUNTS`.** Both SDKs'
+  `ChargingManager` treat the _presence of both_ as a frozen, container-start-only snapshot of PPE
+  pricing/charge state and never re-read the run record again for the rest of the run - setting them
+  would make a charge issued mid-run invisible to a later `Actor.charge()` call in the same run. Leaving
+  both unset is what makes the SDK fall through to its `GET`-the-run-record branch instead, which
+  re-reads `pricingInfo`/`chargedEventCounts`/`options.maxTotalChargeUsd` fresh on every `charge()` call
+  (`api.md`'s "Run cost estimation and PPE charging").
