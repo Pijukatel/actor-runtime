@@ -149,7 +149,8 @@
       (cgroup v1's `total_inactive_file`, or cgroup v2's `inactive_file` when the former is absent) -
       the same adjustment `docker stats`' own MEM USAGE column makes, so an I/O-heavy Actor's page cache
       is never mistaken for memory pressure against its grant. Falls back to the raw `usage` figure when
-      neither field is present.
+      neither field is present, or when the present figure is not smaller than `usage` (never subtracts to
+      zero or negative).
     - `memMaxBytes` is the container's configured memory **limit** (`memoryMbytes * 1024 * 1024`),
       constant for the run's whole lifetime - never a genuinely observed peak, despite the field's name.
     - `isCpuOverloaded` is `usedCores / grantedCores > 0.95` (strict `>`, not `>=`), where `usedCores` is
