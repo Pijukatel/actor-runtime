@@ -330,6 +330,7 @@ describe('events websocket (GET /actor-runtime/events/:runId)', () => {
 
 		const socket = connectEventsSocket(server, run.id);
 		await waitForOpen(socket.ws);
+		await waitForSubscribed(run.id);
 
 		driver.resolveRun(run.id, { exitCode: 0, timedOut: false });
 		const closeEvent = await socket.closed;
@@ -397,6 +398,7 @@ describe('events websocket (GET /actor-runtime/events/:runId)', () => {
 
 		const firstSocket = connectEventsSocket(server, run.id);
 		await waitForOpen(firstSocket.ws);
+		await waitForSubscribed(run.id);
 		driver.resolveRun(run.id, { exitCode: 0, timedOut: false });
 		expect((await firstSocket.closed).code).toBe(1000);
 
