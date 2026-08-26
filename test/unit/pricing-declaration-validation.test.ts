@@ -24,12 +24,9 @@ describe('validatePricingInfoShape', () => {
 		expect(validatePricingInfoShape(VALID_BODY)).toBeNull();
 	});
 
-	// `eventDescription` is required, not optional, as of this round - it now mirrors apify-core's real
+	// `eventDescription` is required, not optional - it mirrors apify-core's real
 	// `ActorChargeDefinitionCommon` and the Python SDK's pydantic model, both of which require it
-	// (`ChargeEventDefinition`'s own doc comment in `src/pricing.ts`). This test previously asserted the
-	// opposite (that an eventDescription-less definition was accepted) - updated, not weakened, to match
-	// the new, intentionally stricter contract; the case is still exercised, just with the flipped
-	// expected outcome.
+	// (`ChargeEventDefinition`'s own doc comment in `src/pricing.ts`).
 	it('rejects an event definition missing eventDescription (now required)', () => {
 		expect(
 			validatePricingInfoShape({

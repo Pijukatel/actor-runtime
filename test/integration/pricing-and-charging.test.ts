@@ -859,7 +859,7 @@ describe('POST /v2/actor-runs/:runId/charge - request-shape validation', () => {
 
 	/** Identical to the sibling describe block's helper - a PPE run that would otherwise charge
 	 * successfully, so a guard rejection is provably the *only* reason each request below fails (not an
-	 * unrelated 404/405, the exact gap the review flagged). */
+	 * unrelated 404/405 - the run and Actor genuinely exist and would accept a well-formed charge). */
 	async function seedPpeRun(name: string): Promise<{ actor: ActorRecord; runId: string }> {
 		const actor = await seedRunnableActor(server, name);
 		await declarePricing(server.baseUrl, actor.id, SAMPLE_PRICING_BODY, server.token);

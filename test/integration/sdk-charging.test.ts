@@ -15,8 +15,8 @@
  * `Configuration.get()` reads env vars *first*, falling back to constructor options only when no env var
  * is set (`@crawlee/core`'s own doc comment: "Env vars will have precedence over those [options]"), so a real
  * `APIFY_TOKEN` already present in the ambient environment (e.g. from an Apify CLI login on the host)
- * would silently win over a same-named constructor option. Setting the env vars directly - exactly the
- * approach the task verified feasible - sidesteps that precedence entirely. Each key this file touches is
+ * would silently win over a same-named constructor option. Setting the env vars directly sidesteps that
+ * precedence entirely, which is why every test in this file does it that way. Each key this file touches is
  * snapshotted before and restored after every test (`snapshotSdkEnv`/`restoreSdkEnv`), so no test leaks
  * its env into the next.
  *
@@ -258,7 +258,7 @@ describe('Actor.charge() via the real, unmodified apify SDK', () => {
 		// (to 6) so the platform would detect and terminate the run - `apify/dist/charging.js`'s own
 		// comment: "overcharge by one event so that the Actor is detected by the platform and terminated".
 		// Either way, far short of the 10 events actually requested - this is the SDK's own client-side
-		// self-limiting the task asks to prove, with nothing on this runtime enforcing anything.
+		// self-limiting, with nothing on this runtime enforcing anything.
 		const result = await sdkActor.charge({ eventName: 'page-scraped', count: 10 });
 		await sdkActor.exit(undefined, { exit: false });
 
@@ -272,7 +272,8 @@ describe('Actor.charge() via the real, unmodified apify SDK', () => {
 	it('both-sides: a run of a non-PPE Actor still no-ops exactly as before - chargedCount 0, and the SDK logs its own warning once', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const actor = await seedRunnableActor(server, 'sdk-non-ppe-actor');
-		// No pricing declared - `run.pricingInfo` stays `undefined`, the design's own cited failure mode.
+		// No pricing declared - `run.pricingInfo` stays `undefined`, so `ChargingManager` has no PPE
+		// pricing to charge against and must no-op with a warning instead of charging.
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 
 		envSnapshot = snapshotSdkEnv();
