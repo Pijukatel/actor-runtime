@@ -530,9 +530,6 @@ describe('DockerDriver.startBuild - imageWorkingDirectory capture (actor-driver.
 });
 
 describe('DockerDriver.startBuild - dockerfile option (the resolved path is handed to dockerode as its `dockerfile` build option)', () => {
-	/** A stub covering only what `startBuild` calls, exposing the `buildImage` mock itself so a test can
-	 * read back exactly which options it was called with - unlike `stubDockerForBuild` above, which only
-	 * cares about the post-build inspect. */
 	function stubDockerCapturingBuildImageOptions() {
 		const followProgress = vi.fn(
 			(
@@ -567,10 +564,6 @@ describe('DockerDriver.startBuild - dockerfile option (the resolved path is hand
 
 		expect(stub.buildImage).toHaveBeenCalledTimes(1);
 		const [, options] = stub.buildImage.mock.calls[0]!;
-		// Without `ctx.dockerfilePath` being threaded through to this option at all (the pre-fix
-		// behaviour - see `docker-driver.ts`'s old `buildImage(tarball, { t, nocache, abortSignal })`
-		// call, with no `dockerfile` key), this assertion fails: `options.dockerfile` would be
-		// `undefined`, never `'.actor/Dockerfile'`.
 		expect(options).toMatchObject({ dockerfile: '.actor/Dockerfile' });
 	});
 

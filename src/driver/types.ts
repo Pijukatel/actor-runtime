@@ -6,11 +6,7 @@ export interface BuildContext {
 	sourceFiles: SourceFile[];
 	useCache: boolean;
 	timeoutSecs: number;
-	/** The tar-relative path to the Dockerfile to build, as resolved by
-	 * `services/dockerfile-location.ts: resolveDockerfileLocation` (a `resolved` or `default` outcome -
-	 * `runBuildInBackground` never calls `driver.startBuild` on a `failure`). Passed straight through as
-	 * dockerode's own `dockerfile` build option - always set, never omitted, so there is no second,
-	 * untested code path that falls back to Docker's implicit "Dockerfile at the tar root" default. */
+	/** Tar-relative path to the Dockerfile to build, passed as dockerode's `dockerfile` build option. */
 	dockerfilePath: string;
 }
 

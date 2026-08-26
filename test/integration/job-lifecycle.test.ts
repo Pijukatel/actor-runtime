@@ -98,10 +98,7 @@ const VERSION: ActorVersionRecord = {
 	sourceFiles: [],
 };
 
-/** Fails the test immediately (rather than hanging) if the driver is ever asked to start a run/build.
- * Used both to assert the pre-start abort window really does prevent a container/build from ever
- * starting, and - for `startBuild` - to assert that a `resolveDockerfileLocation` "failure" outcome
- * fails the build without the driver ever being invoked. */
+/** Fails the test immediately if the driver is ever asked to start a run/build. */
 function neverStartDriver(): Driver & { abortRunCalls: string[]; abortBuildCalls: string[] } {
 	const abortRunCalls: string[] = [];
 	const abortBuildCalls: string[] = [];
@@ -337,8 +334,6 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			server = await startTestServer(driver);
 			const actor = await seedActor(server, 'dockerfile-failure-actor');
 
-			// A "dockerfile" field that escapes the Actor root - resolveDockerfileLocation returns a
-			// `failure` outcome before any candidate is even looked up in sourceFiles.
 			const escapingSourceFiles: SourceFile[] = [
 				{
 					name: '.actor/actor.json',
@@ -367,8 +362,6 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			expect(final?.statusMessage).toBe(
 				'Dockerfile path "../../evil/Dockerfile" in .actor/actor.json points outside the Actor root directory.',
 			);
-			// `startBuild` is never called either - if it were, `neverStartDriver` would have thrown and
-			// failed the test.
 		});
 
 		it('a "default" outcome appends the bundled default Dockerfile to the driver\'s ctx.sourceFiles and sets ctx.dockerfilePath to "Dockerfile"', async () => {
@@ -376,8 +369,6 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			server = await startTestServer(driver);
 			const actor = await seedActor(server, 'dockerfile-default-actor');
 
-			// No actor.json, and no Dockerfile anywhere in sourceFiles - resolveDockerfileLocation falls
-			// all the way through to the bundled default.
 			const noDockerfileSourceFiles: SourceFile[] = [
 				{ name: 'main.js', format: 'TEXT', content: 'console.log(1);\n' },
 			];
@@ -400,14 +391,10 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			expect(driver.startBuildContexts).toHaveLength(1);
 			const ctx = driver.startBuildContexts[0]!;
 			expect(ctx.dockerfilePath).toBe(DEFAULT_DOCKERFILE_NAME);
-			// The extra, injected Dockerfile SourceFile actually reaches the driver's ctx, alongside the
-			// original sourceFiles - never in place of them.
 			expect(ctx.sourceFiles).toEqual([
 				...noDockerfileSourceFiles,
 				{ name: 'Dockerfile', format: 'TEXT', content: DEFAULT_DOCKERFILE_CONTENT },
 			]);
-			// Never written back to the version's own persisted sourceFiles - only this one build's ctx
-			// gets the extra entry.
 			expect(version.sourceFiles).toEqual(noDockerfileSourceFiles);
 
 			const final = await getRegistries().builds.get(record.id);
@@ -419,7 +406,6 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 			server = await startTestServer(driver);
 			const actor = await seedActor(server, 'dockerfile-resolved-actor');
 
-			// No actor.json "dockerfile" field, but a .actor/Dockerfile exists - candidate 2 resolves.
 			const resolvedSourceFiles: SourceFile[] = [
 				{ name: '.actor/Dockerfile', format: 'TEXT', content: 'FROM node:20\n' },
 				{ name: 'main.js', format: 'TEXT', content: 'console.log(1);\n' },

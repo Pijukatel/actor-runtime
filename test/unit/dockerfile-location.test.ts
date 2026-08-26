@@ -16,7 +16,6 @@ function actorJson(spec: Record<string, unknown> | string): SourceFile {
 }
 
 describe('resolveDockerfileLocation', () => {
-	// --- A: sample_actor_crawler - the bug this change fixes. ---
 	it('A: resolves the "dockerfile" field to .actor/Dockerfile (sample_actor_crawler layout)', () => {
 		const result = resolveDockerfileLocation([
 			actorJson({ dockerfile: './Dockerfile' }),
@@ -33,7 +32,6 @@ describe('resolveDockerfileLocation', () => {
 		]);
 	});
 
-	// --- B: sample_actor_ts / sample_actor_py - the regression guard. ---
 	it('B: resolves "../Dockerfile" to the root Dockerfile (sample_actor_ts/py layout) - byte-identical to today\'s implicit default', () => {
 		const result = resolveDockerfileLocation([
 			actorJson({ dockerfile: '../Dockerfile' }),
@@ -46,7 +44,6 @@ describe('resolveDockerfileLocation', () => {
 		expect(result.dockerfilePath).toBe('Dockerfile');
 	});
 
-	// --- C: a "dockerfile" field that names nothing - warn and fall through. ---
 	it('C: warns and falls through to .actor/Dockerfile when the "dockerfile" field names no file', () => {
 		const result = resolveDockerfileLocation([
 			actorJson({ dockerfile: './Custom.Dockerfile' }),
@@ -62,7 +59,6 @@ describe('resolveDockerfileLocation', () => {
 		]);
 	});
 
-	// --- D: a path that escapes the Actor root. ---
 	describe('D: an escaping "dockerfile" field fails the build before any daemon call', () => {
 		it('a relative path with enough ".." segments to escape .actor/', () => {
 			const result = resolveDockerfileLocation([actorJson({ dockerfile: '../../evil/Dockerfile' })]);
@@ -86,8 +82,6 @@ describe('resolveDockerfileLocation', () => {
 		});
 
 		it('a path that normalizes to exactly ".." (the joined === ".." disjunct, not just startsWith("../"))', () => {
-			// .actor + ".." joins and normalizes to exactly "..", not "../something" - a separate
-			// disjunct in the escape check from the startsWith("../") case exercised above.
 			const result = resolveDockerfileLocation([actorJson({ dockerfile: '../..' })]);
 
 			expect(result).toEqual({
@@ -98,8 +92,6 @@ describe('resolveDockerfileLocation', () => {
 		});
 
 		it('a path that stays inside .actor/ (one level of ".." exactly cancels the join) is not treated as escaping', () => {
-			// .actor + ../Dockerfile normalizes to plain "Dockerfile" - inside the root, not outside it
-			// (this is Example B, re-asserted here to pin the boundary this escape check must not cross).
 			const result = resolveDockerfileLocation([
 				actorJson({ dockerfile: '../Dockerfile' }),
 				text('Dockerfile', 'FROM node:20\n'),
@@ -109,7 +101,6 @@ describe('resolveDockerfileLocation', () => {
 		});
 	});
 
-	// --- E: case-insensitive matching, exact-case tie-break. ---
 	describe('E: case-insensitive matching', () => {
 		it('matches .actor/Dockerfile against a lowercase .actor/dockerfile source file, returning ITS OWN spelling', () => {
 			const result = resolveDockerfileLocation([text('.actor/dockerfile', 'FROM node:20\n')]);
@@ -140,7 +131,6 @@ describe('resolveDockerfileLocation', () => {
 		});
 	});
 
-	// --- F: no Dockerfile at all - the platform-parity default. ---
 	describe('F: nothing resolves - the bundled default is injected', () => {
 		it('injects the bundled default Dockerfile, verbatim, as an extra Dockerfile-named SourceFile', () => {
 			const result = resolveDockerfileLocation([
@@ -175,7 +165,6 @@ describe('resolveDockerfileLocation', () => {
 		});
 	});
 
-	// --- G: a present-but-malformed "dockerfile" field. ---
 	describe('G: malformed "dockerfile" field', () => {
 		it('a non-string value (e.g. true) fails the build immediately, before any candidate is tried', () => {
 			const result = resolveDockerfileLocation([
@@ -219,7 +208,6 @@ describe('resolveDockerfileLocation', () => {
 		});
 	});
 
-	// --- JSON5 tolerance: the platform accepts what strict JSON.parse would reject. ---
 	describe('JSON5 tolerance', () => {
 		it('parses a trailing comma and a comment in .actor/actor.json', () => {
 			const result = resolveDockerfileLocation([
@@ -265,7 +253,6 @@ describe('resolveDockerfileLocation', () => {
 		});
 	});
 
-	// --- No .actor/actor.json at all: candidates 2 and 3 must still work standalone. ---
 	describe('no-actor.json fallbacks', () => {
 		it('resolves .actor/Dockerfile with no actor.json present at all', () => {
 			const result = resolveDockerfileLocation([
@@ -298,8 +285,6 @@ describe('resolveDockerfileLocation', () => {
 		});
 	});
 
-	// --- .actor/actor.json parses fine but isn't an object (e.g. bare "null") - candidate 1 must be
-	// skipped, not crash on `'dockerfile' in null`. ---
 	describe('.actor/actor.json parses to a non-object value', () => {
 		it('content is exactly "null" (JSON5-parseable, non-object) - falls through to candidate 2, no crash', () => {
 			const result = resolveDockerfileLocation([actorJson('null'), text('.actor/Dockerfile', 'FROM node:20\n')]);

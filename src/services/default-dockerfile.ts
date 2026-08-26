@@ -1,26 +1,7 @@
-/**
- * The single source of truth for both the basename `dockerfile-location.ts`'s resolver searches for
- * (candidates 2 and 3: `.actor/Dockerfile`, root `Dockerfile`) and the tar-entry name given to the
- * bundled default below when it is injected. Because the injected default's name is exactly the string
- * the candidate-3 search looks for, it can never collide with a real pushed Dockerfile: the `default`
- * outcome is only reachable after that search has already missed.
- */
+/** Basename for the resolver's Dockerfile candidates and the bundled default's own tar-entry name. */
 export const DEFAULT_DOCKERFILE_NAME = 'Dockerfile';
 
-/**
- * The bundled default Dockerfile, injected by `dockerfile-location.ts`'s resolver when an Actor's
- * pushed source names no Dockerfile at all (no `dockerfile` field in `.actor/actor.json`, and no
- * case-insensitive `Dockerfile` at `.actor/Dockerfile` or the Actor root). This is apify-worker's own
- * platform-parity fallback, copied here verbatim (byte-for-byte, including its own leading comment) from
- * `apify-worker/src/actor/build/default_Dockerfile` - not reinterpreted or "improved" - so a locally
- * built default-Dockerfile image matches what the real platform would have produced for the same,
- * Dockerfile-less source.
- *
- * A string constant, not a sibling file copied at build/run time: the runtime's build input is
- * already an in-memory `SourceFile[]`/tar, not a working directory on disk, and the codebase has no
- * existing pattern for shipping a non-TS asset file. A string constant produces the identical bytes
- * with no extra packaging step.
- */
+/** Injected when an Actor's pushed source names no Dockerfile. Matches the Apify platform's default Dockerfile. */
 export const DEFAULT_DOCKERFILE_CONTENT = `# This is a default Dockerfile is used for Actors that don't have a Dockerfile.
 FROM apify/actor-node:20
 

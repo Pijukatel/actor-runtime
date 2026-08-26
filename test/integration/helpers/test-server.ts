@@ -65,13 +65,8 @@ export function fixedRunOutcomeDriver(outcome: RunOutcome): Driver {
 	};
 }
 
-/** Same idea as `fixedRunOutcomeDriver`, but for builds: `startBuild` either resolves with `outcome` or
- * rejects with `error`, whichever the caller supplies (`error` wins if both are given, so a
- * `DriverTimedOutError` can be asserted straight through to a `TIMED-OUT` status). Every `startBuild`
- * call's `ctx` is recorded in `startBuildContexts`, in call order - lets a test assert exactly what
- * `runBuildInBackground` computed and passed through (e.g. `sourceFiles`/`dockerfilePath` after the
- * Dockerfile resolver ran), not just that some build happened; existing callers that only need `Driver`
- * itself are unaffected, since this is a strict superset of that interface. */
+/** Same idea as `fixedRunOutcomeDriver`, but for builds; also records every `startBuild` ctx into
+ * `startBuildContexts`. */
 export function fixedBuildOutcomeDriver(
 	outcome: BuildOutcome,
 	error?: Error,

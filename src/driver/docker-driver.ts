@@ -108,11 +108,6 @@ function sourceFileToBuffer(file: SourceFile): Buffer {
 	return file.format === 'BASE64' ? Buffer.from(file.content, 'base64') : Buffer.from(file.content, 'utf8');
 }
 
-/** Entry names go through `normalizeEntryName` - the same normalizer `dockerfile-location.ts`'s
- * resolver indexes `sourceFiles` by - so the `dockerfilePath` `startBuild` hands dockerode as its
- * `dockerfile` option is guaranteed to name exactly the tar entry Docker will find. This changes some
- * tar entry names versus a raw `SourceFile.name` (e.g. `./foo` becomes `foo`); the change only
- * canonicalizes the name, it never changes which file a given `SourceFile` corresponds to. */
 function buildTarball(sourceFiles: SourceFile[]): NodeJS.ReadableStream {
 	const pack = tar.pack();
 	for (const file of sourceFiles) {

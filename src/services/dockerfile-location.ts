@@ -1,21 +1,9 @@
 /**
- * Resolves which Dockerfile a build should use, from the version's flat, in-memory `SourceFile[]` -
- * mirroring apify-worker's own `ensureDockerfileExists` (`act2_build_job.ts`) so that "builds locally"
- * keeps predicting "builds on the platform" (`requirements/actor-driver.md`). Pure: no filesystem, no
- * Docker. "Does this file exist" is a lookup in a normalized-name index built over `sourceFiles`; "does
- * it escape the root" is POSIX path arithmetic on strings.
- *
- * Candidate order, stopping at the first hit:
- *   1. the `dockerfile` field of `.actor/actor.json`, resolved relative to the `.actor` directory
- *   2. `.actor/Dockerfile`
- *   3. `Dockerfile` at the Actor root
- *   4. (nothing resolved) the bundled default Dockerfile (`default-dockerfile.ts`), platform-parity
- *      with apify-worker rather than failing the build.
- *
- * Matching against `sourceFiles` names is case-insensitive (candidates 1-3), but the path handed back
- * is always the matched source file's OWN name (post-normalization) - never the candidate's canonical
- * casing - because Docker's lookup inside the tar is case-sensitive. When both a case-exact and a
- * case-differing match exist, the case-exact one wins; otherwise the first match in `sourceFiles` order.
+ * Resolves which Dockerfile a build should use from the version's `sourceFiles`. Candidate order,
+ * stopping at the first hit: 1) the `dockerfile` field of `.actor/actor.json`, relative to `.actor` 2)
+ * `.actor/Dockerfile` 3) `Dockerfile` at the Actor root 4) the bundled default. Matching is
+ * case-insensitive; the returned path is always the matched file's own name, never the candidate's
+ * casing - Docker's tar lookup is case-sensitive. An exact-case match wins over a case-differing one.
  */
 import * as path from 'node:path';
 import JSON5 from 'json5';
@@ -27,51 +15,21 @@ import { DEFAULT_DOCKERFILE_CONTENT, DEFAULT_DOCKERFILE_NAME } from './default-d
 const ACTOR_DIR = '.actor';
 const ACTOR_JSON_NAME = `${ACTOR_DIR}/actor.json`;
 
-/**
- * Why resolution failed - each has its own message, computed once at the failure site (see
- * `resolveDockerfileLocation`'s call sites below) and carried through verbatim rather than
- * reconstructed by the caller. `services/builds.ts` only needs `message` to fail the build; `reason`
- * exists so tests can assert *which* failure fired without string-matching the message.
- */
+/** Why Dockerfile resolution failed. */
 export type DockerfileResolutionFailureReason =
 	'escapes-actor-root' | 'invalid-dockerfile-field' | 'unparseable-actor-json';
 
-/**
- * The three outcomes `resolveDockerfileLocation` can return - see this module's doc comment for the
- * candidate order each represents.
- *
- * - `resolved`: a candidate (1, 2, or 3) matched an existing source file. `dockerfilePath` is that
- *   file's own (normalized) name - exactly the string `docker-driver.ts` must hand dockerode as its
- *   `dockerfile` build option, and exactly the tar entry name `buildTarball` will produce for it (both
- *   go through the same normalizer, see `normalizeEntryName` in `driver/tar-entry-name.ts`).
- * - `default`: nothing resolved. `dockerfilePath` is always `'Dockerfile'` (free by construction - see
- *   this module's doc comment), and `extraSourceFile` is the one extra `SourceFile` the caller must
- *   append to `BuildContext.sourceFiles` for this one build only - never written back to the version's
- *   persisted `sourceFiles`.
- * - `failure`: a typed, build-ending problem found before any Docker/daemon call - an escaping
- *   `dockerfile` field path, a non-string `dockerfile` field, or an unparseable `.actor/actor.json`.
- *
- * Every outcome (including `failure`) carries its own diagnostic text in `logLines`/`message` - the
- * choice is never made silently: every build outcome produces a build log entry that identifies which
- * Dockerfile source was used or which warning/failure applied.
- */
+/** `resolveDockerfileLocation`'s outcomes: `resolved` (a candidate matched), `default` (nothing matched
+ * - `extraSourceFile` must be appended to this build's context only, never persisted), or `failure`. */
 export type DockerfileResolution =
 	| { outcome: 'resolved'; dockerfilePath: string; logLines: string[] }
 	| { outcome: 'default'; dockerfilePath: string; logLines: string[]; extraSourceFile: SourceFile }
 	| { outcome: 'failure'; reason: DockerfileResolutionFailureReason; message: string };
 
-/** Decodes a `SourceFile`'s content to text, the same `BASE64`/`TEXT` split `docker-driver.ts`'s
- * `sourceFileToBuffer` uses for the tar - duplicated here (rather than imported) because this module is
- * deliberately Docker-free. Both are one line each; keep them in sync by hand if either format's
- * encoding ever changes. */
 function sourceFileToText(file: SourceFile): string {
 	return file.format === 'BASE64' ? Buffer.from(file.content, 'base64').toString('utf8') : file.content;
 }
 
-/** One `SourceFile`, indexed by its normalized name (for the exact `.actor/actor.json` lookup) and by
- * that name's lowercase (for the case-insensitive Dockerfile candidate lookups) - built once per
- * resolution, in `sourceFiles` order, which is exactly the tie-break order `findCaseInsensitive` below
- * relies on. */
 interface IndexedFile {
 	normalizedName: string;
 	lowerName: string;
@@ -84,9 +42,7 @@ function indexSourceFiles(sourceFiles: SourceFile[]): IndexedFile[] {
 	});
 }
 
-/** Case-insensitive lookup for a Dockerfile candidate: among every indexed file whose normalized name
- * matches `candidate` case-insensitively, an exact-case match wins; otherwise the first match in
- * `sourceFiles` order (`indexed` is already in that order, so "first" here just means "first found"). */
+/** Exact-case match wins; otherwise the first match in `sourceFiles` order. */
 function findCaseInsensitive(indexed: IndexedFile[], candidate: string): IndexedFile | undefined {
 	const lowerCandidate = candidate.toLowerCase();
 	let firstMatch: IndexedFile | undefined;
@@ -98,15 +54,11 @@ function findCaseInsensitive(indexed: IndexedFile[], candidate: string): Indexed
 	return firstMatch;
 }
 
-/** Exact (case-sensitive) lookup, used only for `.actor/actor.json` itself - unlike the Dockerfile
- * candidates, the platform does not case-fold the spec file's own path. */
+/** `.actor/actor.json`'s own path is not case-folded, unlike the Dockerfile candidates. */
 function findExact(sourceFiles: SourceFile[], normalizedTarget: string): SourceFile | undefined {
 	return sourceFiles.find((file) => normalizeEntryName(file.name) === normalizedTarget);
 }
 
-/** Builds the `escapes-actor-root` failure for a `dockerfile` field value, matching apify-worker's own
- * `UserError` for the same condition - always keyed off the raw field value the developer actually
- * wrote, never the joined/normalized path, so the message names exactly what they typed. */
 function escapesActorRootFailure(rawField: string): DockerfileResolution {
 	return {
 		outcome: 'failure',
@@ -115,16 +67,10 @@ function escapesActorRootFailure(rawField: string): DockerfileResolution {
 	};
 }
 
-/**
- * Resolves the Dockerfile for a build from its version's `sourceFiles`. See this module's doc comment
- * for the candidate order and outcome shapes.
- */
 export function resolveDockerfileLocation(sourceFiles: SourceFile[]): DockerfileResolution {
 	const indexed = indexSourceFiles(sourceFiles);
 	const logLines: string[] = [];
 
-	// `.actor/actor.json` is optional - a missing file is not an error, it just means candidate 1 never
-	// applies (mirrors apify-worker's `readActorSpecificationFile`, which swallows ENOENT).
 	const actorJsonFile = findExact(sourceFiles, ACTOR_JSON_NAME);
 	let actorSpecification: unknown;
 	if (actorJsonFile) {
@@ -139,9 +85,6 @@ export function resolveDockerfileLocation(sourceFiles: SourceFile[]): Dockerfile
 		}
 	}
 
-	// Candidate 1: the "dockerfile" field, only when actor.json parsed to an object that actually has
-	// one (a missing field is not an error - it just means this candidate is skipped, same as apify-
-	// worker's `actorSpecification?.dockerfile` optional chain).
 	if (actorSpecification !== null && typeof actorSpecification === 'object' && 'dockerfile' in actorSpecification) {
 		const field: unknown = actorSpecification.dockerfile;
 		if (typeof field !== 'string') {
@@ -153,17 +96,10 @@ export function resolveDockerfileLocation(sourceFiles: SourceFile[]): Dockerfile
 		}
 
 		if (field === '') {
-			// An empty string is a valid string that simply names no file - indistinguishable from a typo
-			// (the "names nothing" case below), never the invalid-format failure above: a non-string
-			// value is a shape error rejected outright, while an empty string is a valid string that
-			// simply fails to match anything, so it gets the same warn-and-fall-through treatment.
 			logLines.push(
 				'Warning: "" (from the "dockerfile" field in .actor/actor.json) is not in the pushed source; falling back to the default locations.\n',
 			);
 		} else if (field.startsWith('/')) {
-			// An absolute path can never be "relative to .actor" - checked before joining, exactly like
-			// apify-worker's `ensureActorDirFileInActorSourceRoot` (path.join would otherwise silently fold
-			// a leading "/" into a same-directory join instead of rejecting it).
 			return escapesActorRootFailure(field);
 		} else {
 			const joined = normalizeEntryName(path.posix.join(ACTOR_DIR, field));
@@ -183,16 +119,12 @@ export function resolveDockerfileLocation(sourceFiles: SourceFile[]): Dockerfile
 				};
 			}
 
-			// Names nothing in the pushed source - warn and fall through to candidate 2, never fail the
-			// build on this account (matches apify-worker's own would-be-breaking `throw`, which
-			// stays commented out there for the same reason).
 			logLines.push(
 				`Warning: "${joined}" (from the "dockerfile" field in .actor/actor.json) is not in the pushed source; falling back to the default locations.\n`,
 			);
 		}
 	}
 
-	// Candidate 2: .actor/Dockerfile
 	const actorDirCandidate = normalizeEntryName(`${ACTOR_DIR}/${DEFAULT_DOCKERFILE_NAME}`);
 	const actorDirMatch = findCaseInsensitive(indexed, actorDirCandidate);
 	if (actorDirMatch) {
@@ -206,7 +138,6 @@ export function resolveDockerfileLocation(sourceFiles: SourceFile[]): Dockerfile
 		};
 	}
 
-	// Candidate 3: Dockerfile at the Actor root
 	const rootCandidate = normalizeEntryName(DEFAULT_DOCKERFILE_NAME);
 	const rootMatch = findCaseInsensitive(indexed, rootCandidate);
 	if (rootMatch) {
@@ -217,10 +148,6 @@ export function resolveDockerfileLocation(sourceFiles: SourceFile[]): Dockerfile
 		};
 	}
 
-	// Nothing resolved: inject the bundled default, platform-parity with apify-worker rather than
-	// failing the build. Plain "Dockerfile" at the tar root is free by construction here -
-	// reaching this branch already required that no case-insensitive Dockerfile matched at
-	// candidate 2 or 3.
 	logLines.push(`${DEFAULT_DOCKERFILE_NAME} not found, using the default one.\n`);
 	return {
 		outcome: 'default',

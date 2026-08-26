@@ -37,33 +37,12 @@
 - Actor build details are saved in `__BUILDS__` internal storage
 - Actor build log is saved in `__LOGS__` internal storage
 - Actor details are saved in `__ACTORS__` internal storage
-- **The Dockerfile to build is resolved from the version's `sourceFiles`**, not left to Docker's own
-  implicit "`Dockerfile` at the tar root" default, matching the real platform (apify-worker's
-  `ensureDockerfileExists`) so that "builds locally" keeps predicting "builds on the platform". The
-  resolved (or default) path is always passed explicitly as dockerode's `dockerfile` build option -
-  never omitted. `.actor/actor.json` is parsed as JSON5 (matching the platform) before any candidate is
-  tried; a file that fails to parse at all fails the build immediately, before any daemon call, with
-  `Could not parse .actor/actor.json: <parse error message>` - a third build-ending failure mode,
-  alongside the two below. Resolution order, stopping at the first hit:
-    1. the `dockerfile` field of `.actor/actor.json`, interpreted relative to the `.actor`
-       directory. A value that resolves outside the Actor root (e.g. `../../evil/Dockerfile`, or a
-       leading `/`) fails the build before any daemon call. A value that is present but not a string
-       (e.g. `true`) also fails the build immediately, with a `.actor/actor.json has invalid format`
-       message. A value that is a string (including the empty string) but names no file in
-       `sourceFiles` does not fail the build on that account - it warns and falls through to the
-       next candidate.
+- **The Dockerfile to build is resolved from the Actor's pushed source**, not Docker's implicit default. `.actor/actor.json` is parsed as JSON5; an unparseable file fails the build with a "Could not parse .actor/actor.json" message. Resolution order, stopping at the first hit:
+    1. the `dockerfile` field of `.actor/actor.json`, relative to `.actor/` - a path escaping the Actor root fails with "points outside the Actor root directory"; a non-string value fails with `"dockerfile" must be a string`; a value naming no pushed file (including empty) falls through instead of failing.
     2. `.actor/Dockerfile`
     3. `Dockerfile` at the Actor root
-    - Matching against `sourceFiles` names is case-insensitive for all three candidates, but the path
-      handed to Docker is always the matched source file's own name, never the candidate's canonical
-      casing (Docker's lookup inside the tar is case-sensitive). An exact-case match wins; otherwise the
-      first match in `sourceFiles` order.
-    - If none of the three candidates resolves, the build does not fail: a bundled default Dockerfile
-      (apify-worker's own `default_Dockerfile`, `FROM apify/actor-node:20` + `npm install`) is injected
-      as an extra in-memory `SourceFile` for that one build only - never written back to the version's
-      persisted `sourceFiles`.
-    - Every outcome (resolved candidate, warn-and-fall-through, or default) is recorded in the build log,
-      so the choice is never silent.
+    4. the platform's bundled default Dockerfile, for that build only - the pushed source itself is unchanged.
+    - Matching is case-insensitive, exact-case wins ties, and every outcome is stated in the build log.
 
 # Bind mount volumes with Actor source code
 

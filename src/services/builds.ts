@@ -181,12 +181,6 @@ export async function runBuildInBackground(
 		return;
 	}
 
-	// Resolved right before the actual `docker build` (mirrors apify-worker, where this lives in the
-	// build job, not the Docker-facing layer): candidate order is the "dockerfile" field of
-	// `.actor/actor.json`, then `.actor/Dockerfile`, then root `Dockerfile`, then the bundled default
-	// (`requirements/actor-driver.md`). Never persisted onto `version` either way - a
-	// `default` outcome's extra `SourceFile` is appended only to the in-memory list this one build's
-	// `BuildContext` gets, so a later push that adds a real Dockerfile is never competing with it.
 	const dockerfileResolution = resolveDockerfileLocation(version.sourceFiles);
 	if (dockerfileResolution.outcome === 'failure') {
 		appendLog(record.id, `${dockerfileResolution.message}\n`);
