@@ -1,10 +1,11 @@
 import { generateId } from '../storage/ids.js';
-import type { BuildRecord, JobStatus } from '../storage/entities.js';
+import type { BuildRecord, JobStatus, SourceFile } from '../storage/entities.js';
 import { getRegistries } from '../storage/registries.js';
 import type { ActorRecord, ActorVersionRecord } from '../storage/entities.js';
 import { recordTaggedBuild, updateActor } from './actors.js';
 import type { Driver } from '../driver/types.js';
 import { DriverTimedOutError } from '../driver/types.js';
+import { resolveDockerfileLocation } from './dockerfile-location.js';
 import { appendLog, flushLog, markLogTerminal } from './logs.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 
@@ -180,14 +181,32 @@ export async function runBuildInBackground(
 		return;
 	}
 
+	const dockerfileResolution = resolveDockerfileLocation(version.sourceFiles);
+	if (dockerfileResolution.outcome === 'failure') {
+		appendLog(record.id, `${dockerfileResolution.message}\n`);
+		await flushLog(record.id);
+		markLogTerminal(record.id);
+		await transitionJobStatus(builds, record.id, 'FAILED', {
+			finishedAt: new Date().toISOString(),
+			statusMessage: dockerfileResolution.message,
+		});
+		return;
+	}
+	for (const line of dockerfileResolution.logLines) appendLog(record.id, line);
+	const sourceFiles: SourceFile[] =
+		dockerfileResolution.outcome === 'default'
+			? [...version.sourceFiles, dockerfileResolution.extraSourceFile]
+			: version.sourceFiles;
+
 	try {
 		const outcome = await driver.startBuild(
 			{
 				buildId: record.id,
 				actorName: actor.name,
-				sourceFiles: version.sourceFiles,
+				sourceFiles,
 				useCache: options.useCache,
 				timeoutSecs: DEFAULT_BUILD_TIMEOUT_SECS,
+				dockerfilePath: dockerfileResolution.dockerfilePath,
 			},
 			(chunk) => appendLog(record.id, chunk),
 		);

@@ -29,7 +29,8 @@
   which covers push/call/log-stream/storage-access against the runtime itself, not what a given Actor's
   own code does over the network.
 - Building the sample Actors' images requires pulling their base images
-  (`apify/actor-node:24`, `apify/actor-python:3.13`) at least once; CI must pre-pull both before
+  (`apify/actor-node:24`, `apify/actor-python:3.13`, and `python:3.11-slim` for the
+  `sample_actor_crawler` build case) at least once; CI must pre-pull all three before
   running the e2e suite so the timing of the actual push/call assertions is not dominated by image
   pulls.
 

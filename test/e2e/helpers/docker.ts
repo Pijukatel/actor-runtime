@@ -18,7 +18,7 @@ export function pullBaseImages(): void {
 	// Pre-pulled here rather than left to the first build, per `test.md`'s documented CI requirement -
 	// building an Actor image is the one step that still needs network, and doing it once up front
 	// keeps the timing of the actual push/call assertions predictable.
-	for (const image of ['apify/actor-node:24', 'apify/actor-python:3.13']) {
+	for (const image of ['apify/actor-node:24', 'apify/actor-python:3.13', 'python:3.11-slim']) {
 		execFileSync('docker', ['pull', image], { stdio: 'inherit' });
 	}
 }

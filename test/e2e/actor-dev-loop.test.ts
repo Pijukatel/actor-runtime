@@ -106,6 +106,21 @@ describe('full Actor dev loop via apify-cli (requires Docker)', () => {
 		);
 	}
 
+	it(
+		'sample_actor_crawler: push -> build succeeds (build-only - its Dockerfile lives at .actor/Dockerfile, ' +
+			'the layout that used to fail with a daemon-side "Cannot locate specified Dockerfile" error)',
+		() => {
+			const env = apifyEnv(isolatedApifyHome);
+			const actorDir = join(REPO_ROOT, 'sample_actor_crawler');
+
+			const pushOutput = apify(['push', '--json'], { cwd: actorDir, env });
+			const push = JSON.parse(pushOutput) as PushResult;
+
+			expect(push.build.status).toBe('SUCCEEDED');
+		},
+		5 * 60 * 1000,
+	);
+
 	it('the run log contains the crawler per-page lines', () => {
 		const env = apifyEnv(isolatedApifyHome);
 		const callOutput = apify(['call', '--input', JSON.stringify({ maxPages: 1 }), '--json'], {

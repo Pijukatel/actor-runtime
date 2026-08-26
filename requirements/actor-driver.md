@@ -37,6 +37,12 @@
 - Actor build details are saved in `__BUILDS__` internal storage
 - Actor build log is saved in `__LOGS__` internal storage
 - Actor details are saved in `__ACTORS__` internal storage
+- **The Dockerfile to build is resolved from the Actor's pushed source**, not Docker's implicit default. `.actor/actor.json` is parsed as JSON5; an unparseable file fails the build with a "Could not parse .actor/actor.json" message. Resolution order, stopping at the first hit:
+    1. the `dockerfile` field of `.actor/actor.json`, relative to `.actor/` - a path escaping the Actor root fails with "points outside the Actor root directory"; a non-string value fails with `"dockerfile" must be a string`; a value naming no pushed file (including empty) falls through instead of failing.
+    2. `.actor/Dockerfile`
+    3. `Dockerfile` at the Actor root
+    4. the platform's bundled default Dockerfile, for that build only - the pushed source itself is unchanged.
+    - Matching is case-insensitive, exact-case wins ties, and every outcome is stated in the build log.
 
 # Bind mount volumes with Actor source code
 

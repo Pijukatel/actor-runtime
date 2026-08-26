@@ -6,6 +6,8 @@ export interface BuildContext {
 	sourceFiles: SourceFile[];
 	useCache: boolean;
 	timeoutSecs: number;
+	/** Tar-relative path to the Dockerfile to build, passed as dockerode's `dockerfile` build option. */
+	dockerfilePath: string;
 }
 
 /** Host folder + image working directory, carried together so "both or neither" is enforced by the

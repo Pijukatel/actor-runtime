@@ -30,6 +30,7 @@
 		"@crawlee/fs-storage": "4.0.0-beta.145",
 		"dockerode": "^4.0.5",
 		"express": "^5.1.0",
+		"json5": "^2.2.3",
 		"tar-stream": "^3.1.7"
 	},
 	"devDependencies": {
