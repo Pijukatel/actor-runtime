@@ -1,22 +1,22 @@
 {
-  "title": "Sample Actor Crawler input",
-  "type": "object",
-  "schemaVersion": 1,
-  "properties": {
-    "startUrl": {
-      "title": "Start URL",
-      "type": "string",
-      "description": "The page the crawler starts from. Same-domain links found on it (and on the pages it discovers) are enqueued too, up to the crawl limit.",
-      "editor": "textfield",
-      "default": "https://crawlee.dev"
-    },
-    "proxyConfiguration": {
-      "title": "Proxy configuration",
-      "type": "object",
-      "description": "Apify Proxy configuration used for every request. The only way to crawl direct with no proxy is an explicit `{\"useApifyProxy\": false}` -- omitting this field entirely is NOT equivalent; it falls through to the SDK's default proxy configuration (same as `useApifyProxy: true`) and requires a valid APIFY_PROXY_PASSWORD.",
-      "editor": "proxy",
-      "default": { "useApifyProxy": true, "apifyProxyGroups": ["RESIDENTIAL"] }
-    }
-  },
-  "required": ["startUrl"]
+	"title": "Sample Actor Crawler input",
+	"type": "object",
+	"schemaVersion": 1,
+	"properties": {
+		"startUrl": {
+			"title": "Start URL",
+			"type": "string",
+			"description": "The page the crawler starts from. Same-domain links found on it (and on the pages it discovers) are enqueued too, up to the crawl limit.",
+			"editor": "textfield",
+			"default": "https://crawlee.dev"
+		},
+		"proxyConfiguration": {
+			"title": "Proxy configuration",
+			"type": "object",
+			"description": "Apify Proxy configuration used for every request. The only way to crawl direct with no proxy is an explicit `{\"useApifyProxy\": false}` -- omitting this field entirely is NOT equivalent; it falls through to the SDK's default proxy configuration (same as `useApifyProxy: true`) and requires a valid APIFY_PROXY_PASSWORD.",
+			"editor": "proxy",
+			"default": { "useApifyProxy": true, "apifyProxyGroups": ["RESIDENTIAL"] }
+		}
+	},
+	"required": ["startUrl"]
 }
