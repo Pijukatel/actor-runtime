@@ -11,6 +11,20 @@ interface Input {
 	maxPages?: number;
 }
 
+const { memoryMbytes } = Actor.getEnv();
+log.info(
+	`Resources granted to this run: ${memoryMbytes} MB memory, ${process.env.APIFY_DEDICATED_CPUS ?? 'unknown'} CPU core(s).`,
+);
+
+// The runtime measures this container and relays a systemInfo event once a second.
+Actor.on('systemInfo', (info: { cpuCurrentUsage?: number; memCurrentBytes?: number; isCpuOverloaded?: boolean }) => {
+	const memoryMb = info.memCurrentBytes !== undefined ? (info.memCurrentBytes / 1024 / 1024).toFixed(1) : 'unknown';
+	log.info(
+		`Resource usage: CPU ${info.cpuCurrentUsage?.toFixed(1)}% of one core, memory ${memoryMb} MB, ` +
+			`CPU overloaded: ${info.isCpuOverloaded}`,
+	);
+});
+
 const input = await Actor.getInput<Input>();
 const startUrl = input?.startUrl ?? 'https://crawlee.dev/';
 const maxPages = input?.maxPages ?? 2;

@@ -84,21 +84,12 @@ const NOT_A_DIRECTORY_SUBSTRING = 'not a directory';
  * constant, so it is trivially adjustable later if per-second `stats()` calls against the daemon (up to
  * one per concurrently running Actor, `system.md`'s scale budget) ever prove too much load. */
 const SAMPLE_INTERVAL_MS = 1000;
-/** Bounds `startResourceSampler`'s `stop()` - the true constraint this guards is that `new Docker()`
- * (this class's constructor, below) is built with no options, and `docker-modem` only ever installs a
- * request timeout when one is explicitly supplied (`self.timeout`) - so the in-flight `stats()` call
- * `stop()` awaits has no client-side ceiling of its own and can hang forever against a daemon that never
- * answers. Mirrors `LOG_DRAIN_GRACE_MS` below for exactly that reason: this sampler is a third Docker
- * connection `startRun`'s own `finally` now waits on, and it must never be the thing that leaves the
- * whole run - and therefore its record, its log stream, its events socket - stuck non-terminal forever.
- * A call that outlives this grace is abandoned, not cancelled: `takeSample`'s own `stopped` check already
- * suppresses its result if it ever does resolve, so racing past it costs nothing but one discarded
- * sample - never a leaked timer, never a `stats()` call issued after `stop()` returns. */
+/** Bounds `stop()`'s wait on the in-flight `stats()` call. The daemon client is built without a request
+ * timeout, so an unanswered call would otherwise hold a run's finalization open forever; a call that
+ * outlives this grace is abandoned, and `stopped` suppresses its result. Mirrors `LOG_DRAIN_GRACE_MS`. */
 const SAMPLER_STOP_GRACE_MS = 5000;
 
-/** The host's own capacity, snapshotted once at `init()` time from `docker.info()` - absent (rather than
- * some zeroed default) whenever that call throws or omits either field, which `buildOverCapacityWarning`
- * treats as "capacity unknown", never as "capacity is zero" (see its doc comment). */
+/** Host capacity, snapshotted once at `init()`. Absent means "unknown", never "zero". */
 interface HostCapacity {
 	ncpu: number;
 	memTotalBytes: number;
@@ -152,30 +143,17 @@ function dockerfileTarball(contents: string): NodeJS.ReadableStream {
 	return pack;
 }
 
-/** The subset of a raw `cpu_stats` block this sampler diffs between two successive samples of its own -
- * deliberately never the daemon's own `precpu_stats` (see `startResourceSampler`'s doc comment). */
+/** The `cpu_stats` fields the sampler diffs between two of its own successive samples. */
 interface CpuUsageSnapshot {
 	totalUsage: number;
 	systemUsage: number;
 }
 
 /**
- * `memory_stats.usage` minus the reclaimable page cache the kernel is still counting against the
- * cgroup - the exact adjustment `docker stats`' own MEM USAGE column makes
- * (`calculateMemUsageUnixNoCache` in moby's CLI), so this sampler's `memoryBytes` tracks what a human
- * watching `docker stats` for the same container would see, not a raw cgroup counter inflated by cache an
- * Actor doing heavy file/network I/O does not actually need back. `undefined` when `usage` itself is
- * missing or not a finite number - the daemon's own stats shape is not guaranteed (a tick landing on an
- * already-exited or mid-removal container is the plausible trigger) - and `takeSample` (below) skips the
- * whole tick outright on `undefined` rather than ever emit a partial frame or feed a `NaN`/`undefined`
- * into `events-channel.ts`'s running accumulators. cgroup v1 reports the cache figure as
- * `total_inactive_file`; cgroup v2 has no such field and reports `inactive_file` instead - checked in that
- * order, first one present wins. Guarded by `< usage` (matching docker's own guard): a cache figure that
- * is somehow not smaller than `usage` (a daemon/cgroup-version inconsistency this driver has no way to
- * verify against, `usage` itself being the daemon's own number) is not subtracted, so this can never
- * produce a negative or zero-when-actually-nonzero result. Absent both cache fields (an unrecognized
- * stats shape) falls back to the raw `usage` this driver has always reported - "unknown cache" must never
- * be treated as "zero usage".
+ * `memory_stats.usage` minus the reclaimable page cache, the same adjustment `docker stats`' MEM USAGE
+ * column makes (cgroup v1 reports it as `total_inactive_file`, v2 as `inactive_file`). Subtracted only
+ * when smaller than `usage`, so the result can never go negative. `undefined` when `usage` is missing or
+ * non-finite, which makes `takeSample` skip the tick rather than emit a partial frame.
  */
 function memoryUsageBytesExcludingCache(stats: Docker.ContainerStats): number | undefined {
 	const usage = stats.memory_stats?.usage;
@@ -186,16 +164,8 @@ function memoryUsageBytesExcludingCache(stats: Docker.ContainerStats): number | 
 }
 
 /**
- * Presence-and-finiteness guard for the two `cpu_stats` fields `takeSample`'s delta computation actually
- * reads (`total_usage`, `system_cpu_usage`) - the CPU-side counterpart to
- * `memoryUsageBytesExcludingCache`'s guard on `memory_stats.usage` above, for the identical reason: the
- * daemon's own stats shape is not guaranteed, and a missing/non-finite field here must skip the tick,
- * never throw (optional chaining throughout - `cpu_stats` itself being absent must not throw a
- * `TypeError` out of `takeSample` and become an unhandled rejection on the interval's own uncaught
- * `inFlight` promise) and never produce a `NaN` delta. `online_cpus` is deliberately not part of this
- * guard: it already degrades to a number via its own `|| 1` fallback at the one call site that reads it
- * (below), precisely because - unlike `total_usage`/`system_cpu_usage` - a missing or zero `online_cpus`
- * still has an obviously correct fallback.
+ * Presence-and-finiteness guard for the two `cpu_stats` fields the delta reads. A missing field skips the
+ * tick instead of throwing or producing a `NaN`. `online_cpus` is excluded: it has a sane `|| 1` fallback.
  */
 function cpuUsageSnapshotOf(stats: Docker.ContainerStats): CpuUsageSnapshot | undefined {
 	const totalUsage = stats.cpu_stats?.cpu_usage?.total_usage;
@@ -206,30 +176,11 @@ function cpuUsageSnapshotOf(stats: Docker.ContainerStats): CpuUsageSnapshot | un
 }
 
 /**
- * Starts a per-run CPU/memory sampler against an already-running container: one `stats({stream: false,
- * 'one-shot': true})` round trip every `SAMPLE_INTERVAL_MS`, CPU expressed as percent of one core (the
- * `docker stats` convention, not percent of the run's own grant - that conversion is `events-channel.ts`'s
- * job, not this one's).
- *
- * The CPU delta is computed against this sampler's *own* previous sample, never the response's own
- * `precpu_stats` - `'one-shot': true` does not reliably populate `precpu_stats` (that only fills in after
- * the daemon's collected two full periods), and waiting for a plain `stats({stream:false})` to do so would
- * add roughly one to two seconds to every run's finalization. An unemitted baseline read is taken
- * immediately (before the first timer tick) purely to seed that "previous sample" - without it, the first
- * *tick* would have nothing to diff against either.
- *
- * `stop()` sets a flag and awaits the at-most-one in-flight `stats()` call, bounded by
- * `SAMPLER_STOP_GRACE_MS` so a daemon that never answers cannot hold `stop()` - and therefore
- * `startRun`'s own `finally`, and therefore the whole run's finalization - open indefinitely: the
- * log-drain bug's shape (two independent Docker connections settling in unspecified order around
- * finalization, see `startRun`'s own doc comment on `LOG_DRAIN_GRACE_MS`) must not recur, unbounded, on
- * this third connection. A call that outlives the grace is left to settle on its own; `stopped` (checked
- * inside `takeSample`, above) suppresses its result either way, so a caller that proceeds straight to
- * `container.remove()` once `stop()` returns risks nothing but that one already-abandoned sample racing
- * the removal - a non-event, not the data-loss the log-drain fix guards against. A tick that finds the
- * previous sample still in flight is skipped outright (never overlapped) - a `stats()` call taking longer
- * than `SAMPLE_INTERVAL_MS` is the pathological case, and skipping preserves "at most one in-flight call"
- * as an invariant `stop()` can actually rely on, rather than "usually one".
+ * Samples an already-running container once per `SAMPLE_INTERVAL_MS`, reporting CPU as percent of one
+ * core. The delta is computed against this sampler's own previous sample rather than the response's
+ * `precpu_stats`, which `'one-shot': true` does not reliably populate; an unemitted baseline read seeds
+ * it. `stop()` awaits the at-most-one in-flight call, bounded by `SAMPLER_STOP_GRACE_MS`. A tick that
+ * finds the previous call still in flight is skipped, keeping "at most one in flight" an invariant.
  */
 function startResourceSampler(
 	container: Docker.Container,
@@ -354,9 +305,7 @@ export class DockerDriver implements Driver {
 			return;
 		}
 
-		// Independent of the network setup below (its own try/catch never throws - see the doc comment) -
-		// a `docker.info()` failure must never make the whole daemon look unavailable when ping/network
-		// setup otherwise succeeded.
+		// A `docker.info()` failure must not make an otherwise-reachable daemon look unavailable.
 		await this.captureHostCapacity();
 
 		try {
@@ -370,11 +319,8 @@ export class DockerDriver implements Driver {
 	}
 
 	/**
-	 * Best-effort snapshot of the host's own CPU count and total memory (`docker.info()`'s `NCPU`/
-	 * `MemTotal` - untyped `any` in `@types/dockerode`, unverified against a live daemon in this sandbox).
-	 * Absence of either field, or the call throwing outright, leaves `hostCapacity` unset - "capacity
-	 * unknown" - which `buildOverCapacityWarning` treats as "warn about nothing", never as "capacity is
-	 * zero" (which would warn on literally every run, the exact false-positive the design rules out).
+	 * Best-effort snapshot of the host's CPU count and total memory. A missing field or a failed call
+	 * leaves `hostCapacity` unset - "unknown", which warns about nothing rather than warning on every run.
 	 */
 	private async captureHostCapacity(): Promise<void> {
 		try {
@@ -390,11 +336,8 @@ export class DockerDriver implements Driver {
 	}
 
 	/**
-	 * A run whose requested memory and/or derived CPU (`dedicatedCpusFor`) exceeds what `hostCapacity`
-	 * reports gets a warning naming both the requested and host figures for whichever resource(s) are
-	 * actually over capacity - never a substituted, clamped limit; `startRun` applies the request
-	 * verbatim regardless of what this returns. `undefined` covers both "in capacity" and "capacity
-	 * unknown" (`hostCapacity` unset) - the two cases that must never warn.
+	 * A warning naming the requested and host figures for whichever resource is over capacity. The limits
+	 * are applied verbatim regardless; `undefined` covers both "in capacity" and "capacity unknown".
 	 */
 	private buildOverCapacityWarning(ctx: RunContext): string | undefined {
 		if (!this.hostCapacity) return undefined;
@@ -556,16 +499,12 @@ export class DockerDriver implements Driver {
 
 		const env = Object.entries(ctx.env).map(([key, value]) => `${key}=${value}`);
 
-		// Written before `createContainer` so either diagnostic is genuinely the first log line even if
-		// that call is what ends up failing - never clamps anything, purely informational (see
-		// `buildOverCapacityWarning`'s doc comment).
+		// Informational only - the requested limits are applied verbatim either way.
 		const overCapacityWarning = this.buildOverCapacityWarning(ctx);
 		if (overCapacityWarning) onLog(overCapacityWarning);
 
 		// A secondary diagnostic for the residual risk that a folder verified at registration later
-		// vanishes: written before `createContainer` so it is still an early log line even if that call is
-		// what ends up failing - not necessarily the FIRST any more, since the over-capacity warning above
-		// may already have been written first when both apply to the same run.
+		// vanishes: written before `createContainer` so it lands even if that call is what fails.
 		if (ctx.devMount) {
 			onLog(
 				`Mounting local dev folder ${ctx.devMount.localDevFolder} over the image's working directory ` +
@@ -580,12 +519,9 @@ export class DockerDriver implements Driver {
 			HostConfig: {
 				NetworkMode: NETWORK_NAME,
 				Memory: ctx.memoryMbytes * 1024 * 1024,
-				// A CFS quota, never `NanoCpus`: moby's `verifyPlatformContainerResources` hard-rejects a
-				// `NanoCpus` above the host's own CPU count ("Range of CPUs is from 0.01 to N.NN"), which
-				// would turn "warn, never clamp" on an over-capacity request into "cannot run at all".
-				// `CpuPeriod`/`CpuQuota` are validated only for range (no host-CPU-count ceiling), so a
-				// `?memory=65536` run on a 4-CPU host still creates and starts - see `buildOverCapacityWarning`
-				// for the warning this design's own decision requires instead of a clamp.
+				// A CFS quota, never `NanoCpus`: the daemon hard-rejects a `NanoCpus` above the host's own
+				// CPU count, which would turn "warn, never clamp" into "cannot run at all". `CpuQuota` is
+				// validated for range only, so an over-capacity request still starts.
 				CpuPeriod: CPU_PERIOD_US,
 				CpuQuota: cpuQuotaFor(ctx.memoryMbytes),
 				AutoRemove: false,
@@ -608,12 +544,8 @@ export class DockerDriver implements Driver {
 			// Only started when someone is actually listening - an unconditional sampler would issue
 			// `container.stats()` calls no caller asked for (and against a stub `dockerode` in tests that
 			// never mocks `.stats()` at all, a hard failure). Created (and the log stream opened, below)
-			// INSIDE this `try` - not before it - so that a failure anywhere between `container.start()` and
-			// `container.wait()` (e.g. `container.logs()` itself throwing) still reaches the `finally` below
-			// and stops the sampler / removes the container, rather than leaking both. A sampler (or
-			// container) created before this `try` began would leak on exactly that path - the same class of
-			// leak this file already guards against for the log-drain connection (see `LOG_DRAIN_GRACE_MS`'s
-			// own doc comment), now applied to the sampler's own third Docker connection.
+			// Inside the `try` so a throw here still reaches the `finally` that stops the sampler and
+			// removes the container.
 			sampler = onSample ? startResourceSampler(container, ctx.memoryMbytes * 1024 * 1024, onSample) : undefined;
 
 			const logStream = (await container.logs({
@@ -695,13 +627,7 @@ export class DockerDriver implements Driver {
 			return { exitCode: result.StatusCode, timedOut };
 		} finally {
 			if (timeout) clearTimeout(timeout);
-			// Awaited BEFORE `container.remove()` below: `sampler.stop()` bounds its own wait
-			// (`SAMPLER_STOP_GRACE_MS`), so this line resolves promptly - a live sampler call almost never
-			// overlaps the removal below, and on the rare tick where the daemon is slow enough to still be
-			// mid-`stats()` past that grace, the overlap costs one discarded sample, never a stuck run (see
-			// `SAMPLER_STOP_GRACE_MS`'s own doc comment) - not the data-loss shape the log-drain bug had. Now
-			// reached on EVERY path out of the `try` above, including `container.start()`/`container.logs()`
-			// themselves throwing - not just a normal `container.wait()` settlement.
+			// Awaited before `container.remove()` so no `stats()` call is issued against a removed container.
 			await sampler?.stop();
 			this.timedOutRuns.delete(ctx.runId);
 			this.runContainers.delete(ctx.runId);

@@ -56,16 +56,11 @@ export type DevFolderProbeOutcome = { ok: true } | { ok: false; reason: DevFolde
  * driver only measures.
  */
 export interface RunResourceSample {
-	/** CPU usage as percent of ONE core - `docker stats`' own convention, not percent of the run's own
-	 * CPU grant (`APIFY_DEDICATED_CPUS`). */
+	/** CPU usage as percent of one core - `docker stats`' convention, not percent of the run's grant. */
 	cpuPercentOfOneCore: number;
-	/** Current memory usage, in bytes - `memory_stats.usage` with the reclaimable page cache subtracted,
-	 * the same adjustment `docker stats`' own MEM USAGE column makes (`docker-driver.ts`'s
-	 * `memoryUsageBytesExcludingCache`), never the raw cgroup counter. */
+	/** Current memory usage in bytes, with the reclaimable page cache subtracted. */
 	memoryBytes: number;
-	/** The container's configured memory LIMIT, in bytes - `memoryMbytes * 1024 * 1024`, the same value
-	 * `HostConfig.Memory` was created with. Constant for the lifetime of the run, never an observed peak -
-	 * see `events-channel.ts`'s doc comment on why `memMaxBytes` must not grow over a run. */
+	/** The container's configured memory limit in bytes - constant, never an observed peak. */
 	memoryLimitBytes: number;
 	/** When this sample was taken. */
 	at: Date;
@@ -111,10 +106,8 @@ export interface Driver {
 
 	/**
 	 * `onSample`, when given, is called roughly once per second for the lifetime of the run with a
-	 * `RunResourceSample` measured from the run's own container - optional (rather than a required
-	 * fourth-arg-shaped method of its own) precisely so every hand-rolled `Driver` object literal in
-	 * `test/` keeps compiling untouched: TypeScript accepts an implementation that simply ignores a
-	 * trailing parameter it never receives an argument for.
+	 * `RunResourceSample` measured from the run's own container. Optional so existing `Driver`
+	 * implementations keep compiling unchanged.
 	 */
 	startRun(
 		ctx: RunContext,

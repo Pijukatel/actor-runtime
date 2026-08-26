@@ -151,63 +151,30 @@
   console-local, unauthenticated route on the console's own port. Both routes funnel into the same
   underlying validate-and-persist path, so the two surfaces can never drift apart in behavior, only in
   how they are reached.
-- **`GET /actor-runtime/events/:runId`** - a websocket upgrade (never `/v2/actor-runtime/*` - reachable
-  at exactly this one path, on the same fixed API port, `system.md`), the run's own platform events
-  channel: `systemInfo` (`actor-driver.md`'s "Run resource telemetry") once a second, plus a one-off
-  `aborting` frame under `?gracefully=` (below). Each frame is a single text message,
-  `{"name": "...", "data": {...}}`, matching apify-sdk-js's/apify-sdk-python's own wire contract.
-    - **No authentication at all** - a deliberate decision, not an oversight. `:runId` alone is what the
-      connecting container can present, and also the only thing the server scopes on: a connection is
-      subscribed only to _that run's own_ frames, and there is no broadcast/all-runs listener anywhere for
-      a mis-scoped subscription to land in - per-run isolation is structural, not a permission check.
-    - An unknown run id, or a run already in a terminal state, still gets a completed upgrade (never a
-      non-101 HTTP status such as `401`) - the socket is then closed immediately with code `1008` and a
-      descriptive reason. Completing the upgrade rather than refusing it matters because
-      apify-sdk-python's event manager treats a failed first connection _attempt_ as fatal (raises out of
-      `Actor.init()`); a post-upgrade `1008` instead leaves the Actor running (one error logged, no
-      further reconnect attempt - `1008`/`POLICY_VIOLATION` is in its own non-retryable close-code set).
-    - A connection to a live run stays open and receives frames until the run reaches a terminal state
-      (including via either an immediate or a graceful abort), at which point the server closes it with
-      code `1000`. The server never drops a healthy, still-live connection for any other reason - the JS
-      SDK's own event manager has no client-side reconnect, so a server-initiated drop would permanently
-      end that run's telemetry. A graceful runtime shutdown (`SIGTERM`/`SIGINT`) is the one sanctioned
-      exception: every still-open events connection is forcibly terminated as part of shutdown, the same
-      way an open `GET /v2/logs/:id?stream=true` response is - any run still non-terminal at that point
-      keeps its container running (this runtime does not stop it), and is swept as an orphan (marked
-      `ABORTED`, its container removed) the next time the runtime starts (`reconcileOrphanedJobs`).
-    - `persistState` is never sent over this channel, under any circumstance - both SDKs' own base event
-      managers already generate it locally on their own timer; a second, server-originated one would
-      double-fire it.
+- **`GET /actor-runtime/events/:runId`** - a websocket upgrade, reachable at exactly this one path on
+  the fixed API port (`system.md`). It carries the run's platform events: `systemInfo` once a second
+  (`actor-driver.md`), plus a one-off `aborting` frame under `?gracefully=` (below). Each frame is a
+  single text message, `{"name": "...", "data": {...}}`.
+    - The endpoint has no authentication. The run id in the path is the only thing it scopes on, and a
+      connection only ever receives that run's own frames; one run never sees another's.
+    - An unknown or already-terminal run id gets a completed upgrade followed immediately by a `1008`
+      close with a reason, never a non-101 HTTP status - the Python SDK treats a refused first connection
+      as fatal to the Actor.
+    - A connection to a live run stays open until the run ends, when the server closes it with `1000`. It
+      is never dropped while healthy, except that a graceful runtime shutdown terminates every open
+      connection along with the rest of the server.
+    - `persistState` is never sent over this channel; both SDKs generate it themselves.
 
 ## Graceful abort (`?gracefully=`)
 
-- `POST /v2/actor-runs/:runId/abort` accepts an optional `?gracefully=` query parameter, parsed the same
-  way every other boolean query parameter in this API is (`queryBoolean`), mirroring `apify-core`'s own
-  abort route's parameter name and default.
-- **Omitted, or `false`:** byte-for-byte identical to the endpoint's behavior without this parameter -
-  the container is stopped immediately, no frame is sent on any open events socket, and there is no
-  added wait.
-- **`true`, and the run is currently `RUNNING` (a container actually exists):** the record still moves to
-  `ABORTING` immediately (observable via the run's own status right away, well before anything below
-  elapses); a best-effort `{"name": "aborting", "data": {}}` frame - a literal empty object, matching
-  apify-sdk-js's own event-name doc table and crawlee-python's zero-field `EventAbortingData` - is
-  published on that run's events socket (a no-op, not an error, if nobody is currently connected); then a
-  fixed `30000ms` wall-clock window elapses before the container is actually stopped and the record
-  finalized `ABORTED`. The window matches the real platform's own number (apify-sdk-python's
-  `Actor.abort(gracefully=True)` docstring: force-stop after 30 seconds). `persistState` is never sent as
-  part of this - see the events endpoint above.
-- **`true`, but the run is not currently `RUNNING`** (e.g. still `READY`, no container created yet, or
-  already terminal): behaves exactly as if `gracefully` had been omitted - there is no container for an
-  `aborting` frame's SDK-side handler to react to, and no reason to hold the caller's request open for 30
-  seconds against nothing running.
-- A graceful abort's HTTP response is held open for the full window in the worst case (the response _is_
-  the finalized record) - the longest any request in this API is held open, and a deliberate one, since
-  it is opt-in and matches the real platform's own worst case.
-- **A second `/abort` call arriving while a graceful window is still open:** a second `?gracefully=true`
-  call is a no-op that joins the existing window rather than starting one of its own or stopping the
-  container early - the run's first caller's window is the only one that elapses, and its own eventual
-  stop is the only one that happens; a second `?gracefully=false` (or omitted) call is a deliberate
-  escalation and stops the container immediately, exactly as a plain double-abort always has.
+- `POST /v2/actor-runs/:runId/abort` accepts an optional `?gracefully=` boolean.
+- Omitted or `false`: the run aborts immediately, exactly as before this parameter existed.
+- `true` on a running run: the record moves to `ABORTING` at once, an `aborting` frame with an empty
+  payload is published on the run's events channel, and the container is stopped 30 seconds later. The
+  request stays open until then, so it is the longest-held response in this API.
+- `true` on a run with no container (still `READY`, or already terminal): behaves as if omitted.
+- A second abort arriving during an open window: another `?gracefully=true` joins that window and neither
+  restarts it nor stops the container early; a non-graceful one escalates and stops the container at once.
 
 ## Upstream fallback (opt-in, off by default, all HTTP methods)
 

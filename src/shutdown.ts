@@ -28,10 +28,7 @@ export function closeServer(server: Server): Promise<void> {
 export interface ShutdownDeps {
 	apiServer: Server;
 	consoleServer: Server;
-	/** Optional so this stays a no-churn addition for every existing caller/test that builds
-	 * `ShutdownDeps` without it. MUST be closed before `closeServer(apiServer)` is awaited, never after -
-	 * see `EventsWebSocketServer.close()`'s own doc comment (`api/events-ws.ts`) for why
-	 * `closeAllConnections()` cannot do this itself. */
+	/** Must be closed before `closeServer(apiServer)` is awaited - see `EventsWebSocketServer.close()`. */
 	eventsWebSocketServer?: { close(): void };
 }
 
@@ -42,10 +39,8 @@ export interface ShutdownDeps {
  * behind a listener `close()` that can block indefinitely (the previous bug) meant it never did while a
  * `apify push`/`apify call` log stream was open, which is the common case, not the edge case.
  *
- * `eventsWebSocketServer?.close()` runs BEFORE `closeServer(apiServer)`, deliberately - not after, as an
- * earlier version of this function had it - because `closeServer(apiServer)` would otherwise hang
- * indefinitely on any still-connected events-websocket client. See `EventsWebSocketServer.close()`'s own
- * doc comment (`api/events-ws.ts`) for why `closeAllConnections()` cannot do this itself.
+ * `eventsWebSocketServer` is closed before `closeServer(apiServer)`, which would otherwise hang on any
+ * still-connected client.
  */
 export async function gracefulShutdown({
 	apiServer,

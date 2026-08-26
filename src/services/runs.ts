@@ -19,11 +19,7 @@ const DEFAULT_TIMEOUT_SECS = 300;
  * schema: `memoryMbytes: 1024` example paired with `diskMbytes: 2048`), also the exact ratio in
  * `apify-client`'s `RunOptions` pydantic model examples. */
 const DISK_MBYTES_PER_MEMORY_MBYTE = 2;
-/** `?gracefully=true`'s fixed wait between the `aborting` frame and the actual `driver.abortRun` call -
- * matches the real platform's own number (apify-sdk-python's `Actor.abort(..., gracefully=True)`
- * docstring: "send `aborting` and `persistState` events into the run and force-stop the run after 30
- * seconds"). A named constant, not inlined, so the one number the docs/tests/code all have to agree on
- * only has one place to look. */
+/** `?gracefully=true`'s wait between the `aborting` frame and the stop, matching the platform's 30s. */
 const GRACEFUL_ABORT_WINDOW_MS = 30_000;
 
 export async function listOwnedRuns(userId: string, actorId?: string): Promise<RunRecord[]> {
@@ -105,14 +101,12 @@ function buildEnv(
 		ACTOR_ID: actor.id,
 		APIFY_ACTOR_RUN_ID: run.id,
 		ACTOR_RUN_ID: run.id,
-		// No token, no query string: this endpoint has no authentication at all (`api/events-ws.ts`) - the
-		// run id in the path is the only per-run element, and also the only thing there is to scope on.
+		// No token: the endpoint is unauthenticated and the run id in the path is all there is to scope on.
 		ACTOR_EVENTS_WEBSOCKET_URL: eventsWebSocketUrl,
 		APIFY_ACTOR_EVENTS_WS_URL: eventsWebSocketUrl,
 		ACTOR_MEMORY_MBYTES: memoryMbytes,
 		APIFY_MEMORY_MBYTES: memoryMbytes,
-		// No `ACTOR_`-prefixed counterpart - apify-sdk-js's `ENV_MAP` has no dedicated-CPU key at all; this
-		// exists solely so apify-sdk-python stops dividing its own CPU-overload ratio by an assumed `1`.
+		// No `ACTOR_`-prefixed counterpart exists; only the Python SDK reads this.
 		APIFY_DEDICATED_CPUS: String(dedicatedCpusFor(run.options.memoryMbytes)),
 	};
 	if (options.proxyPassword) env.APIFY_PROXY_PASSWORD = options.proxyPassword;
@@ -308,28 +302,17 @@ export async function runInBackground(
 }
 
 /**
- * Stops the run for real (`driver.abortRun` -> `container.stop()`) and reports `ABORTED` back to the
- * caller. The record moves to `ABORTING` *before* `driver.abortRun` is called, which is what makes the
- * result race-proof against `runInBackground`'s own completion write: an `ABORTING` record only accepts
- * `ABORTED` next (`job-status.ts`), so whichever write - this function's, or `runInBackground`'s
- * `SUCCEEDED`/`FAILED`/`TIMED-OUT` - lands first, the other is refused rather than clobbering it.
+ * Stops the run and reports `ABORTED`. The record moves to `ABORTING` before `driver.abortRun` is called,
+ * which is what makes this race-proof against `runInBackground`'s own completion write: an `ABORTING`
+ * record only accepts `ABORTED` next, so whichever write lands first, the other is refused.
  *
- * `gracefully`, when true and the run is actually `RUNNING` (a container exists), inserts the platform's
- * graceful-abort contract before the existing `driver.abortRun` call: a best-effort `publishAborting`,
- * then a fixed `GRACEFUL_ABORT_WINDOW_MS` wall-clock wait. A `READY`-state or already-terminal abort skips
- * straight to the immediate path regardless of `gracefully` - full contract, including the join-vs-escalate
- * semantics for a second concurrent `/abort` call below, in `requirements/api.md`'s "Graceful abort"
- * section.
+ * `gracefully` on a `RUNNING` run publishes an `aborting` frame and waits `GRACEFUL_ABORT_WINDOW_MS`
+ * before stopping; other states take the immediate path. A second concurrent graceful abort joins the
+ * window rather than restarting it - see `requirements/api.md`.
  *
- * `wasRunning`/`alreadyAborting` MUST come from `transitionJobStatus`'s `onBeforeTransition` hook - read
- * from *inside* the same mutex-serialized write that performs the `-> ABORTING` transition, never from a
- * separate, preceding `get()`. A plain `get()` taken before the guarded write has no ordering relationship
- * with a concurrent `runInBackground` call (READY -> RUNNING) and could observe a stale status, silently
- * steering a `?gracefully=true` request onto the wrong path. `onBeforeTransition` also tells apart "this
- * call just wrote ABORTING" from "it was already ABORTING" - `job-status.ts`'s transition table refuses
- * every `ABORTING -> ABORTING` attempt, so a post-transition check on the result alone cannot distinguish
- * the two, and that distinction is exactly what decides whether this call starts a graceful window or
- * joins one already running.
+ * Both flags come from `onBeforeTransition`, read inside the same mutex-serialized write that performs
+ * the transition: a preceding `get()` could observe a stale status, and only the hook can tell "this call
+ * wrote ABORTING" apart from "it was already ABORTING".
  */
 export async function abortRun(driver: Driver, run: RunRecord, gracefully = false): Promise<RunRecord | null> {
 	if (isTerminalJobStatus(run.status)) return run;
