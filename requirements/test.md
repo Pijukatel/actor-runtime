@@ -8,6 +8,13 @@
   the request-queue conformance suite, actors/builds/runs/logs, and the console pages). These do not
   replace the mandatory e2e test below; they exist because Docker is not available in every
   environment this runtime is developed/tested in, and the CLI-only e2e test is Docker-dependent.
+- One integration test (`test/integration/python-sdk-charging.test.ts`) drives the real, unmodified
+  Python `apify` SDK (the PyPI package, not the JS one `sdk-charging.test.ts` already covers) as a
+  `python3` subprocess against a real `startTestServer` instance, proving `Actor.charge()` works end to
+  end for the Python SDK too. It is the one test layer with a dependency beyond `pnpm install`: the
+  Python `apify` package must be importable (`python3 -c "import apify"`). See "Continuous integration"
+  below for how CI provisions it and for the skip-vs-fail rule that keeps it from silently no-opping
+  there.
 
 # Continuous integration
 
@@ -16,6 +23,15 @@
   suites; a second job runs the mandatory CLI-only e2e suite below against the runner's Docker
   daemon (GitHub-hosted Ubuntu runners ship one), so the e2e's Docker-unreachable check never
   silently no-ops in CI - a missing daemon fails the job instead.
+- The first job (`checks`) also installs the Python `apify` package (`actions/setup-python` plus a
+  pinned `pip install apify==<version>`) before running `pnpm test`, so
+  `test/integration/python-sdk-charging.test.ts` genuinely runs there instead of silently no-opping -
+  the same "a missing dependency fails the job instead" rule the e2e job's Docker check follows above.
+  Outside CI (a bare `pnpm test` on a developer machine that may not have Python installed), that one
+  test file skips cleanly instead: `decidePythonSdkGate`
+  (`test/integration/helpers/python-sdk-gate.ts`) treats `process.env.CI` - which GitHub Actions always
+  sets - as the line between "this environment is expected to provide the dependency" (fail loudly) and
+  "this is someone's laptop" (skip cleanly).
 
 # Mandatory end-to-end tests
 

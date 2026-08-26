@@ -10,16 +10,19 @@
  * pydantic `ValidationError` while parsing this runtime's own run response - the Python SDK could not run
  * a pay-per-event Actor against this runtime at all, regardless of what the charging logic itself did.
  *
- * Skips cleanly (`describe.skipIf`) when `python3` or the `apify` package isn't importable in this
- * environment, rather than failing the whole suite - the same "skip, don't fail, when the external
- * dependency genuinely isn't there" convention `test/e2e` uses for a missing Docker daemon.
+ * When `python3` or the `apify` package isn't importable: skips cleanly outside CI (a developer's laptop
+ * with no Python is the reasonable local case), but fails loudly in CI (`process.env.CI`) - the `checks`
+ * job in `.github/workflows/ci.yml` is expected to provision the package before `pnpm test` runs, so a
+ * missing package there means that provisioning step regressed, not that Python is legitimately absent.
+ * See `test/integration/helpers/python-sdk-gate.ts` and `requirements/test.md`.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import axios from 'axios';
 
 import { fixedRunOutcomeDriver, startTestServer, type TestServerHandle } from './helpers/test-server.js';
+import { decidePythonSdkGate, isCi } from './helpers/python-sdk-gate.js';
 import { recordTaggedBuild, updateActor } from '../../src/services/actors.js';
 import { generateId } from '../../src/storage/ids.js';
 import { getRegistries } from '../../src/storage/registries.js';
@@ -37,8 +40,17 @@ async function detectPythonSdk(): Promise<boolean> {
 }
 
 // Evaluated once, at collection time - top-level await is valid ESM here (`tsconfig.json`'s
-// `target: "ES2023"`/`module: "NodeNext"`), so `describe.skipIf` below sees a real boolean, not a Promise.
+// `target: "ES2023"`/`module: "NodeNext"`), so `decidePythonSdkGate` below sees a real boolean, not a
+// Promise.
 const pythonSdkAvailable = await detectPythonSdk();
+
+// `requirements/test.md`'s CI philosophy (stated for the e2e suite's Docker dependency) applies here
+// too: a dependency CI is expected to provide must never silently no-op when it's missing. The `checks`
+// job in `.github/workflows/ci.yml` installs the Python `apify` package before `pnpm test` runs, so if
+// it's unimportable while `CI` is set, that provisioning step regressed - fail loudly instead of
+// skipping. Outside CI (a developer's laptop with no Python), skip cleanly as before -
+// `test/unit/python-sdk-gate.test.ts` covers this decision directly.
+const pythonSdkGate = decidePythonSdkGate({ available: pythonSdkAvailable, ci: isCi() });
 
 async function seedActor(server: TestServerHandle, name: string): Promise<ActorRecord> {
 	const created = await server.client.actors().create({ name });
@@ -163,11 +175,27 @@ async def main():
 asyncio.run(main())
 `;
 
-describe.skipIf(!pythonSdkAvailable)('Actor.charge() via the real, unmodified Python apify SDK', () => {
+describe.skipIf(pythonSdkGate === 'skip')('Actor.charge() via the real, unmodified Python apify SDK', () => {
 	let server: TestServerHandle;
 
+	beforeEach(() => {
+		if (pythonSdkGate === 'fail') {
+			// CI is expected to provision the Python `apify` package before `pnpm test` runs
+			// (`.github/workflows/ci.yml`); getting here means that provisioning step regressed. Fail
+			// loudly and explicitly, rather than skip, or let the test fail later with a less legible
+			// subprocess/import error - see `test/integration/helpers/python-sdk-gate.ts` and
+			// `requirements/test.md`.
+			throw new Error(
+				'python3 -c "import apify" failed while running in CI (process.env.CI is set). The `checks` ' +
+					'job in .github/workflows/ci.yml is expected to install the Python `apify` package before ' +
+					'`pnpm test` runs. This is a hard failure, not a skip, because CI is expected to provide ' +
+					'this dependency - see requirements/test.md.',
+			);
+		}
+	});
+
 	afterEach(async () => {
-		await server.close();
+		await server?.close();
 	});
 
 	it('a Python Actor.charge() call completes without throwing, and chargedEventCounts on the run reflects it', async () => {

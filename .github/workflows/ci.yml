@@ -20,6 +20,16 @@ jobs:
                   node-version: 24
                   cache: pnpm
             - run: pnpm install --frozen-lockfile
+            # Provisions the real, unmodified Python `apify` SDK that
+            # `test/integration/python-sdk-charging.test.ts` drives as a subprocess - pinned to the exact
+            # version verified against this runtime, the same way `package.json`'s devDependencies pins
+            # the JS `apify` package. Without this step the test's own CI-vs-local gate
+            # (`test/integration/helpers/python-sdk-gate.ts`) fails the job outright rather than silently
+            # skipping - see `requirements/test.md`.
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: '3.13'
+            - run: pip install apify==4.0.1
             - run: pnpm run build
             - run: pnpm run lint
             - run: pnpm run format:check
