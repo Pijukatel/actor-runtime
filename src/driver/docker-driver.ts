@@ -299,8 +299,16 @@ function startResourceSampler(
 			clearInterval(timer);
 			if (!inFlight) return;
 			// Bounded per `SAMPLER_STOP_GRACE_MS`'s own doc comment - a `stats()` call that never settles must
-			// never leave this `await` (and everything waiting on it) unbounded.
-			await Promise.race([inFlight, new Promise<void>((resolve) => setTimeout(resolve, SAMPLER_STOP_GRACE_MS))]);
+			// never leave this `await` (and everything waiting on it) unbounded. The grace timer's own handle
+			// is captured and cleared once the race settles either way, so the common case (`inFlight` wins
+			// well inside the grace window) never leaves an armed timer behind on the event loop.
+			let graceTimer: ReturnType<typeof setTimeout> | undefined;
+			await Promise.race([
+				inFlight,
+				new Promise<void>((resolve) => {
+					graceTimer = setTimeout(resolve, SAMPLER_STOP_GRACE_MS);
+				}),
+			]).finally(() => clearTimeout(graceTimer));
 		},
 	};
 }
@@ -665,10 +673,17 @@ export class DockerDriver implements Driver {
 			// `stdout`/`stderr` are left open so any bytes that do eventually arrive still reach `onLog`,
 			// they just no longer block this method from resolving.
 			const LOG_DRAIN_GRACE_MS = 5000;
+			// The grace timer's own handle is captured and cleared once the race settles either way (the
+			// common case: `sourceEndedPromise` wins well inside the grace window) - see
+			// `SAMPLER_STOP_GRACE_MS`'s own `stop()` above, which clears its identically-shaped timer for
+			// exactly this reason.
+			let logDrainGraceTimer: ReturnType<typeof setTimeout> | undefined;
 			await Promise.race([
 				sourceEndedPromise,
-				new Promise<void>((resolve) => setTimeout(resolve, LOG_DRAIN_GRACE_MS)),
-			]);
+				new Promise<void>((resolve) => {
+					logDrainGraceTimer = setTimeout(resolve, LOG_DRAIN_GRACE_MS);
+				}),
+			]).finally(() => clearTimeout(logDrainGraceTimer));
 			if (!sourceEnded) {
 				console.warn(
 					`Run ${ctx.runId}: log stream did not end within ${LOG_DRAIN_GRACE_MS}ms of the container exiting; finalizing the run without waiting further.`,

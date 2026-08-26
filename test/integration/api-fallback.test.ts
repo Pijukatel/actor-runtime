@@ -137,8 +137,8 @@ async function warmUpIdentity(baseUrl: string, token: string): Promise<void> {
 	});
 }
 
-/** A fixed `2xx` JSON response with a distinguishing header, the "the caller receives exactly this"
- * shape criteria 11-15 check for every successful-relay case. */
+/** A fixed `2xx` JSON response with a distinguishing header - the shape every successful-relay test
+ * below checks the caller receives unchanged (`api.md`'s "A successful relay" bullet). */
 function fixedOkResponse(distinguishingValue: string) {
 	return () => ({
 		status: 200,
@@ -380,8 +380,9 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 	}
 
 	/** Seeds and returns a non-terminal (`RUNNING`) run owned by the test's default token, so
-	 * `DELETE /v2/actor-runs/:runId` throws `cannot-remove-running-run` - one of the "never forwards"
-	 * conflict-style error types (criterion 18). */
+	 * `DELETE /v2/actor-runs/:runId` throws `cannot-remove-running-run` - one of the error types `api.md`'s
+	 * "Which local outcome each toggle covers" bullet lists as never relayed, regardless of either
+	 * toggle's state. */
 	async function seedRunningRun(): Promise<string> {
 		const actor = await server.client.actors().create({ name: `fallback-conflict-actor-${generateId()}` });
 		const actorRecord = (await getRegistries().actors.get(actor.id))!;
@@ -679,12 +680,13 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 			return res;
 		}
 
-		/** Criterion 16's "byte-identical (status, body, and header set)" - checked here as the header
-		 * *name* set plus every value except `date`, whose value legitimately differs run-to-run (its
-		 * mere presence on both sides is asserted instead). This is what would have caught the fail-closed
-		 * mid-body-death path silently dropping `date`/`connection`/`keep-alive`: that regression left
-		 * status, body, and the two marker headers alone, so only a full-header-set comparison against the
-		 * same request's both-toggles-off baseline surfaces it. */
+		/** `api.md`'s "Fail-closed guarantee" bullet requires the original local error to be reproduced
+		 * unchanged - checked here as the header *name* set plus every value except `date`, whose value
+		 * legitimately differs run-to-run (its mere presence on both sides is asserted instead). This is
+		 * what would have caught the fail-closed mid-body-death path silently dropping
+		 * `date`/`connection`/`keep-alive`: that regression left status, body, and the two marker headers
+		 * alone, so only a full-header-set comparison against the same request's both-toggles-off baseline
+		 * surfaces it. */
 		function expectSameHeaderSet(
 			actual: Record<string, string | string[] | undefined>,
 			baseline: Record<string, string | string[] | undefined>,

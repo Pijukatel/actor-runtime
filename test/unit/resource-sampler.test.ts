@@ -469,16 +469,16 @@ describe('DockerDriver.startRun - per-run resource sampler (onSample)', () => {
 		await outcomePromise;
 	});
 
-	it("skips a tick outright when cpu_stats.system_cpu_usage is missing while total_usage is present and valid - the cgroup v2 rootless daemon shape the guard's second clause exists for", async () => {
+	it("skips a tick outright when cpu_stats.system_cpu_usage is missing while total_usage is present and valid - the shape the guard's second clause exists for", async () => {
 		const stub = stubDockerForSampler();
 		const driver = new DockerDriver(stub.docker);
 		driver.available = true;
 
 		stub.queueStatsResponse(containerStats(0, 0, 100)); // baseline
-		// BAD: total_usage present and finite, but system_cpu_usage is absent entirely - the shape a
-		// cgroup-v2 rootless daemon reports (it never populates system_cpu_usage in that mode), distinct
-		// from - and never reaching the same code path as - the already-tested "total_usage missing" case
-		// above, which returns before system_cpu_usage is even read.
+		// BAD: total_usage present and finite, but system_cpu_usage is absent entirely - covered because
+		// the daemon's own stats shape is not guaranteed (docker-driver.ts's cpuUsageSnapshotOf doc
+		// comment), distinct from - and never reaching the same code path as - the already-tested
+		// "total_usage missing" case above, which returns before system_cpu_usage is even read.
 		stub.queueStatsResponse({
 			cpu_stats: { cpu_usage: { total_usage: 250 }, online_cpus: 1 },
 			memory_stats: { usage: 150 },
@@ -736,6 +736,41 @@ describe('DockerDriver.startRun - per-run resource sampler (onSample)', () => {
 		await vi.advanceTimersByTimeAsync(5000);
 		expect(stub.stats).toHaveBeenCalledTimes(1);
 		expect(samples).toEqual([]);
+	});
+
+	it("clears stop()'s own grace timer once the in-flight stats() call wins the race, instead of leaving it armed for the rest of SAMPLER_STOP_GRACE_MS", async () => {
+		const stub = stubDockerForSampler();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-sampler-stop-3', imageId: 'fake-image', env: {}, memoryMbytes: 1024, timeoutSecs: 60 },
+			() => {},
+			() => {},
+		);
+
+		// Let `startRun` run past its own setup, far enough that the sampler's baseline `stats()` call has
+		// actually been issued - it is left pending (no queued response) for the rest of this test.
+		await vi.advanceTimersByTimeAsync(0);
+		expect(stub.stats).toHaveBeenCalledTimes(1);
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+
+		// A little into the grace window: `stop()`'s own grace `setTimeout` is now the only timer left
+		// armed (the sampler's `setInterval` and the run's own `timeoutSecs` timer are already cleared by
+		// this point, and the log-drain race resolved instantly since the log stream already ended).
+		await vi.advanceTimersByTimeAsync(100);
+		expect(vi.getTimerCount()).toBe(1);
+
+		// The in-flight call wins the race well inside `SAMPLER_STOP_GRACE_MS`.
+		stub.resolvePendingStats(containerStats(0, 0, 100));
+		const outcome = await outcomePromise;
+
+		expect(outcome).toEqual({ exitCode: 0, timedOut: false });
+		// Before this fix, the grace timer's handle was never captured, so it stayed armed on the event
+		// loop for the rest of the grace window even though the race it was guarding had already settled.
+		expect(vi.getTimerCount()).toBe(0);
 	});
 
 	it('a container.logs() rejection between container.start() and container.wait() still stops the sampler and removes the container', async () => {
