@@ -76,14 +76,14 @@ endpoint/console details: `requirements/api.md`'s `/actor-runtime/*` section and
 ## Development
 
 ```bash
-npm install
-npm run build     # tsc
-npm test          # unit + integration (no Docker needed)
-npm run test:e2e  # full CLI-driven dev loop against a built image (requires Docker)
-npm run dev       # run the server directly against ./data with tsx
+pnpm install
+pnpm run build     # tsc
+pnpm test          # unit + integration (no Docker needed)
+pnpm run test:e2e  # full CLI-driven dev loop against a built image (requires Docker)
+pnpm run dev       # run the server directly against ./data with tsx
 ```
 
-`npm run dev` sets `ACTOR_RUNTIME_DATA_DIR=./data` inline in the script (`DEFAULT_DATA_DIR` otherwise
+`pnpm run dev` sets `ACTOR_RUNTIME_DATA_DIR=./data` inline in the script (`DEFAULT_DATA_DIR` otherwise
 falls back to the container path `/data` - see `src/config.ts`); this only works as written on a
 POSIX shell (Linux/macOS). On Windows, set the env var separately before running `tsx src/index.ts`
 (e.g. in PowerShell: `$env:ACTOR_RUNTIME_DATA_DIR="./data"; tsx src/index.ts`), or use a cross-platform
@@ -96,12 +96,18 @@ resolves to (both must move in lockstep - `@crawlee/fs-storage` pins its own nat
 `@crawlee/fs-storage-native`). To bump:
 
 ```bash
-npm view @crawlee/core dist-tags.v4
-npm view @crawlee/fs-storage dist-tags.v4   # should match
+pnpm view @crawlee/core dist-tags.v4
+pnpm view @crawlee/fs-storage dist-tags.v4   # should match
 # update both versions in package.json, then:
-npm install
-npm run build && npm test
+pnpm install
+pnpm run build && pnpm test
 ```
+
+While bumping, check whether the `pnpm.overrides` pin on `@crawlee/fs-storage-native` in
+`package.json` is still needed: it forces the first release with linux-arm64 bindings
+(`0.1.5-beta.19`, API-identical to the `0.1.5-beta.18` that released `@crawlee/fs-storage`
+versions still depend on). Once the bumped `@crawlee/fs-storage` depends on `>= 0.1.5-beta.19`
+on its own, delete the override.
 
 ## Apify Proxy
 

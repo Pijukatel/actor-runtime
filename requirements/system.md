@@ -2,15 +2,12 @@
 
 - Supported operating systems:
     - Linux (tested)
-    - MacOS (not tested in POC)
-    - Windows. (not tested in POC)
+    - MacOS (adhoc manual tests)
+    - Windows (not tested in POC)
 
 - The system is encapsulated in dedicated docker image.
 - Linux is the officially supported and verified platform for the POC.
 - MacOS and Windows are best-effort for the POC.
-- The image is glibc-based (e.g. Debian slim), **not Alpine/musl**: `@crawlee/fs-storage` loads a
-  native Rust addon (`@crawlee/fs-storage-native`) with no musl build, so an Alpine base would fail to
-  load the storage layer entirely.
 
 # Components
 

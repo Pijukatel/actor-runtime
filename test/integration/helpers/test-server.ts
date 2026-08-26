@@ -14,7 +14,7 @@ import { createApiServer } from '../../../src/api/server.js';
 import { attachEventsWebSocket } from '../../../src/api/events-ws.js';
 import { resetLogsForTests, stopLogFlusher } from '../../../src/services/logs.js';
 import { resetEventsChannelForTests } from '../../../src/services/events-channel.js';
-import type { BuildOutcome, Driver, RunOutcome, RunResourceSample } from '../../../src/driver/types.js';
+import type { BuildContext, BuildOutcome, Driver, RunOutcome, RunResourceSample } from '../../../src/driver/types.js';
 
 /** A driver that is always unavailable, so build/run creation fails fast and deterministically. */
 export function unavailableDriver(): Driver {
@@ -67,14 +67,19 @@ export function fixedRunOutcomeDriver(outcome: RunOutcome): Driver {
 	};
 }
 
-/** Same idea as `fixedRunOutcomeDriver`, but for builds: `startBuild` either resolves with `outcome` or
- * rejects with `error`, whichever the caller supplies (`error` wins if both are given, so a
- * `DriverTimedOutError` can be asserted straight through to a `TIMED-OUT` status). */
-export function fixedBuildOutcomeDriver(outcome: BuildOutcome, error?: Error): Driver {
+/** Same idea as `fixedRunOutcomeDriver`, but for builds; also records every `startBuild` ctx into
+ * `startBuildContexts`. */
+export function fixedBuildOutcomeDriver(
+	outcome: BuildOutcome,
+	error?: Error,
+): Driver & { startBuildContexts: BuildContext[] } {
+	const startBuildContexts: BuildContext[] = [];
 	return {
 		available: true,
+		startBuildContexts,
 		async init() {},
-		async startBuild() {
+		async startBuild(ctx) {
+			startBuildContexts.push(ctx);
 			if (error) throw error;
 			return outcome;
 		},

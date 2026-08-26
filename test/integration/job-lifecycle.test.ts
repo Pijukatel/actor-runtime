@@ -39,7 +39,14 @@ import {
 	waitForRunFinish,
 } from '../../src/services/runs.js';
 import { DriverTimedOutError, type Driver } from '../../src/driver/types.js';
-import type { ActorRecord, ActorVersionRecord, BuildRecord, RunRecord } from '../../src/storage/entities.js';
+import type {
+	ActorRecord,
+	ActorVersionRecord,
+	BuildRecord,
+	RunRecord,
+	SourceFile,
+} from '../../src/storage/entities.js';
+import { DEFAULT_DOCKERFILE_CONTENT, DEFAULT_DOCKERFILE_NAME } from '../../src/services/default-dockerfile.js';
 
 /** Creates an Actor via the real client (so it has a genuine owner) and returns the underlying
  * `ActorRecord` for direct service-layer calls. */
@@ -91,8 +98,7 @@ const VERSION: ActorVersionRecord = {
 	sourceFiles: [],
 };
 
-/** Fails the test immediately (rather than hanging) if the driver is ever asked to start a run/build -
- * used to assert the pre-start abort window really does prevent a container/build from ever starting. */
+/** Fails the test immediately if the driver is ever asked to start a run/build. */
 function neverStartDriver(): Driver & { abortRunCalls: string[]; abortBuildCalls: string[] } {
 	const abortRunCalls: string[] = [];
 	const abortBuildCalls: string[] = [];
@@ -102,7 +108,9 @@ function neverStartDriver(): Driver & { abortRunCalls: string[]; abortBuildCalls
 		abortBuildCalls,
 		async init() {},
 		async startBuild() {
-			throw new Error('startBuild must never be called once the record is already ABORTING');
+			throw new Error(
+				'startBuild must never be called once the build has already been finalised - either the record was already ABORTING, or resolveDockerfileLocation returned a "failure" outcome',
+			);
 		},
 		async abortBuild(buildId) {
 			abortBuildCalls.push(buildId);
@@ -317,6 +325,114 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 
 			const aborted = await abortBuild(server.driver, build);
 			expect(aborted?.status).toBe('SUCCEEDED');
+		});
+	});
+
+	describe("Dockerfile resolution wiring: runBuildInBackground acts on resolveDockerfileLocation's outcome", () => {
+		it('a "failure" outcome marks the build FAILED with the resolver\'s message as statusMessage, and never calls driver.startBuild', async () => {
+			const driver = neverStartDriver();
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'dockerfile-failure-actor');
+
+			const escapingSourceFiles: SourceFile[] = [
+				{
+					name: '.actor/actor.json',
+					format: 'TEXT',
+					content: JSON.stringify({ dockerfile: '../../evil/Dockerfile' }),
+				},
+			];
+			const version: ActorVersionRecord = { ...VERSION, sourceFiles: escapingSourceFiles };
+
+			const record: BuildRecord = {
+				id: generateId(),
+				userId: actor.userId,
+				actorId: actor.id,
+				versionNumber: '0.0',
+				buildNumber: '0.0.1',
+				tag: 'latest',
+				status: 'READY',
+				startedAt: new Date().toISOString(),
+			};
+			await getRegistries().builds.set(record.id, record);
+
+			await runBuildInBackground(driver, actor, version, record, { tag: 'latest', useCache: true });
+
+			const final = await getRegistries().builds.get(record.id);
+			expect(final?.status).toBe('FAILED');
+			expect(final?.statusMessage).toBe(
+				'Dockerfile path "../../evil/Dockerfile" in .actor/actor.json points outside the Actor root directory.',
+			);
+		});
+
+		it('a "default" outcome appends the bundled default Dockerfile to the driver\'s ctx.sourceFiles and sets ctx.dockerfilePath to "Dockerfile"', async () => {
+			const driver = fixedBuildOutcomeDriver({ imageId: 'x' });
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'dockerfile-default-actor');
+
+			const noDockerfileSourceFiles: SourceFile[] = [
+				{ name: 'main.js', format: 'TEXT', content: 'console.log(1);\n' },
+			];
+			const version: ActorVersionRecord = { ...VERSION, sourceFiles: noDockerfileSourceFiles };
+
+			const record: BuildRecord = {
+				id: generateId(),
+				userId: actor.userId,
+				actorId: actor.id,
+				versionNumber: '0.0',
+				buildNumber: '0.0.1',
+				tag: 'latest',
+				status: 'READY',
+				startedAt: new Date().toISOString(),
+			};
+			await getRegistries().builds.set(record.id, record);
+
+			await runBuildInBackground(driver, actor, version, record, { tag: 'latest', useCache: true });
+
+			expect(driver.startBuildContexts).toHaveLength(1);
+			const ctx = driver.startBuildContexts[0]!;
+			expect(ctx.dockerfilePath).toBe(DEFAULT_DOCKERFILE_NAME);
+			expect(ctx.sourceFiles).toEqual([
+				...noDockerfileSourceFiles,
+				{ name: 'Dockerfile', format: 'TEXT', content: DEFAULT_DOCKERFILE_CONTENT },
+			]);
+			expect(version.sourceFiles).toEqual(noDockerfileSourceFiles);
+
+			const final = await getRegistries().builds.get(record.id);
+			expect(final?.status).toBe('SUCCEEDED');
+		});
+
+		it('a "resolved" outcome passes the resolved path through to ctx.dockerfilePath, with sourceFiles unchanged', async () => {
+			const driver = fixedBuildOutcomeDriver({ imageId: 'x' });
+			server = await startTestServer(driver);
+			const actor = await seedActor(server, 'dockerfile-resolved-actor');
+
+			const resolvedSourceFiles: SourceFile[] = [
+				{ name: '.actor/Dockerfile', format: 'TEXT', content: 'FROM node:20\n' },
+				{ name: 'main.js', format: 'TEXT', content: 'console.log(1);\n' },
+			];
+			const version: ActorVersionRecord = { ...VERSION, sourceFiles: resolvedSourceFiles };
+
+			const record: BuildRecord = {
+				id: generateId(),
+				userId: actor.userId,
+				actorId: actor.id,
+				versionNumber: '0.0',
+				buildNumber: '0.0.1',
+				tag: 'latest',
+				status: 'READY',
+				startedAt: new Date().toISOString(),
+			};
+			await getRegistries().builds.set(record.id, record);
+
+			await runBuildInBackground(driver, actor, version, record, { tag: 'latest', useCache: true });
+
+			expect(driver.startBuildContexts).toHaveLength(1);
+			const ctx = driver.startBuildContexts[0]!;
+			expect(ctx.dockerfilePath).toBe('.actor/Dockerfile');
+			expect(ctx.sourceFiles).toEqual(resolvedSourceFiles);
+
+			const final = await getRegistries().builds.get(record.id);
+			expect(final?.status).toBe('SUCCEEDED');
 		});
 	});
 
