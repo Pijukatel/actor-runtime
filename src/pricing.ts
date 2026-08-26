@@ -171,8 +171,10 @@ export function initialChargedEventCounts(pricingInfo: PricingInfo, memoryMbytes
 }
 
 /** The `stats` object `runDto` returns - see this module's doc comment for which fields are derived
- * vs. genuinely unmeasured. `resourceStats` is the run's own snapshot (undefined for a run that never
- * received a sample, e.g. one that failed before its container started - treated as all-zero). */
+ * vs. genuinely unmeasured. `resourceStats` is the run's own snapshot - undefined for a run that hasn't
+ * reached a terminal status yet (it's only set in the terminal-transition write), and still an
+ * all-zero object rather than undefined for a terminal run whose container never started. Either way
+ * this function treats a missing snapshot as all-zero. */
 export function computeRunStats(
 	memoryMbytes: number,
 	startedAt: string,

@@ -166,8 +166,10 @@ export interface RunRecord {
 	/** Sampler-derived `memAvgBytes`/`cpuAvgUsage`/`cpuMaxUsage`, snapshotted from
 	 * `events-channel.ts`'s in-memory accumulator in the same terminal-transition write that sets
 	 * `finishedAt` (`pricing.ts`'s doc comment explains why these three - unlike `computeUnits` - are
-	 * not derivable after the fact). Absent for a run that never received a sample (e.g. one that failed
-	 * before its container ever started); `runDto` treats an absent snapshot as all-zero. */
+	 * not derivable after the fact). Absent until the run reaches a terminal status, since that write is
+	 * the only place this field is set; a run whose container never started still gets an all-zero
+	 * snapshot at that point, not an absent field (`events-channel.ts`'s `getResourceStatsSnapshot` never
+	 * returns `undefined`). `runDto` treats an absent snapshot as all-zero. */
 	resourceStats?: ResourceStatsSnapshot;
 }
 
