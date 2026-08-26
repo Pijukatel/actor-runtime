@@ -74,9 +74,9 @@ export function mountRuns(router: Router, deps: ApiServerDeps): void {
 		'/actor-runs/:runId/charge',
 		h(async (req, res) => {
 			// Same "owned record" check every other `/v2/actor-runs/:runId/*` route uses - a run that
-			// doesn't exist, or belongs to someone else, is `404 record-not-found` either way (design
-			// section 4's "Authorization" note: this runtime hands the container the owner's own token,
-			// so there is no separate run-scoped-token check to mirror from apify-core here).
+			// doesn't exist, or belongs to someone else, is `404 record-not-found` either way (this
+			// runtime hands the container the owner's own token, so there is no separate run-scoped-token
+			// check to mirror from apify-core here).
 			const run = await getOwnedRun(requireUser(req).id, req.params.runId as string);
 			if (!run) throw recordNotFound();
 

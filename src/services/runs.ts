@@ -13,12 +13,16 @@ import { initialChargedEventCounts } from '../pricing.js';
 import { CONTAINER_EVENTS_WS_BASE_URL } from '../config.js';
 
 /** Every terminal `RunRecord` write in this module goes through this helper so `resourceStats` is
- * snapshotted identically at every one of the nine terminal-status code paths below - populated the
+ * snapshotted identically at every one of the eight terminal-status code paths below - populated the
  * same way for any run carrying a `finishedAt`, with no per-status special-casing. Reads whatever
  * `events-channel.ts` has accumulated for `runId` so far (all-zero if nothing was ever published - e.g.
  * a run that never got a container). */
 function runTerminalPatch(runId: string, patch: Partial<RunRecord> = {}): Partial<RunRecord> {
-	return { ...patch, finishedAt: new Date().toISOString(), resourceStats: getResourceStatsSnapshot(runId) };
+	return {
+		...patch,
+		finishedAt: new Date().toISOString(),
+		resourceStats: getResourceStatsSnapshot(runId),
+	};
 }
 
 const DEFAULT_MEMORY_MBYTES = 1024;
