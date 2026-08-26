@@ -100,6 +100,28 @@ function chargeViaHttp(
 	});
 }
 
+/** Same endpoint, but sends `rawBody` verbatim as the request body (already-serialized JSON text) instead
+ * of letting axios `JSON.stringify` a plain object - needed for a `count` value JSON itself can represent
+ * but a JS object literal cannot (e.g. `1e400`, a valid JSON number token that parses to `Infinity`), so
+ * the request-shape guard's `!Number.isFinite(count)` arm is reachable rather than always failing earlier
+ * at JSON-parse time. */
+function chargeViaHttpRaw(
+	baseUrl: string,
+	runId: string,
+	token: string,
+	rawBody: string,
+	idempotencyKey: string | undefined,
+) {
+	return axios.post(`${baseUrl}/v2/actor-runs/${runId}/charge`, rawBody, {
+		headers: {
+			'content-type': 'application/json',
+			Authorization: `Bearer ${token}`,
+			...(idempotencyKey ? { 'idempotency-key': idempotencyKey } : {}),
+		},
+		validateStatus: () => true,
+	});
+}
+
 describe('POST|GET /actor-runtime/pricing/:actorId', () => {
 	let server: TestServerHandle;
 
@@ -716,6 +738,171 @@ describe('POST /v2/actor-runs/:runId/charge', () => {
 
 		const after = await server.client.run(runId).get();
 		expect(after?.chargedEventCounts?.['page-scraped']).toBe(2);
+	});
+});
+
+describe('POST /v2/actor-runs/:runId/charge - request-shape validation', () => {
+	let server: TestServerHandle;
+
+	afterEach(async () => {
+		await server.close();
+	});
+
+	/** Identical to the sibling describe block's helper - a PPE run that would otherwise charge
+	 * successfully, so a guard rejection is provably the *only* reason each request below fails (not an
+	 * unrelated 404/405, the exact gap the review flagged). */
+	async function seedPpeRun(name: string): Promise<{ actor: ActorRecord; runId: string }> {
+		const actor = await seedRunnableActor(server, name);
+		await declarePricing(server.baseUrl, actor.id, SAMPLE_PRICING_BODY, server.token);
+		const run = await server.client.actor(actor.id).start({}, { memory: 1024, waitForFinish: 5 });
+		return { actor, runId: run.id };
+	}
+
+	it('a missing eventName is rejected as 400 invalid-request and leaves chargedEventCounts untouched', async () => {
+		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
+		const { runId } = await seedPpeRun('charge-guard-missing-eventname-actor');
+
+		const res = await chargeViaHttp(server.baseUrl, runId, server.token, { count: 1 }, 'k-guard-missing-1');
+		expect(res.status).toBe(400);
+		expect(res.data.error.type).toBe('invalid-request');
+
+		const after = await server.client.run(runId).get();
+		expect(after?.chargedEventCounts?.['page-scraped']).toBe(0);
+	});
+
+	it('an empty-string eventName is rejected as 400 invalid-request', async () => {
+		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
+		const { runId } = await seedPpeRun('charge-guard-empty-eventname-actor');
+
+		const res = await chargeViaHttp(
+			server.baseUrl,
+			runId,
+			server.token,
+			{ eventName: '', count: 1 },
+			'k-guard-empty-1',
+		);
+		expect(res.status).toBe(400);
+		expect(res.data.error.type).toBe('invalid-request');
+
+		const after = await server.client.run(runId).get();
+		expect(after?.chargedEventCounts?.['page-scraped']).toBe(0);
+	});
+
+	it('a non-string eventName is rejected as 400 invalid-request', async () => {
+		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
+		const { runId } = await seedPpeRun('charge-guard-numeric-eventname-actor');
+
+		const res = await chargeViaHttp(
+			server.baseUrl,
+			runId,
+			server.token,
+			{ eventName: 123, count: 1 },
+			'k-guard-numeric-eventname-1',
+		);
+		expect(res.status).toBe(400);
+		expect(res.data.error.type).toBe('invalid-request');
+
+		const after = await server.client.run(runId).get();
+		expect(after?.chargedEventCounts?.['page-scraped']).toBe(0);
+	});
+
+	it('count: 0 is rejected as 400 invalid-request', async () => {
+		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
+		const { runId } = await seedPpeRun('charge-guard-zero-count-actor');
+
+		const res = await chargeViaHttp(
+			server.baseUrl,
+			runId,
+			server.token,
+			{ eventName: 'page-scraped', count: 0 },
+			'k-guard-zero-1',
+		);
+		expect(res.status).toBe(400);
+		expect(res.data.error.type).toBe('invalid-request');
+
+		const after = await server.client.run(runId).get();
+		expect(after?.chargedEventCounts?.['page-scraped']).toBe(0);
+	});
+
+	it('a negative count is rejected as 400 invalid-request', async () => {
+		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
+		const { runId } = await seedPpeRun('charge-guard-negative-count-actor');
+
+		const res = await chargeViaHttp(
+			server.baseUrl,
+			runId,
+			server.token,
+			{ eventName: 'page-scraped', count: -5 },
+			'k-guard-negative-1',
+		);
+		expect(res.status).toBe(400);
+		expect(res.data.error.type).toBe('invalid-request');
+
+		const after = await server.client.run(runId).get();
+		expect(after?.chargedEventCounts?.['page-scraped']).toBe(0);
+	});
+
+	it('a non-numeric count is rejected as 400 invalid-request', async () => {
+		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
+		const { runId } = await seedPpeRun('charge-guard-string-count-actor');
+
+		const res = await chargeViaHttp(
+			server.baseUrl,
+			runId,
+			server.token,
+			{ eventName: 'page-scraped', count: 'five' },
+			'k-guard-string-count-1',
+		);
+		expect(res.status).toBe(400);
+		expect(res.data.error.type).toBe('invalid-request');
+
+		const after = await server.client.run(runId).get();
+		expect(after?.chargedEventCounts?.['page-scraped']).toBe(0);
+	});
+
+	it('a non-finite count (e.g. an out-of-range numeric literal parsing to Infinity) is rejected as 400 invalid-request', async () => {
+		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
+		const { runId } = await seedPpeRun('charge-guard-infinite-count-actor');
+
+		// JSON has no `Infinity`/`NaN` literal, so a plain JS object with `count: Infinity` would be
+		// silently coerced to `null` by `JSON.stringify` before it ever reaches the server (exercising the
+		// "missing" arm, not this one). `1e400` is a valid JSON number token that overflows to `Infinity`
+		// once parsed (`JSON.parse('1e400') === Infinity`, verified directly) - sent as a raw already-JSON
+		// string so it survives the wire as `count: Infinity`, landing on the `!Number.isFinite(count)` arm
+		// specifically rather than the JSON-parse-error or typeof-mismatch arms.
+		const res = await chargeViaHttpRaw(
+			server.baseUrl,
+			runId,
+			server.token,
+			'{"eventName":"page-scraped","count":1e400}',
+			'k-guard-infinite-1',
+		);
+		expect(res.status).toBe(400);
+		expect(res.data.error.type).toBe('invalid-request');
+
+		const after = await server.client.run(runId).get();
+		expect(after?.chargedEventCounts?.['page-scraped']).toBe(0);
+	});
+
+	it("a successful charge with count omitted entirely defaults to 1, incrementing chargedEventCounts by exactly 1 (matching apify-client-js's own default)", async () => {
+		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
+		const { runId } = await seedPpeRun('charge-guard-default-count-actor');
+
+		const before = await server.client.run(runId).get();
+		expect(before?.chargedEventCounts?.['page-scraped']).toBe(0);
+
+		const res = await chargeViaHttp(
+			server.baseUrl,
+			runId,
+			server.token,
+			{ eventName: 'page-scraped' },
+			'k-guard-default-1',
+		);
+		expect(res.status).toBe(201);
+		expect(res.data).toEqual({});
+
+		const after = await server.client.run(runId).get();
+		expect(after?.chargedEventCounts?.['page-scraped']).toBe(1);
 	});
 });
 

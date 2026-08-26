@@ -92,6 +92,7 @@ export const SPEC_TABLE: SpecTableEntry[] = [
 	pathTemplate('DELETE', 'v2/actor-runs/:runId', true),
 	pathTemplate('POST', 'v2/actor-runs/:runId/abort', true),
 	pathTemplate('GET', 'v2/actor-runs/:runId/log', true),
+	pathTemplate('POST', 'v2/actor-runs/:runId/charge', true),
 
 	// --- Datasets ---
 	pathTemplate('GET', 'v2/datasets', true),
