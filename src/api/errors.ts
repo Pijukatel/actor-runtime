@@ -60,3 +60,20 @@ export function cannotChargeNonPayPerEventActor(): ApiError {
 		'This Actor run does not have pay-per-event pricing, so it cannot be charged.',
 	);
 }
+
+/**
+ * Matches the real Apify platform exactly: `POST /v2/actor-runs/:runId/charge` with an `eventName`
+ * starting with `"apify-"` (the reserved prefix for synthetic, platform-owned events such as
+ * `apify-actor-start`) is rejected outright - checked before the run is even looked up
+ * (`apify-core`'s `idempotentChargeUserForEvent`, `src/api/src/lib/run_charging_service.ts:566-569` -
+ * `errors.paidActors.cannotChargeApifyEvent(eventName)`, itself
+ * `src/packages/errors/src/errors/paid_actors.ts:152-153` - `newMeteorishError('cannot-charge-apify-event',
+ * ..., 405)`). An SDK never sends this - only the platform (or a hand-crafted request) would.
+ */
+export function cannotChargeApifyEvent(eventName: string): ApiError {
+	return new ApiError(
+		405,
+		'cannot-charge-apify-event',
+		`Event "${eventName}" is system event and cannot be charged.`,
+	);
+}

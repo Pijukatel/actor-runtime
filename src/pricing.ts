@@ -65,9 +65,10 @@ export const APIFY_MARGIN_PERCENTAGE_PAY_PER_EVENT = 0.2;
  * `AwareDatetime` (the Python SDK's `CommonActorPricingInfo.created_at`/`started_at` type) parses a
  * `Z`-suffixed ISO string into a timezone-aware `datetime` directly, so no conversion is needed on either
  * side. `apifyMarginPercentage`/`createdAt`/`startedAt` are required at this top level in both apify-core
- * and apify-client-js's own `CommonActorPricingInfo` TS type - this was the actual gap: they were entirely
- * absent here, which is why a real `apify_client.run().get()` call failed `RunResponse.model_validate(...)`
- * with three `Field required` errors before this fix. */
+ * and apify-client-js's own `CommonActorPricingInfo` TS type, and the Python SDK's pydantic
+ * `CommonActorPricingInfo` model has no default for any of the three - a `pricingInfo` missing even one
+ * of them fails `RunResponse.model_validate(...)` with a `Field required` error, so `Actor.init()` never
+ * completes for that run. */
 export interface PricingInfo {
 	pricingModel: 'PAY_PER_EVENT';
 	/** When this pricing info record was declared - stamped server-side, never client-supplied

@@ -35,7 +35,7 @@
       runtime API" below.
     - `POST /v2/actor-runs/:runId/charge`: a successful response body is raw `{}` on HTTP `201`, never
       `{data}`-wrapped - matching the real platform and apify-client-js's `run().charge()` byte for byte
-      (see "Actor runs" under "Public API" below). Its error responses still use the ordinary
+      (see "Run cost estimation and PPE charging" under "Public API" below). Its error responses still use the ordinary
       `{error: {type, message}}` shape.
 - `*At` timestamp fields are ISO-8601 strings.
 
@@ -239,8 +239,15 @@ eventPriceUsd }, ... } } }` - or the JSON string `""` to clear, matching the dev
       (`actor-driver.md`'s "Run resource telemetry") onto the run record in the same write that sets
       `finishedAt`, so they read `0` for a run that never received a sample (e.g. one that failed before
       its container ever started).
-    - `netRxBytes`/`netTxBytes`/`imageSizeBytes`/`inputBodyLen`/`migrationCount`/`rebootCount`/
-      `restartCount`/`resurrectCount`/`metamorph` are always `0` - genuinely unmeasured by this runtime.
+    - `memMaxBytes` is **the run's granted memory limit** (`memoryMbytes x 1 MiB`), not an observed peak:
+      this runtime does not sample a true memory high-water mark, so unlike `memAvgBytes` this field is
+      always the same fixed value for the run's whole lifetime, not something to read as "the most memory
+      it actually used" (same convention as the websocket resource-telemetry payload,
+      `actor-driver.md`'s "Run resource telemetry").
+    - `memCurrentBytes`/`cpuCurrentUsage` (instantaneous-at-read-time figures apify-core reports for a
+      still-`RUNNING` job) and `netRxBytes`/`netTxBytes`/`imageSizeBytes`/`inputBodyLen`/
+      `migrationCount`/`rebootCount`/`restartCount`/`resurrectCount`/`metamorph` are always `0` -
+      genuinely unmeasured by this runtime.
 - `usage`/`usageUsd` are `Partial<Record<"ACTOR_COMPUTE_UNITS" | "PAID_ACTORS_PER_EVENT", number>>`,
   computed at read time from persisted counters x a local price table (mirroring apify-core's own
   `CHARGEABLE_SERVICE_PRICING`: `ACTOR_COMPUTE_UNITS` at `$0.20`/CU, `PAID_ACTORS_PER_EVENT` at `$1` per
@@ -299,8 +306,12 @@ eventTotalUsd }, ... }`.
       event).
     - `405` `cannot-charge-non-pay-per-event-actor` - the run's owning Actor has no PPE pricing declared
       at all (no `pricingInfo`, or a `pricingModel` other than `PAY_PER_EVENT`).
+    - `405` `cannot-charge-apify-event` - `eventName` starts with the reserved `apify-` prefix (matching
+      apify-core's own guard, `run_charging_service.ts:566-569` - checked before the run is even looked
+      up, ahead of the `404`/other `405` above).
     - `400` `invalid-request` - a missing/malformed `idempotency-key` header, a missing/empty
-      `eventName`, or a non-positive/non-numeric `count`.
+      `eventName`, or a `count` that is not an integer in `[1, 10000000]` (matching apify-core's own
+      `assertInteger(count, { min: 1, max: 10000000 })`, `run_charge.ts:23-24`).
 - This is exactly the HTTP contract both official SDKs' `Actor.charge()` calls against
   (`apify-client`'s `run(id).charge({eventName, count})`, `POST` to this same path, same header, same
   body) - an unmodified SDK Actor run against this runtime with `pricingInfo` correctly declared

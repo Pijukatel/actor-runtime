@@ -154,8 +154,14 @@ export interface RunRecord {
 	 * seeded at run start by `pricing.ts: initialChargedEventCounts` and incremented only by
 	 * `POST .../charge` (`api.md`). Present iff `pricingInfo` is. */
 	chargedEventCounts?: Record<string, number>;
-	/** Charge-idempotency audit trail - `POST .../charge`'s dedupe check. Capped at 1000 entries (oldest
-	 * evicted); never exposed on `/v2`. */
+	/** Charge-idempotency dedupe check, keyed on `idempotencyKey` (`services/charging.ts`) - the only
+	 * field of each entry that dedupe itself reads. `eventName`/`count`/`chargedAt` are kept alongside it
+	 * deliberately, not left over from dedupe alone: together the three mirror the one-row-per-charge
+	 * audit item apify-core itself writes to DynamoDB on every charge (`{runId, actorId, userId,
+	 * eventName, count, createdAt}`, `run_charging_service.ts: chargeUserForEvent`, lines 337-344), so
+	 * this array can serve the same "debug what a run actually charged" purpose - this runtime just
+	 * doesn't expose a reader for it yet (no console row, no `/actor-runtime/*` endpoint). Capped at 1000
+	 * entries (oldest evicted); never exposed on `/v2`. */
 	chargeLog?: ChargeLogEntry[];
 	/** Sampler-derived `memAvgBytes`/`cpuAvgUsage`/`cpuMaxUsage`, snapshotted from
 	 * `events-channel.ts`'s in-memory accumulator in the same terminal-transition write that sets

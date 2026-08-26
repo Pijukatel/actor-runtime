@@ -3,12 +3,14 @@
  * `sdk-charging.test.ts` already covers) actually calls it, driven as a real `python3` subprocess against
  * `startTestServer` - no mock, no shim.
  *
- * This closes a real gap: the Python SDK's `apify_client` validates every API response through pydantic
- * (`RunResponse.model_validate(...)` in `run().get()`), unlike the JS client, which does no runtime schema
- * check. Before `PricingInfo` carried `createdAt`/`startedAt`/`apifyMarginPercentage` and a required
- * `eventDescription` per event (`src/pricing.ts`), a real Python `Actor.init()` failed outright with a
- * pydantic `ValidationError` while parsing this runtime's own run response - the Python SDK could not run
- * a pay-per-event Actor against this runtime at all, regardless of what the charging logic itself did.
+ * This exercises a real constraint: the Python SDK's `apify_client` validates every API response through
+ * pydantic (`RunResponse.model_validate(...)` in `run().get()`), unlike the JS client, which does no
+ * runtime schema check. `PricingInfo` (`src/pricing.ts`) must carry `createdAt`/`startedAt`/
+ * `apifyMarginPercentage` and a required `eventDescription` per event because pydantic's
+ * `CommonActorPricingInfo`/`ActorChargeEvent` models require them with no default - a run response
+ * missing any one of them fails `RunResponse.model_validate(...)` with a `ValidationError`, and `Actor.
+ * init()` never completes: the Python SDK cannot run a pay-per-event Actor against this runtime at all,
+ * regardless of what the charging logic itself does.
  *
  * When `python3` or the `apify` package isn't importable: skips cleanly outside CI (a developer's laptop
  * with no Python is the reasonable local case), but fails loudly in CI (`process.env.CI`) - the `checks`
@@ -135,8 +137,8 @@ function pythonSdkEnv(server: TestServerHandle, run: SdkRunHandle, actorId: stri
 /** Runs `script` as a `python3 -c` subprocess against `env` and parses its last stdout line as JSON.
  * Every script below prints its result *before* calling `Actor.exit()`: `Actor.exit()` calls `sys.exit()`
  * by default outside IPython/Scrapy (`_ActorType._get_default_exit_process` in `apify/_actor.py`), which
- * would otherwise terminate the process before a later `print` ever ran - confirmed by trial (an earlier
- * draft printed after `exit()` and always produced empty stdout). */
+ * terminates the process before any later `print` can run - so a script that printed after `exit()` would
+ * always produce empty stdout here. */
 async function runPythonScript(env: NodeJS.ProcessEnv, script: string): Promise<Record<string, unknown>> {
 	const { stdout } = await execFileAsync('python3', ['-c', script], { env, timeout: 30_000 });
 	const lastLine = stdout
@@ -227,8 +229,12 @@ describe.skipIf(pythonSdkGate === 'skip')('Actor.charge() via the real, unmodifi
 		expect(result.second).toBe(3);
 
 		const after = await server.client.run(run.id).get();
-		// Builds on the first charge (2 + 3 = 5), not reset by the second call - the Python SDK's
-		// `ChargingManager` re-reads `run().get()` fresh, exactly as the JS one does.
+		// This pins server-side accumulation, not an SDK re-read: `Actor.charge()` never re-reads the run
+		// mid-run (both `charge()` calls above only mutate the Python SDK's own in-memory charging state,
+		// seeded once from the single `run().get()` inside `Actor.init()`, then `POST` to
+		// `/v2/actor-runs/:runId/charge`). What this asserts is that this runtime's own `chargeRun`
+		// (`src/services/charging.ts`) increments `chargedEventCounts` across the two separate `POST`s
+		// (2 + 3 = 5) rather than each call clobbering the last.
 		expect(after?.chargedEventCounts?.['page-scraped']).toBe(5);
 	}, 30_000);
 });

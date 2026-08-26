@@ -124,13 +124,15 @@ function buildEnv(
 		APIFY_DEDICATED_CPUS: String(dedicatedCpusFor(run.options.memoryMbytes)),
 	};
 	if (options.proxyPassword) env.APIFY_PROXY_PASSWORD = options.proxyPassword;
-	// Deliberately NOT set: `APIFY_ACTOR_PRICING_INFO` / `APIFY_CHARGED_ACTOR_EVENT_COUNTS`. Setting
-	// both makes the SDK's `ChargingManager.fetchPricingInfo()` short-circuit onto this frozen
-	// container-start snapshot and never read the run record again for the rest of the run - which
-	// would mean a charge made mid-run is invisible to a later `Actor.charge()` call in the *same* run,
-	// and would freeze charge state at container start. Leaving both unset is what makes
-	// `fetchPricingInfo()` fall through to its `run(id).get()` branch instead, which re-reads
-	// `pricingInfo`/`chargedEventCounts` from `runDto` fresh on every `charge()` call.
+	// Deliberately NOT set: `APIFY_ACTOR_PRICING_INFO` / `APIFY_CHARGED_ACTOR_EVENT_COUNTS`. Both SDKs'
+	// `ChargingManager` read pricing/charge state exactly once, at `Actor.init()` - `charge()` itself
+	// never reads the run record, only the one-time init read populates its in-memory charging state.
+	// Setting both env vars would not change that (nothing re-reads either way); it would just make that
+	// one read come from a frozen container-start snapshot instead of a real `run(id).get()`. Leaving
+	// both unset keeps the SDK's one read on the real `GET /v2/actor-runs/:runId` route (`runDto`) rather
+	// than adding a second, env-var-shaped serialization of the same data that this runtime would then
+	// have to keep in lockstep with `runDto` forever - see `requirements/actor-driver.md`'s "Environment
+	// variables in every Actor container" section for the full reasoning.
 	return env;
 }
 

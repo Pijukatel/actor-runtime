@@ -72,9 +72,9 @@ const SAMPLE_PRICING_BODY = {
 
 /** `setActorPricing` stamps `createdAt`/`startedAt`/`apifyMarginPercentage` server-side (`src/services/
  * pricing-declaration.ts`), so a returned `pricingInfo` is never byte-identical to the declared request
- * body - this checks the declared fields exactly and the stamped ones structurally (a valid, matching ISO
- * timestamp pair and the fixed 0.2 margin), in place of the plain `toEqual(declaredBody)` this file used
- * before those fields existed. Reads via `axios` see the raw ISO strings this runtime actually serializes
+ * body - a plain `toEqual(declaredBody)` would fail on those three stamped fields alone, so this checks
+ * the declared fields exactly and the stamped ones structurally instead (a valid, matching ISO
+ * timestamp pair and the fixed 0.2 margin). Reads via `axios` see the raw ISO strings this runtime actually serializes
  * (`PricingInfo.createdAt`/`startedAt` - see `src/pricing.ts`'s doc comment for why they're strings, not
  * `Date`); reads via `server.client` see them already parsed into `Date` objects, since `apify-client`
  * converts any field whose name matches its own date-like-key heuristic on the way in - both forms are
@@ -1012,6 +1012,96 @@ describe('POST /v2/actor-runs/:runId/charge - request-shape validation', () => {
 
 		const after = await server.client.run(runId).get();
 		expect(after?.chargedEventCounts?.['page-scraped']).toBe(1);
+	});
+
+	// apify-core validates `count` as an integer in [1, 10_000_000]
+	// (`assertInteger(count, { min: 1, max: 10000000 })`, `run_charge.ts:23-24`), not merely "a positive
+	// finite number" - a fractional or unbounded `count` accepted here but rejected by the real platform
+	// would let a locally-tested Actor charge successfully in dev and then fail in production. Worse,
+	// a fractional `chargedEventCounts` entry breaks the Python SDK outright: `apify_client`'s
+	// `Run.charged_event_counts` is typed `dict[str, int]`, so `RunResponse.model_validate(...)` raises a
+	// `ValidationError` on the very next `run().get()` (including the one inside `Actor.init()`),
+	// permanently blocking that run's Python SDK usage.
+	it('a fractional count (e.g. 2.5) is rejected as 400 invalid-request and leaves chargedEventCounts untouched', async () => {
+		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
+		const { runId } = await seedPpeRun('charge-guard-fractional-count-actor');
+
+		const res = await chargeViaHttp(
+			server.baseUrl,
+			runId,
+			server.token,
+			{ eventName: 'page-scraped', count: 2.5 },
+			'k-guard-fractional-1',
+		);
+		expect(res.status).toBe(400);
+		expect(res.data.error.type).toBe('invalid-request');
+
+		const after = await server.client.run(runId).get();
+		expect(after?.chargedEventCounts?.['page-scraped']).toBe(0);
+	});
+
+	it('a count above the 10,000,000 cap is rejected as 400 invalid-request and leaves chargedEventCounts untouched', async () => {
+		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
+		const { runId } = await seedPpeRun('charge-guard-over-cap-count-actor');
+
+		const res = await chargeViaHttp(
+			server.baseUrl,
+			runId,
+			server.token,
+			{ eventName: 'page-scraped', count: 10_000_001 },
+			'k-guard-over-cap-1',
+		);
+		expect(res.status).toBe(400);
+		expect(res.data.error.type).toBe('invalid-request');
+
+		const after = await server.client.run(runId).get();
+		expect(after?.chargedEventCounts?.['page-scraped']).toBe(0);
+	});
+
+	it('a count of exactly 10,000,000 (the cap boundary) succeeds', async () => {
+		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
+		const { runId } = await seedPpeRun('charge-guard-at-cap-count-actor');
+
+		const res = await chargeViaHttp(
+			server.baseUrl,
+			runId,
+			server.token,
+			{ eventName: 'page-scraped', count: 10_000_000 },
+			'k-guard-at-cap-1',
+		);
+		expect(res.status).toBe(201);
+		expect(res.data).toEqual({});
+
+		const after = await server.client.run(runId).get();
+		expect(after?.chargedEventCounts?.['page-scraped']).toBe(10_000_000);
+	});
+
+	// apify-core rejects any `apify-`-prefixed `eventName` outright, as the very first check inside
+	// `idempotentChargeUserForEvent` - before it even looks up the run (`run_charging_service.ts:566-569`
+	// - `errors.paidActors.cannotChargeApifyEvent(eventName)`). These synthetic events (e.g.
+	// `apify-actor-start`, seeded server-side by this runtime itself at run start) are reserved for the
+	// platform; no SDK ever charges one through a client request.
+	it('charging an apify--prefixed event name is rejected as 405 cannot-charge-apify-event and leaves chargedEventCounts untouched', async () => {
+		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
+		const { runId } = await seedPpeRun('charge-guard-apify-prefix-actor');
+
+		const before = await server.client.run(runId).get();
+		// `actorStartEventCount(1024)` (`seedPpeRun`'s fixed 1024 MB) - proof this is genuinely rejected,
+		// not silently no-op'd against an already-absent event.
+		expect(before?.chargedEventCounts?.['apify-actor-start']).toBe(1);
+
+		const res = await chargeViaHttp(
+			server.baseUrl,
+			runId,
+			server.token,
+			{ eventName: 'apify-actor-start', count: 10 },
+			'k-guard-apify-prefix-1',
+		);
+		expect(res.status).toBe(405);
+		expect(res.data.error.type).toBe('cannot-charge-apify-event');
+
+		const after = await server.client.run(runId).get();
+		expect(after?.chargedEventCounts?.['apify-actor-start']).toBe(1);
 	});
 });
 

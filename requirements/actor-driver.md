@@ -177,9 +177,18 @@
 - Every `ACTOR_*`/`APIFY_*` pair above is set to an identical value: the two SDKs disagree on which name
   wins, so a divergent pair would size the same run differently depending on which one reads it.
 - **Deliberately NOT set: `APIFY_ACTOR_PRICING_INFO` / `APIFY_CHARGED_ACTOR_EVENT_COUNTS`.** Both SDKs'
-  `ChargingManager` treat the _presence of both_ as a frozen, container-start-only snapshot of PPE
-  pricing/charge state and never re-read the run record again for the rest of the run - setting them
-  would make a charge issued mid-run invisible to a later `Actor.charge()` call in the same run. Leaving
-  both unset is what makes the SDK fall through to its `GET`-the-run-record branch instead, which
-  re-reads `pricingInfo`/`chargedEventCounts`/`options.maxTotalChargeUsd` fresh on every `charge()` call
-  (`api.md`'s "Run cost estimation and PPE charging").
+  `ChargingManager` read pricing/charge state exactly **once**, at `Actor.init()` - never again for the
+  rest of the run (`ChargingManager.init()`/`__aenter__` is the sole caller of
+  `fetchPricingInfo()`/`_fetch_pricing_info()`; `charge()` itself never reads the run record at all, it
+  only mutates the in-memory charging state built from that one read, then `POST`s). Setting both env
+  vars would not change that - a charge issued mid-run is invisible to nothing either way, because
+  neither path re-reads. What the two env vars actually gate is _where that single read comes from_: set,
+  `fetchPricingInfo()` parses them directly as a frozen snapshot and skips the network call entirely;
+  unset (and `APIFY_IS_AT_HOME=1`, which this runtime always sets), it falls through to a real
+  `run(id).get()` against `GET /v2/actor-runs/:runId` - the same route, and the same `runDto` shape, any
+  other client of this run would see. Leaving both unset is what this runtime does, deliberately: it
+  keeps the SDK's one pricing/charge read on the real, already-tested HTTP contract instead of adding a
+  second, env-var-shaped serialization of the same `pricingInfo`/`chargedEventCounts`/
+  `options.maxTotalChargeUsd` data that this runtime does not currently produce anywhere and would have
+  to keep byte-for-byte in sync with `runDto` forever, for no behavioral gain: by the time `Actor.init()`
+  runs, nothing has charged the run yet either way, so the values read would be identical.

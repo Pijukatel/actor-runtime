@@ -3,7 +3,13 @@ import type { Router } from 'express';
 import { requireUser } from '../auth.js';
 
 import { paginate, sendData, sortByTimestamp } from '../envelope.js';
-import { cannotChargeNonPayPerEventActor, cannotRemoveRunningRun, invalidRequest, recordNotFound } from '../errors.js';
+import {
+	cannotChargeApifyEvent,
+	cannotChargeNonPayPerEventActor,
+	cannotRemoveRunningRun,
+	invalidRequest,
+	recordNotFound,
+} from '../errors.js';
 import { h, jsonBody, paginationParams, queryBoolean } from '../handler.js';
 import { abortRun, deleteRun, getOwnedRun, listOwnedRuns } from '../../services/runs.js';
 import { chargeRun } from '../../services/charging.js';
@@ -14,6 +20,14 @@ import { serveLog } from './logs.js';
 
 /** `RUN_CHARGE_IDEMPOTENCY_HEADER` in apify-client-js - the one header this route requires. */
 const IDEMPOTENCY_KEY_HEADER = 'idempotency-key';
+
+/** Reserved prefix for synthetic, platform-owned charge events (e.g. `apify-actor-start`) - matches
+ * `apify-core`'s `APIFY_EVENTS_PREFIX` (`src/api/src/lib/paid_actors_helpers.ts:32`). */
+const APIFY_EVENT_PREFIX = 'apify-';
+
+/** apify-core's own upper bound on a single charge's `count`, "to stop some joker from trying to
+ * integer overflow" (`run_charge.ts:23`'s comment, verbatim). */
+const MAX_CHARGE_COUNT = 10_000_000;
 
 export function mountRuns(router: Router, deps: ApiServerDeps): void {
 	router.get(
@@ -89,8 +103,28 @@ export function mountRuns(router: Router, deps: ApiServerDeps): void {
 			}
 			// `apify-client`'s own default when `count` is omitted (`run.ts: charge()`).
 			const count = body.count === undefined ? 1 : body.count;
-			if (typeof count !== 'number' || !Number.isFinite(count) || count <= 0) {
-				throw invalidRequest('"count" must be a positive number');
+			// Matches apify-core's `assertInteger(count, { min: 1, max: 10_000_000 })`
+			// (`run_charge.ts:23-24`) exactly, rather than this runtime's earlier, looser
+			// "any positive finite number" check: a fractional `count` here would write a fractional
+			// `chargedEventCounts` entry that the Python `apify_client`'s `dict[str, int]`-typed model
+			// then fails to parse on the *next* `run().get()` - permanently breaking `Actor.init()` for
+			// that run's Python SDK - and an unbounded `count` has no equivalent server-side cap at all.
+			if (
+				typeof count !== 'number' ||
+				!Number.isFinite(count) ||
+				!Number.isInteger(count) ||
+				count < 1 ||
+				count > MAX_CHARGE_COUNT
+			) {
+				throw invalidRequest(`"count" must be an integer >= 1 and <= ${MAX_CHARGE_COUNT}`);
+			}
+			// Matches apify-core exactly: synthetic, platform-owned events (the `apify-` prefix) can
+			// never be charged by a client request - only the runtime itself seeds them
+			// (`services/runs.ts`'s `apify-actor-start` seeding). Checked here, before `chargeRun` is
+			// even called, mirroring `idempotentChargeUserForEvent`'s own guard order (the very first
+			// check it makes, ahead of even looking up the run - `run_charging_service.ts:566-569`).
+			if (body.eventName.startsWith(APIFY_EVENT_PREFIX)) {
+				throw cannotChargeApifyEvent(body.eventName);
 			}
 
 			const outcome = await chargeRun(run.id, body.eventName, count, idempotencyKey);

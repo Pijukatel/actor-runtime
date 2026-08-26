@@ -143,8 +143,9 @@
    `skipHidden`/`skipEmpty`/`unwind` are applied by the runtime after paging (the fs dataset backend
    ignores everything but `offset`/`limit`/`desc`), so `total` always counts unfiltered items.
 6. One runtime process per data directory. Storage-record `stats`/usage stay zeroed per item 5 above -
-   that has not changed. What _has_ changed: run-level cost estimation exists now (`api.md`'s "Actor
-   runs" section) - a run's `GET` response carries real `stats.computeUnits`/`usage`/`usageUsd`/
-   `usageTotalUsd`, and PPE runs additionally carry `pricingInfo`/`chargedEventCounts`/`eventUsage`.
+   that has not changed. What _has_ changed: run-level cost estimation exists now (`api.md`'s "Run cost
+   estimation and PPE charging" section) - a run's `GET` response carries real `stats.computeUnits`/
+   `usage`/`usageUsd`/`usageTotalUsd`, and PPE runs additionally carry
+   `pricingInfo`/`chargedEventCounts`/`eventUsage`.
    None of that lives on, or is derived from, any _storage_ record - a dataset/key-value-store/
    request-queue's own `GET` response is completely unaffected by this.
