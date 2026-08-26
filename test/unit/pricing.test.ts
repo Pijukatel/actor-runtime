@@ -77,10 +77,17 @@ describe('actorStartEventCount', () => {
 
 const SAMPLE_PRICING_INFO: PricingInfo = {
 	pricingModel: 'PAY_PER_EVENT',
+	createdAt: '2026-01-01T00:00:00.000Z',
+	startedAt: '2026-01-01T00:00:00.000Z',
+	apifyMarginPercentage: 0.2,
 	pricingPerEvent: {
 		actorChargeEvents: {
-			'apify-actor-start': { eventTitle: 'Actor start', eventPriceUsd: 0.005 },
-			'page-scraped': { eventTitle: 'Page scraped', eventPriceUsd: 0.001 },
+			'apify-actor-start': {
+				eventTitle: 'Actor start',
+				eventDescription: 'Charged per GB of memory at start',
+				eventPriceUsd: 0.005,
+			},
+			'page-scraped': { eventTitle: 'Page scraped', eventDescription: 'One page scraped', eventPriceUsd: 0.001 },
 		},
 	},
 };
@@ -96,8 +103,17 @@ describe('initialChargedEventCounts', () => {
 	it('omits apify-actor-start entirely when it was not itself declared', () => {
 		const pricingInfo: PricingInfo = {
 			pricingModel: 'PAY_PER_EVENT',
+			createdAt: '2026-01-01T00:00:00.000Z',
+			startedAt: '2026-01-01T00:00:00.000Z',
+			apifyMarginPercentage: 0.2,
 			pricingPerEvent: {
-				actorChargeEvents: { 'page-scraped': { eventTitle: 'Page scraped', eventPriceUsd: 0.001 } },
+				actorChargeEvents: {
+					'page-scraped': {
+						eventTitle: 'Page scraped',
+						eventDescription: 'One page scraped',
+						eventPriceUsd: 0.001,
+					},
+				},
 			},
 		};
 		expect(initialChargedEventCounts(pricingInfo, 4096)).toEqual({ 'page-scraped': 0 });

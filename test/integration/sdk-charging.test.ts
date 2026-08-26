@@ -233,7 +233,13 @@ describe('Actor.charge() via the real, unmodified apify SDK', () => {
 			{
 				pricingModel: 'PAY_PER_EVENT',
 				pricingPerEvent: {
-					actorChargeEvents: { 'page-scraped': { eventTitle: 'Page scraped', eventPriceUsd: 0.01 } },
+					actorChargeEvents: {
+						'page-scraped': {
+							eventTitle: 'Page scraped',
+							eventDescription: 'One page scraped',
+							eventPriceUsd: 0.01,
+						},
+					},
 				},
 			},
 			server.token,
@@ -303,7 +309,13 @@ describe('POST /v2/actor-runs/:runId/charge - nothing here aborts an over-cap ru
 			{
 				pricingModel: 'PAY_PER_EVENT',
 				pricingPerEvent: {
-					actorChargeEvents: { 'page-scraped': { eventTitle: 'Page scraped', eventPriceUsd: 1 } },
+					actorChargeEvents: {
+						'page-scraped': {
+							eventTitle: 'Page scraped',
+							eventDescription: 'One page scraped',
+							eventPriceUsd: 1,
+						},
+					},
 				},
 			},
 			server.token,

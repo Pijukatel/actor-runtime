@@ -5,10 +5,14 @@
  * `mountDevFolder`/`mountApiFallback` - see that module's doc comment for why this namespace owns its
  * own `auth()` rather than inheriting `v2`'s.
  *
- * Canonical body is a JSON value: a `PricingInfo` object to declare PPE pricing, or the JSON string
- * `'""'` to clear (`services/pricing-declaration.ts`'s `setActorPricing`) - byte-identical convention to
- * `dev-folder.ts`'s `POST ... --body '""'`. `GET` reads the same value back; the `POST` response body
- * doubles as a read-back too, matching `dev-folder.ts`'s "no separate read/write shape" choice.
+ * Canonical body is a JSON value: `{ pricingModel: "PAY_PER_EVENT", pricingPerEvent: {...} }` to declare
+ * PPE pricing, or the JSON string `'""'` to clear (`services/pricing-declaration.ts`'s `setActorPricing`)
+ * - byte-identical convention to `dev-folder.ts`'s `POST ... --body '""'`. `createdAt`/`startedAt`/
+ * `apifyMarginPercentage` are stamped server-side onto the stored/returned `PricingInfo` - never read from
+ * the request body - and every event definition needs a non-empty `eventDescription`, mirroring
+ * apify-core's real contract (`src/pricing.ts`'s `PricingInfo`/`ChargeEventDefinition` doc comments).
+ * `GET` reads the same value back; the `POST` response body doubles as a read-back too, matching
+ * `dev-folder.ts`'s "no separate read/write shape" choice.
  *
  * Ownership-scoped like every other Actor write on this API port: `resolveOwnedActor`, so a caller can
  * only ever declare pricing for their own Actor.

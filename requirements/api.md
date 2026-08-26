@@ -161,19 +161,29 @@
   other Actor-source-file) reading or fallback anywhere in this runtime - this endpoint is the only way
   PPE pricing is ever set. `:actorId` accepts the same forms as the rest of the API.
     - **Authenticated** the same way as every `/v2` route, and scoped to the caller's own Actors.
-    - **`POST` request body**: a JSON `PricingInfo` object - `{ pricingModel: "PAY_PER_EVENT",
-pricingPerEvent: { actorChargeEvents: { "<eventName>": { eventTitle, eventDescription?,
+    - **`POST` request body**: a JSON object with just `{ pricingModel: "PAY_PER_EVENT",
+pricingPerEvent: { actorChargeEvents: { "<eventName>": { eventTitle, eventDescription,
 eventPriceUsd }, ... } } }` - or the JSON string `""` to clear, matching the dev-folder endpoint's
-      clear convention exactly.
+      clear convention exactly. `eventDescription` is required (not optional) on every event definition -
+      mirroring apify-core's own pricing-info shape and the Python `apify` SDK's stricter parsing of it
+      (below); a declaration omitting it is rejected as `400 invalid-request`, not silently accepted with
+      a blank description.
+    - **`createdAt`/`startedAt`/`apifyMarginPercentage` are stamped server-side**, never read from the
+      request body: `createdAt`/`startedAt` are both set to the moment of declaration (this runtime has
+      no future-dated/delayed-effect declaration window, so a declaration always takes effect
+      immediately), and `apifyMarginPercentage` is fixed at `0.2` - apify-core's own real default for the
+      `PAY_PER_EVENT` pricing model. A full `PricingInfo` (declared fields plus these three stamped ones)
+      is what both the `POST`/`GET` response and the run's own snapshot (below) carry.
     - **`POST` response**: on success, `{ data: { pricingInfo } }` - `pricingInfo` is `null` when
       cleared/never declared. Doubles as the read-back the same way the dev-folder endpoint's response
       does.
     - **`GET` response**: `{ data: { pricingInfo } }`, same shape - reads the Actor's currently declared
       pricing without changing anything.
     - **Error responses**: `404` `record-not-found` for an unknown/not-owned Actor id; `400`
-      `invalid-request` for a body that is neither `""` nor a well-shaped `PricingInfo` object (missing
+      `invalid-request` for a body that is neither `""` nor a well-shaped declaration (missing
       `pricingModel: "PAY_PER_EVENT"`, a non-object `pricingPerEvent.actorChargeEvents`, or an event
-      definition missing a non-empty `eventTitle`/non-negative numeric `eventPriceUsd`).
+      definition missing a non-empty `eventTitle`/`eventDescription` or a non-negative numeric
+      `eventPriceUsd`).
     - **Snapshotted onto the run, not resolved live**: the Actor's `pricingInfo` at the moment a run
       starts is copied onto that run's own record (`RunRecord.pricingInfo`) and never re-read afterward.
       Editing an Actor's declared pricing later never retroactively changes an already-started run's

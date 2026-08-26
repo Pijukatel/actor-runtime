@@ -34,14 +34,50 @@ const BYTES_PER_MB = 1024 * 1024;
 
 export interface ChargeEventDefinition {
 	eventTitle: string;
-	eventDescription?: string;
+	/** Required, not optional - apify-core's own `ActorChargeDefinitionCommon`
+	 * (`apify-core/src/packages/types/src/paid_actors.ts`) declares this as a plain `string`, and the
+	 * Python SDK's pydantic model (`apify_client._models.ActorChargeEvent.event_description: str`, no
+	 * default) enforces that at parse time - `apify_client`'s `run().get()` calls
+	 * `RunResponse.model_validate(...)` on every response, so a run whose `pricingInfo` omits this field
+	 * fails `Actor.init()` with a `ValidationError` before the Actor even starts. apify-client-js's own
+	 * TS type marks it optional, but that client does no runtime schema validation - being the strict
+	 * superset satisfies both. */
+	eventDescription: string;
 	eventPriceUsd: number;
 }
 
-/** Matches apify-client's `PricePerEventActorPricingInfo` shape exactly (only the `PAY_PER_EVENT`
- * model is supported here - `FREE`/`FLAT_PRICE_PER_MONTH`/`PRICE_PER_DATASET_ITEM` are out of scope). */
+/** apify-core's real default `apifyMarginPercentage` for `PAY_PER_EVENT` Actors
+ * (`APIFY_MARGIN_PERCENTAGE[ACTOR_PRICING_MODEL.PAY_PER_EVENT]`,
+ * `apify-core/src/packages/actor/src/paid_actors/paid_actors_common.ts`) - the platform's standard 20%
+ * take for this pricing model. Fixed here, not settable through the declaration endpoint: this runtime
+ * has no billing-plan/admin-override machinery (`priceOverride`, admin-immediate-effect pricing) to vary
+ * it per Actor, and every locally-declared Actor is equally "just a developer's own Actor", so one fixed
+ * value mirrors the real default without inventing a new knob. */
+export const APIFY_MARGIN_PERCENTAGE_PAY_PER_EVENT = 0.2;
+
+/**
+ * Mirrors apify-core's real `PricePerEventActorResolvedPricingInfo` shape
+ * (`apify-core/src/packages/types/src/paid_actors.ts`'s `CommonActorPricingInfo` +
+ * `PricePerEventActorResolvedPricingInfo`; only the `PAY_PER_EVENT` model is supported here -
+ * `FREE`/`FLAT_PRICE_PER_MONTH`/`PRICE_PER_DATASET_ITEM` are out of scope). `createdAt`/`startedAt` are
+ * ISO strings, not `Date` - every other timestamp this runtime persists/serializes is already an ISO
+ * string (`RunRecord.startedAt`/`finishedAt`, `ActorRecord.modifiedAt`, ...), and pydantic's
+ * `AwareDatetime` (the Python SDK's `CommonActorPricingInfo.created_at`/`started_at` type) parses a
+ * `Z`-suffixed ISO string into a timezone-aware `datetime` directly, so no conversion is needed on either
+ * side. `apifyMarginPercentage`/`createdAt`/`startedAt` are required at this top level in both apify-core
+ * and apify-client-js's own `CommonActorPricingInfo` TS type - this was the actual gap: they were entirely
+ * absent here, which is why a real `apify_client.run().get()` call failed `RunResponse.model_validate(...)`
+ * with three `Field required` errors before this fix. */
 export interface PricingInfo {
 	pricingModel: 'PAY_PER_EVENT';
+	/** When this pricing info record was declared - stamped server-side, never client-supplied
+	 * (`services/pricing-declaration.ts: setActorPricing`). */
+	createdAt: string;
+	/** Since when this pricing info record is effective for the Actor. This runtime has no future-dated/
+	 * delayed-effect declaration (apify-core's `EFFECTIVE_DELAY_FOR_SETTING_MONETIZATION_WEEKS`), so a
+	 * declaration takes effect immediately - always equal to `createdAt` for the same declaration. */
+	startedAt: string;
+	apifyMarginPercentage: number;
 	pricingPerEvent: {
 		actorChargeEvents: Record<string, ChargeEventDefinition>;
 	};

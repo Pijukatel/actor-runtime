@@ -70,6 +70,28 @@ const SAMPLE_PRICING_BODY = {
 	},
 };
 
+/** `setActorPricing` stamps `createdAt`/`startedAt`/`apifyMarginPercentage` server-side (`src/services/
+ * pricing-declaration.ts`), so a returned `pricingInfo` is never byte-identical to the declared request
+ * body - this checks the declared fields exactly and the stamped ones structurally (a valid, matching ISO
+ * timestamp pair and the fixed 0.2 margin), in place of the plain `toEqual(declaredBody)` this file used
+ * before those fields existed. Reads via `axios` see the raw ISO strings this runtime actually serializes
+ * (`PricingInfo.createdAt`/`startedAt` - see `src/pricing.ts`'s doc comment for why they're strings, not
+ * `Date`); reads via `server.client` see them already parsed into `Date` objects, since `apify-client`
+ * converts any field whose name matches its own date-like-key heuristic on the way in - both forms are
+ * normalized to an ISO string here before comparing. */
+function expectValidPricingInfoShape(pricingInfo: unknown, declaredBody: typeof SAMPLE_PRICING_BODY): void {
+	const info = pricingInfo as Record<string, unknown>;
+	expect(info.pricingModel).toBe(declaredBody.pricingModel);
+	expect(info.pricingPerEvent).toEqual(declaredBody.pricingPerEvent);
+	expect(info.apifyMarginPercentage).toBe(0.2);
+	const toIso = (value: unknown) => (value instanceof Date ? value.toISOString() : (value as string));
+	const createdAt = toIso(info.createdAt);
+	const startedAt = toIso(info.startedAt);
+	expect(typeof createdAt).toBe('string');
+	expect(Number.isNaN(Date.parse(createdAt))).toBe(false);
+	expect(startedAt).toBe(createdAt);
+}
+
 function declarePricing(baseUrl: string, actorId: string, body: unknown, token?: string) {
 	return axios.post(`${baseUrl}/actor-runtime/pricing/${actorId}`, JSON.stringify(body), {
 		headers: { 'content-type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -135,11 +157,12 @@ describe('POST|GET /actor-runtime/pricing/:actorId', () => {
 
 		const declared = await declarePricing(server.baseUrl, actor.id, SAMPLE_PRICING_BODY, server.token);
 		expect(declared.status).toBe(200);
-		expect(declared.data.data.pricingInfo).toEqual(SAMPLE_PRICING_BODY);
+		expectValidPricingInfoShape(declared.data.data.pricingInfo, SAMPLE_PRICING_BODY);
 
 		const read = await readPricing(server.baseUrl, actor.id, server.token);
 		expect(read.status).toBe(200);
-		expect(read.data.data.pricingInfo).toEqual(SAMPLE_PRICING_BODY);
+		// The read-back is the exact same stored record, stamp included - not merely "also valid-shaped".
+		expect(read.data.data.pricingInfo).toEqual(declared.data.data.pricingInfo);
 	});
 
 	it("a nonexistent actor id 404s, and a real actor id used with someone else's token 404s the same way", async () => {
@@ -209,6 +232,30 @@ describe('POST|GET /actor-runtime/pricing/:actorId', () => {
 		expect(read.data.data.pricingInfo).toBeNull();
 	});
 
+	it('rejects a pricing declaration missing eventDescription (now required, mirroring apify-core and the Python SDK contract) and writes nothing', async () => {
+		server = await startTestServer();
+		const actor = await server.client.actors().create({ name: 'missing-description-actor' });
+
+		const missingDescription = await declarePricing(
+			server.baseUrl,
+			actor.id,
+			{
+				pricingModel: 'PAY_PER_EVENT',
+				pricingPerEvent: {
+					actorChargeEvents: {
+						'page-scraped': { eventTitle: 'Page scraped', eventPriceUsd: 0.001 },
+					},
+				},
+			},
+			server.token,
+		);
+		expect(missingDescription.status).toBe(400);
+		expect(missingDescription.data.error.type).toBe('invalid-request');
+
+		const read = await readPricing(server.baseUrl, actor.id, server.token);
+		expect(read.data.data.pricingInfo).toBeNull();
+	});
+
 	it('POST "" clears a declared pricing (mirrors the dev-folder endpoint\'s clear convention)', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const actor = await seedRunnableActor(server, 'clearable-pricing-actor');
@@ -239,25 +286,35 @@ describe('POST|GET /actor-runtime/pricing/:actorId', () => {
 
 		await declarePricing(server.baseUrl, actor.id, SAMPLE_PRICING_BODY, server.token);
 		const firstRun = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
-		expect(firstRun.pricingInfo).toEqual(SAMPLE_PRICING_BODY);
+		expectValidPricingInfoShape(firstRun.pricingInfo, SAMPLE_PRICING_BODY);
 
 		const revisedPricing = {
 			pricingModel: 'PAY_PER_EVENT',
 			pricingPerEvent: {
 				actorChargeEvents: {
-					'apify-actor-start': { eventTitle: 'Actor start', eventPriceUsd: 0.05 },
-					'page-scraped': { eventTitle: 'Page scraped', eventPriceUsd: 0.02 },
+					'apify-actor-start': {
+						eventTitle: 'Actor start',
+						eventDescription: 'Charged per GB of memory at start',
+						eventPriceUsd: 0.05,
+					},
+					'page-scraped': {
+						eventTitle: 'Page scraped',
+						eventDescription: 'One page scraped',
+						eventPriceUsd: 0.02,
+					},
 				},
 			},
 		};
 		await declarePricing(server.baseUrl, actor.id, revisedPricing, server.token);
 
-		// The earlier, already-started run must be completely unaffected by the edit.
+		// The earlier, already-started run must be completely unaffected by the edit - not just
+		// structurally valid, but byte-identical to its own snapshot from before the edit (stamp included).
 		const firstRunAfterEdit = await server.client.run(firstRun.id).get();
-		expect(firstRunAfterEdit?.pricingInfo).toEqual(SAMPLE_PRICING_BODY);
+		expect(firstRunAfterEdit?.pricingInfo).toEqual(firstRun.pricingInfo);
 
 		const secondRun = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
-		expect(secondRun.pricingInfo).toEqual(revisedPricing);
+		expectValidPricingInfoShape(secondRun.pricingInfo, revisedPricing);
+		expect(secondRun.pricingInfo).not.toEqual(firstRun.pricingInfo);
 	});
 
 	it('no pay_per_event.json (or similarly named) Actor-source file is ever read as a pricing fallback', async () => {
@@ -290,7 +347,7 @@ describe('POST|GET /actor-runtime/pricing/:actorId', () => {
 		await declarePricing(server.baseUrl, actor.id, SAMPLE_PRICING_BODY, server.token);
 
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
-		expect(run.pricingInfo).toEqual(SAMPLE_PRICING_BODY);
+		expectValidPricingInfoShape(run.pricingInfo, SAMPLE_PRICING_BODY);
 		expect(
 			(run.pricingInfo as typeof SAMPLE_PRICING_BODY).pricingPerEvent.actorChargeEvents['from-file'],
 		).toBeUndefined();
@@ -502,7 +559,7 @@ describe('PPE run start: pricingInfo/chargedEventCounts seeding', () => {
 
 		await declarePricing(server.baseUrl, actor.id, SAMPLE_PRICING_BODY, server.token);
 		const withPricing = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
-		expect(withPricing.pricingInfo).toEqual(SAMPLE_PRICING_BODY);
+		expectValidPricingInfoShape(withPricing.pricingInfo, SAMPLE_PRICING_BODY);
 	});
 
 	it.each([

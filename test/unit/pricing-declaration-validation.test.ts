@@ -14,7 +14,7 @@ const VALID_BODY = {
 	pricingModel: 'PAY_PER_EVENT',
 	pricingPerEvent: {
 		actorChargeEvents: {
-			'page-scraped': { eventTitle: 'Page scraped', eventPriceUsd: 0.001 },
+			'page-scraped': { eventTitle: 'Page scraped', eventDescription: 'One page scraped', eventPriceUsd: 0.001 },
 		},
 	},
 };
@@ -24,13 +24,30 @@ describe('validatePricingInfoShape', () => {
 		expect(validatePricingInfoShape(VALID_BODY)).toBeNull();
 	});
 
-	it('accepts an eventDescription-less event definition (optional field)', () => {
+	// `eventDescription` is required, not optional, as of this round - it now mirrors apify-core's real
+	// `ActorChargeDefinitionCommon` and the Python SDK's pydantic model, both of which require it
+	// (`ChargeEventDefinition`'s own doc comment in `src/pricing.ts`). This test previously asserted the
+	// opposite (that an eventDescription-less definition was accepted) - updated, not weakened, to match
+	// the new, intentionally stricter contract; the case is still exercised, just with the flipped
+	// expected outcome.
+	it('rejects an event definition missing eventDescription (now required)', () => {
 		expect(
 			validatePricingInfoShape({
 				pricingModel: 'PAY_PER_EVENT',
 				pricingPerEvent: { actorChargeEvents: { x: { eventTitle: 'X', eventPriceUsd: 0 } } },
 			}),
-		).toBeNull();
+		).toMatch(/actorChargeEvents/);
+	});
+
+	it('rejects an empty-string eventDescription', () => {
+		expect(
+			validatePricingInfoShape({
+				pricingModel: 'PAY_PER_EVENT',
+				pricingPerEvent: {
+					actorChargeEvents: { x: { eventTitle: 'X', eventPriceUsd: 0, eventDescription: '' } },
+				},
+			}),
+		).toMatch(/actorChargeEvents/);
 	});
 
 	it('rejects a non-object body (a plain string)', () => {
