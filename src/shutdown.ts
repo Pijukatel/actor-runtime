@@ -28,6 +28,8 @@ export function closeServer(server: Server): Promise<void> {
 export interface ShutdownDeps {
 	apiServer: Server;
 	consoleServer: Server;
+	/** Must be closed before `closeServer(apiServer)` is awaited - see `EventsWebSocketServer.close()`. */
+	eventsWebSocketServer?: { close(): void };
 }
 
 /**
@@ -36,11 +38,19 @@ export interface ShutdownDeps {
  * queue's native state (`storage/bootstrap.ts`) - must always run on a graceful shutdown; sequencing it
  * behind a listener `close()` that can block indefinitely (the previous bug) meant it never did while a
  * `apify push`/`apify call` log stream was open, which is the common case, not the edge case.
+ *
+ * `eventsWebSocketServer` is closed before `closeServer(apiServer)`, which would otherwise hang on any
+ * still-connected client.
  */
-export async function gracefulShutdown({ apiServer, consoleServer }: ShutdownDeps): Promise<void> {
+export async function gracefulShutdown({
+	apiServer,
+	consoleServer,
+	eventsWebSocketServer,
+}: ShutdownDeps): Promise<void> {
 	stopLogFlusher();
 	await flushAllLogs();
 	await releaseAllBuffersForShutdown();
+	eventsWebSocketServer?.close();
 	await closeServer(apiServer);
 	await closeServer(consoleServer);
 	await shutdownStorage();

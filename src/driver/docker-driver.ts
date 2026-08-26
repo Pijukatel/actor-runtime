@@ -31,6 +31,7 @@ import Docker from 'dockerode';
 import * as tar from 'tar-stream';
 
 import { CONTAINER_API_ALIAS } from '../config.js';
+import { CPU_PERIOD_US, cpuQuotaFor, dedicatedCpusFor } from '../resources.js';
 import { normalizeEntryName } from './tar-entry-name.js';
 import type { SourceFile } from '../storage/entities.js';
 import {
@@ -43,6 +44,7 @@ import {
 	type Driver,
 	type RunContext,
 	type RunOutcome,
+	type RunResourceSample,
 } from './types.js';
 
 const NETWORK_NAME = 'apify-local';
@@ -78,6 +80,20 @@ const BIND_SOURCE_MISSING_SUBSTRING = 'bind source path does not exist';
  * rejection shape `classifyProbeError` reports as "not a directory" rather than a generic "could not
  * verify", and never as "does not exist". */
 const NOT_A_DIRECTORY_SUBSTRING = 'not a directory';
+/** Per-run CPU/memory sampling cadence - decided, not tunable via env in this PR. A single module
+ * constant, so it is trivially adjustable later if per-second `stats()` calls against the daemon (up to
+ * one per concurrently running Actor, `system.md`'s scale budget) ever prove too much load. */
+const SAMPLE_INTERVAL_MS = 1000;
+/** Bounds `stop()`'s wait on the in-flight `stats()` call. The daemon client is built without a request
+ * timeout, so an unanswered call would otherwise hold a run's finalization open forever; a call that
+ * outlives this grace is abandoned, and `stopped` suppresses its result. Mirrors `LOG_DRAIN_GRACE_MS`. */
+const SAMPLER_STOP_GRACE_MS = 5000;
+
+/** Host capacity, snapshotted once at `init()`. Absent means "unknown", never "zero". */
+interface HostCapacity {
+	ncpu: number;
+	memTotalBytes: number;
+}
 
 /** Narrows an unknown rejection to the shape `docker-modem` attaches to a daemon HTTP-level error
  * response (`Modem.prototype.buildPayload`: `msg.statusCode = res.statusCode`) - present only when the
@@ -127,6 +143,128 @@ function dockerfileTarball(contents: string): NodeJS.ReadableStream {
 	return pack;
 }
 
+/** The `cpu_stats` fields the sampler diffs between two of its own successive samples. */
+interface CpuUsageSnapshot {
+	totalUsage: number;
+	systemUsage: number;
+}
+
+/**
+ * `memory_stats.usage` minus the reclaimable page cache, the same adjustment `docker stats`' MEM USAGE
+ * column makes (cgroup v1 reports it as `total_inactive_file`, v2 as `inactive_file`). Subtracted only
+ * when smaller than `usage`, so the result can never go negative. `undefined` when `usage` is missing or
+ * non-finite, which makes `takeSample` skip the tick rather than emit a partial frame.
+ */
+function memoryUsageBytesExcludingCache(stats: Docker.ContainerStats): number | undefined {
+	const usage = stats.memory_stats?.usage;
+	if (typeof usage !== 'number' || !Number.isFinite(usage)) return undefined;
+	const memStats = stats.memory_stats.stats as { total_inactive_file?: number; inactive_file?: number } | undefined;
+	const cacheBytes = memStats?.total_inactive_file ?? memStats?.inactive_file;
+	return cacheBytes !== undefined && cacheBytes < usage ? usage - cacheBytes : usage;
+}
+
+/**
+ * Presence-and-finiteness guard for the two `cpu_stats` fields the delta reads. A missing field skips the
+ * tick instead of throwing or producing a `NaN`. `online_cpus` is excluded: it has a sane `|| 1` fallback.
+ */
+function cpuUsageSnapshotOf(stats: Docker.ContainerStats): CpuUsageSnapshot | undefined {
+	const totalUsage = stats.cpu_stats?.cpu_usage?.total_usage;
+	const systemUsage = stats.cpu_stats?.system_cpu_usage;
+	if (typeof totalUsage !== 'number' || !Number.isFinite(totalUsage)) return undefined;
+	if (typeof systemUsage !== 'number' || !Number.isFinite(systemUsage)) return undefined;
+	return { totalUsage, systemUsage };
+}
+
+/**
+ * Samples an already-running container once per `SAMPLE_INTERVAL_MS`, reporting CPU as percent of one
+ * core. The delta is computed against this sampler's own previous sample rather than the response's
+ * `precpu_stats`, which `'one-shot': true` does not reliably populate; an unemitted baseline read seeds
+ * it. `stop()` awaits the at-most-one in-flight call, bounded by `SAMPLER_STOP_GRACE_MS`. A tick that
+ * finds the previous call still in flight is skipped, keeping "at most one in flight" an invariant.
+ */
+function startResourceSampler(
+	container: Docker.Container,
+	memoryLimitBytes: number,
+	onSample: (sample: RunResourceSample) => void,
+): { stop(): Promise<void> } {
+	let stopped = false;
+	let previous: CpuUsageSnapshot | undefined;
+	let inFlight: Promise<void> | undefined;
+
+	const takeSample = async (emit: boolean): Promise<void> => {
+		let stats: Docker.ContainerStats;
+		try {
+			stats = await container.stats({ stream: false, 'one-shot': true });
+		} catch {
+			// The container may have already exited (or be mid-removal) by the time this particular tick's
+			// round trip lands - not an error condition for the sampler itself, just a skipped sample.
+			return;
+		}
+		if (stopped) return; // `stop()` raced this call to completion - never emit after stop.
+
+		const current = cpuUsageSnapshotOf(stats);
+		const memoryBytes = memoryUsageBytesExcludingCache(stats);
+		if (!current || memoryBytes === undefined) {
+			// This tick's stats blob is missing (or reports non-finite for) a field a complete eight-field
+			// `systemInfo` frame needs - skipped exactly like the rejecting-stats case above: no emission,
+			// `previous` left untouched. Never emit a partial frame (a frame missing even one field fails
+			// Python-SDK-side pydantic validation and is silently dropped there), and never let a
+			// `NaN`/`undefined` reach `events-channel.ts`'s running avg/max accumulators, which would poison
+			// every later frame of the run, not just this one tick.
+			return;
+		}
+
+		if (emit && previous) {
+			const cpuDelta = current.totalUsage - previous.totalUsage;
+			const systemDelta = current.systemUsage - previous.systemUsage;
+			const onlineCpus = stats.cpu_stats.online_cpus || 1;
+			// `systemDelta` is 0 only in a degenerate case (no host-wide CPU time elapsed between two
+			// samples, e.g. two calls landing on the very same daemon tick) - reported as 0% rather than
+			// producing NaN/Infinity.
+			const cpuPercentOfOneCore = systemDelta > 0 ? (cpuDelta / systemDelta) * onlineCpus * 100 : 0;
+			onSample({
+				cpuPercentOfOneCore,
+				memoryBytes,
+				memoryLimitBytes,
+				at: new Date(),
+			});
+		}
+		previous = current;
+	};
+
+	// The unemitted baseline read (see doc comment above) - kicked off synchronously so `inFlight` is
+	// already set before this function returns, exactly like every later tick.
+	inFlight = takeSample(false).finally(() => {
+		inFlight = undefined;
+	});
+
+	const timer = setInterval(() => {
+		if (stopped || inFlight) return; // never overlap a still-in-flight call (see doc comment above).
+		inFlight = takeSample(true).finally(() => {
+			inFlight = undefined;
+		});
+	}, SAMPLE_INTERVAL_MS);
+
+	return {
+		async stop() {
+			stopped = true;
+			clearInterval(timer);
+			if (!inFlight) return;
+			// Bounded per `SAMPLER_STOP_GRACE_MS`'s own doc comment - a `stats()` call that never settles must
+			// never leave this `await` (and everything waiting on it) unbounded. The grace timer's own handle
+			// is captured and cleared once the race settles either way, so the common case (`inFlight` wins
+			// well inside the grace window) never leaves an armed timer behind on the event loop.
+			let graceTimer: ReturnType<typeof setTimeout> | undefined;
+			await Promise.race([
+				inFlight,
+				new Promise<void>((resolve) => {
+					graceTimer = setTimeout(resolve, SAMPLER_STOP_GRACE_MS);
+				}),
+			]).finally(() => clearTimeout(graceTimer));
+		},
+	};
+}
+
 export class DockerDriver implements Driver {
 	private readonly docker: Docker;
 	/** One `AbortController` per in-flight `startBuild` call, keyed by build id - `abortBuild` aborts it. */
@@ -137,6 +275,10 @@ export class DockerDriver implements Driver {
 	private readonly timedOutBuilds = new Set<string>();
 	private readonly timedOutRuns = new Set<string>();
 	private readonly runContainers = new Map<string, Docker.Container>();
+	/** The host's own CPU/memory capacity, snapshotted once at `init()` time - `undefined` when
+	 * `docker.info()` threw or omitted either field, meaning "capacity unknown" (see
+	 * `captureHostCapacity`'s doc comment). */
+	private hostCapacity: HostCapacity | undefined;
 	/** Set once `ensureProbeImage` has actually built (or found) the probe image - every later call
 	 * returns this without touching the daemon again. */
 	private probeImageId: string | undefined;
@@ -163,6 +305,9 @@ export class DockerDriver implements Driver {
 			return;
 		}
 
+		// A `docker.info()` failure must not make an otherwise-reachable daemon look unavailable.
+		await this.captureHostCapacity();
+
 		try {
 			await this.ensureNetwork();
 			await this.selfAttachToNetwork();
@@ -171,6 +316,50 @@ export class DockerDriver implements Driver {
 			this.available = false;
 			this.unavailableReason = `Docker network setup failed: ${(error as Error).message}`;
 		}
+	}
+
+	/**
+	 * Best-effort snapshot of the host's CPU count and total memory. A missing field or a failed call
+	 * leaves `hostCapacity` unset - "unknown", which warns about nothing rather than warning on every run.
+	 */
+	private async captureHostCapacity(): Promise<void> {
+		try {
+			const info: unknown = await this.docker.info();
+			const ncpu = (info as { NCPU?: unknown } | undefined)?.NCPU;
+			const memTotalBytes = (info as { MemTotal?: unknown } | undefined)?.MemTotal;
+			if (typeof ncpu === 'number' && typeof memTotalBytes === 'number') {
+				this.hostCapacity = { ncpu, memTotalBytes };
+			}
+		} catch {
+			// Capacity stays unknown - see the doc comment above.
+		}
+	}
+
+	/**
+	 * A warning naming the requested and host figures for whichever resource is over capacity. The limits
+	 * are applied verbatim regardless; `undefined` covers both "in capacity" and "capacity unknown".
+	 */
+	private buildOverCapacityWarning(ctx: RunContext): string | undefined {
+		if (!this.hostCapacity) return undefined;
+
+		const requestedCores = dedicatedCpusFor(ctx.memoryMbytes);
+		const hostMemoryMbytes = this.hostCapacity.memTotalBytes / (1024 * 1024);
+		const memoryOverCapacity = ctx.memoryMbytes > hostMemoryMbytes;
+		const cpuOverCapacity = requestedCores > this.hostCapacity.ncpu;
+		if (!memoryOverCapacity && !cpuOverCapacity) return undefined;
+
+		const overCapacityParts: string[] = [];
+		if (memoryOverCapacity) {
+			overCapacityParts.push(`${ctx.memoryMbytes} MB (host has ${Math.round(hostMemoryMbytes)} MB)`);
+		}
+		if (cpuOverCapacity) {
+			overCapacityParts.push(`${requestedCores.toFixed(2)} CPU cores (host has ${this.hostCapacity.ncpu})`);
+		}
+
+		return (
+			`Requested ${overCapacityParts.join(' and ')} — applying the requested limits anyway; this ` +
+			`container is scheduled against resources the host does not have.\n`
+		);
 	}
 
 	private async ensureNetwork(): Promise<void> {
@@ -299,16 +488,23 @@ export class DockerDriver implements Driver {
 		this.buildControllers.get(buildId)?.abort();
 	}
 
-	async startRun(ctx: RunContext, onLog: (chunk: string) => void): Promise<RunOutcome> {
+	async startRun(
+		ctx: RunContext,
+		onLog: (chunk: string) => void,
+		onSample?: (sample: RunResourceSample) => void,
+	): Promise<RunOutcome> {
 		if (!this.available) {
 			throw new Error(this.unavailableReason ?? 'Docker is not available');
 		}
 
 		const env = Object.entries(ctx.env).map(([key, value]) => `${key}=${value}`);
 
+		// Informational only - the requested limits are applied verbatim either way.
+		const overCapacityWarning = this.buildOverCapacityWarning(ctx);
+		if (overCapacityWarning) onLog(overCapacityWarning);
+
 		// A secondary diagnostic for the residual risk that a folder verified at registration later
-		// vanishes: written before `createContainer` so it is genuinely the first log line even if that
-		// call is what ends up failing.
+		// vanishes: written before `createContainer` so it lands even if that call is what fails.
 		if (ctx.devMount) {
 			onLog(
 				`Mounting local dev folder ${ctx.devMount.localDevFolder} over the image's working directory ` +
@@ -323,6 +519,11 @@ export class DockerDriver implements Driver {
 			HostConfig: {
 				NetworkMode: NETWORK_NAME,
 				Memory: ctx.memoryMbytes * 1024 * 1024,
+				// A CFS quota, never `NanoCpus`: the daemon hard-rejects a `NanoCpus` above the host's own
+				// CPU count, which would turn "warn, never clamp" into "cannot run at all". `CpuQuota` is
+				// validated for range only, so an over-capacity request still starts.
+				CpuPeriod: CPU_PERIOD_US,
+				CpuQuota: cpuQuotaFor(ctx.memoryMbytes),
 				AutoRemove: false,
 				...(ctx.devMount ? { Mounts: this.buildDevMounts(ctx.devMount) } : {}),
 			},
@@ -330,54 +531,68 @@ export class DockerDriver implements Driver {
 		});
 		this.runContainers.set(ctx.runId, container);
 
-		await container.start();
-
-		const logStream = (await container.logs({
-			follow: true,
-			stdout: true,
-			stderr: true,
-		})) as NodeJS.ReadableStream;
-		const stdout = new PassThrough();
-		const stderr = new PassThrough();
-		stdout.on('data', (chunk: Buffer) => onLog(chunk.toString('utf8')));
-		stderr.on('data', (chunk: Buffer) => onLog(chunk.toString('utf8')));
-		this.docker.modem.demuxStream(logStream, stdout, stderr);
-
-		// `container.logs({follow:true})` is a separate Docker API connection from `container.wait()` -
-		// the two settle independently, with no ordering guarantee between "the container process exited"
-		// and "every byte of its stdout/stderr has actually arrived over the logs connection". Without
-		// this, `startRun` could resolve (and its caller could write a terminal run status) before the
-		// run's trailing log output had even reached `onLog` yet: a client that polls status, sees it turn
-		// terminal, and immediately does a non-stream `GET /v2/logs/:id` could read the log before its
-		// final chunk landed.
-		//
-		// "Logs drained" MUST be derived from `logStream` (the SOURCE multiplexed stream) ending, not from
-		// `stdout`/`stderr` (the demuxed destinations) ending - `docker-modem`'s `demuxStream` only ever
-		// copies frames: it registers exactly `streama.on('data', processData)` on the source
-		// (`node_modules/docker-modem/lib/modem.js`, `Modem.prototype.demuxStream`) and never calls
-		// `.end()`/`.destroy()` on `stdout`/`stderr` itself. Awaiting the destinations' own `'end'` (the
-		// previous fix) therefore never resolves against a real daemon, which never ends them on its own -
-		// the run stayed RUNNING until its `timeoutSecs` finalized it as TIMED-OUT, exactly the CI
-		// regression this closes. So this driver ends them itself, once the source stream ends.
-		let sourceEnded = false;
-		const sourceEndedPromise = new Promise<void>((resolve) => {
-			const finish = (): void => {
-				if (sourceEnded) return;
-				sourceEnded = true;
-				stdout.end();
-				stderr.end();
-				resolve();
-			};
-			logStream.once('end', finish);
-			logStream.once('close', finish);
-		});
-
-		const timeout = setTimeout(() => {
-			this.timedOutRuns.add(ctx.runId);
-			void container.stop().catch(() => undefined);
-		}, ctx.timeoutSecs * 1000);
+		// Both declared outside the `try` below (so the `finally` can always see them) but only ever
+		// assigned inside it - `sampler` stays `undefined` if `container.start()` itself throws, and
+		// `timeout` stays `undefined` if anything before its own `setTimeout` call throws; `finally` guards
+		// each accordingly.
+		let sampler: { stop(): Promise<void> } | undefined;
+		let timeout: ReturnType<typeof setTimeout> | undefined;
 
 		try {
+			await container.start();
+
+			// Only started when someone is actually listening - an unconditional sampler would issue
+			// `container.stats()` calls no caller asked for (and against a stub `dockerode` in tests that
+			// never mocks `.stats()` at all, a hard failure). Created (and the log stream opened, below)
+			// Inside the `try` so a throw here still reaches the `finally` that stops the sampler and
+			// removes the container.
+			sampler = onSample ? startResourceSampler(container, ctx.memoryMbytes * 1024 * 1024, onSample) : undefined;
+
+			const logStream = (await container.logs({
+				follow: true,
+				stdout: true,
+				stderr: true,
+			})) as NodeJS.ReadableStream;
+			const stdout = new PassThrough();
+			const stderr = new PassThrough();
+			stdout.on('data', (chunk: Buffer) => onLog(chunk.toString('utf8')));
+			stderr.on('data', (chunk: Buffer) => onLog(chunk.toString('utf8')));
+			this.docker.modem.demuxStream(logStream, stdout, stderr);
+
+			// `container.logs({follow:true})` is a separate Docker API connection from `container.wait()` -
+			// the two settle independently, with no ordering guarantee between "the container process exited"
+			// and "every byte of its stdout/stderr has actually arrived over the logs connection". Without
+			// this, `startRun` could resolve (and its caller could write a terminal run status) before the
+			// run's trailing log output had even reached `onLog` yet: a client that polls status, sees it turn
+			// terminal, and immediately does a non-stream `GET /v2/logs/:id` could read the log before its
+			// final chunk landed.
+			//
+			// "Logs drained" MUST be derived from `logStream` (the SOURCE multiplexed stream) ending, not from
+			// `stdout`/`stderr` (the demuxed destinations) ending - `docker-modem`'s `demuxStream` only ever
+			// copies frames: it registers exactly `streama.on('data', processData)` on the source
+			// (`node_modules/docker-modem/lib/modem.js`, `Modem.prototype.demuxStream`) and never calls
+			// `.end()`/`.destroy()` on `stdout`/`stderr` itself. Awaiting the destinations' own `'end'` (the
+			// previous fix) therefore never resolves against a real daemon, which never ends them on its own -
+			// the run stayed RUNNING until its `timeoutSecs` finalized it as TIMED-OUT, exactly the CI
+			// regression this closes. So this driver ends them itself, once the source stream ends.
+			let sourceEnded = false;
+			const sourceEndedPromise = new Promise<void>((resolve) => {
+				const finish = (): void => {
+					if (sourceEnded) return;
+					sourceEnded = true;
+					stdout.end();
+					stderr.end();
+					resolve();
+				};
+				logStream.once('end', finish);
+				logStream.once('close', finish);
+			});
+
+			timeout = setTimeout(() => {
+				this.timedOutRuns.add(ctx.runId);
+				void container.stop().catch(() => undefined);
+			}, ctx.timeoutSecs * 1000);
+
 			const result = (await container.wait()) as { StatusCode: number };
 			// `container.wait()` resolves the same way whether the process exited on its own or was
 			// stopped by our own timeout timer - the timer having fired is the only signal that
@@ -392,10 +607,17 @@ export class DockerDriver implements Driver {
 			// `stdout`/`stderr` are left open so any bytes that do eventually arrive still reach `onLog`,
 			// they just no longer block this method from resolving.
 			const LOG_DRAIN_GRACE_MS = 5000;
+			// The grace timer's own handle is captured and cleared once the race settles either way (the
+			// common case: `sourceEndedPromise` wins well inside the grace window) - see
+			// `SAMPLER_STOP_GRACE_MS`'s own `stop()` above, which clears its identically-shaped timer for
+			// exactly this reason.
+			let logDrainGraceTimer: ReturnType<typeof setTimeout> | undefined;
 			await Promise.race([
 				sourceEndedPromise,
-				new Promise<void>((resolve) => setTimeout(resolve, LOG_DRAIN_GRACE_MS)),
-			]);
+				new Promise<void>((resolve) => {
+					logDrainGraceTimer = setTimeout(resolve, LOG_DRAIN_GRACE_MS);
+				}),
+			]).finally(() => clearTimeout(logDrainGraceTimer));
 			if (!sourceEnded) {
 				console.warn(
 					`Run ${ctx.runId}: log stream did not end within ${LOG_DRAIN_GRACE_MS}ms of the container exiting; finalizing the run without waiting further.`,
@@ -404,7 +626,9 @@ export class DockerDriver implements Driver {
 
 			return { exitCode: result.StatusCode, timedOut };
 		} finally {
-			clearTimeout(timeout);
+			if (timeout) clearTimeout(timeout);
+			// Awaited before `container.remove()` so no `stats()` call is issued against a removed container.
+			await sampler?.stop();
 			this.timedOutRuns.delete(ctx.runId);
 			this.runContainers.delete(ctx.runId);
 			// `{ v: true }` also removes the container's anonymous volumes - without it, the anonymous

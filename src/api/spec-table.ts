@@ -4,7 +4,7 @@
  * fetch at runtime (the live spec is not fetched at implementation time or at runtime/build time -
  * this table's "not implemented" section is a best-effort snapshot of the well-documented, stable
  * Apify v2 API surface, not a byte-for-byte copy of the live spec; it is deliberately wide enough to
- * exercise the 501/404 split required by `api.md` and success criterion 9).
+ * exercise the 501/404 split required by `api.md`'s "501 vs 404" section).
  *
  * `implemented: true` entries all have a real Express route registered for them (including the small
  * number that are *wired but intentionally answer 501* - request deletion - which is a documented,

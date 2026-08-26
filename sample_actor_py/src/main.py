@@ -7,13 +7,27 @@ request queue, and pushes one dataset item per page.
 
 from __future__ import annotations
 
-from apify import Actor
+from apify import Actor, Event, EventSystemInfoData
 from crawlee import ConcurrencySettings
 from crawlee.crawlers import ParselCrawler, ParselCrawlingContext
 
 
 async def main() -> None:
     async with Actor:
+        config = Actor.configuration
+        Actor.log.info(
+            f'Resources granted to this run: {config.memory_mbytes} MB memory, {config.dedicated_cpus} CPU core(s).'
+        )
+
+        # The runtime measures this container and relays a systemInfo event once a second.
+        async def log_resource_usage(event_data: EventSystemInfoData) -> None:
+            Actor.log.info(
+                f'Resource usage: CPU {event_data.cpu_info.used_ratio:.1%} of the grant, '
+                f'memory {event_data.memory_info.current_size.to_mb():.1f} MB'
+            )
+
+        Actor.on(Event.SYSTEM_INFO, log_resource_usage)
+
         actor_input = await Actor.get_input() or {}
         start_url = actor_input.get('startUrl', 'https://crawlee.dev/')
         max_pages = int(actor_input.get('maxPages', 2))

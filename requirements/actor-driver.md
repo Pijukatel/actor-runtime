@@ -101,6 +101,34 @@
 - Actor run details are saved in `__RUNS__` internal storage
 - Actor run log is saved in `__LOGS__` internal storage
 
+## Resource limits
+
+- Every run's container has a hard memory limit and a hard CPU limit. Memory is the run's `memoryMbytes`;
+  CPU is derived from it at the platform's ratio of one core per 4096 MB, so a 1024 MB run gets 0.25 core.
+- A derived CPU limit below what Docker accepts is raised to that minimum.
+- Limits are applied exactly as requested, even when they exceed the host's own capacity. Such a run is
+  warned about in its own log, naming the requested and the host figures; the limits still apply. When the
+  host's capacity cannot be determined, no warning is produced.
+- Disk is not limited. `diskMbytes` is reported but never enforced.
+
+## Run resource telemetry
+
+- While a run's container is up, its CPU and memory usage are measured once a second and published as
+  `systemInfo` events on the run's events channel (`api.md`).
+- Every event carries all eight fields - `memAvgBytes`, `memCurrentBytes`, `memMaxBytes`, `cpuAvgUsage`,
+  `cpuMaxUsage`, `cpuCurrentUsage`, `isCpuOverloaded`, `createdAt` - or is not published at all. A
+  measurement that cannot be read completely is skipped, leaving the run's running figures unaffected.
+    - `cpuCurrentUsage` is percent of one CPU core, not of the run's own grant.
+    - `memCurrentBytes` and `memAvgBytes` exclude reclaimable page cache, matching what `docker stats`
+      reports for the same container.
+    - `memMaxBytes` is the run's configured memory limit, constant for its lifetime.
+    - `isCpuOverloaded` is true when used cores exceed 95% of the run's granted cores.
+    - `memAvgBytes`, `cpuAvgUsage` and `cpuMaxUsage` cover every sample published for that run so far.
+- Measurement lasts exactly as long as the container: it starts once the container is running and stops
+  before the container is removed, and it never delays a run from reaching a terminal state.
+- The bundled sample Actors log their granted resources and each `systemInfo` event they receive, so the
+  contract is observable from a single `apify call`.
+
 # Users
 
 - Users are created adhoc by the runtime for each new token used in the API call (`cli.md`'s User bootstrap).
@@ -132,3 +160,10 @@
   resolved against it (`cli.md`'s User bootstrap). If neither source has a value, the key is absent entirely — never a
   placeholder value. One host-level password (source 1)
   or one harvested-per-account password (source 2) used specifically for each user.
+- `ACTOR_EVENTS_WEBSOCKET_URL` / `APIFY_ACTOR_EVENTS_WS_URL` — the run's own events channel
+  (`api.md`), carrying no credential.
+- `ACTOR_MEMORY_MBYTES` / `APIFY_MEMORY_MBYTES` — the run's requested `memoryMbytes`.
+- `APIFY_DEDICATED_CPUS` — the run's granted CPU cores. No `ACTOR_`-prefixed counterpart; only the
+  Python SDK reads it.
+- Every `ACTOR_*`/`APIFY_*` pair above is set to an identical value: the two SDKs disagree on which name
+  wins, so a divergent pair would size the same run differently depending on which one reads it.

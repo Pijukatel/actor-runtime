@@ -11,8 +11,10 @@ import { openRegistries, resetRegistriesForTests } from '../../../src/storage/re
 import { resetUsersForTests } from '../../../src/services/users.js';
 import { resetApiFallbackStateForTests } from '../../../src/services/api-fallback.js';
 import { createApiServer } from '../../../src/api/server.js';
+import { attachEventsWebSocket } from '../../../src/api/events-ws.js';
 import { resetLogsForTests, stopLogFlusher } from '../../../src/services/logs.js';
-import type { BuildContext, BuildOutcome, Driver, RunOutcome } from '../../../src/driver/types.js';
+import { resetEventsChannelForTests } from '../../../src/services/events-channel.js';
+import type { BuildContext, BuildOutcome, Driver, RunOutcome, RunResourceSample } from '../../../src/driver/types.js';
 
 /** A driver that is always unavailable, so build/run creation fails fast and deterministically. */
 export function unavailableDriver(): Driver {
@@ -209,9 +211,106 @@ export function deferredBuildDriver(): DeferredBuildDriver {
 	};
 }
 
+/**
+ * Same idea as `deferredRunDriver`, but tracking an arbitrary number of runs *concurrently* rather than
+ * exactly one - needed for the events-websocket integration tests, which need two independently
+ * controllable runs open at once (`deferredRunDriver`'s single `started`/`resolveRun` pair cannot express
+ * that). Also captures each run's own `onSample` callback (`Driver.startRun`'s optional third parameter)
+ * so a test can simulate the driver's per-second sampler ticking - `emitSample` - without a real Docker
+ * daemon or a real 1000ms wait.
+ */
+export interface MultiRunDriver extends Driver {
+	abortRunCalls: string[];
+	/** Resolves once `startRun` has actually been called for `runId` - mirrors `deferredRunDriver`'s
+	 * `started`, per-run. */
+	waitForStart(runId: string): Promise<void>;
+	resolveRun(runId: string, outcome: RunOutcome): void;
+	rejectRun(runId: string, error: Error): void;
+	/** Invokes `runId`'s own captured `onSample` callback, if `startRun` was ever called with one -
+	 * simulates one sampler tick. A no-op (never throws) if `startRun` hasn't been called for `runId` yet,
+	 * or was called without an `onSample` at all. */
+	emitSample(runId: string, sample: RunResourceSample): void;
+}
+
+interface MultiRunState {
+	startedResolve: () => void;
+	started: Promise<void>;
+	outcomeResolve: (outcome: RunOutcome) => void;
+	outcomeReject: (error: Error) => void;
+	outcomePromise: Promise<RunOutcome>;
+	onSample?: (sample: RunResourceSample) => void;
+}
+
+export function multiRunDriver(): MultiRunDriver {
+	const states = new Map<string, MultiRunState>();
+	const abortRunCalls: string[] = [];
+
+	function getOrCreateState(runId: string): MultiRunState {
+		let state = states.get(runId);
+		if (!state) {
+			let startedResolve!: () => void;
+			const started = new Promise<void>((resolve) => {
+				startedResolve = resolve;
+			});
+			let outcomeResolve!: (outcome: RunOutcome) => void;
+			let outcomeReject!: (error: Error) => void;
+			const outcomePromise = new Promise<RunOutcome>((resolve, reject) => {
+				outcomeResolve = resolve;
+				outcomeReject = reject;
+			});
+			state = { startedResolve, started, outcomeResolve, outcomeReject, outcomePromise };
+			states.set(runId, state);
+		}
+		return state;
+	}
+
+	return {
+		available: true,
+		abortRunCalls,
+		async init() {},
+		async startBuild() {
+			throw new Error('not used by this stub');
+		},
+		async abortBuild() {},
+		async startRun(ctx, _onLog, onSample) {
+			const state = getOrCreateState(ctx.runId);
+			state.onSample = onSample;
+			state.startedResolve();
+			return state.outcomePromise;
+		},
+		async abortRun(runId) {
+			abortRunCalls.push(runId);
+		},
+		async reconcileOrphans() {},
+		async probeDevFolder() {
+			throw new Error('not used by this stub');
+		},
+		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
+		async waitForStart(runId) {
+			return getOrCreateState(runId).started;
+		},
+		resolveRun(runId, outcome) {
+			getOrCreateState(runId).outcomeResolve(outcome);
+		},
+		rejectRun(runId, error) {
+			getOrCreateState(runId).outcomeReject(error);
+		},
+		emitSample(runId, sample) {
+			getOrCreateState(runId).onSample?.(sample);
+		},
+	};
+}
+
 export interface TestServerHandle {
 	client: ApifyClient;
 	baseUrl: string;
+	/** `baseUrl`, `ws://`-scheméd - the same host:port, since the events websocket upgrades on this same
+	 * server (`api/events-ws.ts`), never a second one. Build a run's own events URL by appending
+	 * `/actor-runtime/events/:runId`, exactly like `services/runs.ts: buildEnv` does against the real
+	 * `CONTAINER_EVENTS_WS_BASE_URL`. */
+	wsBaseUrl: string;
 	token: string;
 	dataDir: string;
 	driver: Driver;
@@ -239,6 +338,10 @@ export async function startTestServer(
 	});
 	const { port } = server.address() as AddressInfo;
 	const baseUrl = `http://127.0.0.1:${port}`;
+	const wsBaseUrl = `ws://127.0.0.1:${port}`;
+	// Same server, same upgrade path as production (`index.ts`) - a real `ws` client against this handle
+	// exercises the actual `api/events-ws.ts` code, not a stand-in.
+	const eventsWebSocketServer = attachEventsWebSocket(server);
 
 	// maxRetries: 0 - real apify-client retries 5xx (so a deliberate 501 from the request-deletion
 	// endpoints would otherwise burn ~8 exponential-backoff retries per test); production behaviour is
@@ -248,13 +351,22 @@ export async function startTestServer(
 	return {
 		client,
 		baseUrl,
+		wsBaseUrl,
 		token,
 		dataDir,
 		driver,
 		async close() {
-			await new Promise<void>((resolve) => server.close(() => resolve()));
+			// MUST run before `server.close()` below, not after - see `EventsWebSocketServer.close()`'s
+			// own doc comment (`api/events-ws.ts`) for why `closeAllConnections()` cannot do this itself;
+			// same ordering requirement `shutdown.ts`'s `gracefulShutdown` follows in production.
+			eventsWebSocketServer.close();
+			await new Promise<void>((resolve) => {
+				server.close(() => resolve());
+				server.closeAllConnections();
+			});
 			stopLogFlusher();
 			resetLogsForTests();
+			resetEventsChannelForTests();
 			await shutdownStorage();
 			resetStorageForTests();
 			resetRegistriesForTests();

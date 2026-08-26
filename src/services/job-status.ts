@@ -48,14 +48,25 @@ export interface StatusRegistry<T> {
  * is always overridden by `next`. Returns the record as it ended up (unchanged if the transition was
  * refused, `null` if the record does not exist), so callers can tell whether their write actually
  * landed by comparing `result.status` to `next`.
+ *
+ * `onBeforeTransition`, when given, is invoked with the record exactly as read INSIDE this same
+ * mutex-serialized read-modify-write (`Registry.update`'s per-id `KeyedMutex`), before the
+ * accept/refuse decision is made - the same moment `current.status` is the freshest it can ever be
+ * relative to this write. A caller that needs to know the record's status immediately prior to a
+ * guarded transition (e.g. "was this run actually RUNNING right before it moved to ABORTING?") should
+ * capture it here, never via a separate, unguarded `registry.get(id)` call made before this one - a
+ * plain `get` has no ordering relationship with a concurrent `update` on the same id and can read a
+ * status that a race has already made stale by the time the transition itself lands.
  */
 export async function transitionJobStatus<T extends { status: JobStatus }>(
 	registry: StatusRegistry<T>,
 	id: string,
 	next: JobStatus,
 	patch: Partial<T> = {},
+	onBeforeTransition?: (current: T | null) => void,
 ): Promise<T | null> {
 	return registry.update(id, (current) => {
+		onBeforeTransition?.(current);
 		if (!current) return null;
 		if (isTerminalJobStatus(current.status)) return current;
 		if (!ALLOWED_NEXT[current.status].has(next)) return current;

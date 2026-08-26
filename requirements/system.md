@@ -28,9 +28,7 @@
   status message, but every other endpoint - storages, actor/build/run records, console - still works).
 - The API port (3333) and the console frontend port (3000) are fixed values and
   are not configurable; they are the same on every start of the container.
-
-# Running the container
-
+- Port 3333 also serves the per-run events websocket (`api.md`); no additional port is published for it.
 - Required `docker run` flags: mount the host Docker socket read-write
   (`-v /var/run/docker.sock:/var/run/docker.sock`) so the runtime can build and run Actor containers,
   and mount a persistent data directory (`-v <host-dir>:/data`, e.g. `-v "$(pwd)/data:/data"`) so
@@ -63,10 +61,11 @@
   reuse the already-pulled base image and every other push/call/log-stream/storage-access needs no
   outbound network access at all (see `cli.md`'s offline-capability note) - unless the opt-in upstream
   API fallback (`api.md`'s "Upstream fallback" section) has been switched on, in which case a local miss
-  that is eligible for it makes one outbound request per such call.
-- The bundled sample Actors (`sample_actor_ts`, `sample_actor_py`) are not offline: they crawl a live
-  site (`https://crawlee.dev/` by default). Running them needs outbound network access from the Actor
-  container, unlike operating the runtime around them (see `test.md`).
+  that is eligible for it makes one outbound request per such call. Measuring a run's CPU and memory
+  needs no network access of its own.
+- The sample Actors are not offline: they crawl a live site (`https://crawlee.dev/` by default). Running
+  them needs outbound network access from the Actor container, unlike operating the runtime around them
+  (see `test.md`).
 - The runtime's one-time, per-token, real-console identity check (`cli.md`'s User bootstrap) is
   best-effort online with a silent offline fallback.
 
@@ -88,6 +87,9 @@ The intended scale of the system is:
 - less than 5 users
 
 The intended scale is not enforced, but the system operating above the intended scale can experience performance or functional issues.
+
+The "less than 5 running actors at the same time" budget also bounds the per-run resource measurement and
+the open events connections - each running Actor adds at most one of each.
 
 # Tests
 

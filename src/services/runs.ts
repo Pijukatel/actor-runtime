@@ -5,8 +5,11 @@ import { createStorage } from './storages.js';
 import { openKeyValueStore } from '../storage/open.js';
 import type { Driver } from '../driver/types.js';
 import { appendLog, flushLog, markLogTerminal } from './logs.js';
+import { markEventsTerminal, publishAborting, publishSystemInfo } from './events-channel.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
+import { dedicatedCpusFor } from '../resources.js';
+import { CONTAINER_EVENTS_WS_BASE_URL } from '../config.js';
 
 const DEFAULT_MEMORY_MBYTES = 1024;
 const DEFAULT_TIMEOUT_SECS = 300;
@@ -16,6 +19,8 @@ const DEFAULT_TIMEOUT_SECS = 300;
  * schema: `memoryMbytes: 1024` example paired with `diskMbytes: 2048`), also the exact ratio in
  * `apify-client`'s `RunOptions` pydantic model examples. */
 const DISK_MBYTES_PER_MEMORY_MBYTE = 2;
+/** `?gracefully=true`'s wait between the `aborting` frame and the stop, matching the platform's 30s. */
+const GRACEFUL_ABORT_WINDOW_MS = 30_000;
 
 export async function listOwnedRuns(userId: string, actorId?: string): Promise<RunRecord[]> {
 	const all = await getRegistries().runs.list();
@@ -33,7 +38,9 @@ export async function listAllRuns(): Promise<RunRecord[]> {
 	return getRegistries().runs.list();
 }
 
-/** Cross-user lookup by id, for the console only (see `listAllRuns`). */
+/** Cross-user lookup by id - for the console (see `listAllRuns`), and for `api/events-ws.ts`'s connection
+ * handler, which has no authenticated caller at all to scope an owned-lookup against (the events
+ * websocket's own scoping is the path's run id itself, not a user - see that module's doc comment). */
 export async function getRunById(id: string): Promise<RunRecord | null> {
 	return getRegistries().runs.get(id);
 }
@@ -75,6 +82,12 @@ function buildEnv(
 		versionEnv[entry.name] = entry.value;
 	}
 
+	// Both names in each pair are byte-identical, deliberately: apify-sdk-js's `ENV_MAP` and pydantic's
+	// `AliasChoices` resolve `ACTOR_*`-vs-`APIFY_*` in OPPOSITE precedence order, so letting the two ever
+	// diverge would size the run differently depending on which SDK happens to read it.
+	const eventsWebSocketUrl = `${CONTAINER_EVENTS_WS_BASE_URL}/actor-runtime/events/${run.id}`;
+	const memoryMbytes = String(run.options.memoryMbytes);
+
 	const env: Record<string, string> = {
 		...versionEnv,
 		APIFY_IS_AT_HOME: '1',
@@ -88,6 +101,13 @@ function buildEnv(
 		ACTOR_ID: actor.id,
 		APIFY_ACTOR_RUN_ID: run.id,
 		ACTOR_RUN_ID: run.id,
+		// No token: the endpoint is unauthenticated and the run id in the path is all there is to scope on.
+		ACTOR_EVENTS_WEBSOCKET_URL: eventsWebSocketUrl,
+		APIFY_ACTOR_EVENTS_WS_URL: eventsWebSocketUrl,
+		ACTOR_MEMORY_MBYTES: memoryMbytes,
+		APIFY_MEMORY_MBYTES: memoryMbytes,
+		// No `ACTOR_`-prefixed counterpart exists; only the Python SDK reads this.
+		APIFY_DEDICATED_CPUS: String(dedicatedCpusFor(run.options.memoryMbytes)),
 	};
 	if (options.proxyPassword) env.APIFY_PROXY_PASSWORD = options.proxyPassword;
 	return env;
@@ -197,6 +217,7 @@ export async function runInBackground(
 		appendLog(record.id, `Cannot start run: ${reason}\n`);
 		await flushLog(record.id);
 		markLogTerminal(record.id);
+		markEventsTerminal(record.id);
 		await transitionJobStatus(runs, record.id, 'FAILED', {
 			finishedAt: new Date().toISOString(),
 			statusMessage: reason,
@@ -247,6 +268,7 @@ export async function runInBackground(
 				devMount,
 			},
 			(chunk) => appendLog(record.id, chunk),
+			(sample) => publishSystemInfo(record.id, sample, record.options),
 		);
 		const status: JobStatus = outcome.timedOut ? 'TIMED-OUT' : outcome.exitCode === 0 ? 'SUCCEEDED' : 'FAILED';
 		// Flush before writing the terminal status, not after: `driver.startRun` resolving is the signal
@@ -273,22 +295,47 @@ export async function runInBackground(
 		});
 	} finally {
 		markLogTerminal(record.id);
+		// Also what actually drives the events websocket's `1000` close (`api/events-ws.ts` polls this
+		// exact flag, mirroring `api/routes/logs.ts`'s `?stream=true` handling of `isLogTerminal`).
+		markEventsTerminal(record.id);
 	}
 }
 
 /**
- * Stops the run for real (`driver.abortRun` -> `container.stop()`) and reports `ABORTED` back to the
- * caller. The record is moved to `ABORTING` *before* `driver.abortRun` is even called, which is what
- * makes the result race-proof against `runInBackground`'s own completion write: from that point on, an
- * `ABORTING` record only accepts `ABORTED` as its next status (`job-status.ts`), so whichever of the two
- * writes - this function's final `ABORTED`, or `runInBackground`'s `SUCCEEDED`/`FAILED`/`TIMED-OUT` -
- * reaches the record first, the other is refused rather than clobbering it.
+ * Stops the run and reports `ABORTED`. The record moves to `ABORTING` before `driver.abortRun` is called,
+ * which is what makes this race-proof against `runInBackground`'s own completion write: an `ABORTING`
+ * record only accepts `ABORTED` next, so whichever write lands first, the other is refused.
+ *
+ * `gracefully` on a `RUNNING` run publishes an `aborting` frame and waits `GRACEFUL_ABORT_WINDOW_MS`
+ * before stopping; other states take the immediate path. A second concurrent graceful abort joins the
+ * window rather than restarting it - see `requirements/api.md`.
+ *
+ * Both flags come from `onBeforeTransition`, read inside the same mutex-serialized write that performs
+ * the transition: a preceding `get()` could observe a stale status, and only the hook can tell "this call
+ * wrote ABORTING" apart from "it was already ABORTING".
  */
-export async function abortRun(driver: Driver, run: RunRecord): Promise<RunRecord | null> {
+export async function abortRun(driver: Driver, run: RunRecord, gracefully = false): Promise<RunRecord | null> {
 	if (isTerminalJobStatus(run.status)) return run;
 	const { runs } = getRegistries();
-	const aborting = await transitionJobStatus(runs, run.id, 'ABORTING');
+	let wasRunning = false;
+	let alreadyAborting = false;
+	const aborting = await transitionJobStatus(runs, run.id, 'ABORTING', {}, (current) => {
+		wasRunning = current?.status === 'RUNNING';
+		alreadyAborting = current?.status === 'ABORTING';
+	});
 	if (!aborting || aborting.status !== 'ABORTING') return aborting;
+
+	// A second `?gracefully=true` call joining a window someone else already started: no-op, join it -
+	// never re-trigger the stop early (see the doc comment above).
+	if (alreadyAborting && gracefully) return aborting;
+
+	if (!alreadyAborting && gracefully && wasRunning) {
+		// Best-effort, same no-subscriber tolerance `publishSystemInfo` already has (`events-channel.ts`):
+		// a run with nobody connected still waits out the window and still gets stopped.
+		publishAborting(run.id);
+		await new Promise<void>((resolve) => setTimeout(resolve, GRACEFUL_ABORT_WINDOW_MS));
+	}
+
 	await driver.abortRun(run.id);
 	return transitionJobStatus(runs, run.id, 'ABORTED', { finishedAt: new Date().toISOString() });
 }

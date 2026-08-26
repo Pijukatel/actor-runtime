@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { startTestServer, type TestServerHandle } from './helpers/test-server.js';
+import { CONTAINER_EVENTS_WS_BASE_URL } from '../../src/config.js';
 import type { Driver } from '../../src/driver/types.js';
 
 /**
@@ -128,7 +129,7 @@ describe('actor version envVars are applied to the run container env', () => {
 
 			// Before this test, only the "absent" arm of `buildEnv`'s `if (options.proxyPassword)` was
 			// ever exercised (grepping the suite for `PROXY_PASSWORD` found zero hits) - this is the
-			// "present" arm, success criterion 15's explicit contract.
+			// "present" arm, covering `requirements/actor-driver.md`'s `APIFY_PROXY_PASSWORD` contract.
 			expect(getCapturedEnv()?.APIFY_PROXY_PASSWORD).toBe('super-secret-proxy-password');
 		} finally {
 			if (previous === undefined) delete process.env.APIFY_PROXY_PASSWORD;
@@ -164,5 +165,82 @@ describe('actor version envVars are applied to the run container env', () => {
 			if (previous === undefined) delete process.env.APIFY_PROXY_PASSWORD;
 			else process.env.APIFY_PROXY_PASSWORD = previous;
 		}
+	});
+
+	// The five new resource/telemetry env vars (`requirements/actor-driver.md`'s "Environment variables
+	// in every Actor container" list): byte-identical pairs, the run id in the URL path with no query
+	// string, present unconditionally (no dev mount involved anywhere in this describe block).
+	it('sets the five resource/telemetry env vars, byte-identical pairs, run id in the URL path, no query string, present without a dev mount', async () => {
+		const actor = await server.client.actors().create({ name: 'events-and-resources-env-actor' });
+		await server.client
+			.actor(actor.id)
+			.versions()
+			.create({
+				versionNumber: '0.0',
+				buildTag: 'latest',
+				sourceType: 'SOURCE_FILES' as never,
+				sourceFiles: [],
+			} as never);
+
+		const build = await server.client.actor(actor.id).build('0.0', { waitForFinish: 5 });
+		expect(build.status).toBe('SUCCEEDED');
+
+		const run = await server.client.actor(actor.id).start({}, { memory: 2048, waitForFinish: 5 });
+		expect(run.status).toBe('SUCCEEDED');
+
+		const env = getCapturedEnv();
+		expect(env).toBeDefined();
+
+		const expectedEventsUrl = `${CONTAINER_EVENTS_WS_BASE_URL}/actor-runtime/events/${run.id}`;
+		expect(env?.ACTOR_EVENTS_WEBSOCKET_URL).toBe(expectedEventsUrl);
+		expect(env?.APIFY_ACTOR_EVENTS_WS_URL).toBe(expectedEventsUrl);
+		// Byte-identical to each other - the two SDKs resolve `ACTOR_*`-vs-`APIFY_*` in opposite
+		// precedence order, so letting them ever diverge would size a run differently per SDK.
+		expect(env?.ACTOR_EVENTS_WEBSOCKET_URL).toBe(env?.APIFY_ACTOR_EVENTS_WS_URL);
+
+		// No token, no query string at all - this endpoint has no authentication (`api/events-ws.ts`).
+		const parsedUrl = new URL(env!.ACTOR_EVENTS_WEBSOCKET_URL!.replace(/^ws:/, 'http:'));
+		expect(parsedUrl.search).toBe('');
+		expect(parsedUrl.pathname).toBe(`/actor-runtime/events/${run.id}`);
+
+		expect(env?.ACTOR_MEMORY_MBYTES).toBe('2048');
+		expect(env?.APIFY_MEMORY_MBYTES).toBe('2048');
+		expect(env?.ACTOR_MEMORY_MBYTES).toBe(env?.APIFY_MEMORY_MBYTES);
+
+		// 2048 / 4096 = 0.5 core - the same ratio the CPU limit itself uses (`resources.ts`).
+		expect(env?.APIFY_DEDICATED_CPUS).toBe('0.5');
+		// No `ACTOR_`-prefixed counterpart at all - apify-sdk-js's own `ENV_MAP` has no dedicated-CPU key.
+		expect(Object.hasOwn(env!, 'ACTOR_DEDICATED_CPUS')).toBe(false);
+	});
+
+	it('the five vars are present for a run configured with only default options (no explicit memory/timeout, no dev mount)', async () => {
+		const actor = await server.client.actors().create({ name: 'default-options-env-actor' });
+		await server.client
+			.actor(actor.id)
+			.versions()
+			.create({
+				versionNumber: '0.0',
+				buildTag: 'latest',
+				sourceType: 'SOURCE_FILES' as never,
+				sourceFiles: [],
+			} as never);
+
+		const build = await server.client.actor(actor.id).build('0.0', { waitForFinish: 5 });
+		expect(build.status).toBe('SUCCEEDED');
+
+		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(run.status).toBe('SUCCEEDED');
+
+		const env = getCapturedEnv();
+		for (const key of [
+			'ACTOR_EVENTS_WEBSOCKET_URL',
+			'APIFY_ACTOR_EVENTS_WS_URL',
+			'ACTOR_MEMORY_MBYTES',
+			'APIFY_MEMORY_MBYTES',
+			'APIFY_DEDICATED_CPUS',
+		]) {
+			expect(Object.hasOwn(env!, key)).toBe(true);
+		}
+		expect(env?.ACTOR_EVENTS_WEBSOCKET_URL).toContain(`/actor-runtime/events/${run.id}`);
 	});
 });

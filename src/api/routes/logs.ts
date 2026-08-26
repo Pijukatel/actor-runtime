@@ -3,6 +3,7 @@ import type { Request, Response, Router } from 'express';
 import { recordNotFound } from '../errors.js';
 import { h, queryBoolean } from '../handler.js';
 import { requireUser } from '../auth.js';
+import { pollUntilTerminal } from '../poll-until-terminal.js';
 import { getFullLog, isLogTerminal, subscribeLog } from '../../services/logs.js';
 import { getOwnedBuild } from '../../services/builds.js';
 import { getOwnedRun } from '../../services/runs.js';
@@ -55,34 +56,18 @@ export async function serveLog(req: Request, res: Response, id: string): Promise
 		res.write(chunk);
 	});
 
-	const finish = (): void => {
-		clearInterval(poll);
-		unsubscribe();
-		res.end();
-	};
-
-	// Guarded against overlapping ticks: the persisted-record re-check below is async, and a slow read
-	// must not let a second tick pile another one on top of it while the first is still in flight.
-	let checkingRecord = false;
-	const poll = setInterval(() => {
-		if (isLogTerminal(id)) {
-			finish();
-			return;
-		}
-		if (checkingRecord) return;
-		checkingRecord = true;
-		resolveOwnedJob(userId, id)
-			.then((current) => {
-				if (!current || isTerminalJobStatus(current.status)) finish();
-			})
-			.catch(() => undefined)
-			.finally(() => {
-				checkingRecord = false;
-			});
-	}, 250);
+	const poller = pollUntilTerminal({
+		intervalMs: 250,
+		isTerminal: () => isLogTerminal(id),
+		refetch: () => resolveOwnedJob(userId, id),
+		onTerminal: () => {
+			unsubscribe();
+			res.end();
+		},
+	});
 
 	req.on('close', () => {
-		clearInterval(poll);
+		poller.stop();
 		unsubscribe();
 	});
 }

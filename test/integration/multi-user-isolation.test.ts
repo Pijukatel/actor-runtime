@@ -1,8 +1,9 @@
 /**
- * Criterion-12, made real: with per-token multi-user (`services/users.ts: getOrCreateUserForToken`)
- * every resource is genuinely owned by the requesting token's user, and every list/get is genuinely
- * filtered by that ownership - not just structurally (the filter always existed) but *actually*, since
- * two different tokens now resolve to two different users instead of the same single bootstrap one.
+ * With per-token multi-user (`services/users.ts: getOrCreateUserForToken`, `cli.md`'s "User
+ * bootstrap"), every resource is genuinely owned by the requesting token's user, and every list/get is
+ * genuinely filtered by that ownership - not just structurally (the filter always existed) but
+ * *actually*, since two different tokens now resolve to two different users instead of the same single
+ * bootstrap one.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ApifyClient } from 'apify-client';

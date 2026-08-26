@@ -25,12 +25,14 @@
   This also protects the runtime's own driver invariant: deleting the record first would permanently
   strand a running Docker container, since its only stop path (`POST .../abort`) requires the record to
   still resolve, and startup reconciliation only ever considers _existing_ run records.
-- Two endpoints are exceptions to the `{data}` envelope:
+- Three endpoints are exceptions to the `{data}` envelope:
     - `GET /v2/logs/:buildOrRunId` (and its `actor-builds`/`actor-runs` aliases): the body is plain text,
       never `{data}`-wrapped, matching apify-client-js's `log().get()`.
     - `GET /v2/datasets/:datasetId/items` (and its `actor-runs/:runId/dataset/items` alias): the body is
       a bare JSON array of items, never `{data}`-wrapped, with pagination metadata carried in
       `x-apify-pagination-*` response headers, matching apify-client-js's `_createPaginationList`.
+    - `GET /actor-runtime/events/:runId`: a websocket upgrade, not a JSON response at all - see "Actor
+      runtime API" below.
 - `*At` timestamp fields are ISO-8601 strings.
 
 # Actor id encoding
@@ -149,6 +151,30 @@
   console-local, unauthenticated route on the console's own port. Both routes funnel into the same
   underlying validate-and-persist path, so the two surfaces can never drift apart in behavior, only in
   how they are reached.
+- **`GET /actor-runtime/events/:runId`** - a websocket upgrade, reachable at exactly this one path on
+  the fixed API port (`system.md`). It carries the run's platform events: `systemInfo` once a second
+  (`actor-driver.md`), plus a one-off `aborting` frame under `?gracefully=` (below). Each frame is a
+  single text message, `{"name": "...", "data": {...}}`.
+    - The endpoint has no authentication. The run id in the path is the only thing it scopes on, and a
+      connection only ever receives that run's own frames; one run never sees another's.
+    - An unknown or already-terminal run id gets a completed upgrade followed immediately by a `1008`
+      close with a reason, never a non-101 HTTP status - the Python SDK treats a refused first connection
+      as fatal to the Actor.
+    - A connection to a live run stays open until the run ends, when the server closes it with `1000`. It
+      is never dropped while healthy, except that a graceful runtime shutdown terminates every open
+      connection along with the rest of the server.
+    - `persistState` is never sent over this channel; both SDKs generate it themselves.
+
+## Graceful abort (`?gracefully=`)
+
+- `POST /v2/actor-runs/:runId/abort` accepts an optional `?gracefully=` boolean.
+- Omitted or `false`: the run aborts immediately, exactly as before this parameter existed.
+- `true` on a running run: the record moves to `ABORTING` at once, an `aborting` frame with an empty
+  payload is published on the run's events channel, and the container is stopped 30 seconds later. The
+  request stays open until then, so it is the longest-held response in this API.
+- `true` on a run with no container (still `READY`, or already terminal): behaves as if omitted.
+- A second abort arriving during an open window: another `?gracefully=true` joins that window and neither
+  restarts it nor stops the container early; a non-graceful one escalates and stops the container at once.
 
 ## Upstream fallback (opt-in, off by default, all HTTP methods)
 

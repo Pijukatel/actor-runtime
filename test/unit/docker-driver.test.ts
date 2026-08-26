@@ -5,6 +5,7 @@ import type Docker from 'dockerode';
 import * as tar from 'tar-stream';
 
 import { DockerDriver } from '../../src/driver/docker-driver.js';
+import { stubDockerForRun } from './helpers/docker-stubs.js';
 
 /**
  * A stub `dockerode`-shaped object covering only what `reconcileOrphans` calls - there is no Docker
@@ -151,70 +152,6 @@ describe('DockerDriver.reconcileOrphans', () => {
 		expect(removeCallOptions).toEqual([{ force: true, v: true }]);
 	});
 });
-
-/**
- * A stub `dockerode`-shaped object covering only what `startRun` calls, with `container.wait()` and the
- * `container.logs()` stream each independently controllable - mirrors the real Docker daemon's two
- * genuinely separate API connections (the finding this fixes: nothing guarantees the log stream's final
- * chunk has arrived by the time `container.wait()` resolves).
- */
-function stubDockerForRun() {
-	let resolveWait!: (result: { StatusCode: number }) => void;
-	const waitPromise = new Promise<{ StatusCode: number }>((resolve) => {
-		resolveWait = resolve;
-	});
-
-	// The raw (not-yet-demuxed) combined stdout/stderr stream `container.logs()` would return - a
-	// separate Docker API connection from `container.wait()` above.
-	const rawLogStream = new PassThrough();
-
-	const container = {
-		start: vi.fn(async () => undefined),
-		logs: vi.fn(async () => rawLogStream),
-		wait: vi.fn(async () => waitPromise),
-		remove: vi.fn(async (_options?: Record<string, unknown>) => undefined),
-		stop: vi.fn(async () => undefined),
-	};
-
-	// Real dockerode demuxing splits stdout/stderr apart by frame header; this stub doesn't need that
-	// distinction, it only needs to forward data. Crucially - faithful to the real
-	// `docker-modem` `Modem.prototype.demuxStream` (`node_modules/docker-modem/lib/modem.js`) - it must
-	// NOT end `stdout`/`stderr` when the source stream ends: the real implementation registers only
-	// `streama.on('data', processData)` and never calls `.end()`/`.destroy()` on either destination.
-	// `stdout`/`stderr` ending is entirely `DockerDriver.startRun`'s own responsibility (it derives that
-	// from the SOURCE stream, i.e. `stream` here, ending) - a demux stub that auto-ends the destinations
-	// (as this one previously did) hides exactly the bug that shipped in production.
-	const demuxStream = vi.fn((stream: NodeJS.ReadableStream, stdout: PassThrough) => {
-		stream.on('data', (chunk: Buffer) => stdout.write(chunk));
-	});
-
-	// Typed with the real `dockerode` parameter shape so `mock.calls[0]` is genuinely a
-	// `[Docker.ContainerCreateOptions]` tuple below - no unsound cast needed to read it back.
-	const createContainer = vi.fn(async (_options: Docker.ContainerCreateOptions) => container);
-	const docker = {
-		createContainer,
-		modem: { demuxStream },
-	} as unknown as Docker;
-
-	return {
-		docker,
-		container,
-		createContainer,
-		/** Simulates `container.wait()` resolving - the container process has exited. */
-		triggerContainerExit(statusCode = 0): void {
-			resolveWait({ StatusCode: statusCode });
-		},
-		/** Simulates a trailing chunk still arriving over the separate Docker logs connection. */
-		pushFinalLogChunk(chunk: string): void {
-			rawLogStream.write(chunk);
-		},
-		/** Simulates the logs connection closing - the real daemon does this once the container's full
-		 * output has been delivered. */
-		endLogStream(): void {
-			rawLogStream.end();
-		},
-	};
-}
 
 describe('DockerDriver.startRun - log stream drain ordering (regression: trailing log chunk race)', () => {
 	it("does not resolve until the container's log stream has fully drained, even after container.wait() has already resolved", async () => {
@@ -878,5 +815,230 @@ describe('DockerDriver.probeDevFolder (actor-driver.md: "A host-side existence-a
 		const outcome = await driver.probeDevFolder('/abs/path', 'image:tag');
 
 		expect(outcome).toEqual({ ok: false, reason: 'unknown' });
+	});
+});
+
+describe('DockerDriver.startRun - CFS CPU limit (actor-driver.md: CpuPeriod/CpuQuota, never NanoCpus)', () => {
+	it('encodes the CPU limit as HostConfig.CpuPeriod/CpuQuota derived from memoryMbytes/4096, never sets NanoCpus, and leaves Memory unchanged', async () => {
+		const stub = stubDockerForRun();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-cpu-1', imageId: 'fake-image', env: {}, memoryMbytes: 1024, timeoutSecs: 60 },
+			() => {},
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const [options] = stub.createContainer.mock.calls[0]!;
+		// 1024 / 4096 = 0.25 core = 25000us of every 100000us period - the ratio worked example in
+		// `requirements/actor-driver.md`'s "Resource limits" section.
+		expect(options.HostConfig?.CpuPeriod).toBe(100_000);
+		expect(options.HostConfig?.CpuQuota).toBe(25_000);
+		expect(options.HostConfig?.Memory).toBe(1024 * 1024 * 1024);
+		expect(options.HostConfig?.NanoCpus).toBeUndefined();
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
+	it("raises the computed quota to Docker's own protocol minimum of 1000us when the raw memoryMbytes/4096 ratio computes lower - a protocol floor, never a host-capacity clamp", async () => {
+		const stub = stubDockerForRun();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-cpu-2', imageId: 'fake-image', env: {}, memoryMbytes: 32, timeoutSecs: 60 },
+			() => {},
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const [options] = stub.createContainer.mock.calls[0]!;
+		// Raw: 32 / 4096 * 100000 = 781.25us, below the 1000us floor.
+		expect(options.HostConfig?.CpuQuota).toBe(1000);
+		expect(options.HostConfig?.CpuPeriod).toBe(100_000);
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+});
+
+/**
+ * A stub `dockerode`-shaped object supporting both `init()` (`ping`/`listNetworks`/`createNetwork`/
+ * `info`) and `startRun()` (reusing `stubDockerForRun`'s own container/createContainer stub) - for
+ * exercising the host-capacity warning end to end: `docker.info()`'s snapshot at `init()` time feeding
+ * `startRun()`'s over-capacity check. `info` is caller-supplied so each test controls exactly what
+ * `docker.info()` resolves (or rejects) with.
+ */
+function stubDockerForCapacity(info: () => Promise<unknown>) {
+	const run = stubDockerForRun();
+	const docker = {
+		...run.docker,
+		ping: vi.fn(async () => undefined),
+		listNetworks: vi.fn(async () => []),
+		createNetwork: vi.fn(async () => undefined),
+		info: vi.fn(info),
+	} as unknown as Docker;
+	return { ...run, docker };
+}
+
+describe('DockerDriver host-capacity warning (actor-driver.md: warn, never clamp)', () => {
+	it('warns through onLog naming both the requested and host figures for both over-capacity resources, and still applies the requested limits verbatim (never clamped)', async () => {
+		const stub = stubDockerForCapacity(async () => ({ NCPU: 4, MemTotal: 8_589_934_592 }));
+		const driver = new DockerDriver(stub.docker);
+		await driver.init();
+		expect(driver.available).toBe(true);
+
+		const chunks: string[] = [];
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-capacity-1', imageId: 'fake-image', env: {}, memoryMbytes: 65_536, timeoutSecs: 60 },
+			(chunk) => chunks.push(chunk),
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const warning = chunks.join('');
+		expect(warning).toContain('65536 MB');
+		expect(warning).toContain('8192 MB');
+		expect(warning).toContain('16.00 CPU');
+		expect(warning).toContain('host has 4');
+		expect(warning).toMatch(/applying the requested limits anyway/);
+
+		// Warned about, never clamped: the created container still carries the full requested limits.
+		const [options] = stub.createContainer.mock.calls[0]!;
+		expect(options.HostConfig?.Memory).toBe(65_536 * 1024 * 1024);
+		expect(options.HostConfig?.CpuQuota).toBe(1_600_000);
+		expect(options.HostConfig?.CpuPeriod).toBe(100_000);
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
+	it('warns naming only the over-capacity resource when memory is over capacity but CPU is not', async () => {
+		// NCPU: 16, MemTotal: 8192 MB - a host with plenty of CPU relative to its RAM at the platform's own
+		// ratio. memoryMbytes: 16_384 -> 4 dedicated cores, which fits comfortably under 16; the memory
+		// figure alone (16384 > 8192) is over capacity.
+		const stub = stubDockerForCapacity(async () => ({ NCPU: 16, MemTotal: 8_589_934_592 }));
+		const driver = new DockerDriver(stub.docker);
+		await driver.init();
+
+		const chunks: string[] = [];
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-capacity-mem-only', imageId: 'fake-image', env: {}, memoryMbytes: 16_384, timeoutSecs: 60 },
+			(chunk) => chunks.push(chunk),
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const warning = chunks.join('');
+		expect(warning).toContain('16384 MB');
+		expect(warning).toContain('host has 8192 MB');
+		expect(warning).toMatch(/applying the requested limits anyway/);
+		// The CPU figure must not appear at all - only the over-capacity resource is named.
+		expect(warning).not.toContain('CPU cores');
+		expect(warning).not.toContain('host has 16');
+
+		// Still applied verbatim, unclamped.
+		const [options] = stub.createContainer.mock.calls[0]!;
+		expect(options.HostConfig?.Memory).toBe(16_384 * 1024 * 1024);
+		expect(options.HostConfig?.CpuQuota).toBe(400_000);
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
+	it('warns naming only the over-capacity resource when CPU is over capacity but memory is not', async () => {
+		// NCPU: 1, MemTotal: 1 TiB - a host with plenty of RAM but only a single core. memoryMbytes: 8192 ->
+		// 2 dedicated cores, over the host's single core; the memory figure (8192 MB against ~1,048,576 MB
+		// of host RAM) is comfortably under capacity.
+		const stub = stubDockerForCapacity(async () => ({ NCPU: 1, MemTotal: 1_099_511_627_776 }));
+		const driver = new DockerDriver(stub.docker);
+		await driver.init();
+
+		const chunks: string[] = [];
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-capacity-cpu-only', imageId: 'fake-image', env: {}, memoryMbytes: 8192, timeoutSecs: 60 },
+			(chunk) => chunks.push(chunk),
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const warning = chunks.join('');
+		expect(warning).toContain('2.00 CPU cores');
+		expect(warning).toContain('host has 1');
+		expect(warning).toMatch(/applying the requested limits anyway/);
+		// The memory figure must not appear at all - only the over-capacity resource is named.
+		expect(warning).not.toContain('MB (host has');
+
+		// Still applied verbatim, unclamped.
+		const [options] = stub.createContainer.mock.calls[0]!;
+		expect(options.HostConfig?.Memory).toBe(8192 * 1024 * 1024);
+		expect(options.HostConfig?.CpuQuota).toBe(200_000);
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
+	it('produces no warning at all for an in-capacity request', async () => {
+		const stub = stubDockerForCapacity(async () => ({ NCPU: 4, MemTotal: 8_589_934_592 }));
+		const driver = new DockerDriver(stub.docker);
+		await driver.init();
+
+		const chunks: string[] = [];
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-capacity-2', imageId: 'fake-image', env: {}, memoryMbytes: 1024, timeoutSecs: 60 },
+			(chunk) => chunks.push(chunk),
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		expect(chunks.join('')).toBe('');
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
+	it('produces no warning when docker.info() rejects outright - capacity unknown, never a crash, never treated as capacity zero', async () => {
+		const stub = stubDockerForCapacity(async () => {
+			throw new Error('info unavailable');
+		});
+		const driver = new DockerDriver(stub.docker);
+		await driver.init();
+		// A docker.info() failure must never make the whole daemon look unavailable.
+		expect(driver.available).toBe(true);
+
+		const chunks: string[] = [];
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-capacity-3', imageId: 'fake-image', env: {}, memoryMbytes: 65_536, timeoutSecs: 60 },
+			(chunk) => chunks.push(chunk),
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		expect(chunks.join('')).toBe('');
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
+	});
+
+	it('produces no warning when docker.info() resolves but omits NCPU/MemTotal - capacity unknown, not capacity zero', async () => {
+		const stub = stubDockerForCapacity(async () => ({}));
+		const driver = new DockerDriver(stub.docker);
+		await driver.init();
+
+		const chunks: string[] = [];
+		const outcomePromise = driver.startRun(
+			{ runId: 'run-capacity-4', imageId: 'fake-image', env: {}, memoryMbytes: 65_536, timeoutSecs: 60 },
+			(chunk) => chunks.push(chunk),
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		expect(chunks.join('')).toBe('');
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcomePromise;
 	});
 });

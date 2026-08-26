@@ -319,7 +319,7 @@ describe('CLI log-stream race: apify-cli outputJobLog must always settle (regres
 		expect(() => appendLog(record.id, 'late line, after end\n')).not.toThrow();
 	});
 
-	it("stress: many trials with randomized tight timing, the periodic flusher running, and unrelated concurrent traffic never leave the stream unsettled (regression for a low-probability race, cf. iter-12's 0.23%-under-flusher finding)", async () => {
+	it('stress: many trials with randomized tight timing, the periodic flusher running, and unrelated concurrent traffic never leave the stream unsettled (regression for a low-probability race that only surfaces under the periodic flusher)', async () => {
 		const { startLogFlusher, stopLogFlusher } = await import('../../src/services/logs.js');
 		const TRIALS = 60;
 		const failures: string[] = [];

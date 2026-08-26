@@ -47,6 +47,25 @@ export type DevFolderProbeFailureReason = 'unreachable' | 'image-missing' | 'not
 
 export type DevFolderProbeOutcome = { ok: true } | { ok: false; reason: DevFolderProbeFailureReason };
 
+/**
+ * One CPU/memory measurement of a live run's container, taken by the driver's own per-run sampler
+ * (`docker-driver.ts`'s `startResourceSampler`) and handed to `startRun`'s optional `onSample` callback -
+ * plain numbers (plus a `Date`), never a `dockerode` type, same as every other value that crosses the
+ * `Driver` boundary. Shaping this into the platform's `systemInfo` envelope (percent-of-grant math,
+ * running avg/max, `isCpuOverloaded`) is `services/events-channel.ts`'s job, not the driver's - the
+ * driver only measures.
+ */
+export interface RunResourceSample {
+	/** CPU usage as percent of one core - `docker stats`' convention, not percent of the run's grant. */
+	cpuPercentOfOneCore: number;
+	/** Current memory usage in bytes, with the reclaimable page cache subtracted. */
+	memoryBytes: number;
+	/** The container's configured memory limit in bytes - constant, never an observed peak. */
+	memoryLimitBytes: number;
+	/** When this sample was taken. */
+	at: Date;
+}
+
 export interface RunOutcome {
 	exitCode: number;
 	/**
@@ -85,7 +104,16 @@ export interface Driver {
 	startBuild(ctx: BuildContext, onLog: (chunk: string) => void): Promise<BuildOutcome>;
 	abortBuild(buildId: string): Promise<void>;
 
-	startRun(ctx: RunContext, onLog: (chunk: string) => void): Promise<RunOutcome>;
+	/**
+	 * `onSample`, when given, is called roughly once per second for the lifetime of the run with a
+	 * `RunResourceSample` measured from the run's own container. Optional so existing `Driver`
+	 * implementations keep compiling unchanged.
+	 */
+	startRun(
+		ctx: RunContext,
+		onLog: (chunk: string) => void,
+		onSample?: (sample: RunResourceSample) => void,
+	): Promise<RunOutcome>;
 	abortRun(runId: string): Promise<void>;
 
 	/** Startup reconciliation: any run container this process no longer tracks is removed. Build
