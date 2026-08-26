@@ -53,8 +53,8 @@ async function seedActor(server: TestServerHandle, name: string): Promise<ActorR
 	return (await getRegistries().actors.get(created.id))!;
 }
 
-/** A SUCCEEDED build with a fake image, seeded directly - `pricing-and-charging.test.ts`'s identical
- * helper (the stub drivers used below cannot build one). */
+/** A SUCCEEDED build with a fake image, seeded directly - mirrors `pricing-and-charging.test.ts`'s
+ * identical helper (the stub drivers used below cannot build one). */
 async function seedSucceededBuild(actor: ActorRecord): Promise<BuildRecord> {
 	const build: BuildRecord = {
 		id: generateId(),

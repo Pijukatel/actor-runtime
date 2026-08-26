@@ -464,7 +464,7 @@ describe('runDto: stats/usage projection (compute units)', () => {
 		);
 	});
 
-	it('two runs of the same Actor/memory but different durations produce computeUnits in the same ratio as their durations', async () => {
+	it('two runs of the same Actor/memory but different durations produce computeUnits ordered the same as the durations', async () => {
 		// `bootstrapStorage()`/its registries are process-wide singletons (see `storage/bootstrap.ts`'s
 		// own doc comment), so two runs are driven sequentially through ONE server/driver here, not two
 		// concurrent `startTestServer()`s.
