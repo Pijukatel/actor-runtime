@@ -295,6 +295,34 @@ describe('POST|GET /actor-runtime/pricing/:actorId', () => {
 			(run.pricingInfo as typeof SAMPLE_PRICING_BODY).pricingPerEvent.actorChargeEvents['from-file'],
 		).toBeUndefined();
 	});
+
+	// `services/pricing-declaration.ts: writePricingInfo` bypasses `services/actors.ts: updateActor`
+	// deliberately (see that function's own doc comment) - mirrors `dev-folder.test.ts`'s identical
+	// regression tests for `writeLocalDevFolder`.
+	it("declaring pricing never bumps the Actor's modifiedAt", async () => {
+		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
+		const actor = await server.client.actors().create({ name: 'modifiedat-declare-actor' });
+		const before = (await getRegistries().actors.get(actor.id))!.modifiedAt;
+
+		const res = await declarePricing(server.baseUrl, actor.id, SAMPLE_PRICING_BODY, server.token);
+		expect(res.status).toBe(200);
+
+		const after = (await getRegistries().actors.get(actor.id))!.modifiedAt;
+		expect(after).toBe(before);
+	});
+
+	it("clearing a previously-declared pricing never bumps the Actor's modifiedAt", async () => {
+		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
+		const actor = await server.client.actors().create({ name: 'modifiedat-clear-pricing-actor' });
+		await declarePricing(server.baseUrl, actor.id, SAMPLE_PRICING_BODY, server.token);
+		const before = (await getRegistries().actors.get(actor.id))!.modifiedAt;
+
+		const res = await declarePricing(server.baseUrl, actor.id, '', server.token);
+		expect(res.status).toBe(200);
+
+		const after = (await getRegistries().actors.get(actor.id))!.modifiedAt;
+		expect(after).toBe(before);
+	});
 });
 
 describe('runDto: stats/usage projection (compute units)', () => {

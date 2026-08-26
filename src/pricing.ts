@@ -12,11 +12,11 @@
  * two reads, exactly as apify-core's own would.
  */
 
-/** apify-core's `CHARGEABLE_SERVICE_PRICING` (`src/packages/finances/src/pricing.ts`), copied for the
- * two services this runtime supports: `ACTOR_COMPUTE_UNITS.baseUnitPriceUsd`
- * is USD per compute unit; `PAID_ACTORS_PER_EVENT` follows apify-core's $1-per-USD-denominated-unit
- * convention, so a PPE dollar amount and its "usage unit" count are numerically identical. Proxy/
- * storage services are deliberately absent - out of scope.
+/** apify-core's `CHARGEABLE_SERVICE_PRICING` (`src/packages/finances/src/pricing.ts`), copied for the two
+ * services this runtime supports: `ACTOR_COMPUTE_UNITS.baseUnitPriceUsd` is USD per compute unit;
+ * `PAID_ACTORS_PER_EVENT` follows apify-core's $1-per-USD-denominated-unit convention, so a PPE dollar
+ * amount and its "usage unit" count are numerically identical. Proxy/storage services are deliberately
+ * absent - out of scope.
  */
 export const CHARGEABLE_SERVICE_PRICING = {
 	ACTOR_COMPUTE_UNITS: 0.2,

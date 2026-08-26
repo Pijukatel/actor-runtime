@@ -54,6 +54,12 @@ export function validatePricingInfoShape(value: unknown): string | null {
 	return null;
 }
 
+/** Writes `pricingInfo` directly on the `__ACTORS__` registry, bypassing `services/actors.ts: updateActor`
+ * - deliberately, so declaring or clearing PPE pricing never bumps `modifiedAt`, the same technique
+ * `dev-folder.ts: writeLocalDevFolder` uses for `localDevFolder` and for the same reason: `modifiedAt`
+ * *is* exposed on `/v2` (`actorDto` in `api/dto/actors.ts`), while `pricingInfo` is not, so touching it
+ * here would leak this declaration through a side channel a caller could observe without ever reading
+ * `pricingInfo` itself. */
 async function writePricingInfo(actorId: string, pricingInfo: PricingInfo | undefined): Promise<ActorRecord | null> {
 	return getRegistries().actors.update(actorId, (current) => (current ? { ...current, pricingInfo } : current));
 }
