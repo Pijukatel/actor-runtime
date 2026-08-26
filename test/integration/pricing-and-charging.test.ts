@@ -65,21 +65,14 @@ const SAMPLE_PRICING_BODY = {
 				eventDescription: 'Charged per GB of memory at start',
 				eventPriceUsd: 0.005,
 			},
-			'page-scraped': {
-				eventTitle: 'Page scraped',
-				eventDescription: 'One page scraped',
-				eventPriceUsd: 0.001,
-			},
+			'page-scraped': { eventTitle: 'Page scraped', eventDescription: 'One page scraped', eventPriceUsd: 0.001 },
 		},
 	},
 };
 
 function declarePricing(baseUrl: string, actorId: string, body: unknown, token?: string) {
 	return axios.post(`${baseUrl}/actor-runtime/pricing/${actorId}`, JSON.stringify(body), {
-		headers: {
-			'content-type': 'application/json',
-			...(token ? { Authorization: `Bearer ${token}` } : {}),
-		},
+		headers: { 'content-type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
 		validateStatus: () => true,
 	});
 }
@@ -183,10 +176,7 @@ describe('POST|GET /actor-runtime/pricing/:actorId', () => {
 		const badEvent = await declarePricing(
 			server.baseUrl,
 			actor.id,
-			{
-				pricingModel: 'PAY_PER_EVENT',
-				pricingPerEvent: { actorChargeEvents: { x: { eventTitle: 'X' } } },
-			},
+			{ pricingModel: 'PAY_PER_EVENT', pricingPerEvent: { actorChargeEvents: { x: { eventTitle: 'X' } } } },
 			server.token,
 		);
 		expect(badEvent.status).toBe(400);
@@ -499,10 +489,7 @@ describe('PPE run start: pricingInfo/chargedEventCounts seeding', () => {
 			await declarePricing(server.baseUrl, actor.id, SAMPLE_PRICING_BODY, server.token);
 
 			const run = await server.client.actor(actor.id).start({}, { memory: memoryMbytes, waitForFinish: 5 });
-			expect(run.chargedEventCounts).toEqual({
-				'apify-actor-start': expectedStartCount,
-				'page-scraped': 0,
-			});
+			expect(run.chargedEventCounts).toEqual({ 'apify-actor-start': expectedStartCount, 'page-scraped': 0 });
 		},
 	);
 });
@@ -744,10 +731,7 @@ describe('POST /v2/actor-runs/:runId/charge', () => {
 		const expectedPpeUsd = startCount * 0.005 + 137 * 0.001;
 		expect((run!.usage as Record<string, number>).PAID_ACTORS_PER_EVENT).toBeCloseTo(expectedPpeUsd, 10);
 		expect((run!.usageUsd as Record<string, number>).PAID_ACTORS_PER_EVENT).toBeCloseTo(expectedPpeUsd, 10);
-		expect(run!.eventUsage!['page-scraped']).toEqual({
-			eventTitle: 'Page scraped',
-			eventTotalUsd: 137 * 0.001,
-		});
+		expect(run!.eventUsage!['page-scraped']).toEqual({ eventTitle: 'Page scraped', eventTotalUsd: 137 * 0.001 });
 		expect(run!.eventUsage!['apify-actor-start']).toEqual({
 			eventTitle: 'Actor start',
 			eventTotalUsd: startCount * 0.005,

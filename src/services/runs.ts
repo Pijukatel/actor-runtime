@@ -18,11 +18,7 @@ import { CONTAINER_EVENTS_WS_BASE_URL } from '../config.js';
  * `events-channel.ts` has accumulated for `runId` so far (all-zero if nothing was ever published - e.g.
  * a run that never got a container). */
 function runTerminalPatch(runId: string, patch: Partial<RunRecord> = {}): Partial<RunRecord> {
-	return {
-		...patch,
-		finishedAt: new Date().toISOString(),
-		resourceStats: getResourceStatsSnapshot(runId),
-	};
+	return { ...patch, finishedAt: new Date().toISOString(), resourceStats: getResourceStatsSnapshot(runId) };
 }
 
 const DEFAULT_MEMORY_MBYTES = 1024;
