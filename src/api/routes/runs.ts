@@ -85,25 +85,16 @@ export function mountRuns(router: Router, deps: ApiServerDeps): void {
 		'/actor-runs/:runId/charge',
 		h(async (req, res) => {
 			const body = jsonBody<{ eventName?: unknown; count?: unknown }>(req);
+			// Request-shape validation, all of it, before anything looks at the run: matches apify-core's
+			// own order exactly (`run_charge.ts:19-24`) - `assertString(eventName)`, then
+			// `assertString(idempotencyKey)`, then `assertInteger(count, { min: 1, max: 10_000_000 })`, all
+			// inside the route handler itself, ahead of the `RunChargingService` call that does the prefix
+			// check and the run lookup. Keeping these three together (rather than splitting the header check
+			// or the count check off to sit near the lookup) is what makes an `apify-`-prefixed event with an
+			// invalid `count` answer `400` here too, the same as apify-core.
 			if (typeof body.eventName !== 'string' || body.eventName.length === 0) {
 				throw invalidRequest('"eventName" must be a non-empty string');
 			}
-			// Matches apify-core exactly: synthetic, platform-owned events (the `apify-` prefix) can never be
-			// charged by a client request - only the runtime itself seeds them (`services/runs.ts`'s
-			// `apify-actor-start` seeding). Checked ahead of the "owned record" lookup just below, mirroring
-			// `idempotentChargeUserForEvent`'s own guard order (the very first check it makes, ahead of even
-			// looking up the run - `run_charging_service.ts:566-569`): an `apify-`-prefixed event on an unknown
-			// or not-owned run answers `405` here too, the same as one on a run that does exist.
-			if (body.eventName.startsWith(APIFY_EVENT_PREFIX)) {
-				throw cannotChargeApifyEvent(body.eventName);
-			}
-
-			// Same "owned record" check every other `/v2/actor-runs/:runId/*` route uses - a run that
-			// doesn't exist, or belongs to someone else, is `404 record-not-found` either way (this
-			// runtime hands the container the owner's own token, so there is no separate run-scoped-token
-			// check to mirror from apify-core here).
-			const run = await getOwnedRun(requireUser(req).id, req.params.runId as string);
-			if (!run) throw recordNotFound();
 
 			const idempotencyKey = req.header(IDEMPOTENCY_KEY_HEADER);
 			if (!idempotencyKey) throw invalidRequest(`Missing required "${IDEMPOTENCY_KEY_HEADER}" header`);
@@ -120,8 +111,26 @@ export function mountRuns(router: Router, deps: ApiServerDeps): void {
 				throw invalidRequest(`"count" must be an integer >= 1 and <= ${MAX_CHARGE_COUNT}`);
 			}
 
+			// Matches apify-core exactly: synthetic, platform-owned events (the `apify-` prefix) can never be
+			// charged by a client request - only the runtime itself seeds them (`services/runs.ts`'s
+			// `apify-actor-start` seeding). Checked ahead of the "owned record" lookup just below, mirroring
+			// `idempotentChargeUserForEvent`'s own guard order - the first thing it does once the request shape
+			// is valid, ahead of even looking up the run (`run_charging_service.ts:566-569`): an
+			// `apify-`-prefixed event on an unknown or not-owned run answers `405` here too, the same as one on
+			// a run that does exist.
+			if (body.eventName.startsWith(APIFY_EVENT_PREFIX)) {
+				throw cannotChargeApifyEvent(body.eventName);
+			}
+
+			// Same "owned record" check every other `/v2/actor-runs/:runId/*` route uses - a run that
+			// doesn't exist, or belongs to someone else, is `404 record-not-found` either way (this
+			// runtime hands the container the owner's own token, so there is no separate run-scoped-token
+			// check to mirror from apify-core here).
+			const run = await getOwnedRun(requireUser(req).id, req.params.runId as string);
+			if (!run) throw recordNotFound();
+
 			const outcome = await chargeRun(run.id, body.eventName, count, idempotencyKey);
-			switch (outcome.kind) {
+			switch (outcome) {
 				case 'not-found':
 					throw recordNotFound();
 				case 'not-pay-per-event':

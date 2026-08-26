@@ -4,7 +4,7 @@
  * `KeyedMutex` (already used by every `Registry.update()`) serialises concurrent charges for the same
  * run - no second lock, no Redis, nothing else to add.
  */
-import type { ChargeLogEntry, RunRecord } from '../storage/entities.js';
+import type { ChargeLogEntry } from '../storage/entities.js';
 import { getRegistries } from '../storage/registries.js';
 
 /** Capped, oldest evicted first - a replay of an evicted key would double-charge, which is still
@@ -12,12 +12,9 @@ import { getRegistries } from '../storage/registries.js';
  * `dto/actors.ts: runDto` never reads `chargeLog`. */
 const MAX_CHARGE_LOG_ENTRIES = 1000;
 
-export type ChargeOutcome =
-	| { kind: 'charged'; run: RunRecord }
-	| { kind: 'replayed'; run: RunRecord }
-	| { kind: 'not-found' }
-	| { kind: 'not-pay-per-event' }
-	| { kind: 'undeclared-event' };
+/** No variant carries a payload - the caller (`api/routes/runs.ts`) only ever branches on which of
+ * these happened, never reads the run record back out of the outcome. */
+export type ChargeOutcome = 'charged' | 'replayed' | 'not-found' | 'not-pay-per-event' | 'undeclared-event';
 
 /**
  * `runId` must already be resolved+owned by the caller (`api/routes/runs.ts`'s `getOwnedRun`, the same
@@ -32,29 +29,28 @@ export async function chargeRun(
 	idempotencyKey: string,
 ): Promise<ChargeOutcome> {
 	const { runs } = getRegistries();
-	// The mutator assigns the full outcome (run included, for the two arms that have one) as it goes,
-	// so the caller just returns whatever it last set - no recombining `runs.update()`'s own return
-	// value with a separately tracked `kind` afterwards.
-	let outcome: ChargeOutcome = { kind: 'not-found' };
+	// The mutator assigns the outcome as it goes, so the caller just returns whatever it last set - no
+	// recombining `runs.update()`'s own return value with a separately tracked outcome afterwards.
+	let outcome: ChargeOutcome = 'not-found';
 
 	await runs.update(runId, (current) => {
 		if (!current) {
-			outcome = { kind: 'not-found' };
+			outcome = 'not-found';
 			return current;
 		}
 		if (!current.pricingInfo || current.pricingInfo.pricingModel !== 'PAY_PER_EVENT') {
-			outcome = { kind: 'not-pay-per-event' };
+			outcome = 'not-pay-per-event';
 			return current;
 		}
 		if (!current.pricingInfo.pricingPerEvent.actorChargeEvents[eventName]) {
-			outcome = { kind: 'undeclared-event' };
+			outcome = 'undeclared-event';
 			return current;
 		}
 		// Idempotency: a replay of the exact same key is a no-op (same status, no second increment,
 		// `chargeLog` unchanged) - this file-backed log is what makes the dedupe survive a restart,
 		// unlike apify-core's 180s Redis TTL.
 		if (current.chargeLog?.some((entry) => entry.idempotencyKey === idempotencyKey)) {
-			outcome = { kind: 'replayed', run: current };
+			outcome = 'replayed';
 			return current;
 		}
 
@@ -65,9 +61,8 @@ export async function chargeRun(
 		const entry: ChargeLogEntry = { idempotencyKey, eventName, count, chargedAt: new Date().toISOString() };
 		const chargeLog = [...(current.chargeLog ?? []), entry].slice(-MAX_CHARGE_LOG_ENTRIES);
 
-		const next = { ...current, chargedEventCounts, chargeLog };
-		outcome = { kind: 'charged', run: next };
-		return next;
+		outcome = 'charged';
+		return { ...current, chargedEventCounts, chargeLog };
 	});
 
 	return outcome;

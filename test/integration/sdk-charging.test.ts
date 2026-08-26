@@ -269,7 +269,7 @@ describe('Actor.charge() via the real, unmodified apify SDK', () => {
 		expect(after?.chargedEventCounts?.['page-scraped']).toBe(6);
 	});
 
-	it('both-sides: a run of a non-PPE Actor still no-ops exactly as before - chargedCount 0, and the SDK logs its own warning once', async () => {
+	it('a run of a non-PPE Actor still no-ops exactly as before - chargedCount 0, and the SDK logs its own warning once', async () => {
 		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
 		const actor = await seedRunnableActor(server, 'sdk-non-ppe-actor');
 		// No pricing declared - `run.pricingInfo` stays `undefined`, so `ChargingManager` has no PPE

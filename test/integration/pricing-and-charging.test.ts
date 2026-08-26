@@ -1132,6 +1132,31 @@ describe('POST /v2/actor-runs/:runId/charge - request-shape validation', () => {
 		const after = await server.client.run(runId).get();
 		expect(after?.chargedEventCounts?.['apify-actor-start']).toBe(1);
 	});
+
+	// Request-shape validation (`eventName`/`idempotency-key`/`count`) runs before the `apify-` prefix
+	// check, matching apify-core's own order exactly: `assertString(eventName)`, `assertString(idempotencyKey)`,
+	// and `assertInteger(count, ...)` all sit inside the route handler (`run_charge.ts:19-24`), ahead of
+	// the `RunChargingService` call whose *first* line is the prefix check
+	// (`run_charging_service.ts:566-569`). So an `apify-`-prefixed event with an invalid `count` answers
+	// `400` `invalid-request` here, not `405` `cannot-charge-apify-event` - the shape guard fires first
+	// because it never gets far enough to see the prefix.
+	it('an apify--prefixed event with an invalid count is rejected as 400 invalid-request, not 405 cannot-charge-apify-event', async () => {
+		server = await startTestServer(fixedRunOutcomeDriver({ exitCode: 0, timedOut: false }));
+		const { runId } = await seedPpeRun('charge-guard-apify-prefix-bad-count-actor');
+
+		const res = await chargeViaHttp(
+			server.baseUrl,
+			runId,
+			server.token,
+			{ eventName: 'apify-actor-start', count: 2.5 },
+			'k-guard-apify-prefix-bad-count-1',
+		);
+		expect(res.status).toBe(400);
+		expect(res.data.error.type).toBe('invalid-request');
+
+		const after = await server.client.run(runId).get();
+		expect(after?.chargedEventCounts?.['apify-actor-start']).toBe(1);
+	});
 });
 
 describe('multiRunDriver-based resourceStats snapshot (memAvgBytes/cpuAvgUsage/cpuMaxUsage)', () => {
