@@ -2,6 +2,9 @@
 import { Actor, log } from 'apify';
 // Crawlee - web scraping and browser automation library (https://crawlee.dev)
 import { CheerioCrawler } from '@crawlee/cheerio';
+// impit impersonates a real browser's TLS fingerprint - moebelix.cz sits behind Cloudflare, whose
+// TLS fingerprinting otherwise flags Node's own TLS stack as a bot no matter which proxy IP is used.
+import { ImpitHttpClient, Browser } from '@crawlee/impit-client';
 await Actor.init();
 const BASE_URL = 'https://www.moebelix.cz';
 const CATEGORY_HUB_URL = `${BASE_URL}/c/nabytek`;
@@ -119,6 +122,10 @@ const crawler = new CheerioCrawler({
     proxyConfiguration,
     maxConcurrency,
     ignoreSslErrors: input.ignoreSslErrors ?? false,
+    httpClient: new ImpitHttpClient({
+        browser: Browser.Chrome,
+        ignoreTlsErrors: input.ignoreSslErrors ?? false,
+    }),
     // Cloudflare intermittently challenges individual proxy sessions with a 403; the session pool
     // retires the blocked session and a retry with a fresh one virtually always passes, so allow
     // a generous number of retries.
