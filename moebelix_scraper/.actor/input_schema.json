@@ -1,0 +1,51 @@
+{
+	"title": "Möbelix.cz category scraper input",
+	"type": "object",
+	"schemaVersion": 1,
+	"properties": {
+		"category": {
+			"title": "Furniture category",
+			"type": "string",
+			"editor": "textfield",
+			"description": "Name of the furniture category to scrape, as shown on https://www.moebelix.cz/c/nabytek (e.g. \"Židle\", \"Postele\", \"Komody\", \"Sedací soupravy\"). Diacritics-insensitive; a category slug like \"zidle\" works too. Ignored when Category URL is set.",
+			"prefill": "Židle"
+		},
+		"categoryUrl": {
+			"title": "Category URL",
+			"type": "string",
+			"editor": "textfield",
+			"description": "Direct URL of a moebelix.cz category listing (e.g. https://www.moebelix.cz/zidle-C22). Takes precedence over Furniture category.",
+			"pattern": "^https://www\\.moebelix\\.cz/.*"
+		},
+		"maxItems": {
+			"title": "Max items",
+			"type": "integer",
+			"description": "Maximum number of products to scrape from the category.",
+			"default": 60,
+			"minimum": 1
+		},
+		"maxConcurrency": {
+			"title": "Max concurrency",
+			"type": "integer",
+			"description": "Maximum number of listing pages fetched in parallel.",
+			"default": 5,
+			"minimum": 1,
+			"maximum": 20
+		},
+		"ignoreSslErrors": {
+			"title": "Ignore SSL errors (development only)",
+			"type": "boolean",
+			"description": "Skip TLS certificate validation. Only for local development in environments whose outbound traffic goes through a TLS-intercepting proxy. Leave off in production.",
+			"default": false
+		},
+		"proxyConfiguration": {
+			"title": "Proxy configuration",
+			"type": "object",
+			"editor": "proxy",
+			"description": "Proxy to use. moebelix.cz sits behind Cloudflare and blocks plain datacenter IPs, so Apify Proxy is required in practice. The proxy password is taken from the APIFY_PROXY_PASSWORD environment variable - never hardcode it.",
+			"default": { "useApifyProxy": true },
+			"prefill": { "useApifyProxy": true }
+		}
+	},
+	"required": []
+}

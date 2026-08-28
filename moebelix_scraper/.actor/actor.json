@@ -1,0 +1,13 @@
+{
+	"$schema": "https://apify.com/schemas/v1/actor.ide.json",
+	"actorSpecification": 1,
+	"name": "moebelix-category-scraper",
+	"title": "Möbelix.cz furniture category scraper",
+	"description": "Scrapes products from a chosen furniture category on moebelix.cz (name, price, availability, rating, image, URL) through Apify Proxy.",
+	"version": "0.0",
+	"buildTag": "latest",
+	"meta": {
+		"templateId": "ts-empty"
+	},
+	"dockerfile": "../Dockerfile"
+}

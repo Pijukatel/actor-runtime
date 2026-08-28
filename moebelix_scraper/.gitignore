@@ -1,0 +1,6 @@
+node_modules/
+storage/
+apify_storage/
+# The Docker image is built from the compiled output with no npm install (see Dockerfile), so
+# dist/ is deliberately committed - it overrides the repo-root dist/ ignore.
+!dist/
