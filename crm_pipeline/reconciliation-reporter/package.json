@@ -1,0 +1,14 @@
+{
+	"name": "reconciliation-reporter",
+	"version": "1.0.0",
+	"type": "module",
+	"description": "Deduplicates crm-normalized into crm-master and reports what the import pipeline produced.",
+	"main": "src/main.js",
+	"scripts": {
+		"start": "node src/main.js"
+	},
+	"dependencies": {
+		"apify": "^3.7.2"
+	},
+	"license": "ISC"
+}

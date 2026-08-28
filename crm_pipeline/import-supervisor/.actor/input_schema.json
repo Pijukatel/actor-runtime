@@ -1,0 +1,29 @@
+{
+	"title": "CRM import supervisor input",
+	"type": "object",
+	"schemaVersion": 1,
+	"properties": {
+		"seed": {
+			"title": "PRNG seed",
+			"type": "integer",
+			"description": "Seed handed to export-simulator.",
+			"default": 20240301,
+			"editor": "number"
+		},
+		"maxConcurrency": {
+			"title": "Max concurrent importers",
+			"type": "integer",
+			"description": "How many region-importer runs may be in flight at once.",
+			"default": 4,
+			"editor": "number"
+		},
+		"maxAttempts": {
+			"title": "Max attempts per region",
+			"type": "integer",
+			"description": "Attempts per region before the pipeline gives up; attempts after the first use force=true.",
+			"default": 3,
+			"editor": "number"
+		}
+	},
+	"required": []
+}

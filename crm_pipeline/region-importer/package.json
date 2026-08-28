@@ -1,0 +1,14 @@
+{
+	"name": "region-importer",
+	"version": "1.0.0",
+	"type": "module",
+	"description": "Parses, normalizes and imports one regional CRM export, with a malformed-row circuit breaker.",
+	"main": "src/main.js",
+	"scripts": {
+		"start": "node src/main.js"
+	},
+	"dependencies": {
+		"apify": "^3.7.2"
+	},
+	"license": "ISC"
+}

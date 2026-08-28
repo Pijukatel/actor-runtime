@@ -1,0 +1,14 @@
+{
+	"name": "import-supervisor",
+	"version": "1.0.0",
+	"type": "module",
+	"description": "Orchestrates the nightly CRM import: simulator, 8 regional importers, reconciliation.",
+	"main": "src/main.js",
+	"scripts": {
+		"start": "node src/main.js"
+	},
+	"dependencies": {
+		"apify": "^3.7.2"
+	},
+	"license": "ISC"
+}

@@ -1,0 +1,15 @@
+{
+	"title": "CRM reconciliation reporter input",
+	"type": "object",
+	"schemaVersion": 1,
+	"properties": {
+		"regionsRetried": {
+			"title": "Regions retried",
+			"type": "array",
+			"description": "Regions the supervisor had to relaunch with force=true; echoed into the report.",
+			"default": [],
+			"editor": "json"
+		}
+	},
+	"required": []
+}

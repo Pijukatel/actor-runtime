@@ -5,7 +5,14 @@ import prettier from 'eslint-config-prettier';
 
 export default tseslint.config(
 	{
-		ignores: ['dist/**', 'node_modules/**', 'sample_actor_ts/**', 'sample_actor_py/**', 'data/**'],
+		ignores: [
+			'dist/**',
+			'node_modules/**',
+			'sample_actor_ts/**',
+			'sample_actor_py/**',
+			'crm_pipeline/**',
+			'data/**',
+		],
 	},
 	js.configs.recommended,
 	...tseslint.configs.recommended,

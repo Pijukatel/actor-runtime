@@ -1,0 +1,14 @@
+{
+	"name": "export-simulator",
+	"version": "1.0.0",
+	"type": "module",
+	"description": "Generates deterministic regional CRM exports and the pipeline's ground-truth report.",
+	"main": "src/main.js",
+	"scripts": {
+		"start": "node src/main.js"
+	},
+	"dependencies": {
+		"apify": "^3.7.2"
+	},
+	"license": "ISC"
+}

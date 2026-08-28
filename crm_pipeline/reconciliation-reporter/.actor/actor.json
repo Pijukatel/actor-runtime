@@ -1,0 +1,10 @@
+{
+	"actorSpecification": 1,
+	"name": "reconciliation-reporter",
+	"title": "CRM reconciliation reporter",
+	"description": "Deduplicates crm-normalized by normalized email into crm-master and writes the pipeline's reconciliation report as OUTPUT.",
+	"version": "1.0",
+	"buildTag": "latest",
+	"input": "./input_schema.json",
+	"dockerfile": "../Dockerfile"
+}

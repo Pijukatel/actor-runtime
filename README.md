@@ -40,6 +40,14 @@ the real platform is reachable, the runtime also adopts that account's real user
 the first time it sees the token; fully offline (or with any other non-empty token) it just keeps using
 the single local user, with no error either way - see `requirements/cli.md`'s User bootstrap section.
 
+## Example: a multi-Actor pipeline
+
+`crm_pipeline/` holds four Actors that model a nightly CRM import - a generator, eight parallel
+regional importers with a circuit breaker, a supervisor that drives and retries them over the runs
+API, and a reconciliation reporter - coordinating only through named datasets and named key-value
+stores. It is a worked example of running a whole Actor-to-Actor pipeline on this runtime; see
+`crm_pipeline/README.md` and `crm_pipeline/run-log.md`.
+
 ## Rapid dev loop: bind-mounting your local source (no rebuild per edit)
 
 After the one push+build above, register your Actor's local source folder so every future run picks up

@@ -1,0 +1,10 @@
+{
+	"actorSpecification": 1,
+	"name": "import-supervisor",
+	"title": "CRM import supervisor",
+	"description": "Runs the whole nightly CRM import: export-simulator, 8 region-importers (max 4 concurrent, forced retries), then reconciliation-reporter.",
+	"version": "1.0",
+	"buildTag": "latest",
+	"input": "./input_schema.json",
+	"dockerfile": "../Dockerfile"
+}

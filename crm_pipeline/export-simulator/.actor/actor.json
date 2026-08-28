@@ -1,0 +1,10 @@
+{
+	"actorSpecification": 1,
+	"name": "export-simulator",
+	"title": "CRM export simulator",
+	"description": "Generates 8 defect-seeded regional CRM exports into the named key-value store crm-exports, plus expected-report.json.",
+	"version": "1.0",
+	"buildTag": "latest",
+	"input": "./input_schema.json",
+	"dockerfile": "../Dockerfile"
+}

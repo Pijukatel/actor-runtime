@@ -1,0 +1,15 @@
+{
+	"title": "CRM export simulator input",
+	"type": "object",
+	"schemaVersion": 1,
+	"properties": {
+		"seed": {
+			"title": "PRNG seed",
+			"type": "integer",
+			"description": "Seed for the deterministic generator. The same seed always yields byte-identical exports.",
+			"default": 20240301,
+			"editor": "number"
+		}
+	},
+	"required": []
+}
