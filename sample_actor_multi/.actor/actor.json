@@ -1,0 +1,12 @@
+{
+	"actorSpecification": 1,
+	"name": "my-multi-actor",
+	"title": "Multi-actor sample actor for actor-runtime",
+	"description": "Calls one Actor that exists in this runtime and one that only exists on the real Apify platform, recording both outcomes.",
+	"version": "0.0",
+	"buildTag": "latest",
+	"meta": {
+		"templateId": "python-empty"
+	},
+	"dockerfile": "../Dockerfile"
+}

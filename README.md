@@ -73,6 +73,36 @@ mechanics: `requirements/actor-driver.md`'s "Bind mount volumes with Actor sourc
 endpoint/console details: `requirements/api.md`'s `/actor-runtime/*` section and
 `requirements/console.md`.
 
+## Multi-actor demo: calling another Actor (and one that isn't here)
+
+`sample_actor_multi` is a trivial caller. It calls two Actors in turn and pushes one dataset item per
+call, so both outcomes are visible in `apify datasets info` and in the console:
+
+1. `localActorId` (default `my-actor`, i.e. `sample_actor_ts`) - an Actor already pushed to this
+   runtime, so the call is served locally.
+2. `remoteActorId` (default `apify/hello-world`) - an Actor this runtime doesn't have. The call fails,
+   the failure is recorded, and the run carries on rather than crashing.
+
+```bash
+cd sample_actor_ts && apify push        # the local callee
+cd ../sample_actor_multi && apify push
+apify call                              # first call succeeds, second one doesn't
+```
+
+The second call is the interesting one: switch the upstream API fallback on and the same unresolvable
+Actor id is relayed to the real Apify platform instead of 404ing, so the call really runs there.
+
+```bash
+apify api POST /actor-runtime/api-fallback --body '{"fallbackNotFoundEnabled": true}'
+apify call                              # now both calls succeed
+```
+
+Both Actor ids are inputs, so `apify call --input '{"remoteActorId": "your-username/your-actor"}'`
+points the second call at whatever you have on the platform. Note what the toggle costs: it forwards
+the token the failing call authenticated with to `upstreamBaseUrl`, and because the relayed request is
+a `POST` it starts a real, billable run on that account. Both toggles are off on every start and reset
+to off on restart - see `requirements/api.md`'s "Upstream fallback" section.
+
 ## Development
 
 ```bash

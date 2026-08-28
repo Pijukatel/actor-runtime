@@ -1,0 +1,22 @@
+{
+	"title": "Multi-actor sample input",
+	"type": "object",
+	"schemaVersion": 1,
+	"properties": {
+		"localActorId": {
+			"title": "Local Actor",
+			"type": "string",
+			"editor": "textfield",
+			"description": "An Actor already pushed to this runtime, called first. The default is sample_actor_ts's own name.",
+			"default": "my-actor"
+		},
+		"remoteActorId": {
+			"title": "Remote Actor",
+			"type": "string",
+			"editor": "textfield",
+			"description": "An Actor that does not exist in this runtime, called second. It fails harmlessly unless the upstream API fallback is on, in which case the call is relayed to the real Apify platform and really runs there.",
+			"default": "apify/hello-world"
+		}
+	},
+	"required": []
+}
