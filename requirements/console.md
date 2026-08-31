@@ -1,27 +1,22 @@
 # Frontend
 
 - Console frontend is a page that allows inspecting each user's objects across the whole runtime.
-- Server-rendered HTML from the same process that serves the API, on its own fixed port (3000). No
-  SPA, no bundler, no build step - plain Express routes returning HTML strings. It reads through the
-  same service layer as the API handlers, so storage/build/run access logic is shared rather than
-  reimplemented.
+- Server-rendered HTML on its own fixed port (3000); the console reflects the same live state the API serves.
 - Frontend shows for each object the owner (`userId`).
 - The console has no login of its own, so with multiple users it lists and shows every user's objects
   rather than scoping to one - the API's own endpoints stay strictly scoped to the calling token's user
   (`storage.md`'s "Users" section).
-- The console is unauthenticated. Every route is a read except the dev-folder form below and the
-  Settings form below, which are the console's only two writes - it is no longer strictly view-only.
-- Both of those two writes reject a submission that identifies itself as cross-site (via the
-  `Sec-Fetch-Site` header) with a plain `403`; a submission that does not is unaffected. This
-  narrows the console's existing "anyone who can reach it" model by one specific vector, it does
-  not add a login.
+- The console is unauthenticated. Every route is a read except the console's only two writes: the
+  dev-folder form and the Settings form (both below).
+- Both of those writes reject a submission that identifies itself as cross-site (via the
+  `Sec-Fetch-Site` header) with a plain `403`; a submission that does not is unaffected.
 - There are three types of objects: key-value store, dataset, request queue.
     - For each object type there must be exactly one widget for inspection.
-    - The request-queue widget leads with the authoritative counts from `RequestQueue.getInfo()`
-      (`totalRequestCount`/`handledRequestCount`/`pendingRequestCount`) plus a requests table; it is the
-      same in-process, best-effort id index the API's `GET /requests` uses (never `GET /head`/`POST/head/lock`, which would mutate queue state - see
-      `storage.md`'s "Known differences from the Apify platform" - it reflects only what this runtime
-      process has seen, not necessarily the whole queue, and does not survive a restart).
+    - The request-queue widget leads with the authoritative counts
+      (`totalRequestCount`/`handledRequestCount`/`pendingRequestCount`) plus a requests table showing the
+      same best-effort listing as the API's `GET /requests` (see `storage.md`'s "Known differences from
+      the Apify platform"): only requests this runtime process has seen, not necessarily the whole queue,
+      and not surviving a restart. Viewing the widget never mutates queue state.
 
 - It contains list view and detail view for following objects:
     - Actors
@@ -47,22 +42,19 @@
 ## Local dev-folder registration form (Actor detail view)
 
 - The Actor detail view shows the Actor's registered local dev folder, or that none is registered - the
-  same status the API endpoint reports (`api.md`). It never claims a mount "will apply": that depends on
-  which build a given run resolves, which this Actor-level view has no way to know in advance.
-- A single-field form exposes the same registration capability as the API endpoint, with no build-first
-  precondition either: submitting it sets or clears the dev folder, funnelling into the same
-  validate-and-persist path, so the two surfaces can never observe or produce different outcomes for the
-  same input. Submitting an empty value clears the registration, matching the API; a whitespace-only
-  value is rejected as a malformed path, also matching the API.
+  same status the API endpoint reports (`api.md`). It never claims a mount "will apply" (that depends on
+  which build a given run resolves - `actor-driver.md`).
+- A single-field form sets or clears the dev folder with exactly the API endpoint's behavior (`api.md`),
+  including no build-first precondition: an empty value clears the registration; a whitespace-only value
+  is rejected as a malformed path. For any given input, the form and the API produce the same outcome.
 - A submission that fails validation redirects back to the same detail page with the classified error
   message shown inline, never swallowed by the redirect.
 
 ## Settings page
 
 - Every page's header navigation includes a link to `/settings`, the one page for the upstream API
-  fallback toggles (`api.md`'s "Upstream fallback" section). The link itself shows both toggles'
-  current values, independently of each other, so neither toggle can ever be on without being visible
-  from anywhere in the console.
+  fallback toggles (`api.md`'s "Upstream fallback" section); the link itself shows each toggle's current
+  value.
 - `/settings` shows `fallbackUnimplementedEnabled`, `fallbackNotFoundEnabled`, and `upstreamBaseUrl`
   (the same values the API's toggle endpoint reports), plus a warning that enabling either toggle
   forwards the caller's own Apify token to that URL.
@@ -70,6 +62,5 @@
   submitting the form always sets both toggles explicitly - leaving one unchecked sets it to `false`,
   never "leave this toggle unchanged". A change made through either surface is immediately visible on
   the other, and via the API's own `GET`, with no restart needed either way.
-- Since the console has no login of its own, anyone who can reach it can flip either toggle for every
-  caller of the API - the same unauthenticated, cross-user model the rest of the console already has,
-  not a new exposure specific to this page.
+- The console has no login, so anyone who can reach it can flip either toggle for every caller of the
+  API.
