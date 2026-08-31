@@ -1,42 +1,28 @@
 # Actor build
 
-- The system is capable of building Actor docker image, over the **host Docker socket** (via
-  `dockerode`) rather than Docker-in-Docker - this keeps the host's image layer cache available and
-  avoids running a nested, privileged Docker daemon.
-- A build is produced by building a docker image from the Actor source that was
-  pushed to the system.
-- Build and run output streams are appended to an in-memory buffer that is flushed periodically into
-  `__LOGS__` and fanned out live to any open `GET /v2/logs/:id?stream=true` response.
+- The system builds an Actor's docker image over the **host Docker socket** rather than
+  Docker-in-Docker, keeping the host's image layer cache available.
+- A build is produced by building a docker image from the Actor source that was pushed to the system.
+- Build and run output is persisted as the job's log and fanned out live to any open
+  `GET /v2/logs/:id?stream=true` response.
 - **Status state machine**: `READY -> RUNNING -> SUCCEEDED | FAILED | TIMED-OUT | ABORTED`, with
   `RUNNING -> ABORTING -> ABORTED` while a stop is in flight (`ABORTING`/`ABORTED` are also reachable
   directly from `READY` - an abort issued before the build/run ever started).
-- `TIMED-OUT` applies to **both** builds and runs apply the same `TIMED_OUT`/`ABORTED` outcomes to both `ACTOR_JOB_TYPES.BUILD`
-  and `.RUN` off a `runtime.timeoutAt`deadline.
+- Both builds and runs can end `TIMED-OUT` (timeout deadline reached) or `ABORTED`.
 - a **run's** timeout is caller-configurable (`timeoutSecs` on `POST .../runs`, default **300s** if omitted)
 - a **build's** timeout is a fixed internal default **1800s**
-- Every write to a build/run's `status` field goes through one guarded transition helper
-  (`services/job-status.ts`'s `transitionJobStatus`) that refuses to move a record out of a terminal
-  status and only allows the edges drawn above - this is what makes `ABORTED` and `TIMED-OUT` reliable
-  in the face of a completion write racing an in-flight abort, rather than a convention every call site has to remember
-  to check for itself.
-- **Abort and timeout are race-proof.** Both `POST /actor-builds/:id/abort` and
-  `POST /actor-runs/:id/abort` move the record to `ABORTING` _before_ asking the driver to interrupt
-  anything, then to `ABORTED` - from the moment `ABORTING` lands, the background build/run handler's own
-  eventual completion write (whatever status it computes, whenever it lands) is refused by the guard
-  above, never overwrites the abort. This also closes the "abort during `READY`" window: the background
-  handler re-checks the record immediately before it would create a container / start a build, and if
-  it is already `ABORTING`/`ABORTED`, it never starts one and finalises `ABORTED` itself.
-- Aborting a **build** is genuine cancellation, not just a status flag: `dockerode`'s `buildImage()` accepts an
-  `abortSignal`, which it forwards to Node's `http.request({ signal })` - aborting it destroys the
-  in-flight HTTP request to the Docker daemon (verified by reading `docker-modem`'s and `dockerode`'s
-  installed source; there is no Docker socket in this sandbox to exercise it against a real daemon, so
-  this is covered by stub-driver tests, not an end-to-end one). Aborting a **run** stops the container
-  (`container.stop()`, unchanged from before).
+- **Abort and timeout are race-proof.** A build/run never moves out of a terminal status; only the
+  transitions drawn above ever occur. `POST /actor-builds/:id/abort` and `POST /actor-runs/:id/abort`
+  move the record to `ABORTING`, then `ABORTED`; once `ABORTING` is set, the job's own eventual
+  completion - whatever status it computes, whenever it lands - never overwrites the abort. An abort
+  issued while the record is still `READY` means no build or container is ever started; the record
+  finalises as `ABORTED`.
+- Aborting a **build** genuinely cancels the in-flight Docker build, not just the record's status;
+  aborting a **run** stops the run's container.
 - On a successful build, the Actor's `taggedBuilds[<tag>]` is updated with the new build's id and
   number - stock `apify push` polls for exactly this field before returning.
-- Actor build details are saved in `__BUILDS__` internal storage
-- Actor build log is saved in `__LOGS__` internal storage
-- Actor details are saved in `__ACTORS__` internal storage
+- Actor, build, and build-log details are kept in internal records that persist across runtime
+  restarts (`storage.md`).
 - **The Dockerfile to build is resolved from the Actor's pushed source**, not Docker's implicit default. `.actor/actor.json` is parsed as JSON5; an unparseable file fails the build with a "Could not parse .actor/actor.json" message. Resolution order, stopping at the first hit:
     1. the `dockerfile` field of `.actor/actor.json`, relative to `.actor/` - a path escaping the Actor root fails with "points outside the Actor root directory"; a non-string value fails with `"dockerfile" must be a string`; a value naming no pushed file (including empty) falls through instead of failing.
     2. `.actor/Dockerfile`
@@ -46,39 +32,32 @@
 
 # Bind mount volumes with Actor source code
 
-- To enable rapid development of Actors, it is desired to avoid the need to rebuild the Actors for
-  every source change. This is achieved by bind mounting the Actor's local development folder over the
-  built image's working directory when starting the container - edit locally, recompile locally
-  (`tsc`, or the language-appropriate equivalent), `apify call` again, with no `apify push`/build in
-  between. A running container never picks up a recompile; only the next run's container start does.
-  Dependency or environment changes still require a real rebuild.
-- `localDevFolder` is **registered explicitly** on a new local-only endpoint,
-  `POST /actor-runtime/dev-folder/:actorId` (see `api.md`), also exposed as a single-field form on the
-  console's Actor detail view (`console.md`), sets or clears it. Both surfaces funnel through one
-  shared validate-and-persist path, so they can never disagree.
-- **Registration validates the path in two layers**, not shape alone:
-    1. A cheap shape check: the submitted value must be an absolute POSIX path.
-    2. A **host-side existence-and-directory check**. The runtime's own filesystem cannot be trusted to
-       judge a host path - it is not necessarily the host's filesystem at all - so this must be verified
-       some other way.
-    - Submitting the **empty string clears the registration** and never runs either validation layer.
-    - Every non-success outcome is classified rather than guessed: being unable to verify the path at
-      all (e.g. Docker is unreachable) is reported as "could not verify", never as "does not exist"; a
-      path confirmed missing is reported as "path does not exist"; a path that exists but is a file is
-      reported as "path is not a directory"; anything else unverifiable is a generic "could not verify".
-- **Registration has no build-first precondition.** It requires no build of the Actor's own to exist,
-  succeeded or otherwise - the host-side check needs only something host-present to validate against,
-  never a build a run would actually use.
-- **`imageWorkingDirectory` is captured by the driver itself, right after a successful build, and is
-  build-specific, not Actor-specific** - it is persisted on that build's own record (see `storage.md`),
-  never on the Actor. The mount a run applies always reads it off _that run's own resolved build_, never
-  off any other build the Actor happens to have.
+- To let an Actor be re-run with source changes and no rebuild, the Actor's registered local dev
+  folder is bind-mounted over the built image's working directory when the run's container starts:
+  edit locally, recompile locally (`tsc`, or the language-appropriate equivalent), `apify call`
+  again - no `apify push`/build in between. A running container never picks up a recompile; only the
+  next run's container start does. Dependency or environment changes still require a real rebuild.
+- `localDevFolder` is **registered explicitly**: the local-only endpoint
+  `POST /actor-runtime/dev-folder/:actorId` (`api.md`) or a single-field form on the console's Actor
+  detail view (`console.md`) sets or clears it, with identical outcomes for the same input on both
+  surfaces.
+- Registration validates that the submitted value is an absolute POSIX path and that the path exists
+  **on the host** and is a directory.
+    - Submitting the **empty string clears the registration** and skips validation.
+    - Every non-success outcome is classified: unable to verify at all (e.g. Docker unreachable)
+      reports "could not verify" - never "does not exist"; a path confirmed missing reports "path
+      does not exist"; a path that exists but is a file reports "path is not a directory"; anything
+      else unverifiable reports a generic "could not verify".
+- **Registration has no build-first precondition** - it requires no build of the Actor to exist,
+  succeeded or otherwise.
+- The working directory the mount covers is recorded **per build**, never on the Actor
+  (`storage.md`); the mount a run applies always uses the one from _that run's own resolved build_,
+  never any other build the Actor happens to have.
 - **The mount is applied only when both a registered dev folder and a known working directory exist**
   for the run's resolved build; either missing means the run starts exactly as if the feature did not
   exist.
-- The registration status the console and API report is the registered folder alone - it never claims a
-  mount "will apply", since that depends on which build a given run resolves, which an Actor-level status
-  has no way to know in advance.
+- The registration status the console and API report is the registered folder alone - never that a
+  mount "will apply", since that depends on which build a given run resolves.
 - If the registered folder has since been deleted, moved, or made unreadable, the run must **fail
   visibly** - never silently mount an empty directory in its place.
 - The Actor image's own installed dependencies (e.g. `node_modules`) must remain available to the Actor
@@ -87,19 +66,18 @@
 
 # Networking
 
-- On startup, the runtime detects its own container id, ensures a Docker network `apify-local`
-  exists, and joins it under the fixed DNS alias `apify-api`. Every Actor container is started on that
-  same network, so it can reach the runtime's API at `http://apify-api:3333` regardless of the host's
-  own networking.
+- On startup, the runtime ensures a Docker network `apify-local` exists and joins it under the fixed
+  DNS alias `apify-api`. Every Actor container is started on that network, so it can reach the
+  runtime's API at `http://apify-api:3333` regardless of the host's own networking.
 
 # Actor run
 
-- The system is capable of running containerized Actor
+- The system runs Actors as containers
 - A run launches the Actor's built image as a container, with the Actor's input and its default
   storages (key-value store, dataset, request queue) wired in **entirely over HTTP** - the run's
   storages are reachable only through `APIFY_API_BASE_URL`.
-- Actor run details are saved in `__RUNS__` internal storage
-- Actor run log is saved in `__LOGS__` internal storage
+- Run details and the run log are kept in internal records that persist across runtime restarts
+  (`storage.md`).
 
 ## Resource limits
 
@@ -136,10 +114,9 @@
 # Environment variables in every Actor container
 
 - The Actor version's own `envVars` (accepted and stored on `POST`/`PUT
-.../actors/:actorId/versions`) are applied to the run's container
-  environment. They are merged in first, so every platform-owned var listed
-  below always takes precedence: a version cannot override `APIFY_TOKEN`,
-  the default storage ids, or any other contract var the runtime itself sets.
+.../actors/:actorId/versions`) are applied to the run's container environment, but every
+  platform-owned var listed below takes precedence: a version cannot override `APIFY_TOKEN`, the
+  default storage ids, or any other contract var the runtime itself sets.
 - `APIFY_IS_AT_HOME=1` (mirrors the real platform; an SDK/client instantiated
   in the container reports `isAtHome`/`is_at_home = true`).
 - `APIFY_META_ORIGIN` — `API` for ordinary runs (every local run arrives via
@@ -153,17 +130,15 @@
 - `APIFY_ACTOR_ID` / `ACTOR_ID` and `APIFY_ACTOR_RUN_ID` / `ACTOR_RUN_ID` —
   both the legacy `APIFY_`-prefixed and the modern unprefixed spellings, equal
   in value.
-- `APIFY_PROXY_PASSWORD` — included when a value is known from either of two sources, in this
-  precedence order: (1) the runtime itself was started with `APIFY_PROXY_PASSWORD` set in its own
-  environment (see README.md's "Apify Proxy" section) — always wins when set; otherwise (2) the proxy
-  password harvested from the real Apify platform the one time the run owner's token successfully
-  resolved against it (`cli.md`'s User bootstrap). If neither source has a value, the key is absent entirely — never a
-  placeholder value. One host-level password (source 1)
-  or one harvested-per-account password (source 2) used specifically for each user.
+- `APIFY_PROXY_PASSWORD` — set when a value is known, from either of two sources in precedence order:
+  (1) `APIFY_PROXY_PASSWORD` set in the runtime's own environment (README.md's "Apify Proxy" section) —
+  always wins when set; otherwise (2) the proxy password obtained for the run owner's own account during
+  User bootstrap (`cli.md`). If neither source has a value, the key is absent entirely — never a
+  placeholder.
 - `ACTOR_EVENTS_WEBSOCKET_URL` / `APIFY_ACTOR_EVENTS_WS_URL` — the run's own events channel
   (`api.md`), carrying no credential.
 - `ACTOR_MEMORY_MBYTES` / `APIFY_MEMORY_MBYTES` — the run's requested `memoryMbytes`.
 - `APIFY_DEDICATED_CPUS` — the run's granted CPU cores. No `ACTOR_`-prefixed counterpart; only the
   Python SDK reads it.
-- Every `ACTOR_*`/`APIFY_*` pair above is set to an identical value: the two SDKs disagree on which name
-  wins, so a divergent pair would size the same run differently depending on which one reads it.
+- Every `ACTOR_*`/`APIFY_*` pair above is set to an identical value (the two SDKs disagree on which name
+  wins).

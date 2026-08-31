@@ -1,36 +1,28 @@
 # API specification
 
-- The API is implementing subset of the OpenAPI specification `https://docs.apify.com/api/openapi.json`
+- The API implements a subset of the OpenAPI specification `https://docs.apify.com/api/openapi.json`
 
 # Response envelopes
 
-- Every JSON response wraps its payload as `{ "data": ... }` (apify-client-js unwraps every response
-  via its internal `pluckData` and would otherwise hand the CLI/SDK `undefined`).
+- Every JSON response wraps its payload as `{ "data": ... }` - apify-client-js unwraps every response
+  and would otherwise hand the CLI/SDK `undefined`.
 - Every error response is `{ "error": { "type": "...", "message": "..." } }`. A request for a resource
   id that does not exist (or does not belong to the caller) answers HTTP `404` with error type
-  `record-not-found` - apify-client-js keys its "return `undefined` instead of throwing" behaviour off
-  that exact type, which `apify push`'s "does this Actor already exist" probe depends on. This applies
-  uniformly to every `DELETE` in the Public API list below (Actors/builds/runs, datasets,
-  key-value-stores, request queues) - a missing storage id 404s the same way a missing build/run id
-  does, verified against `apify-core`'s own `getDatasetById` / `ensureStoreExists` /
-  `ensureQueueExists` / `getActorRun` / `getActorBuild`, which all throw `record-not-found` before a
-  delete is ever attempted. The one documented exception is deleting a key-value-store _record_ whose
-  key does not exist inside an otherwise-existing store: that stays a `204` no-op, matching
-  `apify-core`'s S3 delete swallowing a `NotFound` for the key
-  (`src/packages/storages-server/src/key_value_store_handler.ts:328-333`).
+  `record-not-found` - the exact type apify-client-js keys its "return `undefined` instead of
+  throwing" behaviour off, which `apify push`'s "does this Actor already exist" probe depends on. This
+  applies uniformly to every `DELETE` in the Public API list below (Actors/builds/runs, datasets,
+  key-value-stores, request queues), matching the Apify platform. The one documented exception:
+  deleting a key-value-store _record_ whose key does not exist inside an otherwise-existing store is a
+  `204` no-op, matching the platform.
 - `DELETE /v2/actor-builds/:buildId` and `DELETE /v2/actor-runs/:runId` on a **non-terminal** build/run
   are rejected, not aborted-then-deleted: `400` with error type `deleting-unfinished-build` (builds) or
-  `cannot-remove-running-run` (runs), matching `apify-core` exactly
-  (`src/packages/errors/src/errors/api.ts:217-218`, `src/packages/errors/src/errors/runs.ts:10-15`).
-  This also protects the runtime's own driver invariant: deleting the record first would permanently
-  strand a running Docker container, since its only stop path (`POST .../abort`) requires the record to
-  still resolve, and startup reconciliation only ever considers _existing_ run records.
+  `cannot-remove-running-run` (runs), matching the Apify platform.
 - Three endpoints are exceptions to the `{data}` envelope:
     - `GET /v2/logs/:buildOrRunId` (and its `actor-builds`/`actor-runs` aliases): the body is plain text,
       never `{data}`-wrapped, matching apify-client-js's `log().get()`.
     - `GET /v2/datasets/:datasetId/items` (and its `actor-runs/:runId/dataset/items` alias): the body is
       a bare JSON array of items, never `{data}`-wrapped, with pagination metadata carried in
-      `x-apify-pagination-*` response headers, matching apify-client-js's `_createPaginationList`.
+      `x-apify-pagination-*` response headers, matching apify-client-js's pagination handling.
     - `GET /actor-runtime/events/:runId`: a websocket upgrade, not a JSON response at all - see "Actor
       runtime API" below.
 - `*At` timestamp fields are ISO-8601 strings.
@@ -48,7 +40,7 @@
 # 501 vs 404
 
 - Which endpoints answer `501` (unimplemented spec path) instead of `404` (off-spec path entirely) is
-  decided from a vendored, committed table of known Apify API v2 paths - nothing is fetched from
+  decided from a fixed, built-in list of known Apify API v2 spec paths - nothing is fetched from
   `docs.apify.com` at runtime. See "Known differences from the Apify platform" in `storage.md` for the
   specific spec paths this runtime answers `501` on by design (request deletion) rather than because
   they are simply unbuilt.
@@ -123,18 +115,15 @@
       `storage.md`'s "Known differences from the Apify platform".
     - `GET v2/key-value-stores/:storeId/records` (no `:recordKey`) and its
       `v2/actor-runs/:runId/key-value-store/records` alias - on the real platform this downloads every
-      record in the store as a zip archive (`apify-core`'s `key_value_stores/records.ts` GET handler,
-      mounted at `API_V2_SERVER_ROUTES.KEY_VALUE_STORES.RECORDS`; the `actor-runs` alias reaches the same
-      handler through `ACTOR_RUNS.KEY_VALUE_STORE`'s wildcard route). Unrelated to
-      `.../records/:recordKey` (single-record read/write/delete) just above, which this runtime does
-      implement. Not built here; both paths are in the vendored spec table (`api/spec-table.ts`) as
-      `implemented: false` so they answer `501`, not `404`.
+      record in the store as a zip archive. Unrelated to `.../records/:recordKey` (single-record
+      read/write/delete) just above, which this runtime does implement. Both paths answer `501`, not
+      `404`.
 - All endpoints from the specification that do not have implementation must return response `501 Not Implemented`
 - All endpoints not present in specification must return `404 Not Found` - **except** the `/actor-runtime/*`
 
 # Actor runtime API
 
-- `/actor-runtime/*` is API that control specifics function of the local Actor runtime
+- `/actor-runtime/*` is the API controlling functions specific to the local Actor runtime
 - **`POST /actor-runtime/dev-folder/:actorId`** - registers (or clears) the Actor's local dev folder for
   the bind-mount feature (`actor-driver.md`). `:actorId` accepts the same forms as the rest of the API
   (id, plain name, `username~name`).
@@ -152,9 +141,8 @@
         - `503` `dev-folder-check-unavailable` - Docker itself is unreachable.
         - `500` `internal-error` - an operational fault unrelated to the submitted path.
 - The console's own dev-folder form (`console.md`) does **not** go through this endpoint - it posts to a
-  console-local, unauthenticated route on the console's own port. Both routes funnel into the same
-  underlying validate-and-persist path, so the two surfaces can never drift apart in behavior, only in
-  how they are reached.
+  console-local, unauthenticated route on the console's own port - but the two surfaces accept and
+  reject exactly the same inputs with the same outcomes.
 - **`GET /actor-runtime/events/:runId`** - a websocket upgrade, reachable at exactly this one path on
   the fixed API port (`system.md`). It carries the run's platform events: `systemInfo` once a second
   (`actor-driver.md`), plus a one-off `aborting` frame under `?gracefully=` (below). Each frame is a
@@ -172,10 +160,10 @@
 ## Graceful abort (`?gracefully=`)
 
 - `POST /v2/actor-runs/:runId/abort` accepts an optional `?gracefully=` boolean.
-- Omitted or `false`: the run aborts immediately, exactly as before this parameter existed.
+- Omitted or `false`: the run aborts immediately.
 - `true` on a running run: the record moves to `ABORTING` at once, an `aborting` frame with an empty
   payload is published on the run's events channel, and the container is stopped 30 seconds later. The
-  request stays open until then, so it is the longest-held response in this API.
+  request stays open until then.
 - `true` on a run with no container (still `READY`, or already terminal): behaves as if omitted.
 - A second abort arriving during an open window: another `?gracefully=true` joins that window and neither
   restarts it nor stops the container early; a non-graceful one escalates and stops the container at once.

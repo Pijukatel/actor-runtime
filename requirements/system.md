@@ -1,13 +1,10 @@
 # Environment
 
 - Supported operating systems:
-    - Linux (tested)
-    - MacOS (adhoc manual tests)
-    - Windows (not tested in POC)
-
-- The system is encapsulated in dedicated docker image.
-- Linux is the officially supported and verified platform for the POC.
-- MacOS and Windows are best-effort for the POC.
+    - Linux - officially supported and verified for the POC (tested)
+    - MacOS - best-effort (adhoc manual tests)
+    - Windows - best-effort (not tested in POC)
+- The system is encapsulated in a dedicated docker image.
 
 # Components
 
@@ -22,12 +19,11 @@
 - The system is isolated environment that is started by running the docker container.
 - The system user interface is accessible on localhost with specific ports for console frontend and API.
 - The user interacts with the system through the Apify cli.
-- When the container is started it prints the relevant user interface ports in console message:
-  a startup banner naming the API port (3333) and the console port (3000), plus a warning if the
-  host's Docker socket could not be reached (in which case builds and runs fail fast with a clear
-  status message, but every other endpoint - storages, actor/build/run records, console - still works).
-- The API port (3333) and the console frontend port (3000) are fixed values and
-  are not configurable; they are the same on every start of the container.
+- On startup the container prints a banner naming the API port (3333) and the console port (3000),
+  plus a warning if the host's Docker socket could not be reached - builds and runs then fail fast
+  with a clear status message, while every other endpoint (storages, actor/build/run records,
+  console) still works.
+- Both ports are fixed and not configurable.
 - Port 3333 also serves the per-run events websocket (`api.md`); no additional port is published for it.
 - Required `docker run` flags: mount the host Docker socket read-write
   (`-v /var/run/docker.sock:/var/run/docker.sock`) so the runtime can build and run Actor containers,
@@ -48,26 +44,7 @@
 
 # Implementation
 
-- The system is implemented in TypeScript.
-
-# Offline-after-first-build note
-
-- This note is scoped to the **runtime** itself (push/build/call/log-stream/storage-access/console) -
-  not to what an individual Actor's own code does over the network once it's running.
-- The first build of any given Actor base image needs outbound network access to pull that base image
-  (e.g. from Docker Hub); likewise, the first-ever `apify push` of a brand-new Actor needs outbound
-  network access because the stock CLI fetches its actor-templates manifest from the internet. Once
-  both of those have happened at least once, the runtime itself operates fully offline: repeat builds
-  reuse the already-pulled base image and every other push/call/log-stream/storage-access needs no
-  outbound network access at all (see `cli.md`'s offline-capability note) - unless the opt-in upstream
-  API fallback (`api.md`'s "Upstream fallback" section) has been switched on, in which case a local miss
-  that is eligible for it makes one outbound request per such call. Measuring a run's CPU and memory
-  needs no network access of its own.
-- The sample Actors are not offline: they crawl a live site (`https://crawlee.dev/` by default). Running
-  them needs outbound network access from the Actor container, unlike operating the runtime around them
-  (see `test.md`).
-- The runtime's one-time, per-token, real-console identity check (`cli.md`'s User bootstrap) is
-  best-effort online with a silent offline fallback.
+- Project constraint: the system is implemented in TypeScript.
 
 # Scope
 
@@ -88,8 +65,7 @@ The intended scale of the system is:
 
 The intended scale is not enforced, but the system operating above the intended scale can experience performance or functional issues.
 
-The "less than 5 running actors at the same time" budget also bounds the per-run resource measurement and
-the open events connections - each running Actor adds at most one of each.
+The "less than 5 running actors at the same time" budget also bounds the per-run resource measurement and the open events websocket connections - each running Actor adds at most one of each.
 
 # Tests
 
