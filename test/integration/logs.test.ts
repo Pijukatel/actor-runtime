@@ -12,6 +12,16 @@ import {
 import { getRegistries } from '../../src/storage/registries.js';
 import { getOrCreateUserForToken } from '../../src/services/users.js';
 
+/** The per-line timestamp prefix from the platform log format (api.md). */
+const LINE_STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /;
+
+function stripStamps(log: string): string {
+	return log
+		.split('\n')
+		.map((line) => line.replace(LINE_STAMP, ''))
+		.join('\n');
+}
+
 /** Polls `check()` until it returns true or `timeoutMs` elapses, rather than a fixed sleep - keeps the
  * disconnect test fast on the happy path and still deterministic if cleanup is ever slow. */
 async function waitUntil(check: () => boolean, timeoutMs = 2000): Promise<void> {
@@ -195,7 +205,7 @@ describe('log streaming', () => {
 		await second;
 		spy.mockRestore();
 
-		expect(await getFullLog(jobId)).toBe('line1\nline2\n');
+		expect(stripStamps(await getFullLog(jobId))).toBe('line1\nline2\n');
 	});
 
 	it('getFullLog never returns a torn read while a flush for the same id is in flight (regression for the reader-vs-writer race)', async () => {
@@ -232,7 +242,7 @@ describe('log streaming', () => {
 		const result = await read;
 		spy.mockRestore();
 
-		expect(result).toBe('first chunk\n');
+		expect(stripStamps(result)).toBe('first chunk\n');
 	});
 
 	it("flushAllLogs persists every live log's buffered content (regression for a lost trailing chunk on graceful shutdown)", async () => {
@@ -248,8 +258,8 @@ describe('log streaming', () => {
 
 		await flushAllLogs();
 
-		expect(await getRegistries().logs.getValue(jobId1)).toBe('alpha\n');
-		expect(await getRegistries().logs.getValue(jobId2)).toBe('beta\n');
+		expect(stripStamps((await getRegistries().logs.getValue(jobId1)) ?? '')).toBe('alpha\n');
+		expect(stripStamps((await getRegistries().logs.getValue(jobId2)) ?? '')).toBe('beta\n');
 	});
 
 	it('a stream closes when the persisted record turns terminal even if markLogTerminal is never called (regression: aborted in the READY window)', async () => {
@@ -401,7 +411,7 @@ describe('log streaming', () => {
 
 		const reader = res.body!.getReader();
 		const { value } = await reader.read();
-		expect(Buffer.from(value!).toString()).toBe('line 1\n');
+		expect(stripStamps(Buffer.from(value!).toString())).toBe('line 1\n');
 
 		// The initial response is a single `res.status(200).send(soFar)`, never `res.write` + a
 		// held-open connection, so `subscribeLog` is never called - checked immediately after the first
@@ -444,10 +454,91 @@ describe('log streaming', () => {
 
 		const reader = res.body!.getReader();
 		const { value } = await reader.read();
-		expect(Buffer.from(value!).toString()).toBe('line 1\n');
+		expect(stripStamps(Buffer.from(value!).toString())).toBe('line 1\n');
 		expect(getSubscriberCount(jobId)).toBe(0);
 
 		const { done } = await reader.read();
 		expect(done).toBe(true);
+	});
+
+	it('stamps every log line with a platform-style ISO timestamp, exactly once per line even when chunk boundaries fall mid-line', async () => {
+		const jobId = 'stampedLinesJobId12';
+		// Docker output is not line-aligned: one line arrives split over two appends, and one append
+		// carries two lines. Both must come out with exactly one stamp per *line*.
+		appendLog(jobId, '[apify] INFO first line\n[apify] WARN second li');
+		appendLog(jobId, 'ne, same stamp\n');
+		appendLog(jobId, '[apify] INFO third line\n');
+
+		const log = await getFullLog(jobId);
+		const lines = log.split('\n').filter((line) => line.length > 0);
+		expect(lines).toHaveLength(3);
+		for (const line of lines) expect(line).toMatch(LINE_STAMP);
+		// The continuation of the split line must NOT have been stamped mid-line.
+		expect(lines[1]).toMatch(/second line, same stamp$/);
+		expect(stripStamps(log)).toBe(
+			'[apify] INFO first line\n[apify] WARN second line, same stamp\n[apify] INFO third line\n',
+		);
+	});
+
+	it('apify-client log redirection recovers every message from ?stream=true&raw=true (regression: Actor.call redirected nothing)', async () => {
+		const jobId = 'redirectedLogJobId1';
+		appendLog(jobId, '[apify] INFO Initializing Actor...\n');
+
+		const user = await getOrCreateUserForToken(server.token);
+		await getRegistries().runs.set(jobId, {
+			id: jobId,
+			userId: user.id,
+			actorId: 'x',
+			buildId: 'y',
+			buildNumber: '0.0.1',
+			status: 'RUNNING',
+			startedAt: new Date().toISOString(),
+			defaultDatasetId: 'd',
+			defaultKeyValueStoreId: 'k',
+			defaultRequestQueueId: 'r',
+			options: { memoryMbytes: 1024, timeoutSecs: 300 },
+			meta: { origin: 'API' },
+		});
+
+		// The exact request apify-client's log redirection makes.
+		const res = await fetch(`${server.baseUrl}/v2/actor-runs/${jobId}/log?stream=true&raw=true`, {
+			headers: { Authorization: `Bearer ${server.token}` },
+		});
+		expect(res.status).toBe(200);
+
+		setTimeout(() => appendLog(jobId, '[apify] INFO doing work\n[apify] WARN partial li'), 50);
+		setTimeout(() => appendLog(jobId, 'ne finished\n'), 100);
+		setTimeout(() => markLogTerminal(jobId), 150);
+
+		// Replicates the client's redirect parsing: buffer chunks, split on the timestamp marker, emit
+		// only marker-delimited messages (a possibly incomplete trailing part waits in the buffer until
+		// the final flush). Without the per-line timestamps this recovers zero messages.
+		const splitMarker = /(?:\n|^)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)/;
+		let streamBuffer = '';
+		const messages: string[] = [];
+		const flushBuffer = (includeLastPart: boolean) => {
+			const allParts = streamBuffer.split(splitMarker).slice(1);
+			const complete = includeLastPart ? allParts : allParts.slice(0, -2);
+			streamBuffer = includeLastPart ? '' : allParts.slice(-2).join('');
+			for (let i = 0; i + 1 < complete.length; i += 2) {
+				messages.push(`${complete[i]}${complete[i + 1]}`.trim());
+			}
+		};
+
+		const reader = res.body!.getReader();
+		for (;;) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			streamBuffer += Buffer.from(value!).toString();
+			if (splitMarker.test(streamBuffer)) flushBuffer(false);
+		}
+		flushBuffer(true);
+
+		const contentsOnly = messages.map((message) => message.replace(LINE_STAMP, ''));
+		expect(contentsOnly).toEqual([
+			'[apify] INFO Initializing Actor...',
+			'[apify] INFO doing work',
+			'[apify] WARN partial line finished',
+		]);
 	});
 });

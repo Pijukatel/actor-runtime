@@ -310,6 +310,59 @@ describe('actors / versions / builds / runs (via real apify-client)', () => {
 		expect(body.error.type).toBe('record-not-found');
 	});
 
+	it('deletes an Actor for real, and a missing Actor 404s on DELETE the same as on GET (record-not-found)', async () => {
+		const actor = await server.client.actors().create({ name: 'delete-actor' });
+		const user = await server.client.user('me').get();
+
+		await server.client.actor(actor.id).delete();
+		expect(await server.client.actor(actor.id).get()).toBeUndefined();
+
+		const list = await server.client.actors().list();
+		expect(list.items.some((a) => a.id === actor.id)).toBe(false);
+
+		// apify-client-js's own `.delete()` swallows a `record-not-found` 404 to stay idempotent from the
+		// caller's perspective, so hit the HTTP endpoint directly to observe the real status/envelope.
+		for (const missingRef of ['nonexistent12345b', `${user.username}~does-not-exist`]) {
+			const res = await fetch(`${server.baseUrl}/v2/actors/${missingRef}`, {
+				method: 'DELETE',
+				headers: { Authorization: `Bearer ${server.token}` },
+			});
+			expect(res.status).toBe(404);
+			const body = (await res.json()) as { error: { type: string } };
+			expect(body.error.type).toBe('record-not-found');
+		}
+	});
+
+	it('deletes an Actor version for real, and a missing version or Actor 404s on DELETE (record-not-found)', async () => {
+		const actor = await server.client.actors().create({ name: 'delete-version-actor' });
+		await server.client
+			.actor(actor.id)
+			.versions()
+			.create({
+				versionNumber: '0.0',
+				buildTag: 'latest',
+				sourceType: 'SOURCE_FILES' as never,
+				sourceFiles: [],
+			} as never);
+
+		await server.client.actor(actor.id).version('0.0').delete();
+		expect(await server.client.actor(actor.id).version('0.0').get()).toBeUndefined();
+
+		const missingVersion = await fetch(`${server.baseUrl}/v2/actors/${actor.id}/versions/9.9`, {
+			method: 'DELETE',
+			headers: { Authorization: `Bearer ${server.token}` },
+		});
+		expect(missingVersion.status).toBe(404);
+		expect(((await missingVersion.json()) as { error: { type: string } }).error.type).toBe('record-not-found');
+
+		const missingActor = await fetch(`${server.baseUrl}/v2/actors/nonexistent12345c/versions/0.0`, {
+			method: 'DELETE',
+			headers: { Authorization: `Bearer ${server.token}` },
+		});
+		expect(missingActor.status).toBe(404);
+		expect(((await missingActor.json()) as { error: { type: string } }).error.type).toBe('record-not-found');
+	});
+
 	it('DELETE rejects a non-terminal build instead of deleting it (matches the real platform: reject, not abort-then-delete)', async () => {
 		const actor = await server.client.actors().create({ name: 'delete-running-build-actor' });
 		const { builds } = getRegistries();

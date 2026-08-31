@@ -94,7 +94,10 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 				req.params.actorId as string,
 				requireUser(req).username,
 			);
-			if (actor) await deleteActor(actor.id);
+			// Matches the real platform: DELETE of a missing Actor 404s the same as GET (api.md's
+			// "applies uniformly to every DELETE").
+			if (!actor) throw recordNotFound();
+			await deleteActor(actor.id);
 			res.status(204).end();
 		}),
 	);
@@ -182,12 +185,13 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 				req.params.actorId as string,
 				requireUser(req).username,
 			);
-			if (actor) {
-				await updateActor(actor.id, (current) => ({
-					...current,
-					versions: current.versions.filter((v) => v.versionNumber !== req.params.versionNumber),
-				}));
-			}
+			// Matches the real platform: a missing Actor and a missing version both 404, never a silent 204.
+			if (!actor) throw recordNotFound();
+			if (!findVersion(actor, req.params.versionNumber as string)) throw recordNotFound();
+			await updateActor(actor.id, (current) => ({
+				...current,
+				versions: current.versions.filter((v) => v.versionNumber !== req.params.versionNumber),
+			}));
 			res.status(204).end();
 		}),
 	);

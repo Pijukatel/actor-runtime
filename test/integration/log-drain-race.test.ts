@@ -147,6 +147,7 @@ describe('end-to-end: a run never reads terminal via HTTP before its log has ful
 		// A fresh, non-stream log read the instant status is observed terminal must contain the full
 		// output - not just what had arrived before the container "exited".
 		const log = await server.client.log(run.id).get();
-		expect(log).toBe('final line\n');
+		// Strip the per-line timestamp - this test is about the drain race, not the log format.
+		expect(log?.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /, '')).toBe('final line\n');
 	});
 });

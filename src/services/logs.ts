@@ -9,6 +9,9 @@ interface LiveLog {
 	buffer: string[];
 	subscribers: Set<(chunk: string) => void>;
 	terminal: boolean;
+	/** Whether the next appended character starts a new log line - lets `appendLog` stamp exactly one
+	 * timestamp per line even when chunk boundaries fall mid-line. */
+	atLineStart: boolean;
 }
 
 const live = new Map<string, LiveLog>();
@@ -26,17 +29,41 @@ const flushMutex = new KeyedMutex();
 function getOrCreate(id: string): LiveLog {
 	let state = live.get(id);
 	if (!state) {
-		state = { buffer: [], subscribers: new Set(), terminal: false };
+		state = { buffer: [], subscribers: new Set(), terminal: false, atLineStart: true };
 		live.set(id, state);
 	}
 	return state;
 }
 
+/**
+ * Prefixes every log *line* in `chunk` with an ingestion timestamp (`2026-08-31T09:13:25.123Z `), the
+ * platform's log format (api.md). Apify clients' log redirection recognizes messages by this prefix,
+ * so unstamped lines would never be redirected.
+ */
+function stampLines(state: LiveLog, chunk: string): string {
+	let out = '';
+	let from = 0;
+	while (from < chunk.length) {
+		if (state.atLineStart) out += `${new Date().toISOString()} `;
+		const newlineAt = chunk.indexOf('\n', from);
+		if (newlineAt === -1) {
+			out += chunk.slice(from);
+			state.atLineStart = false;
+			break;
+		}
+		out += chunk.slice(from, newlineAt + 1);
+		state.atLineStart = true;
+		from = newlineAt + 1;
+	}
+	return out;
+}
+
 export function appendLog(id: string, chunk: string): void {
 	if (!chunk) return;
 	const state = getOrCreate(id);
-	state.buffer.push(chunk);
-	for (const subscriber of state.subscribers) subscriber(chunk);
+	const stamped = stampLines(state, chunk);
+	state.buffer.push(stamped);
+	for (const subscriber of state.subscribers) subscriber(stamped);
 }
 
 /** Returns an unsubscribe function. */

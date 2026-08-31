@@ -34,6 +34,10 @@
     - `GET /actor-runtime/events/:runId`: a websocket upgrade, not a JSON response at all - see "Actor
       runtime API" below.
 - `*At` timestamp fields are ISO-8601 strings.
+- Log content matches the Apify platform's log format: every log line starts with an ISO-8601 UTC
+  timestamp with millisecond precision followed by a space (`2026-08-31T09:13:25.123Z `), exactly one
+  timestamp per line regardless of how the output was chunked when produced. Apify clients' log
+  redirection (e.g. `Actor.call` in the SDKs) relies on this prefix to recognize log messages.
 
 # Actor id encoding
 
