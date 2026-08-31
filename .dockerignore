@@ -1,0 +1,12 @@
+node_modules
+dist
+data
+# Every dotfile/dotdir at the build-context root (VCS metadata, editor config, run-pipeline data
+# directories, etc.) - none of them are named in the Dockerfile's COPY statements, so excluding the
+# whole class is both more robust to future additions and avoids naming any one of them individually.
+.*
+sample_actor_ts/node_modules
+sample_actor_ts/dist
+sample_actor_py/__pycache__
+test
+*.md

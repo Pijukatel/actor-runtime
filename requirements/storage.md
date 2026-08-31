@@ -1,47 +1,107 @@
 # Storage backend
-- The system uses SQLite as storage backend.
-- The storage backend is using SQLite from `crawlee-python` https://github.com/apify/crawlee-python/tree/v1.8.1/src/crawlee/storage_clients/_sql
-- The storage is persistent within the container.
-- The crawlee-python SQL backend provides all three default storage types -
-  dataset, key-value store **and request queue** - so no separate request-queue
-  storage is needed. This is what lets the runtime satisfy `test.md`'s requirement
-  to fetch the request queue, even though the `Actor Runtime API` tag referenced by
-  `api.md` does not itself define request-queue endpoints (they are added by the
-  local API; see `api.md`).
-- Dataset `offset`/`limit` pagination is pushed all the way down to crawlee's own
-  `DatasetClient.get_data(offset=, limit=)`, which already reports
-  `total`/`count`/`offset` — the API layer (`api.md`'s "Pagination" section) just
-  wires optional query params through to it. Request-queue requests have no
-  equivalent offset/limit-aware read on their crawlee client, so their optional
-  `offset`/`limit` slice is computed in Python over the already-fetched full
-  list (acceptable for this project's dev-tool-sized storages; pushing it down
-  into the crawlee facade is a documented follow-up, not a blocker).
-- Key-value-store keys are a partial exception: crawlee's SQL-backed KVS
-  client's own `iterate_keys(exclusive_start_key=, limit=)` already filters
-  `key > exclusive_start_key` in ascending key order and applies `limit` as a
-  SQL `LIMIT` clause, so a request naming `exclusiveStartKey` and/or `limit`
-  (the cursor-pagination path — see `api.md`'s "Pagination" section) is pushed
-  straight through to that instead of being sliced from an already-fetched
-  full list: `Storage.kv_keys_page()` requests `limit + 1` keys to detect
-  truncation in one round trip, then drops the extra key from the returned
-  page and reports the last KEPT key as `nextExclusiveStartKey`. `limit=0` is
-  special-cased to return an empty, non-truncated page without probing at
-  all (a zero-width window has nothing to truncate). The runtime's own
-  `offset`-based console paging — which has no equivalent concept on the
-  real API or on crawlee's KVS client — is untouched and still slices an
-  already-fetched full list (`Storage.kv_keys()`, itself now just
-  `kv_keys_page()`'s own `limit=None` case) in Python, exactly like RQ
-  requests above; the two mechanisms are independent query params on the
-  same endpoint (a request naming both treats the cursor as authoritative
-  and ignores `offset`).
-- The router endpoint on top of `kv_keys_page()` (`list_keys` /
-  `_kv_keys_cursor_envelope` in `app/routers/storages.py`) implements the
-  cursor-mode item shape and `total`-omission contract described in `api.md`'s
-  "Pagination" section (no `total`, a percent-encoded `recordPublicUrl` built
-  from the handling request's own `base_url`) — see that section for the
-  full rationale. The `offset`-sliced path keeps its `total` (it already
-  holds the full list). `recordPublicUrl` itself is attached on EVERY path
-  through this endpoint — bare, cursor-mode, and `offset`-sliced alike — via
-  one shared helper (`_with_record_public_url`), matching the real API's own
-  `ListOfKeys`, which always returns it; it is not a
-  cursor-mode-only or client-compatibility-only addition.
+
+- All storage contents live on disk under the mounted data directory and survive a runtime restart (`system.md`).
+- **Nothing is ever purged**: opening or reusing a dataset, key-value store, or request queue never deletes existing data, and no environment variable - whether set on the runtime itself or inside an Actor container - can enable purging.
+- **A restart releases dangling request hand-outs immediately**: after a crash-and-restart, requests that were handed out and never resolved become available again at once, with no wall-clock lock expiry to wait out.
+- Every runtime resource id is a 17-character Apify-style id. A storage's human-facing display `name` is metadata, settable via `PUT`, and independent of the id the storage is addressed by.
+
+## Request queues
+
+- `GET /head` is a non-consuming peek: it returns upcoming requests without reordering the queue or handing anything out.
+- `POST /head/lock` hands requests out; a handed-out request stays unavailable until it is marked handled, reclaimed, or unlocked.
+- Requests are also addressable by id (`GET /requests/:requestId`), with the same best-effort, this-process-only visibility as the `GET /requests` listing (see "Known differences" below).
+- Peeks and hand-outs never corrupt the queue's ordering, deduplication, in-progress/handled state, or counts.
+
+# Storage objects
+
+- The system stores, in a single storage space, two kinds of objects: internal objects (system- and user-related records required for its own functioning) and user objects (created through the public API by users or their Actors).
+- No internal objects can be accessed by the API.
+
+## Internal objects
+
+### Storage metadata
+
+- The system has one internal key-value store called `__STORAGES__` to track all the storages and their metadata:
+    - `key` is the id of the storage
+    - `value` is the metadata of the storage
+        - owner (`userId`)
+        - statistics
+- The system stores users in dedicated key-value store called `__USERS__`:
+    - `key` is the `userId`
+    - `value` is the metadata of the user
+        - name
+        - token
+        - proxyPassword (optional)
+- The system stores Actors in dedicated key-value store called `__ACTORS__`:
+    - `key` is the id of the Actor `actorId`
+    - `value` is the metadata of the Actor
+        - owner (`userId`)
+        - metadata
+        - `localDevFolder` - **optional**. Absent means no dev folder has ever been registered for this
+          Actor. Set or cleared only through `POST /actor-runtime/dev-folder/:actorId` or the console's
+          equivalent form (`api.md`, `console.md`), never as a side effect of any other Actor write, and
+          never bumping `modifiedAt` (`actor-driver.md`). Submitting the empty string clears it - the
+          field is removed entirely, not stored as an empty string. When present, it is always an
+          absolute host path that has passed registration validation (`actor-driver.md`).
+        - There is **no `imageWorkingDirectory` field on the Actor record.** It lives on the `BuildRecord`
+          instead (`__BUILDS__` below) - build-specific, not Actor-specific: the workdir a run mounts
+          against must be the one for the build that run itself resolved, never whichever tag happened to
+          build most recently.
+        - `localDevFolder`, together with the resolved build's `imageWorkingDirectory`, are **absent (or
+          empty) meaning no mount**: a run only adds the dev-folder bind mount when both are present and
+          non-empty (`actor-driver.md`).
+        - Neither `localDevFolder` nor any build's `imageWorkingDirectory` is ever exposed on the public
+          `/v2` API.
+- The system stores Actor runs in dedicated key-value store called `__RUNS__`:
+    - `key` is the id of the Actor run `runId`
+    - `value` is the metadata of the Actor
+        - owner (`userId`)
+        - Actor (`actorId`)
+        - metadata
+- The system stores Actor builds in dedicated key-value store called `__BUILDS__`:
+    - `key` is the id of the Actor build (`buildId`)
+    - `value` is the metadata of the Actor
+        - owner (`userId`)
+        - Actor (`actorId`)
+        - metadata
+        - `imageWorkingDirectory` - **optional**, and specific to this one build. Absent unless this
+          particular build succeeded and its own image's working directory could be captured (also
+          absent when the captured value was empty or `/`) - never on any other build, and never derived
+          from, or copied onto, the Actor record (see `localDevFolder`'s entry above).
+- The system stores logs in dedicated key-value store called `__LOGS__`:
+    - `key` is the id of the Actor build (`logId`)
+    - `value` is the metadata of the Actor
+        - owner (`userId`)
+        - RunOrBuild (`buildId` or `runId`)
+        - metadata
+- The system stores all needed files in dedicated key-value store called `__FILES__`:
+    - `key` is the id of the file (`fileId`)
+    - `value` is the file
+    - This key-value store is a flexible collection that can be referred by other internal object that needs to contain a file
+
+### Users
+
+- User can be created only by the system.
+- Every API response is a restricted view: it contains only resources owned by the calling user.
+
+# Known differences from the Apify platform
+
+1. **No request-queue locking.** `head/lock` hands a request out but never expires the hand-out;
+   `lockSecs`/`lockExpiresAt` are advisory echoes; `PUT /requests/:id/lock` is a no-op;
+   `POST /requests/unlock` releases everything this runtime handed out and ignores `clientKey`. A
+   request handed to a container that dies is released only by an explicit reclaim or a runtime
+   restart (which relinquishes all dangling hand-outs).
+2. **`GET /requests` is best-effort.** It lists the requests this runtime _process_ has seen (added,
+   peeked via `GET /head`, or handed out), in insertion order; `filter` is ignored; after a restart
+   the listing starts empty and refills as requests are touched again. Counts in
+   `GET /request-queues/:id` remain authoritative.
+3. **Request deletion is unsupported** - `DELETE /requests/:id` and `DELETE /requests/batch` (and their
+   `actor-runs/:runId/request-queue/*` aliases) return `501`.
+4. **`forefront` is honoured, but not against requests already buffered for hand-out** - a `forefront`
+   add lands ahead of everything still in the queue but behind requests the runtime has already
+   buffered for `GET /head` / `POST /head/lock`; that buffer holds at most the requested `limit`,
+   hard-capped around 1000 entries.
+5. **`hadMultipleClients` is always `false`; `stats` fields are zeroed** on every storage type.
+   Dataset options `fields`/`omit`/`clean`/`skipHidden`/`skipEmpty`/`unwind` are applied after paging,
+   so `total` always counts unfiltered items.
+6. One runtime process per data directory; no usage/billing fields.

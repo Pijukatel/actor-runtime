@@ -1,0 +1,12 @@
+{
+	"actorSpecification": 1,
+	"name": "my-python-actor",
+	"title": "Python sample actor for actor-runtime",
+	"description": "Crawls up to maxPages same-domain pages starting from startUrl, over a request queue, pushing one dataset item per page.",
+	"version": "0.0",
+	"buildTag": "latest",
+	"meta": {
+		"templateId": "python-empty"
+	},
+	"dockerfile": "../Dockerfile"
+}

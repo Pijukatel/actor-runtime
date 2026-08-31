@@ -4,89 +4,80 @@
 
 - The supported client for the Actor development loop is the **stock, unmodified
   [`apify-cli`](https://docs.apify.com/cli/docs)** from npm (`npm install -g apify-cli`,
-  verified against v1.7.0). No forked or patched CLI is required or shipped.
+  verified against v1.8.0). No forked or patched CLI is required or shipped.
 
 ## Pointing the CLI at the local runtime
 
-- The CLI is redirected at the local runtime through the environment variable
+- The CLI is redirected to the local runtime API through the environment variable
   **`APIFY_CLIENT_BASE_URL`**, set to the runtime's API URL (for example
-  `http://localhost:3333`). This is the base URL that `apify-cli` passes to its
-  underlying `apify-client`; `apify push` and `apify call` both honour it.
-  (Confirmed by a spike: the other candidates `APIFY_API_BASE_URL` /
-  `APIFY_CLIENT_API_URL` / `APIFY_API_PUBLIC_BASE_URL` are not the variable the
-  push/call HTTP calls use.)
-- The client issues requests against `<APIFY_CLIENT_BASE_URL>/v2/...`.
-- Every local example/script that sets `APIFY_CLIENT_BASE_URL` also exports
-  **`APIFY_CONSOLE_URL`**, set to this same runtime's own console URL (for
-  example `http://localhost:3000`) — the updated `apify-cli` reads this
-  separately to open/print console links; it has no bearing on the API base
-  URL or on any API call itself. README.md's CLI snippet, `scripts/demo.sh`
-  (derived from its own `CONSOLE_PORT`, left unexported in `--remote` mode
-  exactly like `APIFY_CLIENT_BASE_URL`), and the `tests/e2e/` fixtures all
-  follow this pairing.
+  `http://localhost:3333`).
+- The CLI is redirected to the local runtime frontend through the environment variable
+  **`APIFY_CONSOLE_URL`**, set to the runtime's console frontend URL (for example
+  `http://localhost:3000`).
 
-## Authentication / token bootstrap
+## User bootstrap
 
-- The runtime has **placeholder authentication with no passwords**, and identity
-  is **decoupled from the credential**: the token a client presents is a private
-  value that *selects* a user, but is never turned into a username. `apify-client`
-  sends it as `Authorization: Bearer <token>`. **Changing the presented token
-  switches the user** you act as (matching how the real platform's CLI resolves
-  the token to a user) — everything you push, build or run belongs to that user,
-  and one user cannot see another user's Actors, builds, runs or storages. (How
-  the CLI decides which token to present is described below — it is the stored
-  login, not the `APIFY_TOKEN` environment variable.)
-- How a token resolves:
-  - **The first token ever presented** binds ("bootstraps") the default user
-    `local-user` — it becomes that user's stored token, and you act as `local-user`.
-  - **A token matching an existing user** acts as that user (users are created
-    explicitly, e.g. via the console/API; a created user's token equals its name).
-  - **An unknown token** (once the default user's credential is already claimed) is
-    **rejected with `401 invalid-token`** — it is never auto-provisioned into a new
-    user.
-- If `APIFY_TOKEN` is **absent**, requests fall back to the default user
-  `local-user` and are never rejected, so existing scripts keep working unchanged.
-- **How the CLI actually presents a credential (verified against v1.7.x
-  source):** `apify push` and `apify call` use the CLI's **stored login
-  token only** — they do not read the `APIFY_TOKEN` environment variable on
-  that path. Concretely:
-  - **Not logged in:** push/call send **no token at all**, which the runtime
-    accepts via the never-rejected default-user fallback — the whole loop
-    works, but no credential ever gets bound.
-  - **Logged in:** push/call present the stored token, whatever it is — so a
-    CLI logged in against the real platform presents that (real) token, and
-    it becomes `local-user`'s bound credential on first contact.
-  - **To act as a chosen credential**, log the CLI in against the runtime:
-    `apify login -t <token>` (login honours `APIFY_CLIENT_BASE_URL`). To do
-    this without touching your real `~/.apify` login, run the apify commands
-    with an overridden `HOME` and `APIFY_DISABLE_KEYRING=1` (isolated
-    profile). The read-only commands below resolve credentials the same way,
-    so `scripts/demo.sh` never itself discovers or passes a token, and runs
-    unmodified against both this runtime and the real platform (`demo.sh
-    --remote` runs the identical push/call/read-back steps against the real
-    platform instead, skipping only the local image build/container steps).
+- The user is created by the runtime itself at the time of the first API request against the runtime
+  with a previously unseen token.
+- Users are expected to already be logged in (`apify login`, done once, outside the runtime's
+  quickstart) before starting the dev loop against the runtime.
+- The runtime never fabricates or injects a token, and never writes to the CLI's own credential store.
+- On the first authenticated request seen for a given token, the runtime sends that same token to the
+  real platform - `GET https://api.apify.com/v2/users/me` (base URL overridable via
+  `APIFY_UPSTREAM_API_BASE_URL`, for tests/non-production platforms), with a short (~3s) timeout and
+  no retries:
+    - **Success** (a real token, real account reachable) - the runtime creates a user for this token
+      with the real `username`, `id`, and Apify Proxy password, and returns them from
+      `GET /v2/users/me` / `GET /v2/users/:userId` from then on when called with the corresponding
+      token.
+    - **Failure** (offline, non-200, timeout, or the token simply isn't a real one) - no error, no
+      behavior change: the runtime creates a local user with name `local-user-{number}` and fabricated
+      id `0000000000000000{number}` (where {number} is an increasing count of fabricated users). One
+      concise log line is printed (e.g. "could not resolve token against api.apify.com, using local
+      identity").
+- Both real and fabricated users are persisted across runtime restarts: the same token resolves to
+  the same user on every subsequent request.
+- **Proxy password**: the adopted real proxy password (when known) is forwarded as
+  `APIFY_PROXY_PASSWORD` into every Actor run container, with the runtime's own
+  `APIFY_PROXY_PASSWORD` environment variable taking precedence when set (see `actor-driver.md`).
+  With neither source, `/users/me`'s `proxy` field is omitted and no `APIFY_PROXY_PASSWORD` is set
+  on run containers - never a placeholder.
 
-## Supported commands (first draft)
+## Supported commands (POC)
 
 - `apify push` - creates the Actor and Actor version from local source and triggers
-  a build. Source is uploaded in one of two shapes, chosen by total size: under the
-  ~3 MB threshold it goes **inline** as `sourceFiles` (`sourceType=SOURCE_FILES`);
-  at or above the threshold the CLI zips the source, uploads the zip to a key-value
-  store record, and sets `sourceType=TARBALL` with a `tarballUrl` pointing at that
-  record. The runtime builds whichever shape was pushed (see `api.md`).
+  a build.
 - `apify call` - starts a run against the built Actor, streams its log, waits for it
   to finish, and reports the run's default storages; `--json` prints the run's id
   and default storage ids as JSON on stdout (the human-readable progress log still
-  streams to stderr), which `scripts/demo.sh` captures instead of re-listing runs.
-- `apify info` - prints the currently authenticated account's username, used to
-  build a `username~name` Actor id the same way the caller fixture Actor does.
-- `apify runs ls <actorId> --json` - lists an Actor's runs; `scripts/demo.sh` uses
-  it (with `--desc --limit 1`) to find the standby Actor's most recent run, since
-  `apify call` only ever reports the run it itself started.
-- `apify key-value-stores get-value <storeId> <key>` / `apify datasets get-items
-  <datasetId>` - read a run's OUTPUT record / dataset items.
+  streams to stderr). This is the documented way to drive both sample Actors with an input
+  (`apify call --input '{"maxPages":3}'`).
+- `apify info` - prints the currently authenticated account's username
+- `apify runs ls` - lists an Actor's runs
+- `apify datasets info <id>` - prints a dataset's metadata, including `itemCount`; used to inspect a
+  run's default dataset after `apify call` finishes.
+- `apify api` - sends API requests
 
 ## Out of scope
 
-- Modifying, forking or vendoring the CLI.
 - `apify login` interactive flows and real credential management.
+
+## Offline-capability note
+
+- This note is scoped to the CLI's own interaction with the **runtime**
+  (push/build/call/log-stream/storage-access) - not to what an Actor's own code does over the network
+  once `apify call` starts it running.
+- The very **first** `apify push` that creates a brand-new Actor is not offline-capable: stock
+  `apify-cli` fetches its actor-templates manifest from the internet. Every later
+  push/call/log-stream/storage-access, and every build of an already-pulled base image, needs no
+  outbound network access (see `system.md`'s offline-after-first-build note) - unless the opt-in
+  upstream API fallback is enabled (`api.md`, "Upstream fallback"), in which case an eligible local
+  miss makes one outbound request to the configured upstream instead of failing offline.
+- The bundled sample Actors crawl the live web (`https://crawlee.dev/` by default), so an `apify call`
+  that runs one of them needs outbound network access from the Actor container even though the
+  CLI-to-runtime interaction itself does not (see `system.md`).
+- A repeat `apify push` of an Actor whose local source is unmodified since its last successful build
+  will fail with the stock CLI's "already on the platform and was modified there since modified
+  locally" error and requires `--force` to proceed: the runtime bumps the Actor's `modifiedAt` when a
+  build completes, so the server-side timestamp ends up newer than the local files' mtimes. This is
+  expected CLI behavior, not a runtime defect.

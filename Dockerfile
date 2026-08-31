@@ -1,31 +1,38 @@
-# Runtime image for actor-runtime. Talks to the host Docker daemon via the
-# mounted socket to build and run Actor images (see README for the docker run
-# invocation). Python base + the Docker SDK; no Docker CLI needed.
-FROM python:3.11-slim
+# actor-runtime: a minimal, self-contained local Apify platform.
 
-WORKDIR /app
+FROM node:24-bookworm-slim AS builder
 
-# HTTPS proxy support for restricted-network builds. These are build-time only
-# (ARG, not ENV) so they never leak into the published image. In a normal
-# environment they are empty and ignored.
-ARG HTTPS_PROXY=
-ARG https_proxy=
+WORKDIR /usr/src/app
 
-# requirements.txt is always copied; ca-bundle.crt is copied only if the build
-# context provides one (the [t] glob makes it optional). Used to trust a
-# TLS-terminating proxy during pip install.
-COPY requirements.txt ca-bundle.cr[t] ./
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable pnpm
 
-RUN if [ -f ca-bundle.crt ]; then \
-        export PIP_CERT=/app/ca-bundle.crt REQUESTS_CA_BUNDLE=/app/ca-bundle.crt; \
-    fi; \
-    pip install --no-cache-dir -r requirements.txt && \
-    rm -f /app/ca-bundle.crt
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 
-COPY app ./app
+COPY tsconfig.json ./
+COPY src ./src
+RUN pnpm run build
 
-ENV DATA_DIR=/data
+FROM node:24-bookworm-slim
+
+WORKDIR /usr/src/app
+
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable pnpm
+
+COPY package.json pnpm-lock.yaml ./
+# The store prune plays the role `npm cache clean` played before: production node_modules keeps
+# hard links into the store, so pruning drops only the unreferenced (dev) packages' disk copies.
+RUN pnpm install --prod --frozen-lockfile && pnpm store prune
+
+COPY --from=builder /usr/src/app/dist ./dist
+
+# The runtime talks to the host Docker socket via dockerode (no docker CLI needed in-image) and
+# persists all storages under /data - mount both when running the container.
+VOLUME ["/data"]
+ENV ACTOR_RUNTIME_DATA_DIR=/data
 
 EXPOSE 3333 3000
 
-CMD ["python", "-m", "app.server"]
+CMD ["node", "dist/index.js"]

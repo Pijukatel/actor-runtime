@@ -1,0 +1,13 @@
+{
+	"$schema": "https://apify.com/schemas/v1/actor.ide.json",
+	"actorSpecification": 1,
+	"name": "my-actor",
+	"title": "TypeScript sample actor for actor-runtime",
+	"description": "Crawls up to maxPages same-hostname pages starting from startUrl, over a request queue, pushing one dataset item per page.",
+	"version": "0.0",
+	"buildTag": "latest",
+	"meta": {
+		"templateId": "ts-empty"
+	},
+	"dockerfile": "../Dockerfile"
+}
