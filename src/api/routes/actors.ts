@@ -94,7 +94,14 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 				req.params.actorId as string,
 				requireUser(req).username,
 			);
-			if (actor) await deleteActor(actor.id);
+			// Matches the real platform and api.md's response-envelopes contract ("applies uniformly to
+			// every DELETE"): apify-core 404s a missing Actor on DELETE the same as on GET - `removeActor`
+			// (`src/api/src/routes/actors/actor.ts`) throws `recordNotFound('Actor')` for a missing id,
+			// and `convertActorNameToId` throws `recordNotFound('Actor with this name')` before the route
+			// is even reached when a `username~name` reference doesn't resolve. Base's silent 204 no-op
+			// here is what let `apify api DELETE actors/<missing>` succeed where GET 404ed.
+			if (!actor) throw recordNotFound();
+			await deleteActor(actor.id);
 			res.status(204).end();
 		}),
 	);
@@ -182,12 +189,16 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 				req.params.actorId as string,
 				requireUser(req).username,
 			);
-			if (actor) {
-				await updateActor(actor.id, (current) => ({
-					...current,
-					versions: current.versions.filter((v) => v.versionNumber !== req.params.versionNumber),
-				}));
-			}
+			// Matches the real platform: `removeActorVersion` (apify-core
+			// `src/api/src/routes/actors/version.ts`) resolves the Actor via `getPublicActor` and the
+			// version via `findActorVersionOrThrow`, each of which throws `record-not-found` before any
+			// delete happens - so both a missing Actor and a missing version 404, never a silent 204.
+			if (!actor) throw recordNotFound();
+			if (!findVersion(actor, req.params.versionNumber as string)) throw recordNotFound();
+			await updateActor(actor.id, (current) => ({
+				...current,
+				versions: current.versions.filter((v) => v.versionNumber !== req.params.versionNumber),
+			}));
 			res.status(204).end();
 		}),
 	);
