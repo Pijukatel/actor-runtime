@@ -27,18 +27,17 @@
   still resolve, and startup reconciliation only ever considers _existing_ run records.
 - Three endpoints are exceptions to the `{data}` envelope:
     - `GET /v2/logs/:buildOrRunId` (and its `actor-builds`/`actor-runs` aliases): the body is plain text,
-      never `{data}`-wrapped, matching apify-client-js's `log().get()`. Every log _line_ is prefixed with
-      an ingestion timestamp in exactly the platform's stored-log shape - ISO-8601 UTC with 3-digit
-      milliseconds plus a space (`2026-08-31T09:13:25.123Z `), one stamp per line no matter how the
-      producer's chunks were split. This is not cosmetic: apify-client python's log redirection
-      (`Actor.call(logger=...)` → `StreamedLog._split_marker`) only emits messages it can split off at
-      such a marker, so unstamped lines would silently never be redirected at all.
+      never `{data}`-wrapped, matching apify-client-js's `log().get()`.
     - `GET /v2/datasets/:datasetId/items` (and its `actor-runs/:runId/dataset/items` alias): the body is
       a bare JSON array of items, never `{data}`-wrapped, with pagination metadata carried in
       `x-apify-pagination-*` response headers, matching apify-client-js's `_createPaginationList`.
     - `GET /actor-runtime/events/:runId`: a websocket upgrade, not a JSON response at all - see "Actor
       runtime API" below.
 - `*At` timestamp fields are ISO-8601 strings.
+- Log content matches the Apify platform's log format: every log line starts with an ISO-8601 UTC
+  timestamp with millisecond precision followed by a space (`2026-08-31T09:13:25.123Z `), exactly one
+  timestamp per line regardless of how the output was chunked when produced. Apify clients' log
+  redirection (e.g. `Actor.call` in the SDKs) relies on this prefix to recognize log messages.
 
 # Actor id encoding
 

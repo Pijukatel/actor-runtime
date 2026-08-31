@@ -322,8 +322,6 @@ describe('actors / versions / builds / runs (via real apify-client)', () => {
 
 		// apify-client-js's own `.delete()` swallows a `record-not-found` 404 to stay idempotent from the
 		// caller's perspective, so hit the HTTP endpoint directly to observe the real status/envelope.
-		// Before the fix this was a bare 204 no-op, so `apify api DELETE actors/<missing>` "succeeded"
-		// where the platform (apify-core's `removeActor`/`convertActorNameToId`) answers 404.
 		for (const missingRef of ['nonexistent12345b', `${user.username}~does-not-exist`]) {
 			const res = await fetch(`${server.baseUrl}/v2/actors/${missingRef}`, {
 				method: 'DELETE',
@@ -350,8 +348,6 @@ describe('actors / versions / builds / runs (via real apify-client)', () => {
 		await server.client.actor(actor.id).version('0.0').delete();
 		expect(await server.client.actor(actor.id).version('0.0').get()).toBeUndefined();
 
-		// Before the fix both of these were bare 204 no-ops; the platform 404s a missing version
-		// (`findActorVersionOrThrow`) and a missing Actor (`getPublicActor`) alike.
 		const missingVersion = await fetch(`${server.baseUrl}/v2/actors/${actor.id}/versions/9.9`, {
 			method: 'DELETE',
 			headers: { Authorization: `Bearer ${server.token}` },

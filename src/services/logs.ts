@@ -9,11 +9,8 @@ interface LiveLog {
 	buffer: string[];
 	subscribers: Set<(chunk: string) => void>;
 	terminal: boolean;
-	/**
-	 * Whether the next character appended for this id starts a new log line (true initially and after
-	 * every `\n`). Lets `appendLog` stamp exactly one timestamp per *line* even when the producer's
-	 * chunk boundaries fall mid-line (Docker output is not line-aligned).
-	 */
+	/** Whether the next appended character starts a new log line - lets `appendLog` stamp exactly one
+	 * timestamp per line even when chunk boundaries fall mid-line. */
 	atLineStart: boolean;
 }
 
@@ -39,15 +36,9 @@ function getOrCreate(id: string): LiveLog {
 }
 
 /**
- * Prefixes every log *line* in `chunk` with an ingestion timestamp (`2026-08-31T09:13:25.123Z `),
- * carrying line state across chunks via `state.atLineStart` so a line split over two appends gets
- * exactly one stamp. This is the real platform's stored-log format (its worker pipes container output
- * through a line splitter into the circular log, timestamping each line), and it is load-bearing for
- * apify-client's log redirection: python's `StreamedLog._split_marker`
- * (`(?:\n|^)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)`) only ever emits messages it can split off
- * at such a marker - unstamped output is buffered forever and `Actor.call(logger=...)` redirects
- * nothing at all. `Date.prototype.toISOString` produces exactly the 3-digit-milliseconds shape that
- * regex (and `datetime.fromisoformat` in its `from_start=False` filter) requires.
+ * Prefixes every log *line* in `chunk` with an ingestion timestamp (`2026-08-31T09:13:25.123Z `), the
+ * platform's log format (api.md). Apify clients' log redirection recognizes messages by this prefix,
+ * so unstamped lines would never be redirected.
  */
 function stampLines(state: LiveLog, chunk: string): string {
 	let out = '';

@@ -12,9 +12,7 @@ import {
 import { getRegistries } from '../../src/storage/registries.js';
 import { getOrCreateUserForToken } from '../../src/services/users.js';
 
-/** The exact line-start marker apify-client python's `StreamedLog._split_marker` splits redirected
- * logs on (`_streamed_log.py`), as a JS regex. Tests use it both to strip stamps (so content
- * assertions stay about content) and to verify the stamped shape itself. */
+/** The per-line timestamp prefix from the platform log format (api.md). */
 const LINE_STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /;
 
 function stripStamps(log: string): string {
@@ -482,7 +480,7 @@ describe('log streaming', () => {
 		);
 	});
 
-	it("apify-client python's StreamedLog redirect recovers every message from ?stream=true&raw=true (regression: Actor.call log redirection printed nothing)", async () => {
+	it('apify-client log redirection recovers every message from ?stream=true&raw=true (regression: Actor.call redirected nothing)', async () => {
 		const jobId = 'redirectedLogJobId1';
 		appendLog(jobId, '[apify] INFO Initializing Actor...\n');
 
@@ -502,9 +500,7 @@ describe('log streaming', () => {
 			meta: { origin: 'API' },
 		});
 
-		// The exact request `Actor.call(logger=...)`'s redirect makes: apify-client python's
-		// `RunClient.log()` targets the run-scoped alias with `stream=true&raw=true`
-		// (`_resource_clients/run.py` + `log.py`).
+		// The exact request apify-client's log redirection makes.
 		const res = await fetch(`${server.baseUrl}/v2/actor-runs/${jobId}/log?stream=true&raw=true`, {
 			headers: { Authorization: `Bearer ${server.token}` },
 		});
@@ -514,18 +510,12 @@ describe('log streaming', () => {
 		setTimeout(() => appendLog(jobId, 'ne finished\n'), 100);
 		setTimeout(() => markLogTerminal(jobId), 150);
 
-		// Replicate `StreamedLog`'s buffering exactly (`_streamed_log.py`): buffer chunks, split the
-		// buffer on the timestamp marker, emit only marker-delimited messages (the trailing possibly
-		// incomplete part waits in the buffer; a final flush emits it once the stream ends). Before the
-		// stamping fix the marker never matched, this recovered zero messages, and the python redirect
-		// logged nothing at all.
+		// Replicates the client's redirect parsing: buffer chunks, split on the timestamp marker, emit
+		// only marker-delimited messages (a possibly incomplete trailing part waits in the buffer until
+		// the final flush). Without the per-line timestamps this recovers zero messages.
 		const splitMarker = /(?:\n|^)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)/;
 		let streamBuffer = '';
 		const messages: string[] = [];
-		// Direct port of `StreamedLogBase._log_buffer_content`: split the buffer on the marker (JS
-		// `split` with a capture group keeps the markers, like `re.split`), drop the pre-marker prefix,
-		// emit complete (marker, content) pairs, and - unless this is the final flush - leave the last
-		// pair in the buffer as possibly incomplete.
 		const flushBuffer = (includeLastPart: boolean) => {
 			const allParts = streamBuffer.split(splitMarker).slice(1);
 			const complete = includeLastPart ? allParts : allParts.slice(0, -2);
