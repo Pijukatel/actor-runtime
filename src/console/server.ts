@@ -56,21 +56,21 @@ function storageLink(prefix: '/datasets' | '/key-value-stores' | '/request-queue
 	return { text: id, href: `${prefix}/${encodeURIComponent(id)}` };
 }
 
-/** Whether `req` carries positive evidence of being a cross-site form submission, for either of the
- * console's two mutating `POST` routes. The console is deliberately unauthenticated - anyone who can
- * reach it can already flip a toggle or register a dev folder (`console.md`) - but both routes are
+/** Whether `req` carries positive evidence of being a cross-site form submission, for any of the
+ * console's three mutating `POST` routes. The console is deliberately unauthenticated - anyone who can
+ * reach it can already flip a toggle or register a dev folder (`console.md`) - but all three routes are
  * unauthenticated, state-changing form `POST`s reachable from any origin, and a cross-site page silently
- * driving either one is a wider threat model than "reachable": that's true of both routes on its own, and
- * one of them (`/settings`) also enables credential egress once fallback is switched on, which raises the
- * stakes further. Every modern browser sends `Sec-Fetch-Site` on a form submission (a same-origin one -
- * the only way a human actually uses either form - is always `same-origin` or `none`); a request without
- * the header at all (an older browser, or a non-browser caller like `curl`, which `console.md`'s
- * unauthenticated-by-design model already has to tolerate) reports `false` here - only a header that
- * positively says otherwise blocks the request. This closes off the specific cross-site-form vector
- * without adding authentication or changing either route's documented behaviour for a legitimate
- * same-origin submission. Written as a plain predicate (checked at the top of each handler) rather than
- * an Express middleware, so it needs no generic parameter shared across the handler chain - `req.params`
- * keeps the type each route's own path literal already gives it. */
+ * driving any one of them is a wider threat model than "reachable": that's true of all three routes on
+ * their own, and one of them (`/settings`) also enables credential egress once fallback is switched on,
+ * which raises the stakes further. Every modern browser sends `Sec-Fetch-Site` on a form submission (a
+ * same-origin one - the only way a human actually uses any of these forms - is always `same-origin` or
+ * `none`); a request without the header at all (an older browser, or a non-browser caller like `curl`,
+ * which `console.md`'s unauthenticated-by-design model already has to tolerate) reports `false` here -
+ * only a header that positively says otherwise blocks the request. This closes off the specific
+ * cross-site-form vector without adding authentication or changing any route's documented behaviour for a
+ * legitimate same-origin submission. Written as a plain predicate (checked at the top of each handler)
+ * rather than an Express middleware, so it needs no generic parameter shared across the handler chain -
+ * `req.params` keeps the type each route's own path literal already gives it. */
 function isCrossSiteWrite(req: Request): boolean {
 	const site = req.header('sec-fetch-site');
 	return site !== undefined && site !== 'same-origin' && site !== 'none';

@@ -1335,6 +1335,31 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 		).rejects.toThrow(/host port 9229 is already in use/);
 	});
 
+	it('maps an "address already in use" start() rejection to the same clear message naming the port and the port override, for a debug run', async () => {
+		const stub = stubDockerForRun();
+		stub.container.start.mockRejectedValueOnce(
+			Object.assign(new Error('Bind for 0.0.0.0:9229 failed: port is already in use: address already in use'), {
+				statusCode: 500,
+			}),
+		);
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+
+		await expect(
+			driver.startRun(
+				{
+					runId: 'run-debug-port-conflict-address',
+					imageId: 'fake-image',
+					env: {},
+					memoryMbytes: 128,
+					timeoutSecs: 60,
+					debug: { language: 'node', port: 9229 },
+				},
+				() => {},
+			),
+		).rejects.toThrow(/host port 9229 is already in use/);
+	});
+
 	it('does not rewrite an ordinary (non-port-conflict) start() failure for a debug run - the original error propagates', async () => {
 		const stub = stubDockerForRun();
 		stub.container.start.mockRejectedValueOnce(new Error('some other daemon failure'));
