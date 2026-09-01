@@ -246,8 +246,9 @@ describe('describeDebugRefusal', () => {
 		expect(message).toContain('npm start');
 		expect(message).toContain('/actor-runtime/debug/actor-123');
 		expect(message).toContain('"enabled": false');
-		// The "Cannot start run: " prefix is owned by `services/runs.ts: failBeforeContainer`, never baked
-		// into this function's own return value - see its doc comment.
+		// The "Cannot start run: " prefix is never baked into this function's own return value -
+		// `services/runs.ts` prefixes it at its one call site, for both the log line and the
+		// `statusMessage` - see the doc comment above `describeDebugRefusal`.
 		expect(message).not.toContain('Cannot start run:');
 	});
 
@@ -268,7 +269,7 @@ describe('describeDebugRefusal', () => {
 describe('describeDebugPortConflict', () => {
 	it('names the conflicting port, the real actor id, and preserves the stored language preference in the suggested body', () => {
 		const message = describeDebugPortConflict('actor-123', 'auto', 9229);
-		expect(message).toContain('host port 9229 is already in use');
+		expect(message).toContain('Host port 9229 is already in use');
 		expect(message).toContain('/actor-runtime/debug/actor-123');
 		expect(message).toContain('"language": "auto", "port": <n>');
 	});

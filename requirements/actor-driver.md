@@ -147,8 +147,8 @@
   `HostConfig.PortBindings` on `createContainer`, with `HostIp: '127.0.0.1'` - since Actor containers are
   created against the _host's own_ Docker daemon through the mounted socket, this binding lands on the
   developer's own host directly, regardless of whether the runtime process itself runs inside a
-  container. A host port already in use fails `start()` with a message naming the port and the `port`
-  override as the fix.
+  container. A host port already in use fails the run, with a `statusMessage` naming the port and the
+  `port` override as the fix.
 - **The run log carries one line, before `createContainer`**, stating: that the run is paused waiting for
   a debugger; the resolved language; the debug tool and (for Python) its injected version; the listen
   address inside the container and the published host address; the attach action for the relevant IDE

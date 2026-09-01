@@ -280,13 +280,15 @@ export function resolveDebugPlan(localDebug: ActorLocalDebug, target: InspectedD
  * fail the run, loudly" section) - named after the actual command for a package-manager refusal, and
  * naming the `language` override as the fix for an unclassifiable one (criterion 14). Both name the exact
  * `apify api` invocation that clears debug mode for this Actor. Returns the reason text only, with no
- * `Cannot start run: ` prefix: `services/runs.ts: failBeforeContainer` is the single owner of that prefix
- * for every pre-container failure, so every refusal reaches the run's log and `statusMessage` with the
- * identical prefix regardless of which pre-container path produced it. `port` is the Actor's own
- * currently-stored port override (if any) - threaded through so the suggested `language` override below
- * preserves it: `setDebugMode` is a full-replace `POST` (its own doc comment), so a suggested body that
- * omitted a stored `port` would silently reset it to the newly-resolved language's own default the moment
- * the developer runs it verbatim. */
+ * `Cannot start run: ` prefix baked in: `services/runs.ts` prefixes it at the one call site that uses this
+ * function, for both the log line and the `statusMessage` (`failBeforeContainer` itself does not add or
+ * infer a prefix - see its own doc comment). This is not the only pre-container failure's shape: the
+ * driver-unavailable/no-image path also logs a `Cannot start run: `-prefixed line but stores its bare
+ * reason, with no prefix, as `statusMessage`. `port` is the Actor's own currently-stored port override (if
+ * any) - threaded through so the suggested `language` override below preserves it: `setDebugMode` is a
+ * full-replace `POST` (its own doc comment), so a suggested body that omitted a stored `port` would
+ * silently reset it to the newly-resolved language's own default the moment the developer runs it
+ * verbatim. */
 export function describeDebugRefusal(
 	actorId: string,
 	port: number | undefined,
@@ -327,7 +329,7 @@ export function describeDebugPortConflict(
 	port: number,
 ): string {
 	return (
-		`host port ${port} is already in use. Stop whatever is using it, or set a different port with ` +
+		`Host port ${port} is already in use. Stop whatever is using it, or set a different port with ` +
 		`\`apify api POST /actor-runtime/debug/${actorId} --body '{"enabled": true, "language": ` +
 		`"${languagePreference}", "port": <n>}'\`.`
 	);

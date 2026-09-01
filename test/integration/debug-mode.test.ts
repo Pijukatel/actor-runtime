@@ -786,7 +786,7 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 		expect(run.status).toBe('FAILED');
-		expect(run.statusMessage).toContain('host port 5678 is already in use');
+		expect(run.statusMessage).toContain('Host port 5678 is already in use');
 		expect(run.statusMessage).toContain(`/actor-runtime/debug/${actor.id}`);
 		expect(run.statusMessage).toContain('"language": "python"');
 		expect(run.statusMessage).not.toContain('Cannot start run:');

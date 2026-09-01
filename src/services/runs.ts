@@ -364,7 +364,9 @@ export async function runInBackground(
 		// The driver classifies a debug port conflict as a typed `DebugPortInUseError` (just the port); this
 		// is the one place that knows both the Actor id and its stored `language` preference, so it is the
 		// one place that can word the remediation (`services/debug-mode.ts: describeDebugPortConflict`) -
-		// the same "driver classifies, caller words it" split `DriverTimedOutError` already established.
+		// a typed driver error so the service layer can compose the remedy, analogous to but not the same
+		// split as `DriverTimedOutError` (its own caller in `services/builds.ts` only maps status and keeps
+		// the driver's own message verbatim).
 		const statusMessage =
 			error instanceof DebugPortInUseError && actor.localDebug
 				? describeDebugPortConflict(actor.id, actor.localDebug.language, error.port)

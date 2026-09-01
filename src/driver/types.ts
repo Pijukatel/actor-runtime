@@ -27,8 +27,10 @@ export interface DevFolderMount {
  * concept of the Actor id or of the toggle's HTTP surface: on a port conflict it throws
  * `DebugPortInUseError` (below) with just the port, and `services/runs.ts` - which has the Actor record
  * in hand - turns that into the user-facing remediation via `services/debug-mode.ts:
- * describeDebugPortConflict`, the same "driver classifies, caller words it" split `DriverTimedOutError`
- * already establishes. */
+ * describeDebugPortConflict`. A typed driver error carrying just enough for the service layer, which owns
+ * the Actor record and the toggle's HTTP surface, to word the remedy - analogous to `DriverTimedOutError`
+ * below as a typed-driver-error precedent, though that one's own caller only maps status and keeps the
+ * driver's own message verbatim (`services/builds.ts`), so the wording split here is new. */
 export interface DebugRunTarget {
 	language: 'node' | 'python';
 	port: number;
@@ -134,8 +136,11 @@ export class DriverTimedOutError extends Error {
  * daemon's rejection). Carries only the port - the driver has no Actor id and no opinion on the toggle's
  * HTTP surface, so it does not compose the user-facing remediation itself; `services/runs.ts` catches
  * this and hands `port` (plus the Actor it already has in hand) to `services/debug-mode.ts:
- * describeDebugPortConflict` to build that text. Same "driver classifies, caller words it" split as
- * `DriverTimedOutError` above.
+ * describeDebugPortConflict` to build that text - a typed driver error so the service layer, which owns
+ * the Actor record and the toggle's HTTP surface, can word the remedy. Analogous to `DriverTimedOutError`
+ * above as a typed-driver-error precedent, but not the same split: that error's own caller
+ * (`services/builds.ts`) only maps it to a status and stores the driver's own message verbatim: the
+ * wording split here is new.
  */
 export class DebugPortInUseError extends Error {
 	readonly port: number;
