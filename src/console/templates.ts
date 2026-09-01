@@ -1,6 +1,7 @@
 /** Minimal server-rendered HTML helpers. No SPA, no bundler, no build step (`console.md`). */
 
 import { getApiFallbackState, type ApiFallbackState } from '../services/api-fallback.js';
+import type { ActorLocalDebug } from '../storage/entities.js';
 
 export function escapeHtml(value: unknown): string {
 	return String(value ?? '')
@@ -125,10 +126,19 @@ export function devFolderForm(actorId: string, currentValue: string, errorMessag
  * checkbox-only carve-out: a `language` select (defaulting to the currently-stored value, or `auto` when
  * debug mode is off) and a `port` number input (blank means "no override", matching the API body's own
  * optional field), alongside the `enabled` checkbox. Submitting always sends all three fields together -
- * same single-submit contract as `settingsForm` below, never a partial-merge PATCH. */
+ * same single-submit contract as `settingsForm` below, never a partial-merge PATCH.
+ *
+ * `current` is the *raw stored* `ActorRecord.localDebug` - not `debugStatus`'s display-computed value,
+ * which fills in a language-appropriate default port whenever no override is stored. Rendering that
+ * display value here would pre-fill the (editable, plain `<input type="number">`) port field with a
+ * concrete number on every load, so an ordinary resubmission that only changes `language` would silently
+ * persist that number as an explicit override - contradicting both this form's own "blank means no
+ * override" help text below and `console.md`'s documented contract. The status row above this form (in
+ * `debugModeSection`) is the right place for the display-computed effective port; this form only ever
+ * shows what is genuinely stored. */
 export function debugModeForm(
 	actorId: string,
-	current: { language: string; port: number } | null,
+	current: ActorLocalDebug | null | undefined,
 	errorMessage?: string,
 ): string {
 	const errorHtml = errorMessage ? `<p class="error"><strong>Error:</strong> ${escapeHtml(errorMessage)}</p>` : '';

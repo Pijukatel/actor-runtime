@@ -98,7 +98,11 @@
   injected). A Python debug run adds `PYTHONPATH=<payload dir>` (prepended to, never replacing, the
   image's own `PYTHONPATH`) plus the port the payload's own `sitecustomize.py` reads its listen address
   from - both are merged into the run's env _below_ every platform-owned var (`buildEnv`'s own
-  precedence), so a debug run can never shadow a real platform contract var.
+  precedence), so a debug run can never shadow a real platform contract var. The same prepend-not-replace
+  discipline applies one level higher too: if the Actor's own version-level `envVars` (see "Environment
+  variables in every Actor container" in `storage.md`/below) already sets `NODE_OPTIONS`/`PYTHONPATH`,
+  the debug value is prepended onto *that* value rather than clobbering it - a debug run never silently
+  discards an Actor's own configured `NODE_OPTIONS`/`PYTHONPATH`.
 - **The Python debugpy payload is injected by the runtime, not the Actor.** A pinned, pure-Python
   (`py2.py3-none-any`) `debugpy` wheel, plus a generated `sitecustomize.py`, is pre-built into a tar at
   the runtime's own image-build time (`Dockerfile`'s `debugpy-payload` stage) and streamed into a Python

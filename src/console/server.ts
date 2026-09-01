@@ -18,6 +18,7 @@
 import express, { type Express, type Request } from 'express';
 
 import { getActorById, listAllActors } from '../services/actors.js';
+import type { ActorRecord } from '../storage/entities.js';
 import {
 	describeDevFolderFailure,
 	devFolderStatus,
@@ -99,14 +100,16 @@ function devFolderSection(actorId: string, status: DevFolderStatus, errorMessage
  * checkbox-only carve-out, so the console produces the same stored `ActorRecord.localDebug` outcome as a
  * direct API call with the same input. `errorMessage` is threaded through from the POST handler's redirect
  * query param below, same as `devFolderSection`'s own `devFolderError`. */
-function debugModeSection(actorId: string, status: DebugStatus, errorMessage?: string): string {
+function debugModeSection(actor: ActorRecord, status: DebugStatus, errorMessage?: string): string {
 	return (
 		'<h2>Debug mode</h2>' +
 		definitionList([
 			['language', status.localDebug?.language ?? '(debug mode is off)'],
 			['port', status.localDebug?.port ?? ''],
 		]) +
-		debugModeForm(actorId, status.localDebug, errorMessage)
+		// The form gets the *raw* stored `localDebug`, not `status.localDebug` - see `debugModeForm`'s own
+		// doc comment for why the display-computed status value must never pre-fill the port input.
+		debugModeForm(actor.id, actor.localDebug ?? null, errorMessage)
 	);
 }
 
@@ -167,7 +170,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				'/builds',
 			) +
 			devFolderSection(actor.id, devFolderStatus(actor), devFolderError) +
-			debugModeSection(actor.id, debugStatus(actor), debugModeError);
+			debugModeSection(actor, debugStatus(actor), debugModeError);
 		res.send(layout(`Actor ${actor.name}`, body));
 	});
 

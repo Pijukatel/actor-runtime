@@ -299,16 +299,64 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		expect(detail.data).toContain('9229');
 	});
 
-	it('the status row and the form\'s port pre-fill both show node\'s own default (9229), never python\'s, when a node toggle has no port override', async () => {
+	it('the status row shows node\'s own default (9229), never python\'s, when a node toggle has no port override - but the form\'s port input stays blank, since no override is actually stored', async () => {
 		await setUpConsole();
 		const actor = await server.client.actors().create({ name: 'debug-console-node-default-port-actor' });
 		await post(server.baseUrl, actor.id, { enabled: true, language: 'node' }, server.token);
 
 		const detail = await axios.get(`${consoleBaseUrl}/actors/${actor.id}`);
+		// The read-only status row shows the effective/display default.
 		expect(detail.data).toContain('<dd>9229</dd>');
-		expect(detail.data).toContain('value="9229"');
 		expect(detail.data).not.toContain('<dd>5678</dd>');
+		// The editable form field must stay blank - no override is actually stored, so pre-filling it with
+		// either language's default would silently turn an ordinary resubmission into a pinned override
+		// (`console.md`'s "blank meaning 'no override'" contract).
+		expect(detail.data).toContain('<input type="number" name="port" value="" min="1024" max="65535" placeholder="(default)">');
+		expect(detail.data).not.toContain('value="9229"');
 		expect(detail.data).not.toContain('value="5678"');
+	});
+
+	it('resubmitting the form after only changing "language" never silently pins the pre-fill as a port override - the regression from iter-2\'s review: toggle on with language auto and no port, then resubmit changing only language to node', async () => {
+		const capturing = debugCapturingDriver({ cmd: ['node', 'dist/main.js'], env: {} });
+		await setUpConsole(capturing.driver);
+		const actor = await pushAndBuild(server, 'debug-console-resubmit-language-only-actor');
+
+		// Step 1: toggle on via the console form itself, language auto, no port override.
+		const firstSubmit = await axios.post(
+			`${consoleBaseUrl}/actors/${actor.id}/debug`,
+			'enabled=on&language=auto&port=',
+			{ headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, maxRedirects: 0, validateStatus: () => true },
+		);
+		expect(firstSubmit.status).toBe(302);
+		expect(await getRegistries().actors.get(actor.id).then((a) => a?.localDebug)).toEqual({ language: 'auto' });
+
+		// The form's own port input must render blank at this point - the exact pre-fill a browser would
+		// resubmit unedited if the developer only touched the "language" select.
+		const detailBeforeResubmit = await axios.get(`${consoleBaseUrl}/actors/${actor.id}`);
+		expect(detailBeforeResubmit.data).toContain(
+			'<input type="number" name="port" value="" min="1024" max="65535" placeholder="(default)">',
+		);
+
+		// Step 2: resubmit the form changing only "language" to "node" - "port" is submitted exactly as the
+		// form rendered it: blank.
+		const secondSubmit = await axios.post(
+			`${consoleBaseUrl}/actors/${actor.id}/debug`,
+			'enabled=on&language=node&port=',
+			{ headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, maxRedirects: 0, validateStatus: () => true },
+		);
+		expect(secondSubmit.status).toBe(302);
+
+		// The stored record must keep "port" unset - never silently pinned to the display default that was
+		// showing before the resubmission (5678, the nominal "auto" placeholder).
+		const stored = await getRegistries().actors.get(actor.id);
+		expect(stored?.localDebug).toEqual({ language: 'node' });
+
+		// And the effective port at run start must be node's own real default, 9229 - never 5678.
+		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(run.status).toBe('SUCCEEDED');
+		const ctx = capturing.getStartRunContexts()[0]!;
+		expect(ctx.debug).toEqual({ language: 'node', port: 9229 });
+		expect(ctx.env.NODE_OPTIONS).toBe('--inspect-brk=0.0.0.0:9229');
 	});
 
 	it('submitting with "enabled" unchecked clears the toggle, same as {"enabled": false} on the API', async () => {
@@ -432,6 +480,68 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 
 		const stored = await getRegistries().runs.get(run.id);
 		expect(stored?.localDebug).toEqual({ language: 'python', port: 5679 });
+	});
+
+	it('a debug-enabled node Actor whose own version-level envVars sets NODE_OPTIONS keeps that value - the debug value PREPENDS onto it rather than clobbering it, and platform-owned vars still win over both', async () => {
+		const capturing = debugCapturingDriver({ cmd: ['node', 'dist/main.js'], env: {} });
+		server = await startTestServer(capturing.driver);
+		const actor = await server.client.actors().create({ name: 'run-debug-node-versionenv-actor' });
+		await server.client
+			.actor(actor.id)
+			.versions()
+			.create({
+				versionNumber: '0.0',
+				buildTag: 'latest',
+				sourceType: 'SOURCE_FILES' as never,
+				sourceFiles: [],
+				// A developer-configured Actor input, not the base image's own baked-in value - distinct from
+				// `resolveDebugPlan`'s own prepend onto `InspectedDebugTarget.env` (the image's `Config.Env`).
+				envVars: [
+					{ name: 'NODE_OPTIONS', value: '--max-old-space-size=4096' },
+					{ name: 'APIFY_TOKEN', value: 'should-not-win' },
+				],
+			} as never);
+		const build = await server.client.actor(actor.id).build('0.0', { waitForFinish: 5 });
+		expect(build.status).toBe('SUCCEEDED');
+		await post(server.baseUrl, actor.id, { enabled: true }, server.token);
+
+		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(run.status).toBe('SUCCEEDED');
+
+		const ctx = capturing.getStartRunContexts()[0]!;
+		// Before the fix, `...versionEnv, ...debugPlan?.env` fully replaced the version's own NODE_OPTIONS.
+		expect(ctx.env.NODE_OPTIONS).toBe('--inspect-brk=0.0.0.0:9229 --max-old-space-size=4096');
+		// Platform-owned vars still win over both the version's own envVars and the debug plan's env.
+		expect(ctx.env.APIFY_TOKEN).toBe(server.token);
+		expect(ctx.env.APIFY_TOKEN).not.toBe('should-not-win');
+	});
+
+	it('a debug-enabled python Actor whose own version-level envVars sets PYTHONPATH keeps that value - the debug payload dir PREPENDS onto it rather than clobbering it', async () => {
+		const capturing = debugCapturingDriver({ cmd: ['python3', '-m', 'src'], env: {} });
+		server = await startTestServer(capturing.driver);
+		const actor = await server.client.actors().create({ name: 'run-debug-python-versionenv-actor' });
+		await server.client
+			.actor(actor.id)
+			.versions()
+			.create({
+				versionNumber: '0.0',
+				buildTag: 'latest',
+				sourceType: 'SOURCE_FILES' as never,
+				sourceFiles: [],
+				envVars: [{ name: 'PYTHONPATH', value: '/actor/src' }],
+			} as never);
+		const build = await server.client.actor(actor.id).build('0.0', { waitForFinish: 5 });
+		expect(build.status).toBe('SUCCEEDED');
+		await post(server.baseUrl, actor.id, { enabled: true }, server.token);
+
+		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(run.status).toBe('SUCCEEDED');
+
+		const ctx = capturing.getStartRunContexts()[0]!;
+		// Before the fix, this would be just '/opt/apify-debug', silently discarding the version's own
+		// PYTHONPATH entirely.
+		expect(ctx.env.PYTHONPATH).toBe('/opt/apify-debug:/actor/src');
+		expect(ctx.env.APIFY_TOKEN).toBe(server.token);
 	});
 
 	it('the toggle is not consumed by one run - two separate runs of the same debug-enabled Actor both resolve a plan', async () => {

@@ -8,7 +8,7 @@ import { appendLog, flushLog, markLogTerminal } from './logs.js';
 import { markEventsTerminal, publishAborting, publishSystemInfo } from './events-channel.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
-import { describeDebugRefusal, resolveDebugPlan, type DebugPlan } from './debug-mode.js';
+import { describeDebugRefusal, prependDebugEnvValue, resolveDebugPlan, type DebugPlan } from './debug-mode.js';
 import { dedicatedCpusFor } from '../resources.js';
 import { CONTAINER_EVENTS_WS_BASE_URL } from '../config.js';
 
@@ -90,12 +90,24 @@ function buildEnv(
 	const eventsWebSocketUrl = `${CONTAINER_EVENTS_WS_BASE_URL}/actor-runtime/events/${run.id}`;
 	const memoryMbytes = String(run.options.memoryMbytes);
 
+	// A debug plan's `NODE_OPTIONS`/`PYTHONPATH` must PREPEND to (never clobber) an Actor-version-level
+	// `envVars` entry of the same name - the identical prepend-not-replace discipline `resolveDebugPlan`
+	// already applies to the resolved build image's own baked-in env, just against a different "other
+	// source" (`services/debug-mode.ts: prependDebugEnvValue`'s own doc comment). A plain `...debugPlan?.env`
+	// spread here would silently clobber a version-level override of the same name instead.
+	const debugEnv: Record<string, string> = {};
+	if (debugPlan) {
+		for (const [key, value] of Object.entries(debugPlan.env)) {
+			debugEnv[key] = prependDebugEnvValue(key, value, versionEnv[key]);
+		}
+	}
+
 	const env: Record<string, string> = {
 		...versionEnv,
 		// Below every platform-owned var (spread order matters here, even though nothing today actually
 		// collides): a debug run's `NODE_OPTIONS`/`PYTHONPATH`/debug-port var must never be able to shadow
 		// a real contract var (`services/debug-mode.ts: DebugPlan`'s own doc comment).
-		...debugPlan?.env,
+		...debugEnv,
 		APIFY_IS_AT_HOME: '1',
 		APIFY_META_ORIGIN: 'API',
 		APIFY_API_BASE_URL: options.apiBaseUrl,

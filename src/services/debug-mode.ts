@@ -169,6 +169,28 @@ export const PYTHON_DEBUG_PAYLOAD_DIR = '/opt/apify-debug';
  * way to import this module - it runs inside the Actor's container, not the runtime's own process). */
 export const DEBUGPY_PORT_ENV_VAR = 'APIFY_ACTOR_RUNTIME_DEBUG_PORT';
 
+/** The list-joining separator each env var's own convention uses, for the (currently two) debug-plan env
+ * keys that are themselves lists of prepended values rather than a single opaque value: `NODE_OPTIONS`
+ * space-separates flags, `PYTHONPATH` colon-separates directories. A key with no entry here (the
+ * debug-port var) has no such convention, so `prependDebugEnvValue` below cannot meaningfully combine two
+ * values for it and the debug value wins outright - which never actually collides in practice, since no
+ * version defines its own Apify-internal debug-port var. */
+const ENV_LIST_SEPARATOR: Partial<Record<string, string>> = { NODE_OPTIONS: ' ', PYTHONPATH: ':' };
+
+/**
+ * Prepends a debug plan's own value for one of its env keys onto an existing value for the *same key from
+ * a different source* - used twice, for two different "other sources": here in `resolveDebugPlan`, onto
+ * the resolved build image's own baked-in `Config.Env` value; and in `services/runs.ts: buildEnv`, onto an
+ * Actor version's own `envVars` entry of the same name. Both call sites need the identical prepend-not-
+ * clobber discipline and the identical separator convention, so it lives here once rather than being
+ * duplicated (and risking drift) at each call site.
+ */
+export function prependDebugEnvValue(key: string, debugValue: string, existingValue: string | undefined): string {
+	if (!existingValue) return debugValue;
+	const separator = ENV_LIST_SEPARATOR[key];
+	return separator !== undefined ? `${debugValue}${separator}${existingValue}` : debugValue;
+}
+
 const PYTHON_ARGV_TOKEN = /^python3?(\.\d+)?$/;
 const NODE_ARGV_TOKENS = new Set(['node', 'tsx', 'ts-node']);
 const PACKAGE_MANAGER_ARGV_TOKENS = new Set(['npm', 'yarn', 'pnpm']);
@@ -237,15 +259,11 @@ export function resolveDebugPlan(localDebug: ActorLocalDebug, target: InspectedD
 	const port = localDebug.port ?? DEFAULT_PORT_BY_LANGUAGE[language];
 
 	if (language === 'node') {
-		const existing = target.env.NODE_OPTIONS;
-		const value = existing ? `--inspect-brk=0.0.0.0:${port} ${existing}` : `--inspect-brk=0.0.0.0:${port}`;
+		const value = prependDebugEnvValue('NODE_OPTIONS', `--inspect-brk=0.0.0.0:${port}`, target.env.NODE_OPTIONS);
 		return { kind: 'plan', plan: { language, port, env: { NODE_OPTIONS: value } } };
 	}
 
-	const existingPythonPath = target.env.PYTHONPATH;
-	const pythonPath = existingPythonPath
-		? `${PYTHON_DEBUG_PAYLOAD_DIR}:${existingPythonPath}`
-		: PYTHON_DEBUG_PAYLOAD_DIR;
+	const pythonPath = prependDebugEnvValue('PYTHONPATH', PYTHON_DEBUG_PAYLOAD_DIR, target.env.PYTHONPATH);
 	return {
 		kind: 'plan',
 		plan: { language, port, env: { PYTHONPATH: pythonPath, [DEBUGPY_PORT_ENV_VAR]: String(port) } },
