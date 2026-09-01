@@ -94,10 +94,11 @@ function devFolderSection(actorId: string, status: DevFolderStatus, errorMessage
 	);
 }
 
-/** The debug-mode toggle form + its status row, on the Actor detail view (`console.md`'s "Local debug
- * mode form" section) - full parity with the API body: `enabled`/`language`/`port`, not a checkbox-only
- * carve-out (`_design_feedback.md` Round 2, open question 3). `errorMessage` is threaded through from the
- * POST handler's redirect query param below, same as `devFolderSection`'s own `devFolderError`. */
+/** The debug-mode toggle form + its status row, on the Actor detail view (`console.md`'s "Debug-mode form
+ * (Actor detail view)" section) - full parity with the API body: `enabled`/`language`/`port`, not a
+ * checkbox-only carve-out, so the console produces the same stored `ActorRecord.localDebug` outcome as a
+ * direct API call with the same input. `errorMessage` is threaded through from the POST handler's redirect
+ * query param below, same as `devFolderSection`'s own `devFolderError`. */
 function debugModeSection(actorId: string, status: DebugStatus, errorMessage?: string): string {
 	return (
 		'<h2>Debug mode</h2>' +

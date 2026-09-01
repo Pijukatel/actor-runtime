@@ -6,8 +6,8 @@ before any user module runs - including `python3 -m src` (exec-form), a shell-fo
 wrapper alike, since `site` processing always happens first, regardless of how the interpreter itself
 was invoked.
 
-Guard (`_design_feedback.md`'s open subtlety: this file runs in EVERY Python process in the container,
-not just the Actor's own - `pip`, a subprocess the Actor's own code spawns, anything). An atomic,
+Guard: this file runs in EVERY Python process in the container, not just the Actor's own - `pip`, a
+subprocess the Actor's own code spawns, anything. An atomic,
 exclusive marker-file create (`os.O_CREAT | os.O_EXCL`) decides which single process actually starts the
 debugpy listener - race-free even if two processes reach this file within the same tick, unlike a
 read-then-write check. The marker lives right next to this file (this payload's own directory, on
@@ -24,9 +24,10 @@ assuming someone else already did; (2) a failed `debugpy.listen()` (address alre
 caught on its own, on the theory that another process genuinely did win a race this guard failed to
 prevent. Both fallbacks fail towards "try to pause", never towards "silently don't".
 
-No synthetic breakpoint after `wait_for_client()` (settled decision, `_design_feedback.md` Round 2, open
-question 1): the IDE's own attach is what determines where execution actually stops - this file only
-gets the Actor's own first line to wait *before*, never a frame of its own to show the developer.
+No synthetic breakpoint after `wait_for_client()` (a deliberate choice, documented in
+`requirements/actor-driver.md`'s "Debug mode" section): the IDE's own attach is what determines where
+execution actually stops - this file only gets the Actor's own first line to wait *before*, never a
+frame of its own to show the developer.
 """
 
 import os

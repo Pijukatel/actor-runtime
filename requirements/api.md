@@ -165,7 +165,7 @@
     - **Error responses**: `400` `invalid-request` for every malformed body (not a JSON object, an
       unknown field, a missing/non-boolean `enabled`, an invalid `language`, or a `port` outside
       `1024..65535`) - no state change on rejection.
-    - Worked examples (`2-design.md`):
+    - Worked examples:
         ```
         POST /actor-runtime/debug/<actorId> --body '{"enabled": true}'
         -> { "data": { "localDebug": { "language": "auto", "port": 5678 } } }

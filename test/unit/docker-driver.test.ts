@@ -1399,38 +1399,84 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 		expect(stub.container.remove).toHaveBeenCalledWith({ v: true });
 	});
 
-	it('loads the debug payload from disk only once across multiple Python debug runs on the same driver instance', async () => {
-		const driver = new DockerDriver(stubDockerForRun().docker);
+	it('caches the debug payload in memory after the first read - a second debug run on the same driver instance still succeeds after the payload is deleted from disk', async () => {
+		// A minimal per-run container stub (mirroring `stubDockerForRun`'s own container shape) - built
+		// fresh per run because `container.wait()`/`.logs()` each resolve/end exactly once and can't be
+		// reused for a second `startRun` call, but the *docker client* (and therefore the driver
+		// constructed against it) is created exactly once and never swapped, so this needs no reach into
+		// the driver's private fields at all.
+		function freshContainerStub() {
+			let resolveWait!: (result: { StatusCode: number }) => void;
+			const waitPromise = new Promise<{ StatusCode: number }>((resolve) => {
+				resolveWait = resolve;
+			});
+			const rawLogStream = new PassThrough();
+			return {
+				container: {
+					start: vi.fn(async () => undefined),
+					logs: vi.fn(async () => rawLogStream),
+					wait: vi.fn(async () => waitPromise),
+					remove: vi.fn(async () => undefined),
+					stop: vi.fn(async () => undefined),
+					putArchive: vi.fn(async () => undefined),
+				},
+				triggerContainerExit(statusCode = 0): void {
+					resolveWait({ StatusCode: statusCode });
+				},
+				endLogStream(): void {
+					rawLogStream.end();
+				},
+			};
+		}
+
+		const first = freshContainerStub();
+		const second = freshContainerStub();
+		const containers = [first.container, second.container];
+		let callIndex = 0;
+		const createContainer = vi.fn(async () => containers[callIndex++]!);
+		const demuxStream = vi.fn((stream: NodeJS.ReadableStream, stdout: PassThrough) => {
+			stream.on('data', (chunk: Buffer) => stdout.write(chunk));
+		});
+		const docker = { createContainer, modem: { demuxStream } } as unknown as Docker;
+
+		const driver = new DockerDriver(docker);
 		driver.available = true;
 
-		for (let i = 0; i < 2; i++) {
-			const stub = stubDockerForRun();
-			// Reassign the driver's own docker client per run via a fresh stub's container/createContainer,
-			// mirroring how a real driver would create a new container per run - reuse the SAME driver
-			// instance so its internal payload cache persists across iterations.
-			(driver as unknown as { docker: Docker }).docker = stub.docker;
-			const outcomePromise = driver.startRun(
-				{
-					runId: `run-debug-python-cache-${i}`,
-					imageId: 'fake-image',
-					env: {},
-					memoryMbytes: 128,
-					timeoutSecs: 60,
-					debug: { language: 'python', port: 5678 },
-				},
-				() => {},
-			);
-			await new Promise((resolve) => setImmediate(resolve));
-			stub.triggerContainerExit(0);
-			stub.endLogStream();
-			await outcomePromise;
+		const runOptions = (runId: string) => ({
+			runId,
+			imageId: 'fake-image',
+			env: {},
+			memoryMbytes: 128,
+			timeoutSecs: 60,
+			debug: { language: 'python' as const, port: 5678 },
+		});
+
+		// First run: `loadDebugPayload` has nothing cached yet, so it reads the fixture tar/version files
+		// `beforeEach` wrote to `payloadDir` from disk.
+		const firstOutcome = driver.startRun(runOptions('run-debug-python-cache-1'), () => {});
+		for (let i = 0; i < 50 && first.container.putArchive.mock.calls.length < 1; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
 		}
-		// Both runs succeeded reading the same on-disk fixture written once in `beforeEach` - if the driver
-		// re-read the (now on-disk-but-conceptually-"gone-after-first-read") payload path per run instead
-		// of caching, this would still pass since the file stays present; the cache's own effect is
-		// verified more directly by the earlier "missing payload" test never leaving stale cached state
-		// across driver instances.
-		expect(true).toBe(true);
+		expect(first.container.putArchive).toHaveBeenCalledWith(Buffer.from('fake-tar-content'), { path: '/' });
+		first.triggerContainerExit(0);
+		first.endLogStream();
+		await firstOutcome;
+
+		// Delete the on-disk payload entirely before the second run. If the driver re-read it per run
+		// instead of caching the first read, this second run would fail the same way the dedicated
+		// "missing payload" test above asserts (`rejects.toThrow(/debugpy payload is missing/)`), and the
+		// `putArchive` assertion below would never be reached - this is what makes the test a real
+		// regression check for the caching behavior, not a tautology.
+		rmSync(join(payloadDir, 'debugpy-payload.tar'));
+
+		const secondOutcome = driver.startRun(runOptions('run-debug-python-cache-2'), () => {});
+		for (let i = 0; i < 50 && second.container.putArchive.mock.calls.length < 1; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		expect(second.container.putArchive).toHaveBeenCalledWith(Buffer.from('fake-tar-content'), { path: '/' });
+		second.triggerContainerExit(0);
+		second.endLogStream();
+		await secondOutcome;
 	});
 
 	it('a debug run\'s timeoutSecs timer fires exactly like a non-debug run\'s - the pause gets no extra grace period (actor-driver.md: "completely unaffected by debug mode")', async () => {

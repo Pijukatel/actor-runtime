@@ -120,12 +120,12 @@ export function devFolderForm(actorId: string, currentValue: string, errorMessag
 	);
 }
 
-/** The debug-mode toggle form on the Actor detail view (`console.md`'s "Local debug mode form" section)
- * - full parity with the API body's three fields (`enabled`/`language`/`port`), not a checkbox-only
- * carve-out: a `language` select (defaulting to the currently-stored value, or `auto` when debug mode is
- * off) and a `port` number input (blank means "no override", matching the API body's own optional
- * field), alongside the `enabled` checkbox. Submitting always sends all three fields together - same
- * single-submit contract as `settingsForm` below, never a partial-merge PATCH. */
+/** The debug-mode toggle form on the Actor detail view (`console.md`'s "Debug-mode form (Actor detail
+ * view)" section) - full parity with the API body's three fields (`enabled`/`language`/`port`), not a
+ * checkbox-only carve-out: a `language` select (defaulting to the currently-stored value, or `auto` when
+ * debug mode is off) and a `port` number input (blank means "no override", matching the API body's own
+ * optional field), alongside the `enabled` checkbox. Submitting always sends all three fields together -
+ * same single-submit contract as `settingsForm` below, never a partial-merge PATCH. */
 export function debugModeForm(
 	actorId: string,
 	current: { language: string; port: number } | null,

@@ -18,14 +18,16 @@ const MAX_PORT = 65535;
 
 /** Language-specific default port, applied only once a run's language has actually resolved (never at
  * toggle time, when `language: 'auto'` may still be genuinely unresolved) - matches each ecosystem's
- * own IDE-default convention (`_design_feedback.md` Round 2). */
+ * own IDE-default convention: 9229 is Node's own inspector default, 5678 is debugpy's. */
 export const DEFAULT_PORT_BY_LANGUAGE: Record<DebugLanguage, number> = { python: 5678, node: 9229 };
 
-/** The port a toggle-on response shows when the caller didn't override it - a nominal placeholder only
- * (`api.md`'s own worked example), never a claim about what a future run will actually publish: that is
- * decided fresh at run start, from whichever language *actually* resolves (`resolveDebugPlan` below),
- * which for `language: 'auto'` this toggle-time response cannot yet know. */
-const DISPLAY_DEFAULT_PORT = DEFAULT_PORT_BY_LANGUAGE.python;
+/** The port a toggle-on response shows for an unresolved `language: 'auto'` when the caller didn't
+ * override it - a nominal placeholder only (`api.md`'s own worked example), never a claim about what a
+ * future run will actually publish: that is decided fresh at run start, from whichever language
+ * *actually* resolves (`resolveDebugPlan` below), which for `language: 'auto'` this toggle-time response
+ * cannot yet know. An explicitly-stored `'node'`/`'python'` preference is not "unresolved" - its display
+ * default is that language's own real default port (`DEFAULT_PORT_BY_LANGUAGE`), never this placeholder. */
+const DISPLAY_DEFAULT_PORT_FOR_AUTO = DEFAULT_PORT_BY_LANGUAGE.python;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -125,12 +127,16 @@ export interface DebugStatus {
 }
 
 /** The one value both the API's toggle response and the console detail page show - doubling as the
- * read-back this design has no separate `GET` for (`api.md`). */
+ * read-back this design has no separate `GET` for (`api.md`). When no `port` override is stored, the
+ * displayed default is language-appropriate: `'node'` shows `9229`, `'python'` shows `5678`, and only a
+ * genuinely unresolved `'auto'` falls back to the nominal `DISPLAY_DEFAULT_PORT_FOR_AUTO` placeholder -
+ * an explicit non-`'auto'` preference is never shown Python's default just because the constant used to
+ * be applied unconditionally. */
 export function debugStatus(actor: ActorRecord): DebugStatus {
 	if (!actor.localDebug) return { localDebug: null };
-	return {
-		localDebug: { language: actor.localDebug.language, port: actor.localDebug.port ?? DISPLAY_DEFAULT_PORT },
-	};
+	const { language, port } = actor.localDebug;
+	const displayDefaultPort = language === 'auto' ? DISPLAY_DEFAULT_PORT_FOR_AUTO : DEFAULT_PORT_BY_LANGUAGE[language];
+	return { localDebug: { language, port: port ?? displayDefaultPort } };
 }
 
 // --- Run-start language resolution --------------------------------------------------------------
@@ -210,10 +216,9 @@ function detectLanguage(target: InspectedDebugTarget): LanguageDetection {
 /**
  * Turns a Debug toggle's stored preference plus an inspected build target into either a concrete
  * `DebugPlan` or a classified refusal - pure and unit-testable, exactly mirroring how `probeDevFolder`
- * probes but `setDevFolder` decides (`2-design.md`'s "Proposed solution"). An explicit `language`
- * override (`'node'`/`'python'`) always wins outright, skipping detection (and therefore the
- * package-manager/unclassifiable refusals) entirely - those refusals exist only for `'auto'`, where this
- * function itself has to guess.
+ * probes but `setDevFolder` decides. An explicit `language` override (`'node'`/`'python'`) always wins
+ * outright, skipping detection (and therefore the package-manager/unclassifiable refusals) entirely -
+ * those refusals exist only for `'auto'`, where this function itself has to guess.
  */
 export function resolveDebugPlan(localDebug: ActorLocalDebug, target: InspectedDebugTarget): ResolveDebugPlanResult {
 	let language: DebugLanguage;

@@ -619,7 +619,7 @@ export class DockerDriver implements Driver {
 		let timeout: ReturnType<typeof setTimeout> | undefined;
 
 		try {
-			// Between `createContainer` and `start()`, exactly as `2-design.md`'s worked example shows - the
+			// Between `createContainer` and `start()`, matching `actor-driver.md`'s "Debug mode" section - the
 			// payload itself was already loaded (and any missing-payload failure already raised) above,
 			// before this container even existed; only the upload against this specific container happens
 			// here, inside the `try` so a failed upload still reaches the `finally` below and removes the

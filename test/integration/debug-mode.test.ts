@@ -127,6 +127,15 @@ describe('POST /actor-runtime/debug/:actorId', () => {
 		expect(res.data.data).toEqual({ localDebug: { language: 'auto', port: 5678 } });
 	});
 
+	it('{"enabled": true, "language": "node"} with no port override returns node\'s own default port 9229, never python\'s 5678', async () => {
+		server = await startTestServer();
+		const actor = await server.client.actors().create({ name: 'debug-node-default-port-actor' });
+
+		const res = await post(server.baseUrl, actor.id, { enabled: true, language: 'node' }, server.token);
+		expect(res.status).toBe(200);
+		expect(res.data.data).toEqual({ localDebug: { language: 'node', port: 9229 } });
+	});
+
 	it('a body overriding both language and port is echoed back and persisted verbatim', async () => {
 		server = await startTestServer();
 		const actor = await server.client.actors().create({ name: 'debug-override-actor' });
@@ -288,6 +297,18 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		const detail = await axios.get(`${consoleBaseUrl}/actors/${actor.id}`);
 		expect(detail.data).toContain('node');
 		expect(detail.data).toContain('9229');
+	});
+
+	it('the status row and the form\'s port pre-fill both show node\'s own default (9229), never python\'s, when a node toggle has no port override', async () => {
+		await setUpConsole();
+		const actor = await server.client.actors().create({ name: 'debug-console-node-default-port-actor' });
+		await post(server.baseUrl, actor.id, { enabled: true, language: 'node' }, server.token);
+
+		const detail = await axios.get(`${consoleBaseUrl}/actors/${actor.id}`);
+		expect(detail.data).toContain('<dd>9229</dd>');
+		expect(detail.data).toContain('value="9229"');
+		expect(detail.data).not.toContain('<dd>5678</dd>');
+		expect(detail.data).not.toContain('value="5678"');
 	});
 
 	it('submitting with "enabled" unchecked clears the toggle, same as {"enabled": false} on the API', async () => {

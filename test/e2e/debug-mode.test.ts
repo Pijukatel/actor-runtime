@@ -89,8 +89,9 @@ async function waitFor<T>(check: () => T | undefined, timeoutMs: number, descrip
 
 /** A bare TCP connect to `127.0.0.1:port` - succeeds the moment something is listening, with no protocol
  * handshake at all. Used for the Python case: debugpy's own listen socket accepts a raw TCP connection
- * before any DAP handshake happens (a full DAP handshake is `2-design.md`'s own documented follow-up,
- * not this PR). */
+ * before any DAP handshake happens. This only proves the port is reachable and something is listening,
+ * not that a real IDE could attach - asserting a full DAP initialize/attach/configurationDone handshake
+ * is deliberately out of scope for this test. */
 function canConnectTcp(port: number): Promise<boolean> {
 	return new Promise((resolve) => {
 		const socket = connect({ host: '127.0.0.1', port, timeout: 2000 });
