@@ -25,7 +25,7 @@ import {
 	setDevFolder,
 	type DevFolderStatus,
 } from '../services/dev-folder.js';
-import { debugStatus, setDebugMode, type DebugStatus } from '../services/debug-mode.js';
+import { debugStatus, setDebugMode } from '../services/debug-mode.js';
 import { getBuildById, listAllBuilds } from '../services/builds.js';
 import { getRunById, listAllRuns } from '../services/runs.js';
 import { getFullLog } from '../services/logs.js';
@@ -98,18 +98,21 @@ function devFolderSection(actorId: string, status: DevFolderStatus, errorMessage
 /** The debug-mode toggle form + its status row, on the Actor detail view (`console.md`'s "Debug-mode form
  * (Actor detail view)" section) - full parity with the API body: `enabled`/`language`/`port`, not a
  * checkbox-only carve-out, so the console produces the same stored `ActorRecord.localDebug` outcome as a
- * direct API call with the same input. `errorMessage` is threaded through from the POST handler's redirect
- * query param below, same as `devFolderSection`'s own `devFolderError`. */
-function debugModeSection(actor: ActorRecord, status: DebugStatus, errorMessage?: string): string {
+ * direct API call with the same input. Takes the Actor's raw stored `localDebug` (never the whole
+ * record - it needs no other field, matching `devFolderSection`'s own actorId-only shape) and derives the
+ * display status from it itself, since the form below needs that same raw value pre-`debugStatus` (see
+ * `debugModeForm`'s own doc comment for why the display-computed status value must never pre-fill the
+ * port input). `errorMessage` is threaded through from the POST handler's redirect query param below,
+ * same as `devFolderSection`'s own `devFolderError`. */
+function debugModeSection(actorId: string, localDebug: ActorRecord['localDebug'], errorMessage?: string): string {
+	const status = debugStatus({ localDebug });
 	return (
 		'<h2>Debug mode</h2>' +
 		definitionList([
 			['language', status.localDebug?.language ?? '(debug mode is off)'],
 			['port', status.localDebug?.port ?? ''],
 		]) +
-		// The form gets the *raw* stored `localDebug`, not `status.localDebug` - see `debugModeForm`'s own
-		// doc comment for why the display-computed status value must never pre-fill the port input.
-		debugModeForm(actor.id, actor.localDebug ?? null, errorMessage)
+		debugModeForm(actorId, localDebug ?? null, errorMessage)
 	);
 }
 
@@ -170,7 +173,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				'/builds',
 			) +
 			devFolderSection(actor.id, devFolderStatus(actor), devFolderError) +
-			debugModeSection(actor, debugStatus(actor), debugModeError);
+			debugModeSection(actor.id, actor.localDebug, debugModeError);
 		res.send(layout(`Actor ${actor.name}`, body));
 	});
 
@@ -340,30 +343,25 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			return;
 		}
 		const log = await getFullLog(run.id);
-		const body =
-			definitionList([
-				['id', run.id],
-				['userId', run.userId],
-				['actorId', run.actorId],
-				['buildId', run.buildId],
-				['status', run.status],
-				['startedAt', run.startedAt],
-				['finishedAt', run.finishedAt ?? ''],
-				['defaultDatasetId', storageLink('/datasets', run.defaultDatasetId)],
-				['defaultKeyValueStoreId', storageLink('/key-value-stores', run.defaultKeyValueStoreId)],
-				['defaultRequestQueueId', storageLink('/request-queues', run.defaultRequestQueueId)],
-				// Only present for a run that actually resolved a debug plan (`services/debug-mode.ts`) -
-				// local-only, never present on the emulated `/v2` run object (`dto/actors.ts: runDto` is
-				// explicit field-by-field, same containment `localDevFolder` already relies on).
-				...(run.localDebug
-					? ([['debug', `${run.localDebug.language}, attach at 127.0.0.1:${run.localDebug.port}`]] as Array<
-							[string, string]
-						>)
-					: []),
-			]) +
-			'<h2>Log</h2><pre>' +
-			(log ? ansiToHtml(log) : '(empty)') +
-			'</pre>';
+		const rows: Array<[string, unknown]> = [
+			['id', run.id],
+			['userId', run.userId],
+			['actorId', run.actorId],
+			['buildId', run.buildId],
+			['status', run.status],
+			['startedAt', run.startedAt],
+			['finishedAt', run.finishedAt ?? ''],
+			['defaultDatasetId', storageLink('/datasets', run.defaultDatasetId)],
+			['defaultKeyValueStoreId', storageLink('/key-value-stores', run.defaultKeyValueStoreId)],
+			['defaultRequestQueueId', storageLink('/request-queues', run.defaultRequestQueueId)],
+		];
+		// Only present for a run that actually resolved a debug plan (`services/debug-mode.ts`) - local-
+		// only, never present on the emulated `/v2` run object (`dto/actors.ts: runDto` is explicit
+		// field-by-field, same containment `localDevFolder` already relies on).
+		if (run.localDebug) {
+			rows.push(['debug', `${run.localDebug.language}, attach at 127.0.0.1:${run.localDebug.port}`]);
+		}
+		const body = definitionList(rows) + '<h2>Log</h2><pre>' + (log ? ansiToHtml(log) : '(empty)') + '</pre>';
 		res.send(layout(`Run ${run.id}`, body));
 	});
 

@@ -132,7 +132,7 @@ export interface DebugStatus {
  * genuinely unresolved `'auto'` falls back to the nominal `DISPLAY_DEFAULT_PORT_FOR_AUTO` placeholder -
  * an explicit non-`'auto'` preference is never shown Python's default just because the constant used to
  * be applied unconditionally. */
-export function debugStatus(actor: ActorRecord): DebugStatus {
+export function debugStatus(actor: Pick<ActorRecord, 'localDebug'>): DebugStatus {
 	if (!actor.localDebug) return { localDebug: null };
 	const { language, port } = actor.localDebug;
 	const displayDefaultPort = language === 'auto' ? DISPLAY_DEFAULT_PORT_FOR_AUTO : DEFAULT_PORT_BY_LANGUAGE[language];
@@ -141,12 +141,15 @@ export function debugStatus(actor: ActorRecord): DebugStatus {
 
 // --- Run-start language resolution --------------------------------------------------------------
 
-/** The env entries a resolved plan adds to the run's container - always exactly one key
- * (`NODE_OPTIONS` or `PYTHONPATH`), prepended to (never replacing) whatever value the image itself
- * already set for that key. Merged into `services/runs.ts: buildEnv`'s result *below* every
- * platform-owned var, so a debug run can never accidentally shadow a real platform contract var (there
- * happens to be no overlap today, but the ordering is the same precedence discipline version `envVars`
- * already follow). */
+/** The env entries a resolved plan adds to the run's container. A Node plan has exactly one key
+ * (`NODE_OPTIONS`, prepended to - never replacing - whatever value the image itself already set for that
+ * key). A Python plan has two: `PYTHONPATH` (same prepend discipline) plus `DEBUGPY_PORT_ENV_VAR`
+ * (`APIFY_ACTOR_RUNTIME_DEBUG_PORT`), a single opaque value with no list-join convention of its own (see
+ * `ENV_LIST_SEPARATOR` below), so it always wins outright rather than being prepended - which never
+ * actually collides, since no version defines its own Apify-internal debug-port var. Merged into
+ * `services/runs.ts: buildEnv`'s result *below* every platform-owned var, so a debug run can never
+ * accidentally shadow a real platform contract var (there happens to be no overlap today, but the
+ * ordering is the same precedence discipline version `envVars` already follow). */
 export interface DebugPlan {
 	language: DebugLanguage;
 	port: number;
@@ -212,13 +215,17 @@ type LanguageDetection =
  * `language: 'auto'`'s own detection, most specific first: an exact `python`/`python3`(`.N`) argv token
  * wins outright, then an exact `node`/`tsx`/`ts-node` token. A package-manager launcher
  * (`npm`/`yarn`/`pnpm`) is checked **before** falling back to the base-image env fingerprint -
- * deliberately: an `apify/actor-node` image's own `NODE_VERSION` env would otherwise make an `npm
- * start`-style command look identically classifiable as `'node'`, which is exactly the broken case
- * `actor-driver.md`'s "Non-debuggable images" section exists to catch (`--inspect-brk` would attach to
- * npm's own node process, never the Actor's). Only once the argv itself offers no definitive signal at
- * all - no interpreter token, no package-manager token - does the env fingerprint (`PYTHON_VERSION` /
- * `NODE_VERSION`, present on every Apify base image) get to make the call; failing that too, the image
- * is genuinely unclassifiable.
+ * deliberately: a *custom* base image that happens to bake its own `NODE_VERSION` env (as the plain
+ * upstream `node` Docker Hub image does, unlike any `apify/actor-node` image, which sets neither var -
+ * verified via `docker image inspect`) would otherwise make an `npm start`-style command look identically
+ * classifiable as `'node'`, which is exactly the broken case `actor-driver.md`'s "Non-debuggable images"
+ * section exists to catch (`--inspect-brk` would attach to npm's own node process, never the Actor's).
+ * Only once the argv itself offers no definitive signal at all - no interpreter token, no package-manager
+ * token - does the env fingerprint (`PYTHON_VERSION` / `NODE_VERSION`) get to make the call; failing that
+ * too, the image is genuinely unclassifiable. For any current Apify base image this fingerprint never
+ * fires (neither var is present on one), so an Apify-based image with no argv signal reaches the
+ * "unclassifiable" refusal instead - a safe failure, not a silent misclassification; the fingerprint
+ * exists only for a custom base image built directly from the plain upstream `node`/`python` images.
  */
 function detectLanguage(target: InspectedDebugTarget): LanguageDetection {
 	const words = argvWords(target);
@@ -270,28 +277,38 @@ export function resolveDebugPlan(localDebug: ActorLocalDebug, target: InspectedD
 	};
 }
 
-/** The exact run-log / `statusMessage` text for a refused debug run (`actor-driver.md`'s "Non-debuggable
- * images fail the run, loudly" section) - named after the actual command for a package-manager refusal,
- * and naming the `language` override as the fix for an unclassifiable one (criterion 14). Both name the
- * exact `apify api` invocation that clears debug mode for this Actor. */
+/** The run-log / `statusMessage` text for a refused debug run (`actor-driver.md`'s "Non-debuggable images
+ * fail the run, loudly" section) - named after the actual command for a package-manager refusal, and
+ * naming the `language` override as the fix for an unclassifiable one (criterion 14). Both name the exact
+ * `apify api` invocation that clears debug mode for this Actor. Returns the reason text only, with no
+ * `Cannot start run: ` prefix - `services/runs.ts: failBeforeContainer` owns that prefix for every
+ * pre-container failure, so it is never baked into this string too (previously it was, which is what let
+ * this path's `statusMessage` and the driver-unavailable path's drift into two differently-prefixed
+ * strings for the same kind of failure). `port` is the Actor's own currently-stored port override (if
+ * any) - threaded through so the suggested `language` override below preserves it: `setDebugMode` is a
+ * full-replace `POST` (its own doc comment), so a suggested body that omitted a stored `port` would
+ * silently reset it to the newly-resolved language's own default the moment the developer runs it
+ * verbatim. */
 export function describeDebugRefusal(
 	actorId: string,
+	port: number | undefined,
 	result: Extract<ResolveDebugPlanResult, { kind: 'refused' }>,
 ): string {
 	const clearCommand = `apify api POST /actor-runtime/debug/${actorId} --body '{"enabled": false}'`;
 	if (result.reason === 'package-manager') {
 		const manager = result.command.split(' ')[0];
 		return (
-			`Cannot start run: debug mode is on for this Actor, but its image starts the Actor through ` +
+			`debug mode is on for this Actor, but its image starts the Actor through ` +
 			`\`${result.command}\`. Node's --inspect-brk would attach to ${manager}, not to your Actor. Change ` +
 			`the image's CMD to invoke \`node\` directly (e.g. CMD ["node", "dist/main.js"]), or clear debug ` +
 			`mode with ${clearCommand}.`
 		);
 	}
+	const portField = port !== undefined ? `, "port": ${port}` : '';
 	return (
-		`Cannot start run: debug mode is on for this Actor with language "auto", but its image's command ` +
+		`debug mode is on for this Actor with language "auto", but its image's command ` +
 		`could not be classified as Python or Node. Set an explicit language with ` +
-		`\`apify api POST /actor-runtime/debug/${actorId} --body '{"enabled": true, "language": "node"}'\` ` +
+		`\`apify api POST /actor-runtime/debug/${actorId} --body '{"enabled": true, "language": "node"${portField}}'\` ` +
 		`(or "python"), or clear debug mode with ${clearCommand}.`
 	);
 }

@@ -211,6 +211,20 @@ describe('POST /actor-runtime/debug/:actorId', () => {
 		expect((await getRegistries().actors.get(actor.id))!.modifiedAt).toBe(before);
 	});
 
+	it("clearing an actor that has nothing registered is a no-op write and never bumps modifiedAt (mirrors dev-folder.test.ts's own already-off clear)", async () => {
+		server = await startTestServer();
+		const actor = await server.client.actors().create({ name: 'debug-noop-clear-actor' });
+		const before = (await getRegistries().actors.get(actor.id))!.modifiedAt;
+
+		const res = await post(server.baseUrl, actor.id, { enabled: false }, server.token);
+		expect(res.status).toBe(200);
+		expect(res.data.data).toEqual({ localDebug: null });
+
+		const after = await getRegistries().actors.get(actor.id);
+		expect(after!.modifiedAt).toBe(before);
+		expect(after!.localDebug).toBeUndefined();
+	});
+
 	it('never appears on the /v2 actor response (get or list)', async () => {
 		server = await startTestServer();
 		const actor = await server.client.actors().create({ name: 'debug-no-leak-actor' });
@@ -299,7 +313,7 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		expect(detail.data).toContain('9229');
 	});
 
-	it('the status row shows node\'s own default (9229), never python\'s, when a node toggle has no port override - but the form\'s port input stays blank, since no override is actually stored', async () => {
+	it("the status row shows node's own default (9229), never python's, when a node toggle has no port override - but the form's port input stays blank, since no override is actually stored", async () => {
 		await setUpConsole();
 		const actor = await server.client.actors().create({ name: 'debug-console-node-default-port-actor' });
 		await post(server.baseUrl, actor.id, { enabled: true, language: 'node' }, server.token);
@@ -311,12 +325,14 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		// The editable form field must stay blank - no override is actually stored, so pre-filling it with
 		// either language's default would silently turn an ordinary resubmission into a pinned override
 		// (`console.md`'s "blank meaning 'no override'" contract).
-		expect(detail.data).toContain('<input type="number" name="port" value="" min="1024" max="65535" placeholder="(default)">');
+		expect(detail.data).toContain(
+			'<input type="number" name="port" value="" min="1024" max="65535" placeholder="(default)">',
+		);
 		expect(detail.data).not.toContain('value="9229"');
 		expect(detail.data).not.toContain('value="5678"');
 	});
 
-	it('resubmitting the form after only changing "language" never silently pins the pre-fill as a port override - the regression from iter-2\'s review: toggle on with language auto and no port, then resubmit changing only language to node', async () => {
+	it('resubmitting the form after only changing "language" never silently pins the pre-fill as a port override (the regression the review flagged): toggle on with language auto and no port, then resubmit changing only language to node', async () => {
 		const capturing = debugCapturingDriver({ cmd: ['node', 'dist/main.js'], env: {} });
 		await setUpConsole(capturing.driver);
 		const actor = await pushAndBuild(server, 'debug-console-resubmit-language-only-actor');
@@ -325,10 +341,18 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		const firstSubmit = await axios.post(
 			`${consoleBaseUrl}/actors/${actor.id}/debug`,
 			'enabled=on&language=auto&port=',
-			{ headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, maxRedirects: 0, validateStatus: () => true },
+			{
+				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+				maxRedirects: 0,
+				validateStatus: () => true,
+			},
 		);
 		expect(firstSubmit.status).toBe(302);
-		expect(await getRegistries().actors.get(actor.id).then((a) => a?.localDebug)).toEqual({ language: 'auto' });
+		expect(
+			await getRegistries()
+				.actors.get(actor.id)
+				.then((a) => a?.localDebug),
+		).toEqual({ language: 'auto' });
 
 		// The form's own port input must render blank at this point - the exact pre-fill a browser would
 		// resubmit unedited if the developer only touched the "language" select.
@@ -342,7 +366,11 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		const secondSubmit = await axios.post(
 			`${consoleBaseUrl}/actors/${actor.id}/debug`,
 			'enabled=on&language=node&port=',
-			{ headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, maxRedirects: 0, validateStatus: () => true },
+			{
+				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+				maxRedirects: 0,
+				validateStatus: () => true,
+			},
 		);
 		expect(secondSubmit.status).toBe(302);
 
@@ -355,7 +383,7 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 		expect(run.status).toBe('SUCCEEDED');
 		const ctx = capturing.getStartRunContexts()[0]!;
-		expect(ctx.debug).toEqual({ language: 'node', port: 9229 });
+		expect(ctx.debug).toEqual({ language: 'node', port: 9229, actorId: actor.id, languagePreference: 'node' });
 		expect(ctx.env.NODE_OPTIONS).toBe('--inspect-brk=0.0.0.0:9229');
 	});
 
@@ -457,7 +485,7 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 		expect(run.status).toBe('SUCCEEDED');
 
 		const ctx = capturing.getStartRunContexts()[0]!;
-		expect(ctx.debug).toEqual({ language: 'node', port: 9229 });
+		expect(ctx.debug).toEqual({ language: 'node', port: 9229, actorId: actor.id, languagePreference: 'auto' });
 		expect(ctx.env.NODE_OPTIONS).toBe('--inspect-brk=0.0.0.0:9229');
 
 		const stored = await getRegistries().runs.get(run.id);
@@ -474,7 +502,7 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 		expect(run.status).toBe('SUCCEEDED');
 
 		const ctx = capturing.getStartRunContexts()[0]!;
-		expect(ctx.debug).toEqual({ language: 'python', port: 5679 });
+		expect(ctx.debug).toEqual({ language: 'python', port: 5679, actorId: actor.id, languagePreference: 'auto' });
 		expect(ctx.env.PYTHONPATH).toBe('/opt/apify-debug');
 		expect(ctx.env.APIFY_ACTOR_RUNTIME_DEBUG_PORT).toBe('5679');
 
@@ -516,6 +544,35 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 		expect(ctx.env.APIFY_TOKEN).not.toBe('should-not-win');
 	});
 
+	it("a debug-enabled node Actor whose image AND version-level envVars both bake in NODE_OPTIONS: the debug run's final value stacks all three layers (debug prefix, then the image's own value, then the version's) - pins actor-driver.md's documented three-way composition (this only reaches a value no Apify base image ever sets on its own)", async () => {
+		const capturing = debugCapturingDriver({ cmd: ['node', 'dist/main.js'], env: { NODE_OPTIONS: 'from-image' } });
+		server = await startTestServer(capturing.driver);
+		const actor = await server.client.actors().create({ name: 'run-debug-node-image-and-versionenv-actor' });
+		await server.client
+			.actor(actor.id)
+			.versions()
+			.create({
+				versionNumber: '0.0',
+				buildTag: 'latest',
+				sourceType: 'SOURCE_FILES' as never,
+				sourceFiles: [],
+				envVars: [{ name: 'NODE_OPTIONS', value: 'from-version' }],
+			} as never);
+		const build = await server.client.actor(actor.id).build('0.0', { waitForFinish: 5 });
+		expect(build.status).toBe('SUCCEEDED');
+		await post(server.baseUrl, actor.id, { enabled: true }, server.token);
+
+		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(run.status).toBe('SUCCEEDED');
+
+		const ctx = capturing.getStartRunContexts()[0]!;
+		// `resolveDebugPlan` prepends the debug flag onto the image's own value first ("from-image"); then
+		// `buildEnv` prepends THAT whole result onto the version's own value ("from-version") - each layer
+		// preserved, none clobbering another. A non-debug run of the same Actor would carry only
+		// "from-version" (ordinary container env precedence discards the image's baked value outright).
+		expect(ctx.env.NODE_OPTIONS).toBe('--inspect-brk=0.0.0.0:9229 from-image from-version');
+	});
+
 	it('a debug-enabled python Actor whose own version-level envVars sets PYTHONPATH keeps that value - the debug payload dir PREPENDS onto it rather than clobbering it', async () => {
 		const capturing = debugCapturingDriver({ cmd: ['python3', '-m', 'src'], env: {} });
 		server = await startTestServer(capturing.driver);
@@ -544,6 +601,32 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 		expect(ctx.env.APIFY_TOKEN).toBe(server.token);
 	});
 
+	it('a debug-enabled python Actor whose own version-level envVars sets the debug-port var (APIFY_ACTOR_RUNTIME_DEBUG_PORT) has it CLOBBERED by the debug value, unlike PYTHONPATH/NODE_OPTIONS above - it has no list-join convention of its own', async () => {
+		const capturing = debugCapturingDriver({ cmd: ['python3', '-m', 'src'], env: {} });
+		server = await startTestServer(capturing.driver);
+		const actor = await server.client.actors().create({ name: 'run-debug-python-debugport-versionenv-actor' });
+		await server.client
+			.actor(actor.id)
+			.versions()
+			.create({
+				versionNumber: '0.0',
+				buildTag: 'latest',
+				sourceType: 'SOURCE_FILES' as never,
+				sourceFiles: [],
+				envVars: [{ name: 'APIFY_ACTOR_RUNTIME_DEBUG_PORT', value: 'should-not-survive' }],
+			} as never);
+		const build = await server.client.actor(actor.id).build('0.0', { waitForFinish: 5 });
+		expect(build.status).toBe('SUCCEEDED');
+		await post(server.baseUrl, actor.id, { enabled: true }, server.token);
+
+		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(run.status).toBe('SUCCEEDED');
+
+		const ctx = capturing.getStartRunContexts()[0]!;
+		expect(ctx.env.APIFY_ACTOR_RUNTIME_DEBUG_PORT).toBe('5678');
+		expect(ctx.env.APIFY_ACTOR_RUNTIME_DEBUG_PORT).not.toContain('should-not-survive');
+	});
+
 	it('the toggle is not consumed by one run - two separate runs of the same debug-enabled Actor both resolve a plan', async () => {
 		const capturing = debugCapturingDriver({ cmd: ['node', 'dist/main.js'], env: {} });
 		server = await startTestServer(capturing.driver);
@@ -557,8 +640,18 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 
 		const contexts = capturing.getStartRunContexts();
 		expect(contexts).toHaveLength(2);
-		expect(contexts[0]?.debug).toEqual({ language: 'node', port: 9229 });
-		expect(contexts[1]?.debug).toEqual({ language: 'node', port: 9229 });
+		expect(contexts[0]?.debug).toEqual({
+			language: 'node',
+			port: 9229,
+			actorId: actor.id,
+			languagePreference: 'auto',
+		});
+		expect(contexts[1]?.debug).toEqual({
+			language: 'node',
+			port: 9229,
+			actorId: actor.id,
+			languagePreference: 'auto',
+		});
 	});
 
 	it('a package-manager-launched image (npm start) fails the run before startRun is ever called, with the classified message, and never persists a localDebug', async () => {
@@ -602,7 +695,12 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 		expect(run.status).toBe('SUCCEEDED');
-		expect(capturing.getStartRunContexts()[0]?.debug).toEqual({ language: 'node', port: 9229 });
+		expect(capturing.getStartRunContexts()[0]?.debug).toEqual({
+			language: 'node',
+			port: 9229,
+			actorId: actor.id,
+			languagePreference: 'node',
+		});
 	});
 
 	it('clearing debug mode between two runs makes the second run byte-identical to a never-toggled run (no debug field at all)', async () => {
@@ -652,7 +750,7 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 
 		const ctx = capturing.getStartRunContexts()[0]!;
 		expect(ctx.devMount).toEqual({ localDevFolder: '/abs/dev/src', imageWorkingDirectory: '/usr/src/app' });
-		expect(ctx.debug).toEqual({ language: 'node', port: 9229 });
+		expect(ctx.debug).toEqual({ language: 'node', port: 9229, actorId: actor.id, languagePreference: 'auto' });
 		expect(ctx.env.NODE_OPTIONS).toBe('--inspect-brk=0.0.0.0:9229');
 	});
 });

@@ -7,11 +7,14 @@
 # beyond what `putArchive` already streams. The ONE place the debugpy version is pinned - the run log's
 # attach line (`docker-driver.ts`) reads it back from `debugpy-version.txt` below, never a second,
 # independently-hardcoded copy.
-FROM python:3-slim AS debugpy-payload
+FROM python:3.11-slim AS debugpy-payload
 ARG DEBUGPY_VERSION=1.8.21
-# `config.ts`'s `PYTHON_DEBUG_PAYLOAD_DIR`-equivalent (`services/debug-mode.ts`) - the tar built below is
-# rooted so extracting it at `/` (`docker-driver.ts`'s `putArchive(tar, { path: '/' })`) lands the payload
-# at exactly this in-container path, matching the `PYTHONPATH` entry a Python debug run's env carries.
+# Matches `services/debug-mode.ts`'s `PYTHON_DEBUG_PAYLOAD_DIR` constant - NOT `config.ts`'s similarly
+# named `debugpyPayloadDir()`, which is an unrelated helper for a path inside the RUNTIME's own image
+# (`/opt/apify-debug-payload`, where the built tar below is stored before an Actor container ever exists).
+# The tar built below is rooted so extracting it at `/` (`docker-driver.ts`'s
+# `putArchive(tar, { path: '/' })`) lands the payload at exactly this in-ACTOR-container path, matching
+# the `PYTHONPATH` entry a Python debug run's env carries.
 ARG PAYLOAD_DIR=opt/apify-debug
 WORKDIR /payload
 RUN mkdir -p "/payload/root/${PAYLOAD_DIR}"

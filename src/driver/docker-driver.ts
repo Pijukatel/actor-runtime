@@ -632,10 +632,15 @@ export class DockerDriver implements Driver {
 				await container.start();
 			} catch (error) {
 				if (ctx.debug && isPortInUseError(error)) {
+					// Names the real Actor id and preserves the Actor's own stored `language` preference in the
+					// suggested body - `setDebugMode` is a full-replace `POST` (its own doc comment), so a body
+					// that omitted a stored `'node'`/`'python'` override would silently reset it to `'auto'` the
+					// moment the developer ran it verbatim.
 					throw new Error(
 						`Cannot start debug run: host port ${ctx.debug.port} is already in use. Stop whatever is ` +
-							`using it, or set a different port with \`apify api POST /actor-runtime/debug/<actorId> ` +
-							`--body '{"enabled": true, "port": <n>}'\`.`,
+							`using it, or set a different port with \`apify api POST /actor-runtime/debug/` +
+							`${ctx.debug.actorId} --body '{"enabled": true, "language": ` +
+							`"${ctx.debug.languagePreference}", "port": <n>}'\`.`,
 					);
 				}
 				throw error;

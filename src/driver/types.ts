@@ -1,4 +1,4 @@
-import type { SourceFile } from '../storage/entities.js';
+import type { DebugLanguagePreference, SourceFile } from '../storage/entities.js';
 
 export interface BuildContext {
 	buildId: string;
@@ -23,10 +23,17 @@ export interface DevFolderMount {
  * injecting) and the port to expose-and-publish. The env entries a resolved `DebugPlan` adds
  * (`NODE_OPTIONS`/`PYTHONPATH`) are already merged into `RunContext.env` by the time this reaches the
  * driver - `debug` carries only what `docker-driver.ts`'s `startRun` needs to act on directly
- * (`ExposedPorts`/`PortBindings`, the attach log line, the debugpy payload upload). */
+ * (`ExposedPorts`/`PortBindings`, the attach log line, the debugpy payload upload). `actorId` and
+ * `languagePreference` (the Actor's own *stored* `enabled`/`language`/`port` toggle preference, distinct
+ * from `language` above - the run's *resolved* language, which for a `'auto'` preference can differ) exist
+ * solely so a port-conflict failure can name the real Actor id and suggest a remediation `POST` body that
+ * preserves the stored preference, instead of a literal `<actorId>` placeholder and a body that would
+ * silently reset it back to `'auto'`. */
 export interface DebugRunTarget {
 	language: 'node' | 'python';
 	port: number;
+	actorId: string;
+	languagePreference: DebugLanguagePreference;
 }
 
 export interface RunContext {
@@ -41,12 +48,15 @@ export interface RunContext {
 
 /** What `Driver.inspectDebugTarget` reads off a run's resolved build image - just enough for
  * `services/debug-mode.ts: resolveDebugPlan` to resolve a debug plan, never a raw `dockerode` type (same
- * boundary discipline as `DevFolderMount`/`BuildOutcome` above). `cmd`/`entrypoint` are
- * `Config.Cmd`/`Config.Entrypoint` verbatim - a shell-form Dockerfile `CMD` already arrives here as
- * `['/bin/sh', '-c', '...']`, since that is how the daemon itself stores it; no shell parsing happens
- * anywhere in this codebase. `env` carries only the four vars the language heuristic and the env-merge
- * precedence actually need (`PYTHONPATH`/`NODE_OPTIONS` for prepending, `PYTHON_VERSION`/`NODE_VERSION`
- * as the base-image fingerprint of last resort). */
+ * boundary discipline as `DevFolderMount`/`BuildOutcome` above). `cmd` is `Config.Cmd` verbatim - a
+ * shell-form Dockerfile `CMD` already arrives here as `['/bin/sh', '-c', '...']`, since that is how the
+ * daemon itself stores it; no shell parsing happens anywhere in this codebase. `entrypoint` is
+ * `Config.Entrypoint` normalized to an array (the Engine API returns it as either a string or a
+ * string array; `docker-driver.ts: inspectDebugTarget` does the one-element-array wrapping for a
+ * string-form value before this type ever sees it), never the raw string form. `env` carries only the
+ * four vars the language heuristic and the env-merge precedence actually need (`PYTHONPATH`/
+ * `NODE_OPTIONS` for prepending, `PYTHON_VERSION`/`NODE_VERSION` as the base-image fingerprint of last
+ * resort). */
 export interface InspectedDebugTarget {
 	cmd?: string[];
 	entrypoint?: string[];

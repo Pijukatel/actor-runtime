@@ -1,5 +1,12 @@
 import { generateId } from '../storage/ids.js';
-import type { ActorRecord, ActorVersionRecord, BuildRecord, JobStatus, RunRecord } from '../storage/entities.js';
+import type {
+	ActorRecord,
+	ActorVersionRecord,
+	BuildRecord,
+	DebugLanguagePreference,
+	JobStatus,
+	RunRecord,
+} from '../storage/entities.js';
 import { getRegistries } from '../storage/registries.js';
 import { createStorage } from './storages.js';
 import { openKeyValueStore } from '../storage/open.js';
@@ -198,6 +205,30 @@ export async function startRun(
 }
 
 /**
+ * The "fail the run before any container exists" sequence, shared by every pre-container failure path in
+ * `runInBackground` below (driver-unavailable/no-image, and a refused debug plan) - appends the
+ * `Cannot start run: ` line to the run's log, flushes it, marks the log/events channels terminal, and
+ * transitions the record to `FAILED` with the identical text as `statusMessage`. Owns the
+ * `Cannot start run: ` prefix itself (callers pass only the reason) so the log line and `statusMessage`
+ * can never drift into two differently-prefixed strings for what is, from the developer's perspective,
+ * the same failure - before this helper existed, the debug-refusal path baked its own copy of the prefix
+ * into `describeDebugRefusal`'s return value while this path added it at the call site, so the two were
+ * only accidentally consistent.
+ */
+async function failBeforeContainer(runId: string, reason: string | undefined): Promise<void> {
+	const { runs } = getRegistries();
+	const message = `Cannot start run: ${reason}`;
+	appendLog(runId, `${message}\n`);
+	await flushLog(runId);
+	markLogTerminal(runId);
+	markEventsTerminal(runId);
+	await transitionJobStatus(runs, runId, 'FAILED', {
+		finishedAt: new Date().toISOString(),
+		statusMessage: message,
+	});
+}
+
+/**
  * Exported only for direct testing of the guarded transitions/pre-start abort window (see
  * `test/integration/job-lifecycle.test.ts`) - not part of the service's public surface for callers
  * outside this module, which should only ever go through `startRun`.
@@ -232,14 +263,7 @@ export async function runInBackground(
 	const build = await builds.get(record.buildId);
 	if (!driver.available || !build?.imageId) {
 		const reason = !driver.available ? driver.unavailableReason : 'Build has no image to run';
-		appendLog(record.id, `Cannot start run: ${reason}\n`);
-		await flushLog(record.id);
-		markLogTerminal(record.id);
-		markEventsTerminal(record.id);
-		await transitionJobStatus(runs, record.id, 'FAILED', {
-			finishedAt: new Date().toISOString(),
-			statusMessage: reason,
-		});
+		await failBeforeContainer(record.id, reason);
 		return;
 	}
 
@@ -249,23 +273,17 @@ export async function runInBackground(
 	// ..." path every other pre-container failure above uses, before any container is ever created
 	// (`actor-driver.md`'s "Non-debuggable images fail the run, loudly" section).
 	let debugPlan: DebugPlan | undefined;
+	let debugLanguagePreference: DebugLanguagePreference | undefined;
 	if (actor.localDebug) {
 		const target = await driver.inspectDebugTarget(build.imageId);
 		const result = resolveDebugPlan(actor.localDebug, target);
 		if (result.kind === 'refused') {
-			const message = describeDebugRefusal(actor.id, result);
-			appendLog(record.id, `${message}\n`);
-			await flushLog(record.id);
-			markLogTerminal(record.id);
-			markEventsTerminal(record.id);
-			await transitionJobStatus(runs, record.id, 'FAILED', {
-				finishedAt: new Date().toISOString(),
-				statusMessage: message,
-			});
+			await failBeforeContainer(record.id, describeDebugRefusal(actor.id, actor.localDebug.port, result));
 			return;
 		}
 		const plan = result.plan;
 		debugPlan = plan;
+		debugLanguagePreference = actor.localDebug.language;
 		// Persisted on the run record itself (not derived later from the Actor's toggle, which could
 		// change after this run started) - local-only, so the console run page can show an attach address
 		// after the fact even for a run started by someone else's `apify call` (`actor-driver.md`'s "Debug
@@ -318,7 +336,16 @@ export async function runInBackground(
 				memoryMbytes: record.options.memoryMbytes,
 				timeoutSecs: record.options.timeoutSecs,
 				devMount,
-				debug: debugPlan ? { language: debugPlan.language, port: debugPlan.port } : undefined,
+				debug: debugPlan
+					? {
+							language: debugPlan.language,
+							port: debugPlan.port,
+							actorId: actor.id,
+							// Non-null: only ever set alongside `debugPlan` above, in the same `if (actor.localDebug)`
+							// block.
+							languagePreference: debugLanguagePreference!,
+						}
+					: undefined,
 			},
 			(chunk) => appendLog(record.id, chunk),
 			(sample) => publishSystemInfo(record.id, sample, record.options),

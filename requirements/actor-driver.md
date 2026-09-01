@@ -84,10 +84,13 @@
   `['/bin/sh', '-c', '...']`, needing no shell parsing here) for a `python`/`python3` or `node`/`tsx`/
   `ts-node` token; failing that, a package-manager launcher (`npm`/`yarn`/`pnpm`) is refused outright
   (see below) rather than misclassified via the base image's own `NODE_VERSION`/`PYTHON_VERSION` env
-  fingerprint, which is consulted only once no argv token and no package-manager pattern matched. An
-  explicit `language: "node"`/`"python"` override always wins outright, skipping this detection (and
-  therefore every refusal it could produce) entirely - it exists precisely for images the heuristic
-  cannot classify.
+  fingerprint, which is consulted only once no argv token and no package-manager pattern matched. This
+  fingerprint is a fallback for a custom base image, never a rung any current Apify base image actually
+  reaches: `apify/actor-node`'s and `apify/actor-python`'s own images set neither var (verified via
+  `docker image inspect`), so an unclassifiable Apify-based image reaches the "unclassifiable" refusal
+  below instead - a safe failure, not a silent misclassification. An explicit `language: "node"`/`"python"`
+  override always wins outright, skipping this detection (and therefore every refusal it could produce)
+  entirely - it exists precisely for images the heuristic cannot classify.
 - **Default debug ports are language-specific**: `5678` for Python, `9229` for Node, each ecosystem's own
   IDE-default convention - applied only once the run's language has actually resolved, never a
   toggle-time literal (the toggle's own read-back shows a nominal `5678` for an unresolved `language:
@@ -97,12 +100,29 @@
   debug run adds `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` (Node's own built-in inspector, nothing
   injected). A Python debug run adds `PYTHONPATH=<payload dir>` (prepended to, never replacing, the
   image's own `PYTHONPATH`) plus the port the payload's own `sitecustomize.py` reads its listen address
-  from - both are merged into the run's env _below_ every platform-owned var (`buildEnv`'s own
-  precedence), so a debug run can never shadow a real platform contract var. The same prepend-not-replace
-  discipline applies one level higher too: if the Actor's own version-level `envVars` (see "Environment
-  variables in every Actor container" in `storage.md`/below) already sets `NODE_OPTIONS`/`PYTHONPATH`,
-  the debug value is prepended onto *that* value rather than clobbering it - a debug run never silently
-  discards an Actor's own configured `NODE_OPTIONS`/`PYTHONPATH`.
+  from, in `APIFY_ACTOR_RUNTIME_DEBUG_PORT` - both are merged into the run's env _below_ every
+  platform-owned var (`buildEnv`'s own precedence), so a debug run can never shadow a real platform
+  contract var. The same prepend-not-replace discipline applies one level higher too: if the Actor's own
+  version-level `envVars` (see "Environment variables in every Actor container" in `storage.md`/below)
+  already sets `NODE_OPTIONS`/`PYTHONPATH`, the debug value is prepended onto _that_ value rather than
+  clobbering it - a debug run never silently discards an Actor's own configured
+  `NODE_OPTIONS`/`PYTHONPATH`. `APIFY_ACTOR_RUNTIME_DEBUG_PORT` is the one exception to this
+  prepend-not-replace rule: it is a single opaque value, not a list of flags/paths with a join convention
+  of its own (unlike the other two), so if a version's own `envVars` ever sets that exact name too, the
+  debug run's value **replaces** it outright rather than prepending - this never actually collides in
+  practice, since no version defines its own Apify-internal debug-port var. The `NODE_OPTIONS`/`PYTHONPATH`
+  prepend steps themselves stack: for the rare custom base image that bakes its own
+  `NODE_OPTIONS`/`PYTHONPATH` into `Config.Env` _and_ whose
+  version-level `envVars` also sets the same key, a debug run's final value is
+  `<debug value><separator><image's baked value><separator><version's envVars value>` - the debug prefix,
+  then the image's own value, then the version's own value, each layer preserved rather than the later
+  layer clobbering the earlier one. This can make a debug run's env differ from the same run's non-debug
+  env in one more way than just the added debug flag: a non-debug run's version-level `envVars` entry
+  replaces the image's baked value outright (ordinary container env precedence - the image's value never
+  appears in the container's env at all), while a debug run's own prepend-onto-image-env step
+  (`resolveDebugPlan`) resurrects it. This is a deliberate consequence of applying the same "prepend, never
+  clobber" discipline at both layers independently, not a version-precedence bug: it only reaches a value
+  no Apify base image ever sets for `NODE_OPTIONS`/`PYTHONPATH` on its own.
 - **The Python debugpy payload is injected by the runtime, not the Actor.** A pinned, pure-Python
   (`py2.py3-none-any`) `debugpy` wheel, plus a generated `sitecustomize.py`, is pre-built into a tar at
   the runtime's own image-build time (`Dockerfile`'s `debugpy-payload` stage) and streamed into a Python
@@ -144,7 +164,13 @@
   (`npm start`, `yarn start`, `pnpm start`, ...) is refused by name, explaining that `--inspect-brk` would
   attach to the package manager's own node process rather than the Actor's, and naming both the CMD fix
   and how to clear debug mode. An unclassifiable `language: "auto"` image is refused the same way, naming
-  the `language` override as the fix. Neither refusal ever leaves a container behind.
+  the `language` override as the fix. Neither refusal ever leaves a container behind. **This is not a rare
+  edge case**: `apify/actor-node`'s own images default to `CMD ["npm", "start", "--silent"]`, and this
+  runtime's injected default Dockerfile (`services/default-dockerfile.ts`, used for any pushed Actor that
+  names no `Dockerfile` of its own) is `FROM apify/actor-node:20` with no `CMD` of its own - so it inherits
+  that `npm start` default and is refused by debug mode exactly like any other package-manager-launched
+  image. The remedy is the same one named in the refusal: give the Actor a `Dockerfile` whose `CMD`
+  invokes `node` directly (e.g. `CMD ["node", "dist/main.js"]`).
 - **The resolved plan is persisted on the run record itself** (`RunRecord.localDebug`, local-only, never
   on `/v2` - see `storage.md`), written once the plan resolves, before the container starts - this is
   what lets the console show an attach address after the fact (`console.md`), even for a run started by

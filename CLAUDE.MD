@@ -37,8 +37,14 @@ Local Actor runtime is an Actor development tool for developing, running, and de
   `apify call` against that Actor then starts paused, waiting for a debugger, with the attach address
   printed in the run's own log; connect PyCharm's "Attach to DAP" / VS Code's "Python: Remote Attach"
   (Python) or VS Code's "Attach" (Node) to `127.0.0.1:<port>` to continue past the pause. No Actor-side
-  change is required - the runtime injects everything needed. The run's own `--timeout` is NOT extended
-  for the time spent attaching, so pass a larger one when you expect a slow attach. Clear the toggle with
+  change is required for an image whose `CMD` already invokes `node`/`python3` directly - the runtime
+  injects everything needed. **An Actor pushed with no `Dockerfile` of its own does need a change**: this
+  runtime's injected default Dockerfile is `FROM apify/actor-node:20` with no `CMD`, so it inherits that
+  base image's own default, `CMD ["npm", "start", "--silent"]` - debug mode refuses that (`--inspect-brk`
+  would attach to npm, not the Actor) rather than starting the run undebugged. Give the Actor a
+  `Dockerfile` whose `CMD` invokes `node` directly (e.g. `CMD ["node", "dist/main.js"]`) to fix it. The
+  run's own `--timeout` is NOT extended for the time spent attaching, so pass a larger one when you expect
+  a slow attach. Clear the toggle with
   `apify api POST /actor-runtime/debug/<actorId> --body '{"enabled": false}'` to go back to running
   normally.
 - If a call fails because this runtime doesn't have the Actor/run/build/storage id you're after, or

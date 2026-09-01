@@ -12,6 +12,7 @@ import {
 	DEBUGPY_PORT_ENV_VAR,
 	PYTHON_DEBUG_PAYLOAD_DIR,
 	describeDebugRefusal,
+	prependDebugEnvValue,
 	resolveDebugPlan,
 	validateDebugModeBody,
 } from '../../src/services/debug-mode.js';
@@ -220,25 +221,45 @@ describe("resolveDebugPlan - env prepending (never replacing the image's own val
 			plan: { env: { NODE_OPTIONS: '--inspect-brk=0.0.0.0:9229 --max-old-space-size=4096' } },
 		});
 	});
+
+	it('a key with no ENV_LIST_SEPARATOR entry (the debug-port var) CLOBBERS an existing value outright rather than prepending - unlike NODE_OPTIONS/PYTHONPATH above', () => {
+		// Only reachable in practice for `DEBUGPY_PORT_ENV_VAR`, if an Actor version's own `envVars` ever
+		// sets that exact name (`services/runs.ts: buildEnv`'s own prepend call) - `resolveDebugPlan` itself
+		// never calls `prependDebugEnvValue` for this key at all (it assigns it as a plain literal), so this
+		// exercises `prependDebugEnvValue` directly, the same way `services/runs.ts: buildEnv` would.
+		expect(prependDebugEnvValue(DEBUGPY_PORT_ENV_VAR, '5678', '9999')).toBe('5678');
+		// A key WITH a separator entry never clobbers - included for contrast in the same test.
+		expect(prependDebugEnvValue('PYTHONPATH', PYTHON_DEBUG_PAYLOAD_DIR, '/usr/src/app')).toBe(
+			`${PYTHON_DEBUG_PAYLOAD_DIR}:/usr/src/app`,
+		);
+	});
 });
 
 describe('describeDebugRefusal', () => {
 	it('names the exact offending command and the clear-debug-mode command for a package-manager refusal', () => {
-		const message = describeDebugRefusal('actor-123', {
+		const message = describeDebugRefusal('actor-123', undefined, {
 			kind: 'refused',
 			reason: 'package-manager',
 			command: 'npm start',
 		});
 		expect(message).toContain('npm start');
-		expect(message).toContain('Cannot start run:');
 		expect(message).toContain('/actor-runtime/debug/actor-123');
 		expect(message).toContain('"enabled": false');
+		// The "Cannot start run: " prefix is owned by `services/runs.ts: failBeforeContainer`, never baked
+		// into this function's own return value - see its doc comment.
+		expect(message).not.toContain('Cannot start run:');
 	});
 
-	it('names the language override as the fix for an unclassifiable refusal', () => {
-		const message = describeDebugRefusal('actor-123', { kind: 'refused', reason: 'unclassifiable' });
+	it('names the language override as the fix for an unclassifiable refusal, with no port field when no port is stored', () => {
+		const message = describeDebugRefusal('actor-123', undefined, { kind: 'refused', reason: 'unclassifiable' });
 		expect(message).toContain('language');
 		expect(message).toContain('/actor-runtime/debug/actor-123');
-		expect(message).toContain('Cannot start run:');
+		expect(message).not.toContain('Cannot start run:');
+		expect(message).not.toContain('"port"');
+	});
+
+	it("preserves a stored port override in the suggested language-override body - resubmitting it verbatim must not silently reset the Actor's port", () => {
+		const message = describeDebugRefusal('actor-123', 9230, { kind: 'refused', reason: 'unclassifiable' });
+		expect(message).toContain('"language": "node", "port": 9230');
 	});
 });

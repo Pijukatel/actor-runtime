@@ -31,7 +31,7 @@ export const DEFAULT_DATA_DIR = process.env.ACTOR_RUNTIME_DATA_DIR ?? '/data';
  * directory simply does not exist - `docker-driver.ts` treats that as "cannot start a Python debug run",
  * never a silent non-debug start.
  */
-export function debugpyPayloadDir(): string {
+function debugpyPayloadDir(): string {
 	return process.env.ACTOR_RUNTIME_DEBUGPY_PAYLOAD_DIR ?? '/opt/apify-debug-payload';
 }
 
