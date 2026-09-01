@@ -264,8 +264,9 @@ describe('actors / versions / builds / runs (via real apify-client)', () => {
 		}
 		expect(final.status).toBe('FAILED');
 		// The bare driver-unavailable reason, no "Cannot start run: " prefix and no literal "undefined" -
-		// `failBeforeContainer` prefixes only the run's log line for this path, matching
-		// `services/builds.ts`'s own driver-unavailable path, which stores `driver.unavailableReason` as-is.
+		// the caller composes that prefix only for the log line it passes to `failBeforeContainer`, which
+		// itself prefixes nothing and stores `statusMessage` verbatim, matching `services/builds.ts`'s own
+		// driver-unavailable path, which stores `driver.unavailableReason` as-is.
 		expect(final.statusMessage).toBe('Docker is not available in the test environment');
 
 		const list = await server.client.runs().list();

@@ -135,7 +135,10 @@
   and never lets an unexpected internal failure leave the Actor running silently undebugged: it prints
   its own "listening" line once `debugpy.listen()` succeeds (its absence from the log is what makes a
   broken injection diagnosable), and any other internal failure prints a loud message and exits non-zero
-  rather than silently continuing.
+  rather than silently continuing. Because the injected payload dir is prepended to `PYTHONPATH`, it is
+  always the first `sitecustomize.py` CPython's `site` module finds - if the Actor's own image ships a
+  same-named `sitecustomize.py` anywhere else on `PYTHONPATH`, ours shadows it outright (no chaining or
+  delegation) for the duration of the debug run.
 - **No synthetic breakpoint.** `debugpy.wait_for_client()` (Python) / `--inspect-brk` (Node) pause before
   any user code runs; once a debugger attaches, execution proceeds to the developer's own first
   breakpoint - the runtime never sets one of its own.
