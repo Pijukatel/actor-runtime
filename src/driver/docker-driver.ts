@@ -27,10 +27,11 @@
  * The rest of the runtime (storages, actors-as-records, console) is unaffected.
  */
 import { PassThrough } from 'node:stream';
+import { readFile } from 'node:fs/promises';
 import Docker from 'dockerode';
 import * as tar from 'tar-stream';
 
-import { CONTAINER_API_ALIAS } from '../config.js';
+import { CONTAINER_API_ALIAS, debugpyPayloadTarPath, debugpyVersionFilePath } from '../config.js';
 import { CPU_PERIOD_US, cpuQuotaFor, dedicatedCpusFor } from '../resources.js';
 import { normalizeEntryName } from './tar-entry-name.js';
 import type { SourceFile } from '../storage/entities.js';
@@ -42,6 +43,7 @@ import {
 	type DevFolderProbeFailureReason,
 	type DevFolderProbeOutcome,
 	type Driver,
+	type InspectedDebugTarget,
 	type RunContext,
 	type RunOutcome,
 	type RunResourceSample,
@@ -80,6 +82,11 @@ const BIND_SOURCE_MISSING_SUBSTRING = 'bind source path does not exist';
  * rejection shape `classifyProbeError` reports as "not a directory" rather than a generic "could not
  * verify", and never as "does not exist". */
 const NOT_A_DIRECTORY_SUBSTRING = 'not a directory';
+/** Substrings the Docker daemon's own `container.start()` rejection carries for "the requested host
+ * port is already bound by something else" - covers both the classic message and the newer moby
+ * wording, so `startRun`'s debug-port-conflict message (`actor-driver.md`) fires on either. */
+const PORT_IN_USE_SUBSTRINGS = ['port is already allocated', 'address already in use'];
+
 /** Per-run CPU/memory sampling cadence - decided, not tunable via env in this PR. A single module
  * constant, so it is trivially adjustable later if per-second `stats()` calls against the daemon (up to
  * one per concurrently running Actor, `system.md`'s scale budget) ever prove too much load. */
@@ -118,6 +125,14 @@ function classifyProbeError(error: unknown): DevFolderProbeFailureReason {
 	if (error.message.includes(BIND_SOURCE_MISSING_SUBSTRING)) return 'not-found';
 	if (error.message.includes(NOT_A_DIRECTORY_SUBSTRING)) return 'not-a-directory';
 	return 'unknown';
+}
+
+/** True when a rejection from `container.start()` looks like "the requested host port is already bound
+ * by something else on this host" - `startRun` maps this to a message naming the port and the `port`
+ * override (`actor-driver.md`'s "Port publishing" section), rather than the daemon's own generic wording. */
+function isPortInUseError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return PORT_IN_USE_SUBSTRINGS.some((substring) => message.includes(substring));
 }
 
 function sourceFileToBuffer(file: SourceFile): Buffer {
@@ -286,6 +301,11 @@ export class DockerDriver implements Driver {
 	 * twice at once; cleared on failure so a later call gets to retry rather than replaying the same
 	 * rejection forever. */
 	private probeImageBuild: Promise<string> | undefined;
+	/** The Python debug payload tar + its debugpy version string, read from disk (`config.ts`'s
+	 * `debugpyPayloadTarPath`/`debugpyVersionFilePath`) at most once and reused for every later Python
+	 * debug run - never re-read per run, and never read at all for a runtime that never runs a Python
+	 * debug run in its whole process lifetime. */
+	private debugPayload: { tar: Buffer; debugpyVersion: string } | undefined;
 
 	available = false;
 	unavailableReason: string | undefined;
@@ -479,6 +499,42 @@ export class DockerDriver implements Driver {
 	}
 
 	/**
+	 * Reads back `Config.Cmd`/`Config.Entrypoint` and the four env vars `resolveDebugPlan` needs
+	 * (`services/debug-mode.ts`) - the debug-mode analog of `inspectWorkingDirectory` above, called only
+	 * for a run whose Actor has debug mode on (`services/runs.ts`), never unconditionally after a build.
+	 * Unlike `inspectWorkingDirectory`, an inspect failure here is NOT tolerated: silently treating an
+	 * uninspectable image as "no Cmd, no Entrypoint, no env" would make `resolveDebugPlan` misreport it
+	 * as unclassifiable rather than surfacing the real operational fault, so this lets the rejection
+	 * propagate - `services/runs.ts`'s existing unexpected-error handling (`startRun`'s outer `.catch`)
+	 * already fails the run clearly for any exception escaping this deep in the run-start path.
+	 */
+	async inspectDebugTarget(imageId: string): Promise<InspectedDebugTarget> {
+		const info = await this.docker.getImage(imageId).inspect();
+		const envList = info.Config.Env ?? [];
+		const envMap: Record<string, string> = {};
+		for (const entry of envList) {
+			const separatorIndex = entry.indexOf('=');
+			if (separatorIndex === -1) continue;
+			envMap[entry.slice(0, separatorIndex)] = entry.slice(separatorIndex + 1);
+		}
+		// `Config.Entrypoint` is typed as `string | string[] | undefined` (the Engine API's older exec-form
+		// vs. modern array-form) - normalized to an array here so every downstream consumer only ever
+		// deals with one shape, same as `Config.Cmd` already is.
+		const entrypointRaw = info.Config.Entrypoint;
+		const entrypoint = Array.isArray(entrypointRaw) ? entrypointRaw : entrypointRaw ? [entrypointRaw] : undefined;
+		return {
+			cmd: info.Config.Cmd ?? undefined,
+			entrypoint,
+			env: {
+				PYTHONPATH: envMap.PYTHONPATH,
+				NODE_OPTIONS: envMap.NODE_OPTIONS,
+				PYTHON_VERSION: envMap.PYTHON_VERSION,
+				NODE_VERSION: envMap.NODE_VERSION,
+			},
+		};
+	}
+
+	/**
 	 * Genuinely interrupts the in-flight build: aborts the `AbortController` passed to `buildImage` as
 	 * `abortSignal`, which destroys the underlying HTTP request to the Docker daemon (see the class
 	 * doc comment). A no-op if the build already finished (its controller was already cleaned up) - the
@@ -512,10 +568,23 @@ export class DockerDriver implements Driver {
 			);
 		}
 
+		// Both loaded (for Python) and logged BEFORE `createContainer`, exactly like the dev-mount line
+		// above: a missing payload must fail the run before any container is even created
+		// (`actor-driver.md`'s "never a silent non-debug start"), and the attach line must land in the
+		// log even if `createContainer` itself is what fails.
+		let debugPayload: { tar: Buffer; debugpyVersion: string } | undefined;
+		if (ctx.debug?.language === 'python') {
+			debugPayload = await this.loadDebugPayload();
+		}
+		if (ctx.debug) {
+			onLog(this.buildDebugLogLine(ctx.debug, ctx.timeoutSecs, debugPayload?.debugpyVersion));
+		}
+
 		const container = await this.docker.createContainer({
 			Image: ctx.imageId,
 			Env: env,
 			Labels: { [RUN_LABEL]: ctx.runId },
+			...(ctx.debug ? { ExposedPorts: { [`${ctx.debug.port}/tcp`]: {} } } : {}),
 			HostConfig: {
 				NetworkMode: NETWORK_NAME,
 				Memory: ctx.memoryMbytes * 1024 * 1024,
@@ -526,6 +595,17 @@ export class DockerDriver implements Driver {
 				CpuQuota: cpuQuotaFor(ctx.memoryMbytes),
 				AutoRemove: false,
 				...(ctx.devMount ? { Mounts: this.buildDevMounts(ctx.devMount) } : {}),
+				// Fixed, `127.0.0.1`-bound publish (`actor-driver.md`'s "Port publishing" section) - the
+				// runtime container is created against the *host's* own daemon through the mounted socket, so
+				// this binding lands on the developer's own host directly, regardless of whether the runtime
+				// process itself is running inside a container.
+				...(ctx.debug
+					? {
+							PortBindings: {
+								[`${ctx.debug.port}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(ctx.debug.port) }],
+							},
+						}
+					: {}),
 			},
 			Tty: false,
 		});
@@ -539,7 +619,27 @@ export class DockerDriver implements Driver {
 		let timeout: ReturnType<typeof setTimeout> | undefined;
 
 		try {
-			await container.start();
+			// Between `createContainer` and `start()`, exactly as `2-design.md`'s worked example shows - the
+			// payload itself was already loaded (and any missing-payload failure already raised) above,
+			// before this container even existed; only the upload against this specific container happens
+			// here, inside the `try` so a failed upload still reaches the `finally` below and removes the
+			// container it was created against, rather than leaking it.
+			if (debugPayload) {
+				await container.putArchive(debugPayload.tar, { path: '/' });
+			}
+
+			try {
+				await container.start();
+			} catch (error) {
+				if (ctx.debug && isPortInUseError(error)) {
+					throw new Error(
+						`Cannot start debug run: host port ${ctx.debug.port} is already in use. Stop whatever is ` +
+							`using it, or set a different port with \`apify api POST /actor-runtime/debug/<actorId> ` +
+							`--body '{"enabled": true, "port": <n>}'\`.`,
+					);
+				}
+				throw error;
+			}
 
 			// Only started when someone is actually listening - an unconditional sampler would issue
 			// `container.stats()` calls no caller asked for (and against a stub `dockerode` in tests that
@@ -648,6 +748,65 @@ export class DockerDriver implements Driver {
 			{ Type: 'bind', Source: devMount.localDevFolder, Target: devMount.imageWorkingDirectory },
 			{ Type: 'volume', Source: '', Target: `${devMount.imageWorkingDirectory}/node_modules` },
 		];
+	}
+
+	/**
+	 * Reads the Python debug payload tar and its debugpy version off disk (`config.ts`'s
+	 * `debugpyPayloadTarPath`/`debugpyVersionFilePath`), caching a successful read for the lifetime of
+	 * this driver instance - never re-read per run. Outside the runtime's own built image (`pnpm dev`,
+	 * unit tests) these files simply don't exist; that rejection propagates as-is up through `startRun`,
+	 * which is called before `createContainer` so a missing payload fails the run with a clear message
+	 * before any container exists, never as a silent non-debug start (`actor-driver.md`).
+	 */
+	private async loadDebugPayload(): Promise<{ tar: Buffer; debugpyVersion: string }> {
+		if (this.debugPayload) return this.debugPayload;
+		let tarBuffer: Buffer;
+		let versionText: string;
+		try {
+			[tarBuffer, versionText] = await Promise.all([
+				readFile(debugpyPayloadTarPath()),
+				readFile(debugpyVersionFilePath(), 'utf8'),
+			]);
+		} catch (error) {
+			throw new Error(
+				`Cannot start a Python debug run: the runtime's debugpy payload is missing (${(error as Error).message}). ` +
+					`This runtime only injects debugpy when it is running from its own built image (its Dockerfile ` +
+					`bakes this payload in) - debug mode for Python Actors does not work when the runtime itself runs ` +
+					`from source (e.g. \`pnpm dev\`).`,
+			);
+		}
+		this.debugPayload = { tar: tarBuffer, debugpyVersion: versionText.trim() };
+		return this.debugPayload;
+	}
+
+	/**
+	 * The run log's one-line "paused, waiting for a debugger" announcement (`actor-driver.md`'s "Debug
+	 * mode" section), printed once before `createContainer` - the address, the resolved language, the
+	 * attach action for the relevant IDE, and the unmodified-timeout gotcha, all in one place so a run
+	 * that dies mid-session (or a breakpoint set too late) is self-explaining from its own log alone.
+	 */
+	private buildDebugLogLine(
+		debug: { language: 'node' | 'python'; port: number },
+		timeoutSecs: number,
+		debugpyVersion?: string,
+	): string {
+		const { language, port } = debug;
+		const tool =
+			language === 'python'
+				? `Python (debugpy ${debugpyVersion ?? 'unknown version'}, injected by the runtime)`
+				: `Node (its own built-in inspector)`;
+		const attach =
+			language === 'python'
+				? `attach PyCharm's "Attach to DAP" or VS Code's "Python: Remote Attach" there`
+				: `attach VS Code's "Attach" or Chrome DevTools' "Open dedicated DevTools for Node" there`;
+		return (
+			`Debug mode: this run is paused before its first line, waiting for a debugger. ${tool} is listening ` +
+			`inside the container on 0.0.0.0:${port}, published on the host at 127.0.0.1:${port} - ${attach}. Set ` +
+			`your breakpoints as part of that attach - the runtime does not stop synthetically beyond the initial ` +
+			`wait, so code runs to your first breakpoint once the IDE delivers it. The run's ${timeoutSecs}s timeout ` +
+			`is already running and is NOT extended for debugging; pass a larger \`apify call --timeout\` when you ` +
+			`expect a long session.\n`
+		);
 	}
 
 	/**

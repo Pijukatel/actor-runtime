@@ -64,6 +64,91 @@
   despite the mount covering the whole working directory.
 - **Registering or clearing a dev folder never bumps the Actor's `modifiedAt`.**
 
+# Debug mode
+
+- Debug mode is a **persistent per-Actor toggle**, set and read through the local-only endpoint
+  `POST /actor-runtime/debug/:actorId` (`api.md`) or a form on the console's Actor detail view
+  (`console.md`), with identical outcomes for the same input on both surfaces - the exact same
+  `/actor-runtime/*` split the dev-folder bind mount already uses. It is not a per-run flag: turning it
+  on for an Actor pauses every subsequent run of that Actor until the toggle is cleared, and stock
+  `apify call`'s invocation/flags/exit behavior never change - the workflow is: toggle once, then run
+  normally.
+- The toggle stores `enabled`, `language` (`auto` - the default - `node`, or `python`), and an optional
+  `port` override. A `POST` fully replaces the prior state for that Actor (never a partial merge): a
+  field the body omits resets to its own default rather than keeping whatever the previous call set.
+  Submitting `{"enabled": false}` clears the whole toggle back to unset, regardless of what else the body
+  names.
+- **Language resolution happens at run start, not at toggle time**, since the toggle itself requires no
+  build to exist yet. `language: "auto"` inspects the run's resolved build image's `Config.Cmd`/
+  `Config.Entrypoint` (a shell-form `CMD` arrives pre-flattened by the daemon as
+  `['/bin/sh', '-c', '...']`, needing no shell parsing here) for a `python`/`python3` or `node`/`tsx`/
+  `ts-node` token; failing that, a package-manager launcher (`npm`/`yarn`/`pnpm`) is refused outright
+  (see below) rather than misclassified via the base image's own `NODE_VERSION`/`PYTHON_VERSION` env
+  fingerprint, which is consulted only once no argv token and no package-manager pattern matched. An
+  explicit `language: "node"`/`"python"` override always wins outright, skipping this detection (and
+  therefore every refusal it could produce) entirely - it exists precisely for images the heuristic
+  cannot classify.
+- **Default debug ports are language-specific**: `5678` for Python, `9229` for Node, each ecosystem's own
+  IDE-default convention - applied only once the run's language has actually resolved, never a
+  toggle-time literal (the toggle's own read-back shows a nominal `5678` for an unresolved `language:
+"auto"`, purely for display). An explicit `port` override always wins over the resolved language's own
+  default.
+- **Activation is env-var-only - the driver never touches the container's `Cmd`/`Entrypoint`.** A Node
+  debug run adds `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` (Node's own built-in inspector, nothing
+  injected). A Python debug run adds `PYTHONPATH=<payload dir>` (prepended to, never replacing, the
+  image's own `PYTHONPATH`) plus the port the payload's own `sitecustomize.py` reads its listen address
+  from - both are merged into the run's env _below_ every platform-owned var (`buildEnv`'s own
+  precedence), so a debug run can never shadow a real platform contract var.
+- **The Python debugpy payload is injected by the runtime, not the Actor.** A pinned, pure-Python
+  (`py2.py3-none-any`) `debugpy` wheel, plus a generated `sitecustomize.py`, is pre-built into a tar at
+  the runtime's own image-build time (`Dockerfile`'s `debugpy-payload` stage) and streamed into a Python
+  debug run's container via `container.putArchive(tar, { path: '/' })`, between `createContainer` and
+  `start()` - the runtime needs no network access at run time, and the Actor's own source, Dockerfile,
+  and `requirements.txt` need zero changes. `sitecustomize.py` is what CPython's `site` module imports
+  before any user module runs, for exec-form, shell-form, or a bash-wrapped `CMD` alike. Since it runs in
+  **every** Python process the container ever spawns (not just the Actor's own - `pip`, a subprocess the
+  Actor's own code starts), it guards itself so only the first such process starts the debugpy listener,
+  and never lets an unexpected internal failure leave the Actor running silently undebugged: it prints
+  its own "listening" line once `debugpy.listen()` succeeds (its absence from the log is what makes a
+  broken injection diagnosable), and any other internal failure prints a loud message and exits non-zero
+  rather than silently continuing.
+- **No synthetic breakpoint.** `debugpy.wait_for_client()` (Python) / `--inspect-brk` (Node) pause before
+  any user code runs; once a debugger attaches, execution proceeds to the developer's own first
+  breakpoint - the runtime never sets one of its own.
+- **A missing debugpy payload fails the run with a clear message, never a silent non-debug start** - this
+  is what happens if the runtime process itself is not running from its own built image (e.g. `pnpm dev`
+  during development of this runtime itself); Python debug mode only works when the runtime runs inside
+  its own Docker image.
+- **Port publishing is fixed, per-Actor-overridable, and bound to `127.0.0.1`**: `ExposedPorts` +
+  `HostConfig.PortBindings` on `createContainer`, with `HostIp: '127.0.0.1'` - since Actor containers are
+  created against the _host's own_ Docker daemon through the mounted socket, this binding lands on the
+  developer's own host directly, regardless of whether the runtime process itself runs inside a
+  container. A host port already in use fails `start()` with a message naming the port and the `port`
+  override as the fix.
+- **The run log carries one line, before `createContainer`**, stating: that the run is paused waiting for
+  a debugger; the resolved language; the debug tool and (for Python) its injected version; the listen
+  address inside the container and the published host address; the attach action for the relevant IDE
+  (PyCharm's "Attach to DAP" / VS Code's "Python: Remote Attach" for Python; VS Code's "Attach" / Chrome
+  DevTools for Node); and that the run's timeout is unchanged and not extended for debugging.
+- **The run's timeout is completely unaffected by debug mode.** The configured `timeoutSecs` (default
+  300s) is measured from container start regardless of whether a debugger ever attaches - a paused-
+  waiting session gets no extra grace period, and the run still finalises `TIMED-OUT` (with its container
+  removed) exactly like any other run whose timeout elapses. Passing a larger `apify call --timeout` is
+  the documented way to get more time; this is a deliberate, documented trade-off, not an oversight.
+- **Non-debuggable images fail the run, loudly, before any container is created** - the driver's own
+  "Cannot start run: ..." path, matching every other pre-container failure. A package-manager launcher
+  (`npm start`, `yarn start`, `pnpm start`, ...) is refused by name, explaining that `--inspect-brk` would
+  attach to the package manager's own node process rather than the Actor's, and naming both the CMD fix
+  and how to clear debug mode. An unclassifiable `language: "auto"` image is refused the same way, naming
+  the `language` override as the fix. Neither refusal ever leaves a container behind.
+- **The resolved plan is persisted on the run record itself** (`RunRecord.localDebug`, local-only, never
+  on `/v2` - see `storage.md`), written once the plan resolves, before the container starts - this is
+  what lets the console show an attach address after the fact (`console.md`), even for a run started by
+  someone else's `apify call`, and even after the run has finished.
+- **Debug mode composes with the dev-folder bind mount** - the two features are independent and both
+  apply to the same run when both are configured for an Actor, e.g. edit -> recompile -> `apify call` ->
+  breakpoint, with no rebuild in between.
+
 # Networking
 
 - On startup, the runtime ensures a Docker network `apify-local` exists and joins it under the fixed

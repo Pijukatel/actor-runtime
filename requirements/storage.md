@@ -50,14 +50,28 @@
         - `localDevFolder`, together with the resolved build's `imageWorkingDirectory`, are **absent (or
           empty) meaning no mount**: a run only adds the dev-folder bind mount when both are present and
           non-empty (`actor-driver.md`).
-        - Neither `localDevFolder` nor any build's `imageWorkingDirectory` is ever exposed on the public
-          `/v2` API.
+        - `localDebug` - **optional**. Absent means debug mode has never been turned on (or was
+          explicitly cleared) for this Actor. Set or cleared only through
+          `POST /actor-runtime/debug/:actorId` or the console's equivalent form (`api.md`, `console.md`),
+          never as a side effect of any other Actor write, and never bumping `modifiedAt`
+          (`actor-driver.md`). When present: `{ language: "auto" | "node" | "python", port?: number }` -
+          `port` absent means "resolve the language's own default port at run start", never a stored
+          literal (`actor-driver.md`).
+        - Neither `localDevFolder`, `localDebug`, nor any build's `imageWorkingDirectory` is ever exposed
+          on the public `/v2` API.
 - The system stores Actor runs in dedicated key-value store called `__RUNS__`:
     - `key` is the id of the Actor run `runId`
     - `value` is the metadata of the Actor
         - owner (`userId`)
         - Actor (`actorId`)
         - metadata
+        - `localDebug` - **optional**, specific to this one run. Present only once this run's own debug
+          plan resolved (`actor-driver.md`'s "Debug mode" section), before its container ever started -
+          `{ language: "node" | "python", port: number }`, both already resolved (never `"auto"`, never
+          absent-meaning-default). Absent for every non-debug run, and for a debug run that was refused
+          before a plan could be resolved. A top-level field, not nested under `options` - kept out of
+          the emulated `/v2` run object the same way `ActorRecord.localDevFolder`/`localDebug` are kept
+          off `/v2` Actor responses.
 - The system stores Actor builds in dedicated key-value store called `__BUILDS__`:
     - `key` is the id of the Actor build (`buildId`)
     - `value` is the metadata of the Actor

@@ -18,6 +18,17 @@ export interface DevFolderMount {
 	imageWorkingDirectory: string;
 }
 
+/** What a debug run's container needs from the driver beyond the ordinary `RunContext` shape - the
+ * resolved language (which log line/attach instructions to print, and whether the debugpy payload needs
+ * injecting) and the port to expose-and-publish. The env entries a resolved `DebugPlan` adds
+ * (`NODE_OPTIONS`/`PYTHONPATH`) are already merged into `RunContext.env` by the time this reaches the
+ * driver - `debug` carries only what `docker-driver.ts`'s `startRun` needs to act on directly
+ * (`ExposedPorts`/`PortBindings`, the attach log line, the debugpy payload upload). */
+export interface DebugRunTarget {
+	language: 'node' | 'python';
+	port: number;
+}
+
 export interface RunContext {
 	runId: string;
 	imageId: string;
@@ -25,6 +36,26 @@ export interface RunContext {
 	memoryMbytes: number;
 	timeoutSecs: number;
 	devMount?: DevFolderMount;
+	debug?: DebugRunTarget;
+}
+
+/** What `Driver.inspectDebugTarget` reads off a run's resolved build image - just enough for
+ * `services/debug-mode.ts: resolveDebugPlan` to resolve a debug plan, never a raw `dockerode` type (same
+ * boundary discipline as `DevFolderMount`/`BuildOutcome` above). `cmd`/`entrypoint` are
+ * `Config.Cmd`/`Config.Entrypoint` verbatim - a shell-form Dockerfile `CMD` already arrives here as
+ * `['/bin/sh', '-c', '...']`, since that is how the daemon itself stores it; no shell parsing happens
+ * anywhere in this codebase. `env` carries only the four vars the language heuristic and the env-merge
+ * precedence actually need (`PYTHONPATH`/`NODE_OPTIONS` for prepending, `PYTHON_VERSION`/`NODE_VERSION`
+ * as the base-image fingerprint of last resort). */
+export interface InspectedDebugTarget {
+	cmd?: string[];
+	entrypoint?: string[];
+	env: {
+		PYTHONPATH?: string;
+		NODE_OPTIONS?: string;
+		PYTHON_VERSION?: string;
+		NODE_VERSION?: string;
+	};
 }
 
 export interface BuildOutcome {
@@ -136,4 +167,12 @@ export interface Driver {
 	 * reuses the same image without rebuilding. Never the Actor's own build - registering a dev folder
 	 * must work for an Actor that has never been built at all. */
 	ensureProbeImage(): Promise<string>;
+
+	/** Reads back the image's own `Config.Cmd`/`Config.Entrypoint` and the four env vars
+	 * `services/debug-mode.ts: resolveDebugPlan` needs - the debug-mode analog of
+	 * `inspectWorkingDirectory` (private to `docker-driver.ts`, since only this module's own dev-folder
+	 * mount needs it). Called only when the run's Actor has debug mode on (`services/runs.ts`), never for
+	 * an ordinary run - unlike `inspectWorkingDirectory`, which runs unconditionally right after every
+	 * build. */
+	inspectDebugTarget(imageId: string): Promise<InspectedDebugTarget>;
 }

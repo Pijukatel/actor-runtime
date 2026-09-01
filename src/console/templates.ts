@@ -120,6 +120,40 @@ export function devFolderForm(actorId: string, currentValue: string, errorMessag
 	);
 }
 
+/** The debug-mode toggle form on the Actor detail view (`console.md`'s "Local debug mode form" section)
+ * - full parity with the API body's three fields (`enabled`/`language`/`port`), not a checkbox-only
+ * carve-out: a `language` select (defaulting to the currently-stored value, or `auto` when debug mode is
+ * off) and a `port` number input (blank means "no override", matching the API body's own optional
+ * field), alongside the `enabled` checkbox. Submitting always sends all three fields together - same
+ * single-submit contract as `settingsForm` below, never a partial-merge PATCH. */
+export function debugModeForm(
+	actorId: string,
+	current: { language: string; port: number } | null,
+	errorMessage?: string,
+): string {
+	const errorHtml = errorMessage ? `<p class="error"><strong>Error:</strong> ${escapeHtml(errorMessage)}</p>` : '';
+	const language = current?.language ?? 'auto';
+	const portValue = current?.port !== undefined ? String(current.port) : '';
+	const option = (value: string, label: string) =>
+		`<option value="${value}"${language === value ? ' selected' : ''}>${label}</option>`;
+	return (
+		errorHtml +
+		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/debug">` +
+		`<label><input type="checkbox" name="enabled"${current ? ' checked' : ''}> enabled</label> ` +
+		`<label>language: <select name="language">` +
+		option('auto', 'auto') +
+		option('node', 'node') +
+		option('python', 'python') +
+		'</select></label> ' +
+		`<label>port: <input type="number" name="port" value="${escapeHtml(portValue)}" min="1024" max="65535" ` +
+		'placeholder="(default)"></label> ' +
+		'<button type="submit">Save</button>' +
+		'</form>' +
+		'<p class="empty">Uncheck "enabled" and submit to turn debug mode off. Leave "port" blank to use the ' +
+		"resolved language's own default port (5678 Python / 9229 Node) at run start.</p>"
+	);
+}
+
 /** The one-line credential-forwarding warning the `/settings` page shows above its form
  * (`console.md`'s "Settings page" section) - both toggles forward the caller's own Apify token the
  * moment either is on, so this is shown unconditionally, not only once a toggle is already on. */

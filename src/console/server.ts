@@ -5,15 +5,15 @@
  * shared rather than reimplemented.
  *
  * The console itself has no login of its own - it is unauthenticated, and every route is a read except
- * two mutations (`console.md`): the dev-folder form on the Actor detail view, and the `/settings` form
- * below. With multiple users it does not scope reads to any one of them: every list/detail route below
- * reads through the `listAll*`/`get*ById` cross-user service functions (see e.g.
- * `services/actors.ts: listAllActors`), never the API's own per-user `listOwned*`/`getOwned*`, and every
- * list row and detail view shows the object's owner `userId` (`console.md`: "Frontend shows for each
- * object the owner (userId)"). The dev-folder form writes cross-user the same way - a deliberate
- * deviation from the API's own strictly-owner-scoped write, not an accident; the `/settings` form is
- * runtime-global by nature (`api.md`'s "Upstream fallback" section), so ownership doesn't apply to it at
- * all.
+ * three mutations (`console.md`): the dev-folder form and the debug-mode form, both on the Actor detail
+ * view, and the `/settings` form below. With multiple users it does not scope reads to any one of them:
+ * every list/detail route below reads through the `listAll*`/`get*ById` cross-user service functions
+ * (see e.g. `services/actors.ts: listAllActors`), never the API's own per-user
+ * `listOwned*`/`getOwned*`, and every list row and detail view shows the object's owner `userId`
+ * (`console.md`: "Frontend shows for each object the owner (userId)"). The dev-folder and debug-mode
+ * forms both write cross-user the same way - a deliberate deviation from the API's own strictly-owner-
+ * scoped write, not an accident; the `/settings` form is runtime-global by nature (`api.md`'s "Upstream
+ * fallback" section), so ownership doesn't apply to it at all.
  */
 import express, { type Express, type Request } from 'express';
 
@@ -24,6 +24,7 @@ import {
 	setDevFolder,
 	type DevFolderStatus,
 } from '../services/dev-folder.js';
+import { debugStatus, setDebugMode, type DebugStatus } from '../services/debug-mode.js';
 import { getBuildById, listAllBuilds } from '../services/builds.js';
 import { getRunById, listAllRuns } from '../services/runs.js';
 import { getFullLog } from '../services/logs.js';
@@ -36,6 +37,7 @@ import { ansiToHtml } from './ansi.js';
 import { newestFirst } from './order.js';
 import {
 	apiFallbackWarning,
+	debugModeForm,
 	definitionList,
 	devFolderForm,
 	escapeHtml,
@@ -92,12 +94,27 @@ function devFolderSection(actorId: string, status: DevFolderStatus, errorMessage
 	);
 }
 
+/** The debug-mode toggle form + its status row, on the Actor detail view (`console.md`'s "Local debug
+ * mode form" section) - full parity with the API body: `enabled`/`language`/`port`, not a checkbox-only
+ * carve-out (`_design_feedback.md` Round 2, open question 3). `errorMessage` is threaded through from the
+ * POST handler's redirect query param below, same as `devFolderSection`'s own `devFolderError`. */
+function debugModeSection(actorId: string, status: DebugStatus, errorMessage?: string): string {
+	return (
+		'<h2>Debug mode</h2>' +
+		definitionList([
+			['language', status.localDebug?.language ?? '(debug mode is off)'],
+			['port', status.localDebug?.port ?? ''],
+		]) +
+		debugModeForm(actorId, status.localDebug, errorMessage)
+	);
+}
+
 export function createConsoleServer(deps: ConsoleServerDeps): Express {
 	const app = express();
 	app.disable('x-powered-by');
-	// The dev-folder form and the `/settings` form below are the console's only two writes - every other
-	// route is a plain `GET` (`console.md`'s "Every route is a read except the dev-folder form and the
-	// Settings form below, which are the console's only two writes").
+	// The dev-folder form, the debug-mode form, and the `/settings` form below are the console's only
+	// three writes - every other route is a plain `GET` (`console.md`'s "Every route is a read except
+	// the dev-folder form, the debug-mode form, and the Settings form below").
 	app.use(express.urlencoded({ extended: false }));
 
 	app.get('/', async (_req, res) => {
@@ -126,6 +143,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			return;
 		}
 		const devFolderError = typeof req.query.devFolderError === 'string' ? req.query.devFolderError : undefined;
+		const debugModeError = typeof req.query.debugModeError === 'string' ? req.query.debugModeError : undefined;
 		const body =
 			definitionList([
 				['id', actor.id],
@@ -147,11 +165,12 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				1,
 				'/builds',
 			) +
-			devFolderSection(actor.id, devFolderStatus(actor), devFolderError);
+			devFolderSection(actor.id, devFolderStatus(actor), devFolderError) +
+			debugModeSection(actor.id, debugStatus(actor), debugModeError);
 		res.send(layout(`Actor ${actor.name}`, body));
 	});
 
-	/** One of the console's two mutations - funnels through the same `setDevFolder` the API endpoint uses,
+	/** One of the console's three mutations - funnels through the same `setDevFolder` the API endpoint uses,
 	 * resolving the Actor cross-user by the id already in the page URL (no token) rather than through
 	 * `resolveOwnedActor`. A failure redirects back with `describeDevFolderFailure`'s message in a query
 	 * param, so it's surfaced inline rather than swallowed by the redirect. */
@@ -175,6 +194,42 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		if (result.kind !== 'ok') {
 			const message = describeDevFolderFailure(result);
 			res.redirect(`/actors/${encodeURIComponent(actor.id)}?devFolderError=${encodeURIComponent(message)}`);
+			return;
+		}
+		res.redirect(`/actors/${encodeURIComponent(actor.id)}`);
+	});
+
+	/** The console's third mutation (`console.md`'s "three writes" correction) - funnels through the same
+	 * `setDebugMode` the API endpoint uses, resolving the Actor cross-user by the id already in the page
+	 * URL (no token), exactly like the dev-folder form above. Always submits all three fields (`enabled`
+	 * as a checkbox, `language` as a select, `port` as a number input, left blank for "no override") -
+	 * full parity with the API body, no checkbox-only carve-out. A failure redirects back with the
+	 * classified message in a query param, same pattern as the dev-folder form's `devFolderError`. */
+	app.post('/actors/:id/debug', async (req, res) => {
+		if (isCrossSiteWrite(req)) {
+			res.status(403).send('Cross-site form submissions are not allowed.');
+			return;
+		}
+		const actor = await getActorById(req.params.id);
+		if (!actor) {
+			res.status(404).send(layout('Not found', '<p>Actor not found.</p>'));
+			return;
+		}
+		const body = req.body as Record<string, unknown> | undefined;
+		const enabled = body?.enabled === 'on';
+		const language = typeof body?.language === 'string' ? body.language : 'auto';
+		const portRaw = typeof body?.port === 'string' ? body.port.trim() : '';
+		const requestBody: Record<string, unknown> = { enabled };
+		if (enabled) {
+			requestBody.language = language;
+			if (portRaw !== '') requestBody.port = Number(portRaw);
+		}
+
+		const result = await setDebugMode(actor, requestBody);
+		if (result.kind !== 'ok') {
+			res.redirect(
+				`/actors/${encodeURIComponent(actor.id)}?debugModeError=${encodeURIComponent(result.message)}`,
+			);
 			return;
 		}
 		res.redirect(`/actors/${encodeURIComponent(actor.id)}`);
@@ -293,6 +348,14 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				['defaultDatasetId', storageLink('/datasets', run.defaultDatasetId)],
 				['defaultKeyValueStoreId', storageLink('/key-value-stores', run.defaultKeyValueStoreId)],
 				['defaultRequestQueueId', storageLink('/request-queues', run.defaultRequestQueueId)],
+				// Only present for a run that actually resolved a debug plan (`services/debug-mode.ts`) -
+				// local-only, never present on the emulated `/v2` run object (`dto/actors.ts: runDto` is
+				// explicit field-by-field, same containment `localDevFolder` already relies on).
+				...(run.localDebug
+					? ([['debug', `${run.localDebug.language}, attach at 127.0.0.1:${run.localDebug.port}`]] as Array<
+							[string, string]
+						>)
+					: []),
 			]) +
 			'<h2>Log</h2><pre>' +
 			(log ? ansiToHtml(log) : '(empty)') +
@@ -447,9 +510,9 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 
 	// --- Settings: the shared upstream-fallback toggle state (`services/api-fallback.ts`), read/written
 	// through the same module the API's `GET`/`POST /actor-runtime/api-fallback` route uses - never
-	// through the API port itself (the dev-folder form's precedent). This is the console's second
-	// mutation alongside the dev-folder form - `console.md`'s "every route is a read except..." now
-	// names both.
+	// through the API port itself (the dev-folder form's precedent). This is the console's third
+	// mutation alongside the dev-folder and debug-mode forms - `console.md`'s "every route is a read
+	// except..." now names all three.
 
 	app.get('/settings', async (_req, res) => {
 		const state = getApiFallbackState();

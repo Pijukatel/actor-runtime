@@ -33,6 +33,10 @@ export function stubDockerForRun() {
 		wait: vi.fn(async () => waitPromise),
 		remove: vi.fn(async (_options?: Record<string, unknown>) => undefined),
 		stop: vi.fn(async () => undefined),
+		// `startRun`'s Python-debug path (`docker-driver.ts`): uploads the debugpy payload tar between
+		// `createContainer` and `start()`. A no-op success by default - tests exercising debug mode assert
+		// against `putArchive.mock.calls` directly, same convention as every other stubbed method here.
+		putArchive: vi.fn(async (_file: unknown, _options: unknown) => undefined),
 	};
 
 	// Real dockerode demuxing splits stdout/stderr apart by frame header; this stub doesn't need that

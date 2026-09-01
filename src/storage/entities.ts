@@ -50,6 +50,28 @@ export interface ActorVersionRecord {
 	envVars?: Array<{ name: string; value: string }>;
 }
 
+/** Caller-facing language selector for the debug toggle (`api.md`'s `/actor-runtime/debug/:actorId`) -
+ * `'auto'` (the default) means "resolve from the built image at run start"
+ * (`services/debug-mode.ts: resolveDebugPlan`); `'node'`/`'python'` is an explicit override that always
+ * wins over whatever the image's own command/env would otherwise suggest. */
+export type DebugLanguagePreference = 'auto' | 'node' | 'python';
+/** A run's actually-resolved debug language - never `'auto'`, since by the time a run starts (or is
+ * shown on its own record) the language question has always been settled one way or the other, either
+ * by an explicit override or by `resolveDebugPlan`'s own detection. */
+export type DebugLanguage = 'node' | 'python';
+
+/** The per-Actor debug toggle (`actor-driver.md`'s "Debug mode" section). Set or cleared only through
+ * `services/debug-mode.ts: setDebugMode`, via a direct registry write that deliberately bypasses
+ * `updateActor` - same `modifiedAt`-preserving precedent `localDevFolder` below already established. */
+export interface ActorLocalDebug {
+	language: DebugLanguagePreference;
+	/** An explicit port override; absent means "use the resolved language's own default port at run
+	 * start" (5678 Python / 9229 Node, `services/debug-mode.ts`) - deliberately never persisted as a
+	 * concrete language-specific default at toggle time, since the language itself may still be
+	 * `'auto'` (unresolved) until a build actually exists to inspect. */
+	port?: number;
+}
+
 export interface ActorRecord {
 	id: string;
 	userId: string;
@@ -66,6 +88,11 @@ export interface ActorRecord {
 	 * this field, *is* exposed on `/v2`). Never touched by any other Actor write. Optional and never
 	 * exposed on `/v2` itself either (`dto/actors.ts: actorDto` is explicit field-by-field). */
 	localDevFolder?: string;
+	/** The per-Actor debug-mode toggle (`actor-driver.md`'s "Debug mode" section). Absent means debug
+	 * mode has never been turned on (or was explicitly cleared) for this Actor. Set or cleared only
+	 * through `services/debug-mode.ts: setDebugMode`, the same `modifiedAt`-preserving, never-`/v2`-
+	 * exposed pattern `localDevFolder` above uses. */
+	localDebug?: ActorLocalDebug;
 }
 
 export type JobStatus = 'READY' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'ABORTING' | 'ABORTED' | 'TIMED-OUT';
@@ -135,4 +162,13 @@ export interface RunRecord {
 	 * sets it for real runs (`FOLLOW_USER_SETTING`, the platform's run-creation default), and `runDto`
 	 * backfills the same default when absent. */
 	generalAccess?: RunGeneralAccess;
+	/** This run's own resolved debug plan (`services/debug-mode.ts: resolveDebugPlan`), written once the
+	 * plan is resolved, before the container starts - local-only, so the console run page can show an
+	 * attach address after the fact even for a run started by someone else's `apify call`. Absent for
+	 * every non-debug run (the overwhelming majority), and for a debug run that failed before a plan
+	 * could be resolved (the refusal paths in `services/runs.ts`). Deliberately a **top-level** field,
+	 * not nested under `options` - keeps it out of the emulated `/v2` run object automatically, the same
+	 * containment `ActorRecord.localDevFolder` already relies on (`dto/actors.ts: runDto` is explicit
+	 * field-by-field). */
+	localDebug?: { language: DebugLanguage; port: number };
 }

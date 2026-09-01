@@ -88,6 +88,9 @@ function timedDriver(resolveAfterMs: number): Driver {
 		async ensureProbeImage() {
 			throw new Error('not used by this stub');
 		},
+		async inspectDebugTarget() {
+			throw new Error('not used by this stub');
+		},
 	};
 }
 
@@ -235,6 +238,9 @@ describe('CLI log-stream race: apify-cli outputJobLog must always settle (regres
 					async ensureProbeImage() {
 						throw new Error('not used by this stub');
 					},
+					async inspectDebugTarget() {
+						throw new Error('not used by this stub');
+					},
 				};
 
 				const bg = runInBackground(driver, actor, record, {
@@ -362,6 +368,9 @@ describe('CLI log-stream race: apify-cli outputJobLog must always settle (regres
 						throw new Error('not used by this stub');
 					},
 					async ensureProbeImage() {
+						throw new Error('not used by this stub');
+					},
+					async inspectDebugTarget() {
 						throw new Error('not used by this stub');
 					},
 				};

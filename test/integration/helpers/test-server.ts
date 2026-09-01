@@ -37,6 +37,9 @@ export function unavailableDriver(): Driver {
 		async ensureProbeImage() {
 			throw new Error('not used by this stub');
 		},
+		async inspectDebugTarget() {
+			throw new Error('not used by this stub');
+		},
 	};
 }
 
@@ -62,6 +65,9 @@ export function fixedRunOutcomeDriver(outcome: RunOutcome): Driver {
 			throw new Error('not used by this stub');
 		},
 		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
+		async inspectDebugTarget() {
 			throw new Error('not used by this stub');
 		},
 	};
@@ -93,6 +99,9 @@ export function fixedBuildOutcomeDriver(
 			throw new Error('not used by this stub');
 		},
 		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
+		async inspectDebugTarget() {
 			throw new Error('not used by this stub');
 		},
 	};
@@ -155,6 +164,9 @@ export function deferredRunDriver(): DeferredRunDriver {
 		async ensureProbeImage() {
 			throw new Error('not used by this stub');
 		},
+		async inspectDebugTarget() {
+			throw new Error('not used by this stub');
+		},
 	};
 }
 
@@ -206,6 +218,9 @@ export function deferredBuildDriver(): DeferredBuildDriver {
 			throw new Error('not used by this stub');
 		},
 		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
+		async inspectDebugTarget() {
 			throw new Error('not used by this stub');
 		},
 	};
@@ -286,6 +301,9 @@ export function multiRunDriver(): MultiRunDriver {
 			throw new Error('not used by this stub');
 		},
 		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
+		async inspectDebugTarget() {
 			throw new Error('not used by this stub');
 		},
 		async waitForStart(runId) {

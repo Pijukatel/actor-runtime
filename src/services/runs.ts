@@ -8,6 +8,7 @@ import { appendLog, flushLog, markLogTerminal } from './logs.js';
 import { markEventsTerminal, publishAborting, publishSystemInfo } from './events-channel.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
+import { describeDebugRefusal, resolveDebugPlan, type DebugPlan } from './debug-mode.js';
 import { dedicatedCpusFor } from '../resources.js';
 import { CONTAINER_EVENTS_WS_BASE_URL } from '../config.js';
 
@@ -76,6 +77,7 @@ function buildEnv(
 	actor: ActorRecord,
 	version: ActorVersionRecord | undefined,
 	options: StartRunOptions,
+	debugPlan: DebugPlan | undefined,
 ): Record<string, string> {
 	const versionEnv: Record<string, string> = {};
 	for (const entry of version?.envVars ?? []) {
@@ -90,6 +92,10 @@ function buildEnv(
 
 	const env: Record<string, string> = {
 		...versionEnv,
+		// Below every platform-owned var (spread order matters here, even though nothing today actually
+		// collides): a debug run's `NODE_OPTIONS`/`PYTHONPATH`/debug-port var must never be able to shadow
+		// a real contract var (`services/debug-mode.ts: DebugPlan`'s own doc comment).
+		...debugPlan?.env,
 		APIFY_IS_AT_HOME: '1',
 		APIFY_META_ORIGIN: 'API',
 		APIFY_API_BASE_URL: options.apiBaseUrl,
@@ -225,8 +231,42 @@ export async function runInBackground(
 		return;
 	}
 
+	// Debug-mode resolution - only when the Actor has the toggle on (`env`/`RunContext` below stay
+	// byte-identical to today's for every Actor that has never touched the toggle, the regression
+	// guarantee criterion 9/15 both name). A refusal fails the run through the exact "Cannot start run:
+	// ..." path every other pre-container failure above uses, before any container is ever created
+	// (`actor-driver.md`'s "Non-debuggable images fail the run, loudly" section).
+	let debugPlan: DebugPlan | undefined;
+	if (actor.localDebug) {
+		const target = await driver.inspectDebugTarget(build.imageId);
+		const result = resolveDebugPlan(actor.localDebug, target);
+		if (result.kind === 'refused') {
+			const message = describeDebugRefusal(actor.id, result);
+			appendLog(record.id, `${message}\n`);
+			await flushLog(record.id);
+			markLogTerminal(record.id);
+			markEventsTerminal(record.id);
+			await transitionJobStatus(runs, record.id, 'FAILED', {
+				finishedAt: new Date().toISOString(),
+				statusMessage: message,
+			});
+			return;
+		}
+		const plan = result.plan;
+		debugPlan = plan;
+		// Persisted on the run record itself (not derived later from the Actor's toggle, which could
+		// change after this run started) - local-only, so the console run page can show an attach address
+		// after the fact even for a run started by someone else's `apify call` (`actor-driver.md`'s "Debug
+		// mode" section, "Finding it after the fact"). A direct registry write, mirroring how
+		// `services/dev-folder.ts` bypasses `updateActor` - there is no job-status transition happening
+		// here, just an informational field.
+		await runs.update(record.id, (current) =>
+			current ? { ...current, localDebug: { language: plan.language, port: plan.port } } : current,
+		);
+	}
+
 	const version = findVersion(actor, build.versionNumber);
-	const env = buildEnv(record, actor, version, options);
+	const env = buildEnv(record, actor, version, options, debugPlan);
 	// Both-or-neither, enforced by `DevFolderMount`'s type (`driver/types.ts`) - a mount is only ever
 	// added when the Actor actually has a non-empty registered dev folder AND this *run's own resolved
 	// build* has a known, non-empty image working directory (`actor-driver.md`: "The mount is applied
@@ -266,6 +306,7 @@ export async function runInBackground(
 				memoryMbytes: record.options.memoryMbytes,
 				timeoutSecs: record.options.timeoutSecs,
 				devMount,
+				debug: debugPlan ? { language: debugPlan.language, port: debugPlan.port } : undefined,
 			},
 			(chunk) => appendLog(record.id, chunk),
 			(sample) => publishSystemInfo(record.id, sample, record.options),

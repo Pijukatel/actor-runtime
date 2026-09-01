@@ -6,9 +6,9 @@
 - The console has no login of its own, so with multiple users it lists and shows every user's objects
   rather than scoping to one - the API's own endpoints stay strictly scoped to the calling token's user
   (`storage.md`'s "Users" section).
-- The console is unauthenticated. Every route is a read except the console's only two writes: the
-  dev-folder form and the Settings form (both below).
-- Both of those writes reject a submission that identifies itself as cross-site (via the
+- The console is unauthenticated. Every route is a read except the console's only three writes: the
+  dev-folder form, the debug-mode form, and the Settings form (all below).
+- All three of those writes reject a submission that identifies itself as cross-site (via the
   `Sec-Fetch-Site` header) with a plain `403`; a submission that does not is unaffected.
 - There are three types of objects: key-value store, dataset, request queue.
     - For each object type there must be exactly one widget for inspection.
@@ -36,6 +36,9 @@
 - A run's default storage ids (`defaultDatasetId`, `defaultKeyValueStoreId`, `defaultRequestQueueId`) are
   rendered as links to the corresponding storage detail views (in the run detail view and in the runs
   list's dataset column), not as plain text.
+- A run whose debug plan resolved (`actor-driver.md`'s "Debug mode" section) gets one extra row on its
+  detail view: `debug` - `<language>, attach at 127.0.0.1:<port>`. Absent entirely for a non-debug run.
+  This field is local-only and never appears in the emulated `/v2` run object (`api.md`).
 - Log views render ANSI colors from actor output as HTML, while the `/v2/logs/:id` API keeps serving logs raw (unconverted) for the CLI to render itself.
 - The console accepts the real Apify Console's URL shapes (as printed by stock apify-cli, e.g. `/actors/:actorId/runs/:runId`, `/storage/datasets/:id`) via redirects to its own pages.
 
@@ -49,6 +52,19 @@
   is rejected as a malformed path. For any given input, the form and the API produce the same outcome.
 - A submission that fails validation redirects back to the same detail page with the classified error
   message shown inline, never swallowed by the redirect.
+
+## Debug-mode form (Actor detail view)
+
+- The Actor detail view shows the Actor's debug-mode toggle status - `(debug mode is off)`, or the
+  resolved `language`/`port` when on - the same status the API endpoint reports (`api.md`).
+- A form on the same view exposes all three fields the API body accepts - `enabled` (a checkbox),
+  `language` (a select, `auto`/`node`/`python`), and `port` (a number input, blank meaning "no
+  override") - full parity with the API, not a checkbox-only carve-out. Submitting always sends all
+  three fields together (the same single-submit contract `settingsForm` below uses): an unchecked
+  `enabled` box clears the toggle regardless of what the other two fields hold.
+- For any given input, the form and the API endpoint produce the same outcome.
+- A submission that fails validation redirects back to the same detail page with the classified error
+  message shown inline, never silently applied.
 
 ## Settings page
 

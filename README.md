@@ -73,6 +73,44 @@ mechanics: `requirements/actor-driver.md`'s "Bind mount volumes with Actor sourc
 endpoint/console details: `requirements/api.md`'s `/actor-runtime/*` section and
 `requirements/console.md`.
 
+## Debugging a run with a real IDE (breakpoints, step-through)
+
+Turn debug mode on for an Actor once, then every `apify call` against it starts paused, waiting for a
+debugger to attach - no change to the Actor's own source, Dockerfile, or `requirements.txt`:
+
+```bash
+apify api POST /actor-runtime/debug/<actorId> --body '{"enabled": true}'
+apify call
+```
+
+The run's log prints one line with everything you need: the resolved language, the debug tool (Node's
+own inspector, or the runtime-injected `debugpy`, version named), the listen/publish address, and the
+attach action for the relevant IDE - PyCharm's **Attach to DAP** or VS Code's **Python: Remote Attach**
+for Python (default port `5678`), VS Code's **Attach** for Node (default port `9229`). Connect, and
+execution proceeds to your own first breakpoint - the runtime never sets one of its own.
+
+Override the language (for an image the auto-detection can't classify) and/or the port:
+
+```bash
+apify api POST /actor-runtime/debug/<actorId> --body '{"enabled": true, "language": "node", "port": 9230}'
+```
+
+A `POST` fully replaces the prior toggle state - omitting `language`/`port` resets them to their own
+defaults, it does not keep whatever a previous call set. Clear the toggle to go back to running
+normally:
+
+```bash
+apify api POST /actor-runtime/debug/<actorId> --body '{"enabled": false}'
+```
+
+The run's own `timeoutSecs` (`apify call --timeout`) is **not** extended while paused - a session that
+runs long still needs a larger `--timeout` passed up front. An image whose `CMD` can't be debugged this
+way (e.g. `npm start` - `--inspect-brk` would attach to npm, not your Actor) fails the run immediately,
+before any container is created, with a message naming the fix. The same thing is also a three-field
+form (`enabled`/`language`/`port`) on the Actor's page in the console. Full mechanics:
+`requirements/actor-driver.md`'s "Debug mode" section; endpoint/console details:
+`requirements/api.md`'s `/actor-runtime/*` section and `requirements/console.md`.
+
 ## Development
 
 ```bash

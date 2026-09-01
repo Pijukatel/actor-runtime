@@ -30,6 +30,17 @@ Local Actor runtime is an Actor development tool for developing, running, and de
   hardcodes a `/v2`-suffixed base URL). From then on, edit locally, recompile locally (`tsc` or the
   language-appropriate equivalent), and `apify call` again - no `apify push`/build in between. Submitting
   `--body '""'` clears the registration. Dependency changes still need a real rebuild.
+- To debug an Actor with a real IDE debugger, turn on debug mode for it once:
+  `apify api POST /actor-runtime/debug/<actorId> --body '{"enabled": true}'` (add `"language": "node"` or
+  `"python"` if the runtime's own detection can't classify the image, and/or `"port": <n>` to pick a
+  fixed port other than the language default - `9229` Node, `5678` Python). Every subsequent
+  `apify call` against that Actor then starts paused, waiting for a debugger, with the attach address
+  printed in the run's own log; connect PyCharm's "Attach to DAP" / VS Code's "Python: Remote Attach"
+  (Python) or VS Code's "Attach" (Node) to `127.0.0.1:<port>` to continue past the pause. No Actor-side
+  change is required - the runtime injects everything needed. The run's own `--timeout` is NOT extended
+  for the time spent attaching, so pass a larger one when you expect a slow attach. Clear the toggle with
+  `apify api POST /actor-runtime/debug/<actorId> --body '{"enabled": false}'` to go back to running
+  normally.
 - If a call fails because this runtime doesn't have the Actor/run/build/storage id you're after, or
   doesn't implement that endpoint at all, you can opt in to having such calls transparently relayed to
   the real Apify platform instead of failing:
