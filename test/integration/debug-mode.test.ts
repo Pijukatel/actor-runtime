@@ -17,7 +17,12 @@ import { startTestServer, type TestServerHandle } from './helpers/test-server.js
 import { createConsoleServer } from '../../src/console/server.js';
 import { getRegistries } from '../../src/storage/registries.js';
 import { updateActor } from '../../src/services/actors.js';
-import type { Driver, InspectedDebugTarget, RunContext } from '../../src/driver/types.js';
+import {
+	DebugPortInUseError,
+	type Driver,
+	type InspectedDebugTarget,
+	type RunContext,
+} from '../../src/driver/types.js';
 
 function post(baseUrl: string, actorId: string, body: unknown, token?: string) {
 	return axios.post(`${baseUrl}/actor-runtime/debug/${actorId}`, body, {
@@ -332,7 +337,7 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		expect(detail.data).not.toContain('value="5678"');
 	});
 
-	it('resubmitting the form after only changing "language" never silently pins the pre-fill as a port override (the regression the review flagged): toggle on with language auto and no port, then resubmit changing only language to node', async () => {
+	it('resubmitting the form after only changing "language" never silently pins the pre-fill as a port override: toggle on with language auto and no port, then resubmit changing only language to node', async () => {
 		const capturing = debugCapturingDriver({ cmd: ['node', 'dist/main.js'], env: {} });
 		await setUpConsole(capturing.driver);
 		const actor = await pushAndBuild(server, 'debug-console-resubmit-language-only-actor');
@@ -383,7 +388,7 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 		expect(run.status).toBe('SUCCEEDED');
 		const ctx = capturing.getStartRunContexts()[0]!;
-		expect(ctx.debug).toEqual({ language: 'node', port: 9229, actorId: actor.id, languagePreference: 'node' });
+		expect(ctx.debug).toEqual({ language: 'node', port: 9229 });
 		expect(ctx.env.NODE_OPTIONS).toBe('--inspect-brk=0.0.0.0:9229');
 	});
 
@@ -485,7 +490,7 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 		expect(run.status).toBe('SUCCEEDED');
 
 		const ctx = capturing.getStartRunContexts()[0]!;
-		expect(ctx.debug).toEqual({ language: 'node', port: 9229, actorId: actor.id, languagePreference: 'auto' });
+		expect(ctx.debug).toEqual({ language: 'node', port: 9229 });
 		expect(ctx.env.NODE_OPTIONS).toBe('--inspect-brk=0.0.0.0:9229');
 
 		const stored = await getRegistries().runs.get(run.id);
@@ -502,7 +507,7 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 		expect(run.status).toBe('SUCCEEDED');
 
 		const ctx = capturing.getStartRunContexts()[0]!;
-		expect(ctx.debug).toEqual({ language: 'python', port: 5679, actorId: actor.id, languagePreference: 'auto' });
+		expect(ctx.debug).toEqual({ language: 'python', port: 5679 });
 		expect(ctx.env.PYTHONPATH).toBe('/opt/apify-debug');
 		expect(ctx.env.APIFY_ACTOR_RUNTIME_DEBUG_PORT).toBe('5679');
 
@@ -643,14 +648,10 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 		expect(contexts[0]?.debug).toEqual({
 			language: 'node',
 			port: 9229,
-			actorId: actor.id,
-			languagePreference: 'auto',
 		});
 		expect(contexts[1]?.debug).toEqual({
 			language: 'node',
 			port: 9229,
-			actorId: actor.id,
-			languagePreference: 'auto',
 		});
 	});
 
@@ -698,8 +699,6 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 		expect(capturing.getStartRunContexts()[0]?.debug).toEqual({
 			language: 'node',
 			port: 9229,
-			actorId: actor.id,
-			languagePreference: 'node',
 		});
 	});
 
@@ -750,8 +749,47 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 
 		const ctx = capturing.getStartRunContexts()[0]!;
 		expect(ctx.devMount).toEqual({ localDevFolder: '/abs/dev/src', imageWorkingDirectory: '/usr/src/app' });
-		expect(ctx.debug).toEqual({ language: 'node', port: 9229, actorId: actor.id, languagePreference: 'auto' });
+		expect(ctx.debug).toEqual({ language: 'node', port: 9229 });
 		expect(ctx.env.NODE_OPTIONS).toBe('--inspect-brk=0.0.0.0:9229');
+	});
+
+	it('a debug port conflict at container start (driver throws DebugPortInUseError) fails the run with the composed remediation naming the real actor id and the stored language preference, and no "Cannot start run:" prefix - the port is only bound at container start, after a container already exists, unlike a pre-container refusal', async () => {
+		const driver: Driver = {
+			available: true,
+			async init() {},
+			async startBuild(_ctx, onLog) {
+				onLog('build ok\n');
+				return { imageId: 'fake-image:test' };
+			},
+			async abortBuild() {},
+			async startRun(ctx) {
+				throw new DebugPortInUseError(ctx.debug?.port ?? 0);
+			},
+			async abortRun() {},
+			async reconcileOrphans() {},
+			async probeDevFolder() {
+				throw new Error('not used by this stub');
+			},
+			async ensureProbeImage() {
+				throw new Error('not used by this stub');
+			},
+			async inspectDebugTarget() {
+				return { cmd: ['node', 'dist/main.js'], env: {} };
+			},
+		};
+		server = await startTestServer(driver);
+		const actor = await pushAndBuild(server, 'run-debug-port-conflict-actor');
+		// Explicit 'python' override against a node-shaped image: the run resolves 'python' (the override
+		// always wins), so the conflict is on python's own default port 5678 - and the remedy must name
+		// this STORED preference, never the resolved language it happens to match here.
+		await post(server.baseUrl, actor.id, { enabled: true, language: 'python' }, server.token);
+
+		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(run.status).toBe('FAILED');
+		expect(run.statusMessage).toContain('host port 5678 is already in use');
+		expect(run.statusMessage).toContain(`/actor-runtime/debug/${actor.id}`);
+		expect(run.statusMessage).toContain('"language": "python"');
+		expect(run.statusMessage).not.toContain('Cannot start run:');
 	});
 });
 

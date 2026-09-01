@@ -77,10 +77,27 @@ function currentLog(runId: string, env: NodeJS.ProcessEnv): string {
 	return apify(['api', 'GET', `actor-runs/${runId}/log`], { cwd: REPO_ROOT, env });
 }
 
-async function waitFor<T>(check: () => T | undefined, timeoutMs: number, description: string): Promise<T> {
+/**
+ * Polls `check` until it returns a defined value or `timeoutMs` elapses. `check` may be sync or async -
+ * either way its result is `await`ed before being tested, so an async check (e.g. `nodeInspectorAnswers`,
+ * `canConnectTcp`) is genuinely retried on each poll rather than resolving this function on its very
+ * first call with whatever that one probe happened to return. A check that throws (a transient CLI/HTTP
+ * hiccup) is treated the same as one that returns `undefined` - retried, not propagated - so a single
+ * flaky poll can't fail the whole wait before its deadline.
+ */
+async function waitFor<T>(
+	check: () => T | undefined | Promise<T | undefined>,
+	timeoutMs: number,
+	description: string,
+): Promise<T> {
 	const deadline = Date.now() + timeoutMs;
 	for (;;) {
-		const result = check();
+		let result: T | undefined;
+		try {
+			result = await check();
+		} catch {
+			result = undefined;
+		}
 		if (result !== undefined) return result;
 		if (Date.now() >= deadline) throw new Error(`Timed out waiting for: ${description}`);
 		await new Promise((resolve) => setTimeout(resolve, 500));
@@ -120,6 +137,66 @@ async function nodeInspectorAnswers(port: number): Promise<boolean> {
 		return false;
 	}
 }
+
+/**
+ * `waitFor` itself, in isolation - no Docker, no `apify` CLI. Pins that an async `check` is genuinely
+ * `await`ed and retried on every poll, not just called once and compared against its own pending Promise
+ * (which is never `=== undefined`) - the one property this helper exists to guarantee, in a file whose
+ * real assertions all require Docker to even run.
+ */
+describe('waitFor (self-check, no Docker required)', () => {
+	it('retries a sync check across multiple polls until it returns a defined value', async () => {
+		let calls = 0;
+		const result = await waitFor(
+			() => {
+				calls += 1;
+				return calls >= 3 ? calls : undefined;
+			},
+			5000,
+			'a sync check to succeed on its 3rd call',
+		);
+		expect(result).toBe(3);
+		expect(calls).toBe(3);
+	});
+
+	it('awaits an ASYNC check and genuinely retries it across multiple polls, not just its first call', async () => {
+		let calls = 0;
+		const result = await waitFor(
+			async () => {
+				calls += 1;
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				return calls >= 4 ? calls : undefined;
+			},
+			5000,
+			'an async check to succeed on its 4th call',
+		);
+		expect(result).toBe(4);
+		// `calls` reaching 4 (not 1) is the proof: an un-awaited `check()` call would compare its own
+		// pending Promise against `undefined` - always false-y `!==` - and return on the very first poll.
+		expect(calls).toBe(4);
+	});
+
+	it('treats a throwing check the same as one returning undefined - retried, not propagated', async () => {
+		let calls = 0;
+		const result = await waitFor(
+			() => {
+				calls += 1;
+				if (calls < 3) throw new Error('transient failure');
+				return 'ok';
+			},
+			5000,
+			'a check that throws twice before succeeding',
+		);
+		expect(result).toBe('ok');
+		expect(calls).toBe(3);
+	});
+
+	it('throws its own timeout error, naming the description, when the check never succeeds', async () => {
+		await expect(waitFor(() => undefined, 300, 'a check that never succeeds')).rejects.toThrow(
+			/Timed out waiting for: a check that never succeeds/,
+		);
+	});
+});
 
 describe('per-Actor debug mode: pause, published port, and abort while paused (requires Docker)', () => {
 	let isolatedApifyHome: string;

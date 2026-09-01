@@ -2,10 +2,12 @@
  * `DockerDriver`'s debug-mode surface (`actor-driver.md`'s "Debug mode" section): `inspectDebugTarget`
  * (the `services/debug-mode.ts: resolveDebugPlan` input it reads off an image) and `startRun`'s
  * debug-only behavior - `ExposedPorts`/`PortBindings`, the debugpy payload upload via `putArchive`, the
- * attach log line, and the port-conflict/missing-payload failure messages. Split out of
- * `docker-driver.test.ts` (this repo's one-file-per-area convention) once the debug-mode coverage grew
- * large enough on its own to be its own area; every test below moved here byte-identical apart from this
- * file's own imports and describe placement.
+ * attach log line, and the port-conflict/missing-payload failures. Split out of `docker-driver.test.ts`
+ * (this repo's one-file-per-area convention) into its own file, with its own imports and describe
+ * placement. The two port-conflict tests assert the typed `DebugPortInUseError` (`driver/types.ts`) the
+ * driver throws - the driver only classifies the failure; `services/debug-mode.ts:
+ * describeDebugPortConflict` composes the user-facing remediation text one layer up, and is tested on
+ * its own in `debug-mode-validation.test.ts`.
  */
 import { PassThrough } from 'node:stream';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -16,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type Docker from 'dockerode';
 
 import { DockerDriver } from '../../src/driver/docker-driver.js';
+import { DebugPortInUseError } from '../../src/driver/types.js';
 import { stubDockerForRun } from './helpers/docker-stubs.js';
 
 describe("DockerDriver.inspectDebugTarget (services/debug-mode.ts: resolveDebugPlan's own input)", () => {
@@ -149,7 +152,7 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 				env: { NODE_OPTIONS: '--inspect-brk=0.0.0.0:9229' },
 				memoryMbytes: 128,
 				timeoutSecs: 60,
-				debug: { language: 'node', port: 9229, actorId: 'fake-actor', languagePreference: 'node' },
+				debug: { language: 'node', port: 9229 },
 			},
 			() => {},
 		);
@@ -186,7 +189,7 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 				env: {},
 				memoryMbytes: 128,
 				timeoutSecs: 300,
-				debug: { language: 'node', port: 9229, actorId: 'fake-actor', languagePreference: 'node' },
+				debug: { language: 'node', port: 9229 },
 			},
 			(chunk) => events.push(`log:${chunk}`),
 		);
@@ -232,7 +235,7 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 				env: { PYTHONPATH: '/opt/apify-debug' },
 				memoryMbytes: 128,
 				timeoutSecs: 60,
-				debug: { language: 'python', port: 5678, actorId: 'fake-actor', languagePreference: 'python' },
+				debug: { language: 'python', port: 5678 },
 			},
 			(chunk) => chunks.push(chunk),
 		);
@@ -273,7 +276,7 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 					env: {},
 					memoryMbytes: 128,
 					timeoutSecs: 60,
-					debug: { language: 'python', port: 5678, actorId: 'fake-actor', languagePreference: 'python' },
+					debug: { language: 'python', port: 5678 },
 				},
 				() => {},
 			),
@@ -282,7 +285,7 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 		expect(stub.createContainer).not.toHaveBeenCalled();
 	});
 
-	it('maps a "port is already allocated" start() rejection to a clear message naming the real actor id, the stored language preference (never a literal placeholder or a silent reset to "auto"), and the port override, for a debug run', async () => {
+	it('maps a "port is already allocated" start() rejection to a typed DebugPortInUseError naming the configured port - the driver only classifies; `services/debug-mode.ts: describeDebugPortConflict` (tested separately) composes the remediation text', async () => {
 		const stub = stubDockerForRun();
 		stub.container.start.mockRejectedValueOnce(
 			Object.assign(new Error('driver failed programming external connectivity: port is already allocated'), {
@@ -292,24 +295,27 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 		const driver = new DockerDriver(stub.docker);
 		driver.available = true;
 
-		await expect(
-			driver.startRun(
+		let error: unknown;
+		try {
+			await driver.startRun(
 				{
 					runId: 'run-debug-port-conflict',
 					imageId: 'fake-image',
 					env: {},
 					memoryMbytes: 128,
 					timeoutSecs: 60,
-					debug: { language: 'node', port: 9229, actorId: 'actor-port-conflict', languagePreference: 'auto' },
+					debug: { language: 'node', port: 9229 },
 				},
 				() => {},
-			),
-		).rejects.toThrow(
-			/host port 9229 is already in use.*\/actor-runtime\/debug\/actor-port-conflict.*"language": "auto"/s,
-		);
+			);
+		} catch (caught) {
+			error = caught;
+		}
+		expect(error).toBeInstanceOf(DebugPortInUseError);
+		expect((error as DebugPortInUseError).port).toBe(9229);
 	});
 
-	it('maps an "address already in use" start() rejection to the same clear message naming the port and the port override, for a debug run, preserving a "node"/"python" language OVERRIDE rather than the resolved language', async () => {
+	it('maps an "address already in use" start() rejection to the same typed DebugPortInUseError (the daemon\'s other port-conflict wording)', async () => {
 		const stub = stubDockerForRun();
 		stub.container.start.mockRejectedValueOnce(
 			Object.assign(new Error('Bind for 0.0.0.0:9229 failed: port is already in use: address already in use'), {
@@ -319,29 +325,24 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 		const driver = new DockerDriver(stub.docker);
 		driver.available = true;
 
-		await expect(
-			driver.startRun(
+		let error: unknown;
+		try {
+			await driver.startRun(
 				{
 					runId: 'run-debug-port-conflict-address',
 					imageId: 'fake-image',
 					env: {},
 					memoryMbytes: 128,
 					timeoutSecs: 60,
-					// The resolved `language` is 'node' (an 'auto' toggle resolved against a node image), but the
-					// stored preference is the explicit override 'python' from an earlier toggle call - the
-					// remedy must preserve the stored PREFERENCE, never the resolved language.
-					debug: {
-						language: 'node',
-						port: 9229,
-						actorId: 'actor-port-conflict-2',
-						languagePreference: 'python',
-					},
+					debug: { language: 'node', port: 9229 },
 				},
 				() => {},
-			),
-		).rejects.toThrow(
-			/host port 9229 is already in use.*\/actor-runtime\/debug\/actor-port-conflict-2.*"language": "python"/s,
-		);
+			);
+		} catch (caught) {
+			error = caught;
+		}
+		expect(error).toBeInstanceOf(DebugPortInUseError);
+		expect((error as DebugPortInUseError).port).toBe(9229);
 	});
 
 	it('does not rewrite an ordinary (non-port-conflict) start() failure for a debug run - the original error propagates', async () => {
@@ -358,7 +359,7 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 					env: {},
 					memoryMbytes: 128,
 					timeoutSecs: 60,
-					debug: { language: 'node', port: 9229, actorId: 'fake-actor', languagePreference: 'node' },
+					debug: { language: 'node', port: 9229 },
 				},
 				() => {},
 			),
@@ -399,7 +400,7 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 					env: {},
 					memoryMbytes: 128,
 					timeoutSecs: 60,
-					debug: { language: 'python', port: 5678, actorId: 'fake-actor', languagePreference: 'python' },
+					debug: { language: 'python', port: 5678 },
 				},
 				() => {},
 			),
@@ -457,7 +458,7 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 			env: {},
 			memoryMbytes: 128,
 			timeoutSecs: 60,
-			debug: { language: 'python' as const, port: 5678, actorId: 'fake-actor', languagePreference: 'python' },
+			debug: { language: 'python' as const, port: 5678 },
 		});
 
 		// First run: `loadDebugPayload` has nothing cached yet, so it reads the fixture tar/version files
@@ -502,7 +503,7 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 				env: {},
 				memoryMbytes: 128,
 				timeoutSecs: 0.05,
-				debug: { language: 'node', port: 9229, actorId: 'fake-actor', languagePreference: 'node' },
+				debug: { language: 'node', port: 9229 },
 			},
 			() => {},
 		);
@@ -533,7 +534,7 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 					memoryMbytes: 128,
 					timeoutSecs: 60,
 					devMount: { localDevFolder: '/host/src', imageWorkingDirectory: '/usr/src/app' },
-					debug: { language: 'node', port: 9229, actorId: 'fake-actor', languagePreference: 'node' },
+					debug: { language: 'node', port: 9229 },
 				},
 				() => {},
 			);

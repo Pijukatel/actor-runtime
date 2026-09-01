@@ -130,8 +130,7 @@ export interface DebugStatus {
  * read-back this design has no separate `GET` for (`api.md`). When no `port` override is stored, the
  * displayed default is language-appropriate: `'node'` shows `9229`, `'python'` shows `5678`, and only a
  * genuinely unresolved `'auto'` falls back to the nominal `DISPLAY_DEFAULT_PORT_FOR_AUTO` placeholder -
- * an explicit non-`'auto'` preference is never shown Python's default just because the constant used to
- * be applied unconditionally. */
+ * an explicit non-`'auto'` preference is always shown its own language's real default, never Python's. */
 export function debugStatus(actor: Pick<ActorRecord, 'localDebug'>): DebugStatus {
 	if (!actor.localDebug) return { localDebug: null };
 	const { language, port } = actor.localDebug;
@@ -281,14 +280,13 @@ export function resolveDebugPlan(localDebug: ActorLocalDebug, target: InspectedD
  * fail the run, loudly" section) - named after the actual command for a package-manager refusal, and
  * naming the `language` override as the fix for an unclassifiable one (criterion 14). Both name the exact
  * `apify api` invocation that clears debug mode for this Actor. Returns the reason text only, with no
- * `Cannot start run: ` prefix - `services/runs.ts: failBeforeContainer` owns that prefix for every
- * pre-container failure, so it is never baked into this string too (previously it was, which is what let
- * this path's `statusMessage` and the driver-unavailable path's drift into two differently-prefixed
- * strings for the same kind of failure). `port` is the Actor's own currently-stored port override (if
- * any) - threaded through so the suggested `language` override below preserves it: `setDebugMode` is a
- * full-replace `POST` (its own doc comment), so a suggested body that omitted a stored `port` would
- * silently reset it to the newly-resolved language's own default the moment the developer runs it
- * verbatim. */
+ * `Cannot start run: ` prefix: `services/runs.ts: failBeforeContainer` is the single owner of that prefix
+ * for every pre-container failure, so every refusal reaches the run's log and `statusMessage` with the
+ * identical prefix regardless of which pre-container path produced it. `port` is the Actor's own
+ * currently-stored port override (if any) - threaded through so the suggested `language` override below
+ * preserves it: `setDebugMode` is a full-replace `POST` (its own doc comment), so a suggested body that
+ * omitted a stored `port` would silently reset it to the newly-resolved language's own default the moment
+ * the developer runs it verbatim. */
 export function describeDebugRefusal(
 	actorId: string,
 	port: number | undefined,
@@ -310,5 +308,27 @@ export function describeDebugRefusal(
 		`could not be classified as Python or Node. Set an explicit language with ` +
 		`\`apify api POST /actor-runtime/debug/${actorId} --body '{"enabled": true, "language": "node"${portField}}'\` ` +
 		`(or "python"), or clear debug mode with ${clearCommand}.`
+	);
+}
+
+/** The `statusMessage`/error text for a debug run whose configured host debug port is already bound by
+ * something else - `services/runs.ts` builds this from the `DebugPortInUseError` the driver throws
+ * (`driver/types.ts`) once `container.start()` fails, since the driver itself knows neither the Actor id
+ * nor the toggle's HTTP surface. Names the real Actor id and the Actor's own *stored* `language`
+ * preference (never the run's *resolved* language, which for a `'auto'` preference can differ) in the
+ * suggested remediation body, so following it verbatim preserves that preference instead of silently
+ * resetting it to `'auto'`. This failure happens after `createContainer` (the port is only bound at
+ * `container.start()`), so unlike `describeDebugRefusal` it is never routed through
+ * `failBeforeContainer` and carries no `Cannot start run: ` prefix - it is used exactly like any other
+ * mid-run driver failure's bare `error.message`. */
+export function describeDebugPortConflict(
+	actorId: string,
+	languagePreference: DebugLanguagePreference,
+	port: number,
+): string {
+	return (
+		`host port ${port} is already in use. Stop whatever is using it, or set a different port with ` +
+		`\`apify api POST /actor-runtime/debug/${actorId} --body '{"enabled": true, "language": ` +
+		`"${languagePreference}", "port": <n>}'\`.`
 	);
 }

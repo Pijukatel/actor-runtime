@@ -1,21 +1,20 @@
 import { generateId } from '../storage/ids.js';
-import type {
-	ActorRecord,
-	ActorVersionRecord,
-	BuildRecord,
-	DebugLanguagePreference,
-	JobStatus,
-	RunRecord,
-} from '../storage/entities.js';
+import type { ActorRecord, ActorVersionRecord, BuildRecord, JobStatus, RunRecord } from '../storage/entities.js';
 import { getRegistries } from '../storage/registries.js';
 import { createStorage } from './storages.js';
 import { openKeyValueStore } from '../storage/open.js';
-import type { Driver } from '../driver/types.js';
+import { DebugPortInUseError, type Driver } from '../driver/types.js';
 import { appendLog, flushLog, markLogTerminal } from './logs.js';
 import { markEventsTerminal, publishAborting, publishSystemInfo } from './events-channel.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
-import { describeDebugRefusal, prependDebugEnvValue, resolveDebugPlan, type DebugPlan } from './debug-mode.js';
+import {
+	describeDebugPortConflict,
+	describeDebugRefusal,
+	prependDebugEnvValue,
+	resolveDebugPlan,
+	type DebugPlan,
+} from './debug-mode.js';
 import { dedicatedCpusFor } from '../resources.js';
 import { CONTAINER_EVENTS_WS_BASE_URL } from '../config.js';
 
@@ -206,25 +205,28 @@ export async function startRun(
 
 /**
  * The "fail the run before any container exists" sequence, shared by every pre-container failure path in
- * `runInBackground` below (driver-unavailable/no-image, and a refused debug plan) - appends the
- * `Cannot start run: ` line to the run's log, flushes it, marks the log/events channels terminal, and
- * transitions the record to `FAILED` with the identical text as `statusMessage`. Owns the
- * `Cannot start run: ` prefix itself (callers pass only the reason) so the log line and `statusMessage`
- * can never drift into two differently-prefixed strings for what is, from the developer's perspective,
- * the same failure - before this helper existed, the debug-refusal path baked its own copy of the prefix
- * into `describeDebugRefusal`'s return value while this path added it at the call site, so the two were
- * only accidentally consistent.
+ * `runInBackground` below (driver-unavailable/no-image, and a refused debug plan): appends `logMessage`
+ * to the run's log, flushes it, marks the log/events channels terminal, and transitions the record to
+ * `FAILED` with `statusMessage`. The two callers deliberately pass different shapes for the two
+ * parameters: the driver-unavailable/no-image path logs a `Cannot start run: `-prefixed line but stores
+ * the bare reason as `statusMessage` - the same shape `services/builds.ts`'s own driver-unavailable path
+ * stores for a build - while a refused debug plan's `statusMessage` already carries that same prefix
+ * (`describeDebugRefusal`'s caller builds it in below) so the run's terminal status reads exactly like
+ * the line that appeared in its log. Neither caller relies on this helper to add or infer a prefix.
  */
-async function failBeforeContainer(runId: string, reason: string | undefined): Promise<void> {
+async function failBeforeContainer(
+	runId: string,
+	logMessage: string,
+	statusMessage: string | undefined,
+): Promise<void> {
 	const { runs } = getRegistries();
-	const message = `Cannot start run: ${reason}`;
-	appendLog(runId, `${message}\n`);
+	appendLog(runId, `${logMessage}\n`);
 	await flushLog(runId);
 	markLogTerminal(runId);
 	markEventsTerminal(runId);
 	await transitionJobStatus(runs, runId, 'FAILED', {
 		finishedAt: new Date().toISOString(),
-		statusMessage: message,
+		statusMessage,
 	});
 }
 
@@ -263,7 +265,7 @@ export async function runInBackground(
 	const build = await builds.get(record.buildId);
 	if (!driver.available || !build?.imageId) {
 		const reason = !driver.available ? driver.unavailableReason : 'Build has no image to run';
-		await failBeforeContainer(record.id, reason);
+		await failBeforeContainer(record.id, `Cannot start run: ${reason}`, reason);
 		return;
 	}
 
@@ -273,17 +275,16 @@ export async function runInBackground(
 	// ..." path every other pre-container failure above uses, before any container is ever created
 	// (`actor-driver.md`'s "Non-debuggable images fail the run, loudly" section).
 	let debugPlan: DebugPlan | undefined;
-	let debugLanguagePreference: DebugLanguagePreference | undefined;
 	if (actor.localDebug) {
 		const target = await driver.inspectDebugTarget(build.imageId);
 		const result = resolveDebugPlan(actor.localDebug, target);
 		if (result.kind === 'refused') {
-			await failBeforeContainer(record.id, describeDebugRefusal(actor.id, actor.localDebug.port, result));
+			const message = `Cannot start run: ${describeDebugRefusal(actor.id, actor.localDebug.port, result)}`;
+			await failBeforeContainer(record.id, message, message);
 			return;
 		}
 		const plan = result.plan;
 		debugPlan = plan;
-		debugLanguagePreference = actor.localDebug.language;
 		// Persisted on the run record itself (not derived later from the Actor's toggle, which could
 		// change after this run started) - local-only, so the console run page can show an attach address
 		// after the fact even for a run started by someone else's `apify call` (`actor-driver.md`'s "Debug
@@ -336,16 +337,7 @@ export async function runInBackground(
 				memoryMbytes: record.options.memoryMbytes,
 				timeoutSecs: record.options.timeoutSecs,
 				devMount,
-				debug: debugPlan
-					? {
-							language: debugPlan.language,
-							port: debugPlan.port,
-							actorId: actor.id,
-							// Non-null: only ever set alongside `debugPlan` above, in the same `if (actor.localDebug)`
-							// block.
-							languagePreference: debugLanguagePreference!,
-						}
-					: undefined,
+				debug: debugPlan ? { language: debugPlan.language, port: debugPlan.port } : undefined,
 			},
 			(chunk) => appendLog(record.id, chunk),
 			(sample) => publishSystemInfo(record.id, sample, record.options),
@@ -369,9 +361,17 @@ export async function runInBackground(
 		});
 	} catch (error) {
 		await flushLog(record.id);
+		// The driver classifies a debug port conflict as a typed `DebugPortInUseError` (just the port); this
+		// is the one place that knows both the Actor id and its stored `language` preference, so it is the
+		// one place that can word the remediation (`services/debug-mode.ts: describeDebugPortConflict`) -
+		// the same "driver classifies, caller words it" split `DriverTimedOutError` already established.
+		const statusMessage =
+			error instanceof DebugPortInUseError && actor.localDebug
+				? describeDebugPortConflict(actor.id, actor.localDebug.language, error.port)
+				: (error as Error).message;
 		await transitionJobStatus(runs, record.id, 'FAILED', {
 			finishedAt: new Date().toISOString(),
-			statusMessage: (error as Error).message,
+			statusMessage,
 		});
 	} finally {
 		markLogTerminal(record.id);

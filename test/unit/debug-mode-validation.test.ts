@@ -11,6 +11,7 @@ import {
 	DEFAULT_PORT_BY_LANGUAGE,
 	DEBUGPY_PORT_ENV_VAR,
 	PYTHON_DEBUG_PAYLOAD_DIR,
+	describeDebugPortConflict,
 	describeDebugRefusal,
 	prependDebugEnvValue,
 	resolveDebugPlan,
@@ -261,5 +262,28 @@ describe('describeDebugRefusal', () => {
 	it("preserves a stored port override in the suggested language-override body - resubmitting it verbatim must not silently reset the Actor's port", () => {
 		const message = describeDebugRefusal('actor-123', 9230, { kind: 'refused', reason: 'unclassifiable' });
 		expect(message).toContain('"language": "node", "port": 9230');
+	});
+});
+
+describe('describeDebugPortConflict', () => {
+	it('names the conflicting port, the real actor id, and preserves the stored language preference in the suggested body', () => {
+		const message = describeDebugPortConflict('actor-123', 'auto', 9229);
+		expect(message).toContain('host port 9229 is already in use');
+		expect(message).toContain('/actor-runtime/debug/actor-123');
+		expect(message).toContain('"language": "auto", "port": <n>');
+	});
+
+	it("preserves an explicit 'node'/'python' language OVERRIDE rather than whatever language actually resolved, so following the suggestion verbatim never silently resets it to 'auto'", () => {
+		const message = describeDebugPortConflict('actor-123', 'python', 9229);
+		expect(message).toContain('"language": "python", "port": <n>');
+	});
+
+	// No "Cannot start run: " prefix: unlike `describeDebugRefusal`, this failure happens after
+	// `createContainer` (the port is only bound at `container.start()`), so it is never routed through
+	// `services/runs.ts: failBeforeContainer` - it reaches the run's `statusMessage` exactly like any other
+	// mid-run driver failure's bare `error.message`.
+	it('carries no "Cannot start run: " prefix', () => {
+		const message = describeDebugPortConflict('actor-123', 'auto', 9229);
+		expect(message).not.toContain('Cannot start run:');
 	});
 });

@@ -1,4 +1,4 @@
-import type { DebugLanguagePreference, SourceFile } from '../storage/entities.js';
+import type { SourceFile } from '../storage/entities.js';
 
 export interface BuildContext {
 	buildId: string;
@@ -23,17 +23,15 @@ export interface DevFolderMount {
  * injecting) and the port to expose-and-publish. The env entries a resolved `DebugPlan` adds
  * (`NODE_OPTIONS`/`PYTHONPATH`) are already merged into `RunContext.env` by the time this reaches the
  * driver - `debug` carries only what `docker-driver.ts`'s `startRun` needs to act on directly
- * (`ExposedPorts`/`PortBindings`, the attach log line, the debugpy payload upload). `actorId` and
- * `languagePreference` (the Actor's own *stored* `enabled`/`language`/`port` toggle preference, distinct
- * from `language` above - the run's *resolved* language, which for a `'auto'` preference can differ) exist
- * solely so a port-conflict failure can name the real Actor id and suggest a remediation `POST` body that
- * preserves the stored preference, instead of a literal `<actorId>` placeholder and a body that would
- * silently reset it back to `'auto'`. */
+ * (`ExposedPorts`/`PortBindings`, the attach log line, the debugpy payload upload). The driver has no
+ * concept of the Actor id or of the toggle's HTTP surface: on a port conflict it throws
+ * `DebugPortInUseError` (below) with just the port, and `services/runs.ts` - which has the Actor record
+ * in hand - turns that into the user-facing remediation via `services/debug-mode.ts:
+ * describeDebugPortConflict`, the same "driver classifies, caller words it" split `DriverTimedOutError`
+ * already establishes. */
 export interface DebugRunTarget {
 	language: 'node' | 'python';
 	port: number;
-	actorId: string;
-	languagePreference: DebugLanguagePreference;
 }
 
 export interface RunContext {
@@ -127,6 +125,25 @@ export class DriverTimedOutError extends Error {
 	constructor(message: string) {
 		super(message);
 		this.name = 'DriverTimedOutError';
+	}
+}
+
+/**
+ * Thrown by `Driver.startRun` when a debug run's container fails to start because its configured host
+ * debug port is already bound by something else (`docker-driver.ts`'s `isPortInUseError` classifies the
+ * daemon's rejection). Carries only the port - the driver has no Actor id and no opinion on the toggle's
+ * HTTP surface, so it does not compose the user-facing remediation itself; `services/runs.ts` catches
+ * this and hands `port` (plus the Actor it already has in hand) to `services/debug-mode.ts:
+ * describeDebugPortConflict` to build that text. Same "driver classifies, caller words it" split as
+ * `DriverTimedOutError` above.
+ */
+export class DebugPortInUseError extends Error {
+	readonly port: number;
+
+	constructor(port: number) {
+		super(`Debug port ${port} is already in use`);
+		this.name = 'DebugPortInUseError';
+		this.port = port;
 	}
 }
 

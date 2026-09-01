@@ -36,6 +36,7 @@ import { CPU_PERIOD_US, cpuQuotaFor, dedicatedCpusFor } from '../resources.js';
 import { normalizeEntryName } from './tar-entry-name.js';
 import type { SourceFile } from '../storage/entities.js';
 import {
+	DebugPortInUseError,
 	DriverTimedOutError,
 	type BuildContext,
 	type BuildOutcome,
@@ -571,13 +572,22 @@ export class DockerDriver implements Driver {
 		// Both loaded (for Python) and logged BEFORE `createContainer`, exactly like the dev-mount line
 		// above: a missing payload must fail the run before any container is even created
 		// (`actor-driver.md`'s "never a silent non-debug start"), and the attach line must land in the
-		// log even if `createContainer` itself is what fails.
+		// log even if `createContainer` itself is what fails. The Python branch assigns `debugPayload` and
+		// reads its `debugpyVersion` in the same block, so `buildDebugLogLine`'s Python arm never needs a
+		// fallback for a version that is, structurally, always known by the time it's asked for.
 		let debugPayload: { tar: Buffer; debugpyVersion: string } | undefined;
-		if (ctx.debug?.language === 'python') {
-			debugPayload = await this.loadDebugPayload();
-		}
 		if (ctx.debug) {
-			onLog(this.buildDebugLogLine(ctx.debug, ctx.timeoutSecs, debugPayload?.debugpyVersion));
+			if (ctx.debug.language === 'python') {
+				debugPayload = await this.loadDebugPayload();
+				onLog(
+					this.buildDebugLogLine(
+						{ language: 'python', port: ctx.debug.port, debugpyVersion: debugPayload.debugpyVersion },
+						ctx.timeoutSecs,
+					),
+				);
+			} else {
+				onLog(this.buildDebugLogLine({ language: 'node', port: ctx.debug.port }, ctx.timeoutSecs));
+			}
 		}
 
 		const container = await this.docker.createContainer({
@@ -631,17 +641,10 @@ export class DockerDriver implements Driver {
 			try {
 				await container.start();
 			} catch (error) {
+				// Classification only - no Actor id, no HTTP-surface knowledge here. `services/runs.ts` catches
+				// this and words the remediation via `services/debug-mode.ts: describeDebugPortConflict`.
 				if (ctx.debug && isPortInUseError(error)) {
-					// Names the real Actor id and preserves the Actor's own stored `language` preference in the
-					// suggested body - `setDebugMode` is a full-replace `POST` (its own doc comment), so a body
-					// that omitted a stored `'node'`/`'python'` override would silently reset it to `'auto'` the
-					// moment the developer ran it verbatim.
-					throw new Error(
-						`Cannot start debug run: host port ${ctx.debug.port} is already in use. Stop whatever is ` +
-							`using it, or set a different port with \`apify api POST /actor-runtime/debug/` +
-							`${ctx.debug.actorId} --body '{"enabled": true, "language": ` +
-							`"${ctx.debug.languagePreference}", "port": <n>}'\`.`,
-					);
+					throw new DebugPortInUseError(ctx.debug.port);
 				}
 				throw error;
 			}
@@ -791,14 +794,13 @@ export class DockerDriver implements Driver {
 	 * that dies mid-session (or a breakpoint set too late) is self-explaining from its own log alone.
 	 */
 	private buildDebugLogLine(
-		debug: { language: 'node' | 'python'; port: number },
+		debug: { language: 'node'; port: number } | { language: 'python'; port: number; debugpyVersion: string },
 		timeoutSecs: number,
-		debugpyVersion?: string,
 	): string {
 		const { language, port } = debug;
 		const tool =
 			language === 'python'
-				? `Python (debugpy ${debugpyVersion ?? 'unknown version'}, injected by the runtime)`
+				? `Python (debugpy ${debug.debugpyVersion}, injected by the runtime)`
 				: `Node (its own built-in inspector)`;
 		const attach =
 			language === 'python'
