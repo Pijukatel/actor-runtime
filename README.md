@@ -9,9 +9,26 @@ runtime itself needs no outbound network access after the first build/push (see
 running them does.
 
 See `requirements/*.md` for the full behavioural spec (`system.md`, `api.md`,
-`storage.md`, `actor-driver.md`, `cli.md`, `console.md`, `test.md`).
+`storage.md`, `actor-driver.md`, `cli.md`, `console.md`, `test.md`,
+`distribution.md`).
 
-## Quick start
+## Quick start via the Apify CLI
+
+The runtime is distributed through the Apify CLI (see `requirements/distribution.md`): the
+`apify runtime` commands check that this machine can run Docker images, download the runtime
+image and start it with the canonical flags below.
+
+```bash
+npm install -g apify-cli
+apify runtime install   # verify Docker, download the runtime image
+apify runtime start     # start the runtime (Ctrl+C stops it; --detach to background)
+```
+
+Until the image is published on Apify's Docker Hub, the CLI uses the local placeholder tag
+`actor-runtime:latest` - build it once from this repository (`docker build -t actor-runtime .`)
+and `apify runtime install` will pick it up.
+
+## Quick start with plain Docker
 
 ```bash
 docker build -t actor-runtime .
