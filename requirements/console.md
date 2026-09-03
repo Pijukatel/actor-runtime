@@ -6,9 +6,9 @@
 - The console has no login of its own, so with multiple users it lists and shows every user's objects
   rather than scoping to one - the API's own endpoints stay strictly scoped to the calling token's user
   (`storage.md`'s "Users" section).
-- The console is unauthenticated. Every route is a read except the console's only two writes: the
-  dev-folder form and the Settings form (both below).
-- Both of those writes reject a submission that identifies itself as cross-site (via the
+- The console is unauthenticated. Every route is a read except the console's only three writes: the
+  dev-folder form, the run detail view's Migrate button, and the Settings form (all below).
+- All three of those writes reject a submission that identifies itself as cross-site (via the
   `Sec-Fetch-Site` header) with a plain `403`; a submission that does not is unaffected.
 - There are three types of objects: key-value store, dataset, request queue.
     - For each object type there must be exactly one widget for inspection.
@@ -49,6 +49,16 @@
   is rejected as a malformed path. For any given input, the form and the API produce the same outcome.
 - A submission that fails validation redirects back to the same detail page with the classified error
   message shown inline, never swallowed by the redirect.
+
+## Migrate button (run detail view)
+
+- The run detail view shows the run's `migrationCount` and `rebootCount`, and a "Migration" section:
+  for a `RUNNING` run, a Migrate button that triggers the same emulated migration as
+  `POST /actor-runtime/migrate/:runId` (`api.md`); for any other status, a note that only a `RUNNING`
+  run can be migrated, with no button.
+- Pressing the button returns to the same detail page while the migration proceeds in the background.
+  A press that raced the run ending shows the reason inline, never swallowed by the redirect.
+- Like the dev-folder form, the button writes cross-user - the console's usual unauthenticated model.
 
 ## Settings page
 

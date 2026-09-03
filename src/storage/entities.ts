@@ -130,6 +130,14 @@ export interface RunRecord {
 	exitCode?: number;
 	statusMessage?: string;
 	meta: { origin: string };
+	/** The platform's restart-bookkeeping subset of `Run.stats`; locally only `migrationCount` and
+	 * `rebootCount` ever move. Optional for pre-existing test fixtures; `runDto` backfills zeros. */
+	stats?: {
+		migrationCount?: number;
+		rebootCount?: number;
+		restartCount?: number;
+		resurrectCount?: number;
+	};
 	/** Required by the real Apify API contract (`Run.generalAccess`) but optional here for the same
 	 * test-fixture-compatibility reason as `options.build`/`options.diskMbytes` above; `startRun` always
 	 * sets it for real runs (`FOLLOW_USER_SETTING`, the platform's run-creation default), and `runDto`

@@ -219,7 +219,11 @@ describe('graceful abort (?gracefully=) contract', () => {
 			await waitForPendingTimer();
 			const midWindow = await getRegistries().runs.get(record.id);
 			expect(midWindow?.status).toBe('ABORTING');
-			expect(frames).toEqual([JSON.stringify({ name: 'aborting', data: {} })]);
+			// The platform's graceful-abort frame pair, in this order, before the wait.
+			expect(frames).toEqual([
+				JSON.stringify({ name: 'aborting', data: {} }),
+				JSON.stringify({ name: 'persistState', data: { isMigrating: false } }),
+			]);
 			expect(driver.abortRunCalls).toEqual([]);
 
 			// Just under the window: still not called.
@@ -429,7 +433,10 @@ describe('graceful abort (?gracefully=) contract', () => {
 			// process" is not a reliable signal here the way it is for every other graceful-abort test in
 			// this file, none of which go through a real HTTP client.
 			await pollForRunStatus(server, started.id, 'ABORTING');
-			expect(frames).toEqual([JSON.stringify({ name: 'aborting', data: {} })]);
+			expect(frames).toEqual([
+				JSON.stringify({ name: 'aborting', data: {} }),
+				JSON.stringify({ name: 'persistState', data: { isMigrating: false } }),
+			]);
 			expect(driver.abortRunCalls).toEqual([]);
 
 			let responded = false;

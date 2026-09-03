@@ -12,6 +12,8 @@ import {
 	isEventsTerminal,
 	markEventsTerminal,
 	publishAborting,
+	publishMigrating,
+	publishPersistState,
 	publishSystemInfo,
 	resetEventsChannelForTests,
 	subscribeEvents,
@@ -175,6 +177,49 @@ describe('events-channel: publishAborting', () => {
 		publishSystemInfo(runId, sample(), grant);
 
 		expect(frames.map((f) => f.name)).toEqual(['systemInfo', 'aborting', 'systemInfo']);
+	});
+});
+
+describe('events-channel: publishMigrating/publishPersistState', () => {
+	beforeEach(() => {
+		resetEventsChannelForTests();
+	});
+
+	it('publishMigrating emits exactly {"name":"migrating","data":{}} - a literal empty object, matching aborting', () => {
+		const runId = 'run-migrate-1';
+		const { frames } = captureFrames(runId);
+
+		publishMigrating(runId);
+
+		expect(frames).toEqual([{ name: 'migrating', data: {} }]);
+	});
+
+	it('publishPersistState carries the isMigrating flag verbatim, both values', () => {
+		const runId = 'run-persist-1';
+		const { frames } = captureFrames(runId);
+
+		publishPersistState(runId, false);
+		publishPersistState(runId, true);
+
+		expect(frames).toEqual([
+			{ name: 'persistState', data: { isMigrating: false } },
+			{ name: 'persistState', data: { isMigrating: true } },
+		]);
+	});
+
+	it('both are no-ops (no throw) when nobody is subscribed', () => {
+		expect(() => publishMigrating('run-migrate-nobody')).not.toThrow();
+		expect(() => publishPersistState('run-persist-nobody', false)).not.toThrow();
+	});
+
+	it('one run subscriber never sees another run frames - per-run isolation holds for migrating too', () => {
+		const { frames: framesA } = captureFrames('run-migrate-a');
+		const { frames: framesB } = captureFrames('run-migrate-b');
+
+		publishMigrating('run-migrate-a');
+
+		expect(framesA.map((f) => f.name)).toEqual(['migrating']);
+		expect(framesB).toEqual([]);
 	});
 });
 
