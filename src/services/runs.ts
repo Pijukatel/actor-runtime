@@ -5,7 +5,8 @@ import { createStorage } from './storages.js';
 import { openKeyValueStore } from '../storage/open.js';
 import { DebugPortInUseError, type Driver } from '../driver/types.js';
 import { appendLog, flushLog, markLogTerminal } from './logs.js';
-import { markEventsTerminal, publishAborting, publishSystemInfo } from './events-channel.js';
+import { markEventsTerminal, publishAborting, publishPersistState, publishSystemInfo } from './events-channel.js';
+import { clearRunRestartState, consumeRunRestart } from './migrations.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
 import {
@@ -175,6 +176,8 @@ export async function startRun(
 			diskMbytes: memoryMbytes * DISK_MBYTES_PER_MEMORY_MBYTE,
 		},
 		meta: { origin: 'API' },
+		// Same zeros the platform writes at run creation (see `RunRecord.stats`).
+		stats: { migrationCount: 0, rebootCount: 0, restartCount: 0, resurrectCount: 0 },
 		// The real platform's run-creation default (`RUN_GENERAL_ACCESS.FOLLOW_USER_SETTING`,
 		// `apify-core`'s `actor_jobs.server.ts`) - this runtime has no per-user "make runs public by
 		// default" setting to follow, so every run gets this fixed default.
@@ -329,36 +332,57 @@ export async function runInBackground(
 	}
 
 	try {
-		const outcome = await driver.startRun(
-			{
-				runId: record.id,
-				imageId: build.imageId,
-				env,
-				memoryMbytes: record.options.memoryMbytes,
-				timeoutSecs: record.options.timeoutSecs,
-				devMount,
-				debug: debugPlan ? { language: debugPlan.language, port: debugPlan.port } : undefined,
-			},
-			(chunk) => appendLog(record.id, chunk),
-			(sample) => publishSystemInfo(record.id, sample, record.options),
-		);
-		const status: JobStatus = outcome.timedOut ? 'TIMED-OUT' : outcome.exitCode === 0 ? 'SUCCEEDED' : 'FAILED';
-		// Flush before writing the terminal status, not after: `driver.startRun` resolving is the signal
-		// that every `onLog` call for this run has already happened (the Docker driver waits for its log
-		// capture stream to fully drain before resolving - see `docker-driver.ts`'s doc comment on
-		// `startRun`), so this flush is guaranteed to persist the run's complete output. Doing this before
-		// the status write (rather than in the `finally` below, after it) means a client that polls status,
-		// observes it turn terminal, and immediately does a non-stream `GET /v2/logs/:id` can never observe
-		// the persisted log lagging behind the status it just saw.
-		await flushLog(record.id);
-		// Guarded: `container.wait()` resolving is not proof the run wasn't aborted - `container.stop()`
-		// (from an in-flight `abortRun`) and the container exiting on its own race off the same
-		// underlying Docker event with no ordering guarantee. If `abortRun` already moved the record to
-		// ABORTING/ABORTED, this write is refused rather than clobbering the abort - see `job-status.ts`.
-		await transitionJobStatus(runs, record.id, status, {
-			finishedAt: new Date().toISOString(),
-			exitCode: outcome.exitCode,
-		});
+		// A migration/reboot stop restarts the same run instead of finishing it (`services/migrations.ts`).
+		for (;;) {
+			const outcome = await driver.startRun(
+				{
+					runId: record.id,
+					imageId: build.imageId,
+					env,
+					memoryMbytes: record.options.memoryMbytes,
+					// The timeout budget is per run, not per container - a restart gets only what is left.
+					timeoutSecs: remainingTimeoutSecs(record),
+					devMount,
+					debug: debugPlan ? { language: debugPlan.language, port: debugPlan.port } : undefined,
+				},
+				(chunk) => appendLog(record.id, chunk),
+				(sample) => publishSystemInfo(record.id, sample, record.options),
+			);
+
+			// An abort that raced the restart wins.
+			const restart = consumeRunRestart(record.id);
+			if (restart) {
+				const current = await runs.get(record.id);
+				if (current && current.status === 'RUNNING') {
+					appendLog(
+						record.id,
+						restart === 'migration'
+							? 'Migrating Actor run to a new container.\n'
+							: 'Rebooting Actor run container.\n',
+					);
+					continue;
+				}
+			}
+
+			const status: JobStatus = outcome.timedOut ? 'TIMED-OUT' : outcome.exitCode === 0 ? 'SUCCEEDED' : 'FAILED';
+			// Flush before writing the terminal status, not after: `driver.startRun` resolving is the signal
+			// that every `onLog` call for this run has already happened (the Docker driver waits for its log
+			// capture stream to fully drain before resolving - see `docker-driver.ts`'s doc comment on
+			// `startRun`), so this flush is guaranteed to persist the run's complete output. Doing this before
+			// the status write (rather than in the `finally` below, after it) means a client that polls status,
+			// observes it turn terminal, and immediately does a non-stream `GET /v2/logs/:id` can never observe
+			// the persisted log lagging behind the status it just saw.
+			await flushLog(record.id);
+			// Guarded: `container.wait()` resolving is not proof the run wasn't aborted - `container.stop()`
+			// (from an in-flight `abortRun`) and the container exiting on its own race off the same
+			// underlying Docker event with no ordering guarantee. If `abortRun` already moved the record to
+			// ABORTING/ABORTED, this write is refused rather than clobbering the abort - see `job-status.ts`.
+			await transitionJobStatus(runs, record.id, status, {
+				finishedAt: new Date().toISOString(),
+				exitCode: outcome.exitCode,
+			});
+			return;
+		}
 	} catch (error) {
 		await flushLog(record.id);
 		// The driver classifies a debug port conflict as a typed `DebugPortInUseError` (just the port); this
@@ -376,6 +400,8 @@ export async function runInBackground(
 			statusMessage,
 		});
 	} finally {
+		// A run that ends for real must not leave an armed migration-stop timer behind.
+		clearRunRestartState(record.id);
 		markLogTerminal(record.id);
 		// Also what actually drives the events websocket's `1000` close (`api/events-ws.ts` polls this
 		// exact flag, mirroring `api/routes/logs.ts`'s `?stream=true` handling of `isLogTerminal`).
@@ -383,14 +409,20 @@ export async function runInBackground(
 	}
 }
 
+/** Clamped to at least 1s so a run migrated at the edge of its budget still starts and times out. */
+function remainingTimeoutSecs(record: RunRecord): number {
+	const elapsedSecs = (Date.now() - Date.parse(record.startedAt)) / 1000;
+	return Math.max(1, Math.ceil(record.options.timeoutSecs - elapsedSecs));
+}
+
 /**
  * Stops the run and reports `ABORTED`. The record moves to `ABORTING` before `driver.abortRun` is called,
  * which is what makes this race-proof against `runInBackground`'s own completion write: an `ABORTING`
  * record only accepts `ABORTED` next, so whichever write lands first, the other is refused.
  *
- * `gracefully` on a `RUNNING` run publishes an `aborting` frame and waits `GRACEFUL_ABORT_WINDOW_MS`
- * before stopping; other states take the immediate path. A second concurrent graceful abort joins the
- * window rather than restarting it - see `requirements/api.md`.
+ * `gracefully` on a `RUNNING` run publishes the platform's `aborting` + `persistState` frame pair and
+ * waits `GRACEFUL_ABORT_WINDOW_MS` before stopping; other states take the immediate path. A second
+ * concurrent graceful abort joins the window rather than restarting it - see `requirements/api.md`.
  *
  * Both flags come from `onBeforeTransition`, read inside the same mutex-serialized write that performs
  * the transition: a preceding `get()` could observe a stale status, and only the hook can tell "this call
@@ -415,6 +447,7 @@ export async function abortRun(driver: Driver, run: RunRecord, gracefully = fals
 		// Best-effort, same no-subscriber tolerance `publishSystemInfo` already has (`events-channel.ts`):
 		// a run with nobody connected still waits out the window and still gets stopped.
 		publishAborting(run.id);
+		publishPersistState(run.id, false);
 		await new Promise<void>((resolve) => setTimeout(resolve, GRACEFUL_ABORT_WINDOW_MS));
 	}
 

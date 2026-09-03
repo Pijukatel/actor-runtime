@@ -1,3 +1,5 @@
 # pnpm's generated lockfile is pnpm's own output format, not ours to reformat - and the next
 # `pnpm install` would rewrite it in that format anyway.
 pnpm-lock.yaml
+# Verbatim Apache 2.0 text - legal wording keeps its canonical layout.
+LICENSE.md

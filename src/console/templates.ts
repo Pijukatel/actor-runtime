@@ -164,6 +164,18 @@ export function debugModeForm(
 	);
 }
 
+/** Rendered only for a `RUNNING` run (`console.md`, "Migrate button"). */
+export function migrateRunForm(runId: string): string {
+	return (
+		`<form method="post" action="/runs/${encodeURIComponent(runId)}/migrate">` +
+		'<button type="submit">Migrate</button>' +
+		'</form>' +
+		'<p class="empty">Emulates a platform migration: sends the <code>migrating</code> event, stops the ' +
+		'container a few seconds later (immediately if the Actor reboots itself), and restarts the same run. ' +
+		'Reload this page to watch the log and stats change.</p>'
+	);
+}
+
 /** The one-line credential-forwarding warning the `/settings` page shows above its form
  * (`console.md`'s "Settings page" section) - both toggles forward the caller's own Apify token the
  * moment either is on, so this is shown unconditionally, not only once a toggle is already on. */

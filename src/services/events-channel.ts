@@ -81,6 +81,17 @@ export function publishAborting(runId: string): void {
 	broadcast(getOrCreate(runId), JSON.stringify({ name: 'aborting', data: {} }));
 }
 
+/** Never paired with a server-sent `persistState` - the SDKs synthesize that one on `migrating`. */
+export function publishMigrating(runId: string): void {
+	broadcast(getOrCreate(runId), JSON.stringify({ name: 'migrating', data: {} }));
+}
+
+/** Sent server-side only alongside a graceful abort's `aborting` frame, matching the platform; the
+ * periodic `persistState` stays SDK-generated. */
+export function publishPersistState(runId: string, isMigrating: boolean): void {
+	broadcast(getOrCreate(runId), JSON.stringify({ name: 'persistState', data: { isMigrating } }));
+}
+
 /** Returns an unsubscribe function, mirroring `logs.ts`'s `subscribeLog`. */
 export function subscribeEvents(runId: string, onFrame: (frame: string) => void): () => void {
 	const state = getOrCreate(runId);

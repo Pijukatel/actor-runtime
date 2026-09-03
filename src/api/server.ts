@@ -15,6 +15,7 @@ import { mountLogs } from './routes/logs.js';
 import { mountRunStorageAliases } from './routes/run-storage-aliases.js';
 import { mountDevFolder } from './routes/dev-folder.js';
 import { mountDebugMode } from './routes/debug-mode.js';
+import { mountMigrate } from './routes/migrate.js';
 import { mountApiFallback } from './routes/api-fallback.js';
 import { attemptFallback, type LocalError } from '../services/api-fallback.js';
 import type { Driver } from '../driver/types.js';
@@ -43,13 +44,14 @@ export function createApiServer(deps: ApiServerDeps): Express {
 	// `/actor-runtime/*` - a deliberately non-Apify, local-runtime-only namespace (`api.md`), registered
 	// before the `v2` router (and its own `auth()`) below entirely, so it gets its own sub-router with its
 	// own `auth()` rather than inheriting `v2.use(auth())`. Registered once here, shared by every route
-	// module mounted on this router (`mountDevFolder`, `mountApiFallback`) rather than each registering
+	// module mounted on this router (`mountDevFolder`, `mountMigrate`, `mountApiFallback`) rather than each registering
 	// its own - they are the same router instance, so a second registration would just run `auth()`
 	// twice per request for no benefit.
 	const actorRuntime = express.Router();
 	actorRuntime.use(auth());
 	mountDevFolder(actorRuntime, deps);
 	mountDebugMode(actorRuntime);
+	mountMigrate(actorRuntime, deps);
 	mountApiFallback(actorRuntime);
 	app.use('/actor-runtime', actorRuntime);
 	// Also served at `/v2/actor-runtime/*` - the *same* router instance, no duplicated route logic - solely

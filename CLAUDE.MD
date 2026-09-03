@@ -47,6 +47,11 @@ Local Actor runtime is an Actor development tool for developing, running, and de
   a slow attach. Clear the toggle with
   `apify api POST /actor-runtime/debug/<actorId> --body '{"enabled": false}'` to go back to running
   normally.
+- To test how an Actor handles platform migrations: while a run is `RUNNING`, call
+  `apify api POST /actor-runtime/migrate/<runId>`, or press the Migrate button on the run's console
+  detail page. The run gets the platform migration experience: a `migrating` event, its container
+  stopped a few seconds later, and a fresh container for the same run (same run id, env vars, and
+  storages, in-memory state gone). `POST /v2/actor-runs/<runId>/reboot` is also implemented.
 - If a call fails because this runtime doesn't have the Actor/run/build/storage id you're after, or
   doesn't implement that endpoint at all, you can opt in to having such calls transparently relayed to
   the real Apify platform instead of failing:

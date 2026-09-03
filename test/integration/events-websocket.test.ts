@@ -267,8 +267,8 @@ describe('events websocket (GET /actor-runtime/events/:runId)', () => {
 
 		expect(abortedSocket.messages).toContainEqual({ name: 'aborting', data: {} });
 		expect(unrelatedSocket.messages.some((m) => m.name === 'aborting')).toBe(false);
-		// Never persistState, on either socket, under any circumstance.
-		expect(abortedSocket.messages.some((m) => m.name === 'persistState')).toBe(false);
+		// The companion persistState gets the same per-run isolation.
+		expect(abortedSocket.messages).toContainEqual({ name: 'persistState', data: { isMigrating: false } });
 		expect(unrelatedSocket.messages.some((m) => m.name === 'persistState')).toBe(false);
 
 		await vi.advanceTimersByTimeAsync(30_000);
@@ -357,9 +357,9 @@ describe('events websocket (GET /actor-runtime/events/:runId)', () => {
 
 		const closeEvent = await socket.closed;
 		expect(closeEvent.code).toBe(1000);
-		// The graceful abort's own frame arrived, persistState never did.
+		// The graceful abort's own frame pair arrived (aborting plus its companion persistState).
 		expect(socket.messages).toContainEqual({ name: 'aborting', data: {} });
-		expect(socket.messages.some((m) => m.name === 'persistState')).toBe(false);
+		expect(socket.messages).toContainEqual({ name: 'persistState', data: { isMigrating: false } });
 	});
 
 	it("never drops a healthy, still-running run's connection for any reason short of the run ending or being rejected", async () => {

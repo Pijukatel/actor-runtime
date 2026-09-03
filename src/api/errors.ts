@@ -35,6 +35,12 @@ export function cannotRemoveRunningRun(): ApiError {
 	);
 }
 
+/** Matches the real platform's rejection of reboot/migrate on a finished run (`apify-core`'s
+ * `errors.actor.jobAlreadyFinished()`). */
+export function jobAlreadyFinished(): ApiError {
+	return new ApiError(403, 'job-finished', 'Actor job is already finished.');
+}
+
 /**
  * Matches the real Apify platform exactly: `DELETE /v2/actor-builds/:buildId` on a non-terminal build
  * is rejected rather than aborted-then-deleted (`apify-core`'s `errors.api.deletingUnfinishedBuild()`,

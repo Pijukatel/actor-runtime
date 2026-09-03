@@ -3,9 +3,10 @@ import type { Router } from 'express';
 import { requireUser } from '../auth.js';
 
 import { paginate, sendData, sortByTimestamp } from '../envelope.js';
-import { cannotRemoveRunningRun, recordNotFound } from '../errors.js';
+import { cannotRemoveRunningRun, jobAlreadyFinished, recordNotFound } from '../errors.js';
 import { h, paginationParams, queryBoolean } from '../handler.js';
 import { abortRun, deleteRun, getOwnedRun, listOwnedRuns } from '../../services/runs.js';
+import { rebootRun } from '../../services/migrations.js';
 import { isTerminalJobStatus } from '../../services/job-status.js';
 import { runDto } from '../dto/actors.js';
 import type { ApiServerDeps } from '../server.js';
@@ -57,6 +58,19 @@ export function mountRuns(router: Router, deps: ApiServerDeps): void {
 			// (`services/runs.ts: abortRun`'s doc comment).
 			const gracefully = queryBoolean(req, 'gracefully') ?? false;
 			const updated = await abortRun(deps.driver, run, gracefully);
+			sendData(res, runDto(updated ?? run));
+		}),
+	);
+
+	router.post(
+		'/actor-runs/:runId/reboot',
+		h(async (req, res) => {
+			const run = await getOwnedRun(requireUser(req).id, req.params.runId as string);
+			if (!run) throw recordNotFound();
+			// A finished run is rejected like on the platform; the SDKs call this endpoint from their
+			// default `migrating` handler.
+			if (isTerminalJobStatus(run.status)) throw jobAlreadyFinished();
+			const updated = await rebootRun(deps.driver, run);
 			sendData(res, runDto(updated ?? run));
 		}),
 	);

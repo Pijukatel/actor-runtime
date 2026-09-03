@@ -65,6 +65,7 @@
         - v2/actor-runs
         - v2/actor-runs/:runId
         - v2/actor-runs/:runId/abort
+        - v2/actor-runs/:runId/reboot
         - v2/actor-runs/:runId/log
     - Datasets
         - v2/datasets
@@ -184,7 +185,8 @@
       exactly the same inputs with the same outcomes.
 - **`GET /actor-runtime/events/:runId`** - a websocket upgrade, reachable at exactly this one path on
   the fixed API port (`system.md`). It carries the run's platform events: `systemInfo` once a second
-  (`actor-driver.md`), plus a one-off `aborting` frame under `?gracefully=` (below). Each frame is a
+  (`actor-driver.md`), a one-off `aborting`-plus-`persistState` pair under `?gracefully=` (below), and a
+  one-off `migrating` frame when a migration is triggered ("Migration emulation" below). Each frame is a
   single text message, `{"name": "...", "data": {...}}`.
     - The endpoint has no authentication. The run id in the path is the only thing it scopes on, and a
       connection only ever receives that run's own frames; one run never sees another's.
@@ -193,19 +195,52 @@
       as fatal to the Actor.
     - A connection to a live run stays open until the run ends, when the server closes it with `1000`. It
       is never dropped while healthy, except that a graceful runtime shutdown terminates every open
-      connection along with the rest of the server.
-    - `persistState` is never sent over this channel; both SDKs generate it themselves.
+      connection along with the rest of the server. A migration/reboot restart is not the run ending: the
+      restarted container reconnects to the same path.
+    - The _periodic_ `persistState` is never sent over this channel; both SDKs generate it themselves.
+      The server sends `persistState` exactly once per graceful abort, alongside `aborting` (matching the
+      platform), and never alongside `migrating` (the SDKs synthesize that one).
 
 ## Graceful abort (`?gracefully=`)
 
 - `POST /v2/actor-runs/:runId/abort` accepts an optional `?gracefully=` boolean.
 - Omitted or `false`: the run aborts immediately.
-- `true` on a running run: the record moves to `ABORTING` at once, an `aborting` frame with an empty
-  payload is published on the run's events channel, and the container is stopped 30 seconds later. The
-  request stays open until then.
+- `true` on a running run: the record moves to `ABORTING` at once, an `aborting` frame plus a
+  `persistState {"isMigrating": false}` frame (in that order, matching the platform) are published on
+  the run's events channel, and the container is stopped 30 seconds later. The request stays open until
+  then.
 - `true` on a run with no container (still `READY`, or already terminal): behaves as if omitted.
 - A second abort arriving during an open window: another `?gracefully=true` joins that window and neither
   restarts it nor stops the container early; a non-graceful one escalates and stops the container at once.
+
+## Migration emulation (`POST /actor-runtime/migrate/:runId`) and reboot
+
+A platform migration is not a run status: the run stays `RUNNING` while its container is killed and a
+new one starts for the same run - same run id, env vars, and default storages, in-memory state gone.
+This runtime emulates that observable experience on demand:
+
+- **`POST /actor-runtime/migrate/:runId`** (also at `/v2/actor-runtime/migrate/:runId`) - authenticated
+  like the rest of this namespace, scoped to the caller's own runs. The console's run detail view
+  exposes the same trigger as a Migrate button (`console.md`).
+    - Publishes a `migrating` frame (empty payload) on the run's events channel immediately, stops the
+      container 5 seconds later (the platform promises only "a few seconds"), then restarts the same
+      run. Status stays `RUNNING`; `startedAt`, `finishedAt`, `exitCode`, the default storage ids, and
+      the container env are unchanged. `stats.migrationCount` increments once per performed stop.
+    - Responds immediately with the run object (same shape as `abort`/`reboot`). A second call during
+      the open window joins it: same response, no second frame or window.
+    - Errors: unknown/foreign run `404` `record-not-found`; finished run `403` `job-finished`;
+      `READY`/`ABORTING` `400` `invalid-request`.
+    - The timeout budget is per run, not per container: a restarted container gets only the remaining
+      `timeoutSecs`.
+    - An abort (graceful or hard) landing during the window or restart wins: the run ends `ABORTED`,
+      never restarted.
+- **`POST /v2/actor-runs/:runId/reboot`** - the real platform endpoint the SDKs call from their default
+  `migrating` handler. Stops and restarts the run's container immediately (no warning frame), cancels an
+  open migration window, and increments `stats.rebootCount`. A finished run is `403` `job-finished`; a
+  non-terminal run with no container (`READY`, `ABORTING`) gets the count bump but no restart.
+- The run object's `stats` carries `migrationCount`, `rebootCount`, `restartCount`, and `resurrectCount`
+  (the latter two always `0` here), initialized to `0` at run creation like the platform.
+- The run's log is cumulative across restarts, with a one-line marker between the incarnations' output.
 
 ## Upstream fallback (opt-in, off by default, all HTTP methods)
 

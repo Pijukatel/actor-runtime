@@ -77,7 +77,13 @@ export function runDto(run: RunRecord) {
 		},
 		generalAccess: run.generalAccess ?? 'FOLLOW_USER_SETTING',
 		meta: run.meta,
-		stats: {},
+		// The platform's restart-bookkeeping stats (see `RunRecord.stats`); zeros backfill old fixtures.
+		stats: {
+			migrationCount: run.stats?.migrationCount ?? 0,
+			rebootCount: run.stats?.rebootCount ?? 0,
+			restartCount: run.stats?.restartCount ?? 0,
+			resurrectCount: run.stats?.resurrectCount ?? 0,
+		},
 		statusMessage: run.statusMessage,
 		containerUrl: undefined,
 	};
