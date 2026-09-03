@@ -5,15 +5,15 @@
  * shared rather than reimplemented.
  *
  * The console itself has no login of its own - it is unauthenticated, and every route is a read except
- * two mutations (`console.md`): the dev-folder form on the Actor detail view, and the `/settings` form
- * below. With multiple users it does not scope reads to any one of them: every list/detail route below
- * reads through the `listAll*`/`get*ById` cross-user service functions (see e.g.
- * `services/actors.ts: listAllActors`), never the API's own per-user `listOwned*`/`getOwned*`, and every
- * list row and detail view shows the object's owner `userId` (`console.md`: "Frontend shows for each
- * object the owner (userId)"). The dev-folder form writes cross-user the same way - a deliberate
- * deviation from the API's own strictly-owner-scoped write, not an accident; the `/settings` form is
- * runtime-global by nature (`api.md`'s "Upstream fallback" section), so ownership doesn't apply to it at
- * all.
+ * three mutations (`console.md`): the dev-folder form on the Actor detail view, the Migrate button on
+ * the run detail view, and the `/settings` form below. With multiple users it does not scope reads to
+ * any one of them: every list/detail route below reads through the `listAll*`/`get*ById` cross-user
+ * service functions (see e.g. `services/actors.ts: listAllActors`), never the API's own per-user
+ * `listOwned*`/`getOwned*`, and every list row and detail view shows the object's owner `userId`
+ * (`console.md`: "Frontend shows for each object the owner (userId)"). The dev-folder form and the
+ * Migrate button write cross-user the same way - a deliberate deviation from the API's own
+ * strictly-owner-scoped writes, not an accident; the `/settings` form is runtime-global by nature
+ * (`api.md`'s "Upstream fallback" section), so ownership doesn't apply to it at all.
  */
 import express, { type Express, type Request } from 'express';
 
@@ -26,6 +26,7 @@ import {
 } from '../services/dev-folder.js';
 import { getBuildById, listAllBuilds } from '../services/builds.js';
 import { getRunById, listAllRuns } from '../services/runs.js';
+import { migrateRun } from '../services/migrations.js';
 import { getFullLog } from '../services/logs.js';
 import { getStorageById, listAllStorages } from '../services/storages.js';
 import { listRequests } from '../services/request-queues.js';
@@ -40,6 +41,7 @@ import {
 	devFolderForm,
 	escapeHtml,
 	layout,
+	migrateRunForm,
 	settingsForm,
 	table,
 	type LinkedCell,
@@ -53,21 +55,22 @@ function storageLink(prefix: '/datasets' | '/key-value-stores' | '/request-queue
 	return { text: id, href: `${prefix}/${encodeURIComponent(id)}` };
 }
 
-/** Whether `req` carries positive evidence of being a cross-site form submission, for either of the
- * console's two mutating `POST` routes. The console is deliberately unauthenticated - anyone who can
- * reach it can already flip a toggle or register a dev folder (`console.md`) - but both routes are
- * unauthenticated, state-changing form `POST`s reachable from any origin, and a cross-site page silently
- * driving either one is a wider threat model than "reachable": that's true of both routes on its own, and
- * one of them (`/settings`) also enables credential egress once fallback is switched on, which raises the
- * stakes further. Every modern browser sends `Sec-Fetch-Site` on a form submission (a same-origin one -
- * the only way a human actually uses either form - is always `same-origin` or `none`); a request without
- * the header at all (an older browser, or a non-browser caller like `curl`, which `console.md`'s
- * unauthenticated-by-design model already has to tolerate) reports `false` here - only a header that
- * positively says otherwise blocks the request. This closes off the specific cross-site-form vector
- * without adding authentication or changing either route's documented behaviour for a legitimate
- * same-origin submission. Written as a plain predicate (checked at the top of each handler) rather than
- * an Express middleware, so it needs no generic parameter shared across the handler chain - `req.params`
- * keeps the type each route's own path literal already gives it. */
+/** Whether `req` carries positive evidence of being a cross-site form submission, for any of the
+ * console's three mutating `POST` routes. The console is deliberately unauthenticated - anyone who can
+ * reach it can already flip a toggle, register a dev folder, or migrate a run (`console.md`) - but all
+ * three routes are unauthenticated, state-changing form `POST`s reachable from any origin, and a
+ * cross-site page silently driving one is a wider threat model than "reachable": that's true of each
+ * route on its own, and one of them (`/settings`) also enables credential egress once fallback is
+ * switched on, which raises the stakes further. Every modern browser sends `Sec-Fetch-Site` on a form
+ * submission (a same-origin one - the only way a human actually uses these forms - is always
+ * `same-origin` or `none`); a request without the header at all (an older browser, or a non-browser
+ * caller like `curl`, which `console.md`'s unauthenticated-by-design model already has to tolerate)
+ * reports `false` here - only a header that positively says otherwise blocks the request. This closes
+ * off the specific cross-site-form vector without adding authentication or changing any route's
+ * documented behaviour for a legitimate same-origin submission. Written as a plain predicate (checked
+ * at the top of each handler) rather than an Express middleware, so it needs no generic parameter
+ * shared across the handler chain - `req.params` keeps the type each route's own path literal already
+ * gives it. */
 function isCrossSiteWrite(req: Request): boolean {
 	const site = req.header('sec-fetch-site');
 	return site !== undefined && site !== 'same-origin' && site !== 'none';
@@ -95,9 +98,9 @@ function devFolderSection(actorId: string, status: DevFolderStatus, errorMessage
 export function createConsoleServer(deps: ConsoleServerDeps): Express {
 	const app = express();
 	app.disable('x-powered-by');
-	// The dev-folder form and the `/settings` form below are the console's only two writes - every other
-	// route is a plain `GET` (`console.md`'s "Every route is a read except the dev-folder form and the
-	// Settings form below, which are the console's only two writes").
+	// The dev-folder form, the run detail view's Migrate button, and the `/settings` form below are the
+	// console's only three writes - every other route is a plain `GET` (`console.md`'s "Every route is a
+	// read except..." list).
 	app.use(express.urlencoded({ extended: false }));
 
 	app.get('/', async (_req, res) => {
@@ -281,6 +284,17 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			return;
 		}
 		const log = await getFullLog(run.id);
+		const migrateError = typeof req.query.migrateError === 'string' ? req.query.migrateError : undefined;
+		// migrateError renders regardless of status - a raced press usually means the run just ended.
+		const migrateErrorHtml = migrateError
+			? `<p class="error"><strong>Error:</strong> ${escapeHtml(migrateError)}</p>`
+			: '';
+		const migrateSection =
+			'<h2>Migration</h2>' +
+			migrateErrorHtml +
+			(run.status === 'RUNNING'
+				? migrateRunForm(run.id)
+				: `<p class="empty">Only a RUNNING run can be migrated (current status: ${escapeHtml(run.status)}).</p>`);
 		const body =
 			definitionList([
 				['id', run.id],
@@ -290,14 +304,38 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				['status', run.status],
 				['startedAt', run.startedAt],
 				['finishedAt', run.finishedAt ?? ''],
+				['migrationCount', run.stats?.migrationCount ?? 0],
+				['rebootCount', run.stats?.rebootCount ?? 0],
 				['defaultDatasetId', storageLink('/datasets', run.defaultDatasetId)],
 				['defaultKeyValueStoreId', storageLink('/key-value-stores', run.defaultKeyValueStoreId)],
 				['defaultRequestQueueId', storageLink('/request-queues', run.defaultRequestQueueId)],
 			]) +
+			migrateSection +
 			'<h2>Log</h2><pre>' +
 			(log ? ansiToHtml(log) : '(empty)') +
 			'</pre>';
 		res.send(layout(`Run ${run.id}`, body));
+	});
+
+	/** The console's third write (`console.md`) - the same `migrateRun` as the API endpoint, cross-user
+	 * like the dev-folder form. */
+	app.post('/runs/:id/migrate', async (req, res) => {
+		if (isCrossSiteWrite(req)) {
+			res.status(403).send('Cross-site form submissions are not allowed.');
+			return;
+		}
+		const run = await getRunById(req.params.id);
+		if (!run) {
+			res.status(404).send(layout('Not found', '<p>Run not found.</p>'));
+			return;
+		}
+		const result = await migrateRun(deps.driver, run);
+		if (result === 'not-running') {
+			const message = `Only a RUNNING run can be migrated (current status: ${run.status}).`;
+			res.redirect(`/runs/${encodeURIComponent(run.id)}?migrateError=${encodeURIComponent(message)}`);
+			return;
+		}
+		res.redirect(`/runs/${encodeURIComponent(run.id)}`);
 	});
 
 	app.get('/logs', async (_req, res) => {
@@ -447,9 +485,9 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 
 	// --- Settings: the shared upstream-fallback toggle state (`services/api-fallback.ts`), read/written
 	// through the same module the API's `GET`/`POST /actor-runtime/api-fallback` route uses - never
-	// through the API port itself (the dev-folder form's precedent). This is the console's second
-	// mutation alongside the dev-folder form - `console.md`'s "every route is a read except..." now
-	// names both.
+	// through the API port itself (the dev-folder form's precedent). This is one of the console's three
+	// mutations, alongside the dev-folder form and the run detail view's Migrate button - `console.md`'s
+	// "every route is a read except..." names all three.
 
 	app.get('/settings', async (_req, res) => {
 		const state = getApiFallbackState();

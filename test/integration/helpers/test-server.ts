@@ -14,7 +14,15 @@ import { createApiServer } from '../../../src/api/server.js';
 import { attachEventsWebSocket } from '../../../src/api/events-ws.js';
 import { resetLogsForTests, stopLogFlusher } from '../../../src/services/logs.js';
 import { resetEventsChannelForTests } from '../../../src/services/events-channel.js';
-import type { BuildContext, BuildOutcome, Driver, RunOutcome, RunResourceSample } from '../../../src/driver/types.js';
+import { resetMigrationsForTests } from '../../../src/services/migrations.js';
+import type {
+	BuildContext,
+	BuildOutcome,
+	Driver,
+	RunContext,
+	RunOutcome,
+	RunResourceSample,
+} from '../../../src/driver/types.js';
 
 /** A driver that is always unavailable, so build/run creation fails fast and deterministically. */
 export function unavailableDriver(): Driver {
@@ -303,6 +311,67 @@ export function multiRunDriver(): MultiRunDriver {
 	};
 }
 
+export interface StartCall {
+	ctx: RunContext;
+	resolve(outcome: RunOutcome): void;
+	reject(error: Error): void;
+}
+
+/** Unlike `deferredRunDriver`/`multiRunDriver`, every `startRun` call gets its own deferred outcome -
+ * a migrated/rebooted run starts a second container for the same run id. `waitForStartCalls` uses no
+ * timer, so it is safe under fake timers. */
+export interface RestartTrackingDriver extends Driver {
+	startCalls: StartCall[];
+	abortRunCalls: string[];
+	waitForStartCalls(count: number): Promise<void>;
+}
+
+export function restartTrackingDriver(): RestartTrackingDriver {
+	const startCalls: StartCall[] = [];
+	const abortRunCalls: string[] = [];
+	const waiters: Array<{ count: number; resolve(): void }> = [];
+	const notify = (): void => {
+		for (const waiter of [...waiters]) {
+			if (startCalls.length >= waiter.count) {
+				waiter.resolve();
+				waiters.splice(waiters.indexOf(waiter), 1);
+			}
+		}
+	};
+	return {
+		available: true,
+		startCalls,
+		abortRunCalls,
+		async init() {},
+		async startBuild() {
+			throw new Error('not used by this stub');
+		},
+		async abortBuild() {},
+		async startRun(ctx) {
+			return new Promise<RunOutcome>((resolve, reject) => {
+				startCalls.push({ ctx, resolve, reject });
+				notify();
+			});
+		},
+		async abortRun(runId) {
+			abortRunCalls.push(runId);
+		},
+		async reconcileOrphans() {},
+		async probeDevFolder() {
+			throw new Error('not used by this stub');
+		},
+		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
+		async waitForStartCalls(count) {
+			if (startCalls.length >= count) return;
+			await new Promise<void>((resolve) => {
+				waiters.push({ count, resolve });
+			});
+		},
+	};
+}
+
 export interface TestServerHandle {
 	client: ApifyClient;
 	baseUrl: string;
@@ -367,6 +436,7 @@ export async function startTestServer(
 			stopLogFlusher();
 			resetLogsForTests();
 			resetEventsChannelForTests();
+			resetMigrationsForTests();
 			await shutdownStorage();
 			resetStorageForTests();
 			resetRegistriesForTests();
