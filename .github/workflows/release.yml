@@ -1,15 +1,19 @@
 name: Release Docker image
 
-# Manual-only: pick a branch (or any ref - tag/SHA works too) and this builds the runtime image for
-# every platform in `platforms` and pushes it to Docker Hub as one multi-arch manifest per tag, so a
-# single tag serves x86_64 Linux/Windows-WSL2/Intel Mac and arm64 (Apple Silicon, Ampere) alike.
+# Manual-only: builds the runtime image for every platform in `platforms` and pushes it to Docker Hub
+# as one multi-arch manifest per tag, so a single tag serves x86_64 Linux/Windows-WSL2/Intel Mac and
+# arm64 (Apple Silicon, Ampere) alike.
+#
+# By default it builds whatever branch you dispatched it from ("Use workflow from"), so there is no
+# second branch to remember to change. The `branch` input only exists to override that - to run a
+# newer version of this workflow against an older ref.
 on:
     workflow_dispatch:
         inputs:
             branch:
-                description: Branch (or tag/SHA) to build the image from
-                required: true
-                default: master
+                description: Ref to build - leave empty to build the branch this workflow runs from
+                required: false
+                default: ''
             image:
                 description: Docker Hub repository to push to
                 required: true
@@ -34,9 +38,10 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 60
         steps:
+            # `inputs.branch || github.ref_name`: an empty input falls back to the dispatched branch.
             - uses: actions/checkout@v4
               with:
-                  ref: ${{ inputs.branch }}
+                  ref: ${{ inputs.branch || github.ref_name }}
 
             # Fail here rather than three slow build steps later, with the fix named.
             - name: Check Docker Hub credentials are configured
@@ -57,7 +62,7 @@ jobs:
               id: tags
               env:
                   IMAGE: ${{ inputs.image }}
-                  BRANCH: ${{ inputs.branch }}
+                  BRANCH: ${{ inputs.branch || github.ref_name }}
                   EXTRA_TAG: ${{ inputs.extra_tag }}
                   LATEST: ${{ inputs.latest }}
               run: |
@@ -115,7 +120,7 @@ jobs:
                       org.opencontainers.image.description=A minimal, self-contained local Apify platform in a single Docker image.
                       org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
                       org.opencontainers.image.revision=${{ steps.tags.outputs.revision }}
-                      org.opencontainers.image.version=${{ inputs.branch }}
+                      org.opencontainers.image.version=${{ inputs.branch || github.ref_name }}
 
             - name: Summary
               env:
