@@ -120,8 +120,6 @@ Images currently go to the temporary dev repository
 [`josefprochazka/actor-runtime-dev`](https://hub.docker.com/r/josefprochazka/actor-runtime-dev) (it
 will move to an Apify-owned namespace later).
 
-### From CI (preferred)
-
 The **Release Docker image** workflow (`.github/workflows/release.yml`) is manual only: Actions ->
 Release Docker image -> Run workflow, then pick the branch to build (plus, optionally, an extra tag
 such as `v0.1.0`, whether to also move `:latest`, and which platforms to build). It pushes one
@@ -131,37 +129,6 @@ x86_64 and Apple Silicon.
 Every run publishes `<branch>-<short-sha>` (immutable) and `<branch>` (moving). It needs two
 repository secrets: `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access token with
 Read/Write from <https://hub.docker.com/settings/security>).
-
-### From a local machine
-
-One-off, for your own architecture only:
-
-```bash
-docker login
-docker build -t josefprochazka/actor-runtime-dev:dev .
-docker push josefprochazka/actor-runtime-dev:dev
-```
-
-Multi-arch, matching what CI publishes - `buildx` cannot load a multi-platform result into the local
-image store, so this builds and pushes in one step:
-
-```bash
-docker login
-docker buildx create --name actor-runtime --use   # once; reuse with `--use` afterwards
-docker buildx build \
-  --platform linux/amd64,linux/arm64 \
-  -t josefprochazka/actor-runtime-dev:dev \
-  --push .
-```
-
-Building the non-native platform locally uses QEMU emulation (`docker run --privileged --rm
-tonistiigi/binfmt --install all` if your Docker doesn't already have it registered), which is slow;
-the Dockerfile's `debugpy-payload` and `builder` stages are pinned to `$BUILDPLATFORM` so only the
-final stage is emulated. Check what you pushed with:
-
-```bash
-docker buildx imagetools inspect josefprochazka/actor-runtime-dev:dev
-```
 
 ## Development
 
