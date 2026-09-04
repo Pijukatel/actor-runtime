@@ -3,7 +3,10 @@
 # --- Python debug-mode payload (`requirements/actor-driver.md`'s "Debug mode" section): a pinned,
 # pure-Python debugpy wheel plus `docker/sitecustomize.py`, pre-built into a tar streamed into a Python
 # debug run's container at run start via `container.putArchive`.
-FROM python:3.11-slim AS debugpy-payload
+# `--platform=$BUILDPLATFORM`: this stage's whole output is architecture-independent (a pure-Python
+# wheel plus a .py file, tarred), so on a multi-arch build it runs once natively on the builder rather
+# than once per target under QEMU. Requires BuildKit, which is the default builder in Docker >= 23.
+FROM --platform=$BUILDPLATFORM python:3.11-slim AS debugpy-payload
 ARG DEBUGPY_VERSION=1.8.21
 # Must match `services/debug-mode.ts`'s `PYTHON_DEBUG_PAYLOAD_DIR` - the in-Actor-container path the
 # tar is extracted to.
@@ -26,7 +29,10 @@ import debugpy._version as v; \
 print(v.get_versions()['version'])" > /payload/debugpy-version.txt
 RUN tar -cf /payload/debugpy-payload.tar -C /payload/root .
 
-FROM node:24-bookworm-slim AS builder
+# Also architecture-independent: this stage only runs `tsc`, and the `dist/` it hands to the final
+# stage is plain JavaScript. The final stage does its own `pnpm install --prod`, so the target
+# architecture's native bindings still come from a native (emulated) install there.
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS builder
 
 WORKDIR /usr/src/app
 

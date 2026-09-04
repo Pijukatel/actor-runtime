@@ -114,6 +114,22 @@ three-field form (`enabled`/`language`/`port`) on the Actor's page in the consol
 `requirements/actor-driver.md`'s "Debug mode" section; endpoint/console details: `requirements/api.md`'s
 `/actor-runtime/*` section and `requirements/console.md`.
 
+## Publishing the image
+
+Images currently go to the temporary dev repository
+[`josefprochazka/actor-runtime-dev`](https://hub.docker.com/r/josefprochazka/actor-runtime-dev) (it
+will move to an Apify-owned namespace later).
+
+The **Release Docker image** workflow (`.github/workflows/release.yml`) is manual only: Actions ->
+Release Docker image -> Run workflow, then pick the branch to build (plus, optionally, an extra tag
+such as `v0.1.0`, whether to also move `:latest`, and which platforms to build). It pushes one
+multi-arch manifest per tag - `linux/amd64` and `linux/arm64` by default - so the same tag serves
+x86_64 and Apple Silicon.
+
+Every run publishes `<branch>-<short-sha>` (immutable) and `<branch>` (moving). It needs two
+repository secrets: `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access token with
+Read/Write from <https://hub.docker.com/settings/security>).
+
 ## Development
 
 ```bash
