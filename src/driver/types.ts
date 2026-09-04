@@ -18,19 +18,10 @@ export interface DevFolderMount {
 	imageWorkingDirectory: string;
 }
 
-/** What a debug run's container needs from the driver beyond the ordinary `RunContext` shape - the
- * resolved language (which log line/attach instructions to print, and whether the debugpy payload needs
- * injecting) and the port to expose-and-publish. The env entries a resolved `DebugPlan` adds
- * (`NODE_OPTIONS`/`PYTHONPATH`) are already merged into `RunContext.env` by the time this reaches the
- * driver - `debug` carries only what `docker-driver.ts`'s `startRun` needs to act on directly
- * (`ExposedPorts`/`PortBindings`, the attach log line, the debugpy payload upload). The driver has no
- * concept of the Actor id or of the toggle's HTTP surface: on a port conflict it throws
- * `DebugPortInUseError` (below) with just the port, and `services/runs.ts` - which has the Actor record
- * in hand - turns that into the user-facing remediation via `services/debug-mode.ts:
- * describeDebugPortConflict`. A typed driver error carrying just enough for the service layer, which owns
- * the Actor record and the toggle's HTTP surface, to word the remedy - analogous to `DriverTimedOutError`
- * below as a typed-driver-error precedent, though that one's own caller only maps status and keeps the
- * driver's own message verbatim (`services/builds.ts`), so the wording split here is new. */
+/** What a debug run's container needs beyond the ordinary `RunContext` shape - resolved language and
+ * port to expose-and-publish. Debug env vars (`NODE_OPTIONS`/`PYTHONPATH`) are already merged into
+ * `RunContext.env` by this point; `debug` carries only what `startRun` acts on directly (port
+ * binding, the attach log line, the debugpy payload upload). */
 export interface DebugRunTarget {
 	language: 'node' | 'python';
 	port: number;
@@ -46,17 +37,10 @@ export interface RunContext {
 	debug?: DebugRunTarget;
 }
 
-/** What `Driver.inspectDebugTarget` reads off a run's resolved build image - just enough for
- * `services/debug-mode.ts: resolveDebugPlan` to resolve a debug plan, never a raw `dockerode` type (same
- * boundary discipline as `DevFolderMount`/`BuildOutcome` above). `cmd` is `Config.Cmd` verbatim - a
- * shell-form Dockerfile `CMD` already arrives here as `['/bin/sh', '-c', '...']`, since that is how the
- * daemon itself stores it; no shell parsing happens anywhere in this codebase. `entrypoint` is
- * `Config.Entrypoint` normalized to an array (the Engine API returns it as either a string or a
- * string array; `docker-driver.ts: inspectDebugTarget` does the one-element-array wrapping for a
- * string-form value before this type ever sees it), never the raw string form. `env` carries only the
- * four vars the language heuristic and the env-merge precedence actually need (`PYTHONPATH`/
- * `NODE_OPTIONS` for prepending, `PYTHON_VERSION`/`NODE_VERSION` as the base-image fingerprint of last
- * resort). */
+/** What `Driver.inspectDebugTarget` reads off a run's resolved build image, for
+ * `services/debug-mode.ts: resolveDebugPlan`. `cmd` is `Config.Cmd` verbatim (shell-form, unparsed).
+ * `entrypoint` is `Config.Entrypoint` normalized to an array. `env` carries only the four vars the
+ * language heuristic needs. */
 export interface InspectedDebugTarget {
 	cmd?: string[];
 	entrypoint?: string[];
@@ -130,18 +114,9 @@ export class DriverTimedOutError extends Error {
 	}
 }
 
-/**
- * Thrown by `Driver.startRun` when a debug run's container fails to start because its configured host
- * debug port is already bound by something else (`docker-driver.ts`'s `isPortInUseError` classifies the
- * daemon's rejection). Carries only the port - the driver has no Actor id and no opinion on the toggle's
- * HTTP surface, so it does not compose the user-facing remediation itself; `services/runs.ts` catches
- * this and hands `port` (plus the Actor it already has in hand) to `services/debug-mode.ts:
- * describeDebugPortConflict` to build that text - a typed driver error so the service layer, which owns
- * the Actor record and the toggle's HTTP surface, can word the remedy. Analogous to `DriverTimedOutError`
- * above as a typed-driver-error precedent, but not the same split: that error's own caller
- * (`services/builds.ts`) only maps it to a status and stores the driver's own message verbatim: the
- * wording split here is new.
- */
+/** Thrown by `Driver.startRun` when a debug run's host debug port is already bound by something else.
+ * Carries only the port; `services/runs.ts` builds the user-facing message via
+ * `services/debug-mode.ts: describeDebugPortConflict`. */
 export class DebugPortInUseError extends Error {
 	readonly port: number;
 
@@ -200,11 +175,7 @@ export interface Driver {
 	 * must work for an Actor that has never been built at all. */
 	ensureProbeImage(): Promise<string>;
 
-	/** Reads back the image's own `Config.Cmd`/`Config.Entrypoint` and the four env vars
-	 * `services/debug-mode.ts: resolveDebugPlan` needs - the debug-mode analog of
-	 * `inspectWorkingDirectory` (private to `docker-driver.ts`, since only this module's own dev-folder
-	 * mount needs it). Called only when the run's Actor has debug mode on (`services/runs.ts`), never for
-	 * an ordinary run - unlike `inspectWorkingDirectory`, which runs unconditionally right after every
-	 * build. */
+	/** Reads back the image's `Config.Cmd`/`Config.Entrypoint` and env for
+	 * `services/debug-mode.ts: resolveDebugPlan`. Called only when the run's Actor has debug mode on. */
 	inspectDebugTarget(imageId: string): Promise<InspectedDebugTarget>;
 }

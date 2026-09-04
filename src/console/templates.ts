@@ -121,21 +121,12 @@ export function devFolderForm(actorId: string, currentValue: string, errorMessag
 	);
 }
 
-/** The debug-mode toggle form on the Actor detail view (`console.md`'s "Debug-mode form (Actor detail
- * view)" section) - full parity with the API body's three fields (`enabled`/`language`/`port`), not a
- * checkbox-only carve-out: a `language` select (defaulting to the currently-stored value, or `auto` when
- * debug mode is off) and a `port` number input (blank means "no override", matching the API body's own
- * optional field), alongside the `enabled` checkbox. Submitting always sends all three fields together -
- * same single-submit contract as `settingsForm` below, never a partial-merge PATCH.
+/** The debug-mode toggle form on the Actor detail view - full parity with the API body's three fields
+ * (`enabled`/`language`/`port`), submitted together, never a partial-merge PATCH.
  *
- * `current` is the *raw stored* `ActorRecord.localDebug` - not `debugStatus`'s display-computed value,
- * which fills in a language-appropriate default port whenever no override is stored. Rendering that
- * display value here would pre-fill the (editable, plain `<input type="number">`) port field with a
- * concrete number on every load, so an ordinary resubmission that only changes `language` would silently
- * persist that number as an explicit override - contradicting both this form's own "blank means no
- * override" help text below and `console.md`'s documented contract. The status row above this form (in
- * `debugModeSection`) is the right place for the display-computed effective port; this form only ever
- * shows what is genuinely stored. */
+ * `current` must be the *raw stored* `ActorLocalDebug`, not `debugStatus`'s display-computed value:
+ * rendering the computed default port would pre-fill the port input, so an unrelated resubmission would
+ * silently persist it as an explicit override. */
 export function debugModeForm(
 	actorId: string,
 	current: ActorLocalDebug | null | undefined,

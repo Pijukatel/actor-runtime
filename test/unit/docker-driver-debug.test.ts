@@ -1,14 +1,5 @@
-/**
- * `DockerDriver`'s debug-mode surface (`actor-driver.md`'s "Debug mode" section): `inspectDebugTarget`
- * (the `services/debug-mode.ts: resolveDebugPlan` input it reads off an image) and `startRun`'s
- * debug-only behavior - `ExposedPorts`/`PortBindings`, the debugpy payload upload via `putArchive`, the
- * attach log line, and the port-conflict/missing-payload failures. Split out of `docker-driver.test.ts`
- * (this repo's one-file-per-area convention) into its own file, with its own imports and describe
- * placement. The two port-conflict tests assert the typed `DebugPortInUseError` (`driver/types.ts`) the
- * driver throws - the driver only classifies the failure; `services/debug-mode.ts:
- * describeDebugPortConflict` composes the user-facing remediation text one layer up, and is tested on
- * its own in `debug-mode-validation.test.ts`.
- */
+/** `DockerDriver`'s debug-mode surface: `inspectDebugTarget` and `startRun`'s debug-only behavior.
+ * Split out of `docker-driver.test.ts` (one-file-per-area convention). */
 import { PassThrough } from 'node:stream';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -195,8 +186,6 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 		);
 		await new Promise((resolve) => setImmediate(resolve));
 
-		// The log line lands before `createContainer` is even called - matching the dev-mount line's own
-		// convention (`docker-driver.ts`'s doc comment on `startRun`).
 		expect(events[0]).toMatch(/^log:/);
 		expect(events).toContain('createContainer');
 		const attachLine = events[0]!.slice('log:'.length);
@@ -239,9 +228,7 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 			},
 			(chunk) => chunks.push(chunk),
 		);
-		// Real `fs.readFile` I/O (the payload preload) doesn't settle within a single microtask/`setImmediate`
-		// tick the way the rest of this stub's in-memory flow does - poll briefly instead of assuming one tick
-		// suffices.
+		// Real fs.readFile I/O doesn't settle within one tick like the rest of this stub - poll briefly.
 		for (let i = 0; i < 50 && callOrder.length < 3; i++) {
 			await new Promise((resolve) => setTimeout(resolve, 5));
 		}
@@ -410,11 +397,7 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 	});
 
 	it('caches the debug payload in memory after the first read - a second debug run on the same driver instance still succeeds after the payload is deleted from disk', async () => {
-		// A minimal per-run container stub (mirroring `stubDockerForRun`'s own container shape) - built
-		// fresh per run because `container.wait()`/`.logs()` each resolve/end exactly once and can't be
-		// reused for a second `startRun` call, but the *docker client* (and therefore the driver
-		// constructed against it) is created exactly once and never swapped, so this needs no reach into
-		// the driver's private fields at all.
+		// Built fresh per run since container.wait()/.logs() each resolve/end only once.
 		function freshContainerStub() {
 			let resolveWait!: (result: { StatusCode: number }) => void;
 			const waitPromise = new Promise<{ StatusCode: number }>((resolve) => {
@@ -461,8 +444,6 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 			debug: { language: 'python' as const, port: 5678 },
 		});
 
-		// First run: `loadDebugPayload` has nothing cached yet, so it reads the fixture tar/version files
-		// `beforeEach` wrote to `payloadDir` from disk.
 		const firstOutcome = driver.startRun(runOptions('run-debug-python-cache-1'), () => {});
 		for (let i = 0; i < 50 && first.container.putArchive.mock.calls.length < 1; i++) {
 			await new Promise((resolve) => setTimeout(resolve, 5));
@@ -472,11 +453,7 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 		first.endLogStream();
 		await firstOutcome;
 
-		// Delete the on-disk payload entirely before the second run. If the driver re-read it per run
-		// instead of caching the first read, this second run would fail the same way the dedicated
-		// "missing payload" test above asserts (`rejects.toThrow(/debugpy payload is missing/)`), and the
-		// `putArchive` assertion below would never be reached - this is what makes the test a real
-		// regression check for the caching behavior, not a tautology.
+		// Delete the on-disk payload before the second run - only a cached read can still succeed.
 		rmSync(join(payloadDir, 'debugpy-payload.tar'));
 
 		const secondOutcome = driver.startRun(runOptions('run-debug-python-cache-2'), () => {});
@@ -494,8 +471,6 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 		const driver = new DockerDriver(stub.docker);
 		driver.available = true;
 
-		// A tiny real timeout - the container is never told to exit, mirroring a session where no
-		// debugger ever attaches, so the only thing that can end this run is the timer itself.
 		const outcomePromise = driver.startRun(
 			{
 				runId: 'run-debug-timeout',
@@ -508,9 +483,6 @@ describe('DockerDriver.startRun - debug mode (actor-driver.md: "Debug mode")', (
 			() => {},
 		);
 
-		// The timer firing calls `container.stop()`, which this stub resolves without itself ending the
-		// container - so the outcome only settles once `stop()` is observed AND the log stream is also
-		// ended (mirroring a real daemon actually stopping the container and closing its logs).
 		await new Promise((resolve) => setTimeout(resolve, 150));
 		expect(stub.container.stop).toHaveBeenCalled();
 		stub.triggerContainerExit(137);

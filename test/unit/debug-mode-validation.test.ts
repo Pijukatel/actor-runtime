@@ -1,10 +1,6 @@
-/**
- * Pure-function coverage for `services/debug-mode.ts`'s body validation and run-start language
- * resolution (`actor-driver.md`'s "Debug mode" section) - mirrors `dev-folder-validation.test.ts`'s own
- * split: everything here needs no registry, no Docker, and no driver stub at all.
- * `setDebugMode`/`debugStatus` (the registry-touching half) are covered by
- * `test/integration/debug-mode.test.ts`.
- */
+/** Pure-function coverage for `services/debug-mode.ts`'s body validation and run-start language
+ * resolution - no registry, no Docker. `setDebugMode`/`debugStatus` are covered by
+ * `test/integration/debug-mode.test.ts`. */
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -224,12 +220,7 @@ describe("resolveDebugPlan - env prepending (never replacing the image's own val
 	});
 
 	it('a key with no ENV_LIST_SEPARATOR entry (the debug-port var) CLOBBERS an existing value outright rather than prepending - unlike NODE_OPTIONS/PYTHONPATH above', () => {
-		// Only reachable in practice for `DEBUGPY_PORT_ENV_VAR`, if an Actor version's own `envVars` ever
-		// sets that exact name (`services/runs.ts: buildEnv`'s own prepend call) - `resolveDebugPlan` itself
-		// never calls `prependDebugEnvValue` for this key at all (it assigns it as a plain literal), so this
-		// exercises `prependDebugEnvValue` directly, the same way `services/runs.ts: buildEnv` would.
 		expect(prependDebugEnvValue(DEBUGPY_PORT_ENV_VAR, '5678', '9999')).toBe('5678');
-		// A key WITH a separator entry never clobbers - included for contrast in the same test.
 		expect(prependDebugEnvValue('PYTHONPATH', PYTHON_DEBUG_PAYLOAD_DIR, '/usr/src/app')).toBe(
 			`${PYTHON_DEBUG_PAYLOAD_DIR}:/usr/src/app`,
 		);
@@ -246,9 +237,6 @@ describe('describeDebugRefusal', () => {
 		expect(message).toContain('npm start');
 		expect(message).toContain('/actor-runtime/debug/actor-123');
 		expect(message).toContain('"enabled": false');
-		// The "Cannot start run: " prefix is never baked into this function's own return value -
-		// `services/runs.ts` prefixes it at its one call site, for both the log line and the
-		// `statusMessage` - see the doc comment above `describeDebugRefusal`.
 		expect(message).not.toContain('Cannot start run:');
 	});
 
@@ -279,10 +267,6 @@ describe('describeDebugPortConflict', () => {
 		expect(message).toContain('"language": "python", "port": <n>');
 	});
 
-	// No "Cannot start run: " prefix: unlike `describeDebugRefusal`, this failure happens after
-	// `createContainer` (the port is only bound at `container.start()`), so it is never routed through
-	// `services/runs.ts: failBeforeContainer` - it reaches the run's `statusMessage` exactly like any other
-	// mid-run driver failure's bare `error.message`.
 	it('carries no "Cannot start run: " prefix', () => {
 		const message = describeDebugPortConflict('actor-123', 'auto', 9229);
 		expect(message).not.toContain('Cannot start run:');

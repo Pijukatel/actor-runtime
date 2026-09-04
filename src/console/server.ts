@@ -98,15 +98,10 @@ function devFolderSection(actorId: string, status: DevFolderStatus, errorMessage
 	);
 }
 
-/** The debug-mode toggle form + its status row, on the Actor detail view (`console.md`'s "Debug-mode form
- * (Actor detail view)" section) - full parity with the API body: `enabled`/`language`/`port`, not a
- * checkbox-only carve-out, so the console produces the same stored `ActorRecord.localDebug` outcome as a
- * direct API call with the same input. Takes the Actor's raw stored `localDebug` (never the whole
- * record - it needs no other field, matching `devFolderSection`'s own actorId-only shape) and derives the
- * display status from it itself, since the form below needs that same raw value pre-`debugStatus` (see
- * `debugModeForm`'s own doc comment for why the display-computed status value must never pre-fill the
- * port input). `errorMessage` is threaded through from the POST handler's redirect query param below,
- * same as `devFolderSection`'s own `devFolderError`. */
+/** The debug-mode toggle form + status row on the Actor detail view. Full API-body parity
+ * (`enabled`/`language`/`port`), not a checkbox-only carve-out. Passes the raw stored `localDebug` (not
+ * `debugStatus`'s display-computed version) through to `debugModeForm`, which needs the raw value to
+ * decide what to pre-fill. */
 function debugModeSection(actorId: string, localDebug: ActorRecord['localDebug'], errorMessage?: string): string {
 	const status = debugStatus({ localDebug });
 	return (
@@ -209,12 +204,9 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		res.redirect(`/actors/${encodeURIComponent(actor.id)}`);
 	});
 
-	/** One of the console's four mutations (`console.md`'s "every route is a read except..." list) - funnels through the same
-	 * `setDebugMode` the API endpoint uses, resolving the Actor cross-user by the id already in the page
-	 * URL (no token), exactly like the dev-folder form above. Always submits all three fields (`enabled`
-	 * as a checkbox, `language` as a select, `port` as a number input, left blank for "no override") -
-	 * full parity with the API body, no checkbox-only carve-out. A failure redirects back with the
-	 * classified message in a query param, same pattern as the dev-folder form's `devFolderError`. */
+	/** One of the console's four mutations - funnels through the same `setDebugMode` the API endpoint
+	 * uses, resolving the Actor cross-user by the id already in the page URL, like the dev-folder form
+	 * above. A failure redirects back with the classified message in a query param. */
 	app.post('/actors/:id/debug', async (req, res) => {
 		if (isCrossSiteWrite(req)) {
 			res.status(403).send('Cross-site form submissions are not allowed.');
@@ -371,9 +363,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			['defaultKeyValueStoreId', storageLink('/key-value-stores', run.defaultKeyValueStoreId)],
 			['defaultRequestQueueId', storageLink('/request-queues', run.defaultRequestQueueId)],
 		];
-		// Only present for a run that actually resolved a debug plan (`services/debug-mode.ts`) - local-
-		// only, never present on the emulated `/v2` run object (`dto/actors.ts: runDto` is explicit
-		// field-by-field, same containment `localDevFolder` already relies on).
+		// Only present for a run that resolved a debug plan; never on the emulated `/v2` run object.
 		if (run.localDebug) {
 			rows.push(['debug', `${run.localDebug.language}, attach at 127.0.0.1:${run.localDebug.port}`]);
 		}

@@ -1,13 +1,7 @@
-/**
- * Integration coverage for the per-Actor debug-mode toggle (`api.md`'s `/actor-runtime/debug/:actorId`
- * section, `console.md`'s debug form, `actor-driver.md`'s "Debug mode" section): endpoint
- * auth/ownership/shape contract, that the toggle never leaks into any `/v2` response, persistence across
- * two separate runs, the console form's parity with the API, and the run-start language-resolution
- * wiring through the real `services/runs.ts` path (a controllable `inspectDebugTarget` stub standing in
- * for a real build's image, since there is no Docker daemon in this sandbox - `docker-driver.ts`'s class
- * doc comment). Real port publishing/debugpy injection is only exercised in
- * `test/e2e/debug-mode.test.ts`.
- */
+/** Integration coverage for the per-Actor debug-mode toggle: endpoint contract, `/v2` containment,
+ * persistence, console form parity, and run-start language resolution via a stubbed `inspectDebugTarget`
+ * (no real Docker daemon here). Real port publishing/debugpy injection is only in
+ * `test/e2e/debug-mode.test.ts`. */
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -31,12 +25,8 @@ function post(baseUrl: string, actorId: string, body: unknown, token?: string) {
 	});
 }
 
-/**
- * A driver that is "available" and lets a test control exactly what `inspectDebugTarget` reports for
- * the run's resolved build, then captures every `startRun` call's `RunContext` - the debug-mode analog
- * of `run-env-vars.test.ts`'s `envCapturingDriver`. `startBuild` always succeeds with a fixed image id,
- * since these tests only care about the run-start path.
- */
+/** An available driver with a controllable `inspectDebugTarget`, capturing every `startRun` call's
+ * `RunContext`. */
 function debugCapturingDriver(
 	inspected: InspectedDebugTarget = { env: {} },
 	imageWorkingDirectory?: string,
@@ -186,9 +176,8 @@ describe('POST /actor-runtime/debug/:actorId', () => {
 		expect(bad.data.error.type).toBe('invalid-request');
 		expect(bad.data.error.message).toContain('prot');
 
-		// Read the raw stored state directly - a follow-up POST would itself change it (this toggle's
-		// accepted calls are full replaces, not merges), so it cannot be used to prove the REJECTED call
-		// above left the prior state alone.
+		// Read raw stored state - a follow-up POST would itself change it, so can't confirm the rejected
+		// call above left prior state alone.
 		const stored = await getRegistries().actors.get(actor.id);
 		expect(stored?.localDebug).toEqual({ language: 'python', port: 5678 });
 	});
@@ -324,12 +313,9 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		await post(server.baseUrl, actor.id, { enabled: true, language: 'node' }, server.token);
 
 		const detail = await axios.get(`${consoleBaseUrl}/actors/${actor.id}`);
-		// The read-only status row shows the effective/display default.
 		expect(detail.data).toContain('<dd>9229</dd>');
 		expect(detail.data).not.toContain('<dd>5678</dd>');
-		// The editable form field must stay blank - no override is actually stored, so pre-filling it with
-		// either language's default would silently turn an ordinary resubmission into a pinned override
-		// (`console.md`'s "blank meaning 'no override'" contract).
+		// Form field stays blank - it must show the raw stored value, not the display default.
 		expect(detail.data).toContain(
 			'<input type="number" name="port" value="" min="1024" max="65535" placeholder="(default)">',
 		);
@@ -342,7 +328,6 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		await setUpConsole(capturing.driver);
 		const actor = await pushAndBuild(server, 'debug-console-resubmit-language-only-actor');
 
-		// Step 1: toggle on via the console form itself, language auto, no port override.
 		const firstSubmit = await axios.post(
 			`${consoleBaseUrl}/actors/${actor.id}/debug`,
 			'enabled=on&language=auto&port=',
@@ -359,15 +344,11 @@ describe('console: debug-mode form on the Actor detail view', () => {
 				.then((a) => a?.localDebug),
 		).toEqual({ language: 'auto' });
 
-		// The form's own port input must render blank at this point - the exact pre-fill a browser would
-		// resubmit unedited if the developer only touched the "language" select.
 		const detailBeforeResubmit = await axios.get(`${consoleBaseUrl}/actors/${actor.id}`);
 		expect(detailBeforeResubmit.data).toContain(
 			'<input type="number" name="port" value="" min="1024" max="65535" placeholder="(default)">',
 		);
 
-		// Step 2: resubmit the form changing only "language" to "node" - "port" is submitted exactly as the
-		// form rendered it: blank.
 		const secondSubmit = await axios.post(
 			`${consoleBaseUrl}/actors/${actor.id}/debug`,
 			'enabled=on&language=node&port=',
@@ -379,12 +360,9 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		);
 		expect(secondSubmit.status).toBe(302);
 
-		// The stored record must keep "port" unset - never silently pinned to the display default that was
-		// showing before the resubmission (5678, the nominal "auto" placeholder).
 		const stored = await getRegistries().actors.get(actor.id);
 		expect(stored?.localDebug).toEqual({ language: 'node' });
 
-		// And the effective port at run start must be node's own real default, 9229 - never 5678.
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 		expect(run.status).toBe('SUCCEEDED');
 		const ctx = capturing.getStartRunContexts()[0]!;
@@ -527,8 +505,6 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 				buildTag: 'latest',
 				sourceType: 'SOURCE_FILES' as never,
 				sourceFiles: [],
-				// A developer-configured Actor input, not the base image's own baked-in value - distinct from
-				// `resolveDebugPlan`'s own prepend onto `InspectedDebugTarget.env` (the image's `Config.Env`).
 				envVars: [
 					{ name: 'NODE_OPTIONS', value: '--max-old-space-size=4096' },
 					{ name: 'APIFY_TOKEN', value: 'should-not-win' },
@@ -542,9 +518,7 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 		expect(run.status).toBe('SUCCEEDED');
 
 		const ctx = capturing.getStartRunContexts()[0]!;
-		// Before the fix, `...versionEnv, ...debugPlan?.env` fully replaced the version's own NODE_OPTIONS.
 		expect(ctx.env.NODE_OPTIONS).toBe('--inspect-brk=0.0.0.0:9229 --max-old-space-size=4096');
-		// Platform-owned vars still win over both the version's own envVars and the debug plan's env.
 		expect(ctx.env.APIFY_TOKEN).toBe(server.token);
 		expect(ctx.env.APIFY_TOKEN).not.toBe('should-not-win');
 	});
@@ -571,10 +545,7 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 		expect(run.status).toBe('SUCCEEDED');
 
 		const ctx = capturing.getStartRunContexts()[0]!;
-		// `resolveDebugPlan` prepends the debug flag onto the image's own value first ("from-image"); then
-		// `buildEnv` prepends THAT whole result onto the version's own value ("from-version") - each layer
-		// preserved, none clobbering another. A non-debug run of the same Actor would carry only
-		// "from-version" (ordinary container env precedence discards the image's baked value outright).
+		// Debug prefix, then image's own value, then version's - each layer preserved, none clobbered.
 		expect(ctx.env.NODE_OPTIONS).toBe('--inspect-brk=0.0.0.0:9229 from-image from-version');
 	});
 
@@ -600,8 +571,6 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 		expect(run.status).toBe('SUCCEEDED');
 
 		const ctx = capturing.getStartRunContexts()[0]!;
-		// Before the fix, this would be just '/opt/apify-debug', silently discarding the version's own
-		// PYTHONPATH entirely.
 		expect(ctx.env.PYTHONPATH).toBe('/opt/apify-debug:/actor/src');
 		expect(ctx.env.APIFY_TOKEN).toBe(server.token);
 	});
@@ -731,8 +700,6 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 		expect(fetched).not.toHaveProperty('localDebug');
 		expect(JSON.stringify(fetched)).not.toContain('localDebug');
 
-		// Confirm the field really is on the internal record (i.e. this isn't a false negative from the
-		// plan never having resolved at all).
 		const stored = await getRegistries().runs.get(run.id);
 		expect(stored?.localDebug).toBeDefined();
 	});
@@ -779,9 +746,7 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 		};
 		server = await startTestServer(driver);
 		const actor = await pushAndBuild(server, 'run-debug-port-conflict-actor');
-		// Explicit 'python' override against a node-shaped image: the run resolves 'python' (the override
-		// always wins), so the conflict is on python's own default port 5678 - and the remedy must name
-		// this STORED preference, never the resolved language it happens to match here.
+		// Override against a node-shaped image, so the conflict falls on python's default port 5678.
 		await post(server.baseUrl, actor.id, { enabled: true, language: 'python' }, server.token);
 
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });

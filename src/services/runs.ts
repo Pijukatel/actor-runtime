@@ -97,11 +97,7 @@ function buildEnv(
 	const eventsWebSocketUrl = `${CONTAINER_EVENTS_WS_BASE_URL}/actor-runtime/events/${run.id}`;
 	const memoryMbytes = String(run.options.memoryMbytes);
 
-	// A debug plan's `NODE_OPTIONS`/`PYTHONPATH` must PREPEND to (never clobber) an Actor-version-level
-	// `envVars` entry of the same name - the identical prepend-not-replace discipline `resolveDebugPlan`
-	// already applies to the resolved build image's own baked-in env, just against a different "other
-	// source" (`services/debug-mode.ts: prependDebugEnvValue`'s own doc comment). A plain `...debugPlan?.env`
-	// spread here would silently clobber a version-level override of the same name instead.
+	// Prepend, never clobber, a version-level envVars entry of the same name.
 	const debugEnv: Record<string, string> = {};
 	if (debugPlan) {
 		for (const [key, value] of Object.entries(debugPlan.env)) {
@@ -111,9 +107,7 @@ function buildEnv(
 
 	const env: Record<string, string> = {
 		...versionEnv,
-		// Below every platform-owned var (spread order matters here, even though nothing today actually
-		// collides): a debug run's `NODE_OPTIONS`/`PYTHONPATH`/debug-port var must never be able to shadow
-		// a real contract var (`services/debug-mode.ts: DebugPlan`'s own doc comment).
+		// Below every platform-owned var so a debug run can never shadow one.
 		...debugEnv,
 		APIFY_IS_AT_HOME: '1',
 		APIFY_META_ORIGIN: 'API',
@@ -206,17 +200,9 @@ export async function startRun(
 	return record;
 }
 
-/**
- * The "fail the run before any container exists" sequence, shared by every pre-container failure path in
- * `runInBackground` below (driver-unavailable/no-image, and a refused debug plan): appends `logMessage`
- * to the run's log, flushes it, marks the log/events channels terminal, and transitions the record to
- * `FAILED` with `statusMessage`. The two callers deliberately pass different shapes for the two
- * parameters: the driver-unavailable/no-image path logs a `Cannot start run: `-prefixed line but stores
- * the bare reason as `statusMessage` - the same shape `services/builds.ts`'s own driver-unavailable path
- * stores for a build - while a refused debug plan's `statusMessage` already carries that same prefix
- * (`describeDebugRefusal`'s caller builds it in below) so the run's terminal status reads exactly like
- * the line that appeared in its log. Neither caller relies on this helper to add or infer a prefix.
- */
+/** Fails a run before any container exists: logs `logMessage`, flushes and terminates the log/events
+ * channels, and transitions to `FAILED` with `statusMessage`. Adds no prefix itself - callers pass each
+ * string already formatted as they want it to appear. */
 async function failBeforeContainer(
 	runId: string,
 	logMessage: string,
@@ -272,11 +258,7 @@ export async function runInBackground(
 		return;
 	}
 
-	// Debug-mode resolution - only when the Actor has the toggle on (`env`/`RunContext` below stay
-	// byte-identical to today's for every Actor that has never touched the toggle, the regression
-	// guarantee criterion 9/15 both name). A refusal fails the run through the exact "Cannot start run:
-	// ..." path every other pre-container failure above uses, before any container is ever created
-	// (`actor-driver.md`'s "Non-debuggable images fail the run, loudly" section).
+	// Only when the Actor has the toggle on; a refusal fails the run before any container is created.
 	let debugPlan: DebugPlan | undefined;
 	if (actor.localDebug) {
 		const target = await driver.inspectDebugTarget(build.imageId);
@@ -288,12 +270,8 @@ export async function runInBackground(
 		}
 		const plan = result.plan;
 		debugPlan = plan;
-		// Persisted on the run record itself (not derived later from the Actor's toggle, which could
-		// change after this run started) - local-only, so the console run page can show an attach address
-		// after the fact even for a run started by someone else's `apify call` (`actor-driver.md`'s "Debug
-		// mode" section, "Finding it after the fact"). A direct registry write, mirroring how
-		// `services/dev-folder.ts` bypasses `updateActor` - there is no job-status transition happening
-		// here, just an informational field.
+		// Persisted on the run record itself, not derived later from the Actor's toggle (which could
+		// change after this run started), so the console can show the attach address after the fact.
 		await runs.update(record.id, (current) =>
 			current ? { ...current, localDebug: { language: plan.language, port: plan.port } } : current,
 		);
@@ -385,12 +363,8 @@ export async function runInBackground(
 		}
 	} catch (error) {
 		await flushLog(record.id);
-		// The driver classifies a debug port conflict as a typed `DebugPortInUseError` (just the port); this
-		// is the one place that knows both the Actor id and its stored `language` preference, so it is the
-		// one place that can word the remediation (`services/debug-mode.ts: describeDebugPortConflict`) -
-		// a typed driver error so the service layer can compose the remedy, analogous to but not the same
-		// split as `DriverTimedOutError` (its own caller in `services/builds.ts` only maps status and keeps
-		// the driver's own message verbatim).
+		// This is the one place that knows both the Actor id and its stored language preference, so it
+		// composes the port-conflict remediation from the driver's typed error.
 		const statusMessage =
 			error instanceof DebugPortInUseError && actor.localDebug
 				? describeDebugPortConflict(actor.id, actor.localDebug.language, error.port)
