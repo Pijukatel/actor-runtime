@@ -65,13 +65,11 @@
         - owner (`userId`)
         - Actor (`actorId`)
         - metadata
-        - `localDebug` - **optional**, specific to this one run. Present only once this run's own debug
-          plan resolved (`actor-driver.md`'s "Debug mode" section), before its container ever started -
-          `{ language: "node" | "python", port: number }`, both already resolved (never `"auto"`, never
-          absent-meaning-default). Absent for every non-debug run, and for a debug run that was refused
-          before a plan could be resolved. A top-level field, not nested under `options` - kept out of
-          the emulated `/v2` run object the same way `ActorRecord.localDevFolder`/`localDebug` are kept
-          off `/v2` Actor responses.
+        - `localDebug` - **optional**, specific to this one run. Present once this run's own debug plan
+          has resolved (`actor-driver.md`'s "Debug mode" section): `{ language: "node" | "python", port:
+number }`, both already resolved (never `"auto"`, never absent-meaning-default). Absent for
+          every non-debug run, and for a debug run that was refused before a plan could be resolved.
+          Never exposed on the emulated `/v2` run object.
 - The system stores Actor builds in dedicated key-value store called `__BUILDS__`:
     - `key` is the id of the Actor build (`buildId`)
     - `value` is the metadata of the Actor

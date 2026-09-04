@@ -83,11 +83,11 @@ apify api POST /actor-runtime/debug/<actorId> --body '{"enabled": true}'
 apify call
 ```
 
-The run's log prints one line with everything you need: the resolved language, the debug tool (Node's
-own inspector, or the runtime-injected `debugpy`, version named), the listen/publish address, and the
-attach action for the relevant IDE - PyCharm's **Attach to DAP** or VS Code's **Python: Remote Attach**
-for Python (default port `5678`), VS Code's **Attach** for Node (default port `9229`). Connect, and
-execution proceeds to your own first breakpoint - the runtime never sets one of its own.
+The run's log prints one line with everything you need: the resolved language, the debug tool, the
+listen/publish address, and the attach action for the relevant IDE - PyCharm's **Attach to DAP** or
+VS Code's **Python: Remote Attach** for Python (default port `5678`), VS Code's **Attach** for Node
+(default port `9229`). Connect, and execution proceeds to your own first breakpoint - the runtime never
+sets one of its own.
 
 Override the language (for an image the auto-detection can't classify) and/or the port:
 
@@ -105,16 +105,14 @@ apify api POST /actor-runtime/debug/<actorId> --body '{"enabled": false}'
 
 The run's own `timeoutSecs` (`apify call --timeout`) is **not** extended while paused - a session that
 runs long still needs a larger `--timeout` passed up front. An image whose `CMD` can't be debugged this
-way (e.g. `npm start` - `--inspect-brk` would attach to npm, not your Actor) fails the run immediately,
-before any container is created, with a message naming the fix. **This is not an exotic edge case: it is
-what happens to any Node Actor pushed without its own `Dockerfile`.** This runtime's injected default
-Dockerfile (used whenever an Actor's source names no `Dockerfile` of its own) is `FROM apify/actor-node:20`
-with no `CMD` of its own, so it inherits that base image's own default, `CMD ["npm", "start", "--silent"]`,
-meaning debug mode refuses every default-Dockerfile Node Actor out of the box. The fix is the same one
-named above: give the Actor a `Dockerfile` whose `CMD` invokes `node` directly, e.g.
-`CMD ["node", "dist/main.js"]`. The same thing is also a three-field form (`enabled`/`language`/`port`) on
-the Actor's page in the console. Full mechanics: `requirements/actor-driver.md`'s "Debug mode" section;
-endpoint/console details: `requirements/api.md`'s `/actor-runtime/*` section and `requirements/console.md`.
+way (e.g. `npm start` - it would attach to npm, not your Actor) fails the run immediately, before any
+container is created, with a message naming the fix. **This includes any Node Actor pushed without its
+own `Dockerfile`**: this runtime's injected default Dockerfile inherits its base image's own
+`CMD ["npm", "start", "--silent"]`, so it's refused the same way. The fix: give the Actor a `Dockerfile`
+whose `CMD` invokes `node` directly, e.g. `CMD ["node", "dist/main.js"]`. The same toggle is also a
+three-field form (`enabled`/`language`/`port`) on the Actor's page in the console. Full mechanics:
+`requirements/actor-driver.md`'s "Debug mode" section; endpoint/console details: `requirements/api.md`'s
+`/actor-runtime/*` section and `requirements/console.md`.
 
 ## Development
 

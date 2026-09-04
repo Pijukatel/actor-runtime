@@ -147,8 +147,7 @@
 - **`POST /actor-runtime/debug/:actorId`** - sets (or clears) the Actor's persistent debug-mode toggle
   (`actor-driver.md`'s "Debug mode" section). `:actorId` accepts the same forms as the rest of the API.
     - **Authenticated** the same way as every `/v2` route, and scoped to the caller's own Actors.
-    - **No build-first precondition** - the toggle itself needs no build; language resolution happens
-      lazily, at each run's own start.
+    - **No build-first precondition** - the toggle itself needs no build to exist.
     - **Request body**: a strict JSON object with exactly these fields:
         - `enabled` (required, boolean).
         - `language` (optional, one of `"auto"` / `"node"` / `"python"`; defaults to `"auto"`).

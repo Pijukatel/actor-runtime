@@ -32,19 +32,16 @@ Local Actor runtime is an Actor development tool for developing, running, and de
   `--body '""'` clears the registration. Dependency changes still need a real rebuild.
 - To debug an Actor with a real IDE debugger, turn on debug mode for it once:
   `apify api POST /actor-runtime/debug/<actorId> --body '{"enabled": true}'` (add `"language": "node"` or
-  `"python"` if the runtime's own detection can't classify the image, and/or `"port": <n>` to pick a
-  fixed port other than the language default - `9229` Node, `5678` Python). Every subsequent
-  `apify call` against that Actor then starts paused, waiting for a debugger, with the attach address
-  printed in the run's own log; connect PyCharm's "Attach to DAP" / VS Code's "Python: Remote Attach"
-  (Python) or VS Code's "Attach" (Node) to `127.0.0.1:<port>` to continue past the pause. No Actor-side
-  change is required for an image whose `CMD` already invokes `node`/`python3` directly - the runtime
-  injects everything needed. **An Actor pushed with no `Dockerfile` of its own does need a change**: this
-  runtime's injected default Dockerfile is `FROM apify/actor-node:20` with no `CMD`, so it inherits that
-  base image's own default, `CMD ["npm", "start", "--silent"]` - debug mode refuses that (`--inspect-brk`
-  would attach to npm, not the Actor) rather than starting the run undebugged. Give the Actor a
-  `Dockerfile` whose `CMD` invokes `node` directly (e.g. `CMD ["node", "dist/main.js"]`) to fix it. The
-  run's own `--timeout` is NOT extended for the time spent attaching, so pass a larger one when you expect
-  a slow attach. Clear the toggle with
+  `"python"` if auto-detection can't classify the image, and/or `"port": <n>` to override the language
+  default - `9229` Node, `5678` Python). Every subsequent `apify call` against that Actor then starts
+  paused, waiting for a debugger, with the attach address printed in the run's own log; connect PyCharm's
+  "Attach to DAP" / VS Code's "Python: Remote Attach" (Python) or VS Code's "Attach" (Node) to
+  `127.0.0.1:<port>` to continue past the pause. **An Actor pushed with no `Dockerfile` of its own needs a
+  change**: this runtime's injected default Dockerfile inherits its base image's default,
+  `CMD ["npm", "start", "--silent"]`, which debug mode refuses (it would attach to npm, not the Actor).
+  Give the Actor a `Dockerfile` whose `CMD` invokes `node` directly (e.g. `CMD ["node", "dist/main.js"]`)
+  to fix it. The run's own `--timeout` is NOT extended for the time spent attaching, so pass a larger one
+  when you expect a slow attach. Clear the toggle with
   `apify api POST /actor-runtime/debug/<actorId> --body '{"enabled": false}'` to go back to running
   normally.
 - To test how an Actor handles platform migrations: while a run is `RUNNING`, call
