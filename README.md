@@ -19,10 +19,13 @@ The runtime is distributed through the Apify CLI (see `requirements/distribution
 image and start it with the canonical flags below.
 
 ```bash
-npm install -g apify-cli
+npm install -g apify-cli@runtime
 apify runtime install   # verify Docker, download the runtime image
 apify runtime start     # start the runtime (Ctrl+C stops it; --detach to background)
 ```
+
+The `runtime` npm dist-tag is the opt-in channel carrying these commands while they are in
+development - plain `apify-cli` does not have them yet.
 
 Until the image is published on Apify's Docker Hub, the CLI uses the local placeholder tag
 `actor-runtime:latest` - build it once from this repository (`docker build -t actor-runtime .`)

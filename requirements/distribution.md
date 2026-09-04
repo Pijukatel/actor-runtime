@@ -9,9 +9,9 @@ it already is - a single Docker image - and the stock `apify-cli` gains a `runti
 namespace that installs and runs that image. The user's flow is:
 
 ```bash
-npm install -g apify-cli   # or any other CLI install method
-apify runtime install      # verify Docker works here, download the runtime image
-apify runtime start        # run the runtime container (Ctrl+C stops it)
+npm install -g apify-cli@runtime   # opt-in channel while the commands are in development
+apify runtime install              # verify Docker works here, download the runtime image
+apify runtime start                # run the runtime container (Ctrl+C stops it)
 ```
 
 - **`apify runtime install`** means, concretely:
@@ -36,6 +36,15 @@ local placeholder tag **`actor-runtime:latest`** (one constant, `ACTOR_RUNTIME_I
 and when the pull fails because the image is not published yet, the CLI tells the user to build it
 locally from this repository (`docker build -t actor-runtime:latest .`). Switching to the published
 image is a one-line change of that constant.
+
+## CLI release channel
+
+While the `apify runtime` commands are in development they ship on their own npm dist-tag,
+`runtime`, published from the CLI's feature branch by the CLI repository's "Publish to NPM"
+workflow. Versions look like `1.10.1-runtime.0`. Users of the stable CLI are unaffected: npm
+installs a dist-tag only when asked for it explicitly, so `npm install -g apify-cli` keeps
+resolving to `latest`. When the runtime graduates, the commands land on `master` and reach the
+stable channel through the CLI's normal release, and this channel is no longer needed.
 
 ## Cross-platform notes
 
