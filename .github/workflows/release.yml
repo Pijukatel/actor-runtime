@@ -104,9 +104,12 @@ jobs:
                   tags: ${{ steps.tags.outputs.tags }}
                   provenance: mode=max
                   sbom: true
-                  # Keyed per platform set so a run for one platform list doesn't evict another's cache.
-                  cache-from: type=gha,scope=release-${{ inputs.platforms }}
-                  cache-to: type=gha,mode=max,scope=release-${{ inputs.platforms }}
+                  # One shared scope: a `type=gha` value is itself a comma-separated key=value list,
+                  # so interpolating the (comma-separated) platform list into `scope` would end the
+                  # value early and buildx would reject the leftover as a key. Sharing the scope also
+                  # lets a single-platform run reuse the layers a multi-arch run already cached.
+                  cache-from: type=gha,scope=release
+                  cache-to: type=gha,mode=max,scope=release
                   labels: |
                       org.opencontainers.image.title=actor-runtime
                       org.opencontainers.image.description=A minimal, self-contained local Apify platform in a single Docker image.
