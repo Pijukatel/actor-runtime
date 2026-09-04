@@ -50,6 +50,20 @@ export interface ActorVersionRecord {
 	envVars?: Array<{ name: string; value: string }>;
 }
 
+/** Caller-facing language selector for the debug toggle. `'auto'` resolves from the built image at run
+ * start; `'node'`/`'python'` is an explicit override. */
+export type DebugLanguagePreference = 'auto' | 'node' | 'python';
+/** A run's actually-resolved debug language - never `'auto'`. */
+export type DebugLanguage = 'node' | 'python';
+
+/** The per-Actor debug toggle (`actor-driver.md`'s "Debug mode" section). Set or cleared only through
+ * `services/debug-mode.ts: setDebugMode`. */
+export interface ActorLocalDebug {
+	language: DebugLanguagePreference;
+	/** Explicit port override; absent means "use the resolved language's default port at run start". */
+	port?: number;
+}
+
 export interface ActorRecord {
 	id: string;
 	userId: string;
@@ -66,6 +80,9 @@ export interface ActorRecord {
 	 * this field, *is* exposed on `/v2`). Never touched by any other Actor write. Optional and never
 	 * exposed on `/v2` itself either (`dto/actors.ts: actorDto` is explicit field-by-field). */
 	localDevFolder?: string;
+	/** The per-Actor debug-mode toggle (`actor-driver.md`'s "Debug mode" section). Absent means off.
+	 * Same `modifiedAt`-preserving, never-`/v2`-exposed pattern as `localDevFolder` above. */
+	localDebug?: ActorLocalDebug;
 }
 
 export type JobStatus = 'READY' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'ABORTING' | 'ABORTED' | 'TIMED-OUT';
@@ -143,4 +160,8 @@ export interface RunRecord {
 	 * sets it for real runs (`FOLLOW_USER_SETTING`, the platform's run-creation default), and `runDto`
 	 * backfills the same default when absent. */
 	generalAccess?: RunGeneralAccess;
+	/** This run's resolved debug plan, written before the container starts. Absent for non-debug runs
+	 * and for a debug run that failed before resolving. Top-level (not nested under `options`) to stay
+	 * out of the emulated `/v2` run object automatically. */
+	localDebug?: { language: DebugLanguage; port: number };
 }

@@ -1,6 +1,7 @@
 /** Minimal server-rendered HTML helpers. No SPA, no bundler, no build step (`console.md`). */
 
 import { getApiFallbackState, type ApiFallbackState } from '../services/api-fallback.js';
+import type { ActorLocalDebug } from '../storage/entities.js';
 
 export function escapeHtml(value: unknown): string {
 	return String(value ?? '')
@@ -117,6 +118,40 @@ export function devFolderForm(actorId: string, currentValue: string, errorMessag
 		'<button type="submit">Save</button>' +
 		'</form>' +
 		'<p class="empty">Submit an empty value to clear the registration.</p>'
+	);
+}
+
+/** The debug-mode toggle form on the Actor detail view - full parity with the API body's three fields
+ * (`enabled`/`language`/`port`), submitted together, never a partial-merge PATCH.
+ *
+ * `current` must be the *raw stored* `ActorLocalDebug`, not `debugStatus`'s display-computed value:
+ * rendering the computed default port would pre-fill the port input, so an unrelated resubmission would
+ * silently persist it as an explicit override. */
+export function debugModeForm(
+	actorId: string,
+	current: ActorLocalDebug | null | undefined,
+	errorMessage?: string,
+): string {
+	const errorHtml = errorMessage ? `<p class="error"><strong>Error:</strong> ${escapeHtml(errorMessage)}</p>` : '';
+	const language = current?.language ?? 'auto';
+	const portValue = current?.port !== undefined ? String(current.port) : '';
+	const option = (value: string, label: string) =>
+		`<option value="${value}"${language === value ? ' selected' : ''}>${label}</option>`;
+	return (
+		errorHtml +
+		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/debug">` +
+		`<label><input type="checkbox" name="enabled"${current ? ' checked' : ''}> enabled</label> ` +
+		`<label>language: <select name="language">` +
+		option('auto', 'auto') +
+		option('node', 'node') +
+		option('python', 'python') +
+		'</select></label> ' +
+		`<label>port: <input type="number" name="port" value="${escapeHtml(portValue)}" min="1024" max="65535" ` +
+		'placeholder="(default)"></label> ' +
+		'<button type="submit">Save</button>' +
+		'</form>' +
+		'<p class="empty">Uncheck "enabled" and submit to turn debug mode off. Leave "port" blank to use the ' +
+		"resolved language's own default port (5678 Python / 9229 Node) at run start.</p>"
 	);
 }
 

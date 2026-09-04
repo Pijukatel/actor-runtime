@@ -3,12 +3,19 @@ import type { ActorRecord, ActorVersionRecord, BuildRecord, JobStatus, RunRecord
 import { getRegistries } from '../storage/registries.js';
 import { createStorage } from './storages.js';
 import { openKeyValueStore } from '../storage/open.js';
-import type { Driver } from '../driver/types.js';
+import { DebugPortInUseError, type Driver } from '../driver/types.js';
 import { appendLog, flushLog, markLogTerminal } from './logs.js';
 import { markEventsTerminal, publishAborting, publishPersistState, publishSystemInfo } from './events-channel.js';
 import { clearRunRestartState, consumeRunRestart } from './migrations.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
+import {
+	describeDebugPortConflict,
+	describeDebugRefusal,
+	prependDebugEnvValue,
+	resolveDebugPlan,
+	type DebugPlan,
+} from './debug-mode.js';
 import { dedicatedCpusFor } from '../resources.js';
 import { CONTAINER_EVENTS_WS_BASE_URL } from '../config.js';
 
@@ -77,6 +84,7 @@ function buildEnv(
 	actor: ActorRecord,
 	version: ActorVersionRecord | undefined,
 	options: StartRunOptions,
+	debugPlan: DebugPlan | undefined,
 ): Record<string, string> {
 	const versionEnv: Record<string, string> = {};
 	for (const entry of version?.envVars ?? []) {
@@ -89,8 +97,18 @@ function buildEnv(
 	const eventsWebSocketUrl = `${CONTAINER_EVENTS_WS_BASE_URL}/actor-runtime/events/${run.id}`;
 	const memoryMbytes = String(run.options.memoryMbytes);
 
+	// Prepend, never clobber, a version-level envVars entry of the same name.
+	const debugEnv: Record<string, string> = {};
+	if (debugPlan) {
+		for (const [key, value] of Object.entries(debugPlan.env)) {
+			debugEnv[key] = prependDebugEnvValue(key, value, versionEnv[key]);
+		}
+	}
+
 	const env: Record<string, string> = {
 		...versionEnv,
+		// Below every platform-owned var so a debug run can never shadow one.
+		...debugEnv,
 		APIFY_IS_AT_HOME: '1',
 		APIFY_META_ORIGIN: 'API',
 		APIFY_API_BASE_URL: options.apiBaseUrl,
@@ -182,6 +200,25 @@ export async function startRun(
 	return record;
 }
 
+/** Fails a run before any container exists: logs `logMessage`, flushes and terminates the log/events
+ * channels, and transitions to `FAILED` with `statusMessage`. Adds no prefix itself - callers pass each
+ * string already formatted as they want it to appear. */
+async function failBeforeContainer(
+	runId: string,
+	logMessage: string,
+	statusMessage: string | undefined,
+): Promise<void> {
+	const { runs } = getRegistries();
+	appendLog(runId, `${logMessage}\n`);
+	await flushLog(runId);
+	markLogTerminal(runId);
+	markEventsTerminal(runId);
+	await transitionJobStatus(runs, runId, 'FAILED', {
+		finishedAt: new Date().toISOString(),
+		statusMessage,
+	});
+}
+
 /**
  * Exported only for direct testing of the guarded transitions/pre-start abort window (see
  * `test/integration/job-lifecycle.test.ts`) - not part of the service's public surface for callers
@@ -217,19 +254,31 @@ export async function runInBackground(
 	const build = await builds.get(record.buildId);
 	if (!driver.available || !build?.imageId) {
 		const reason = !driver.available ? driver.unavailableReason : 'Build has no image to run';
-		appendLog(record.id, `Cannot start run: ${reason}\n`);
-		await flushLog(record.id);
-		markLogTerminal(record.id);
-		markEventsTerminal(record.id);
-		await transitionJobStatus(runs, record.id, 'FAILED', {
-			finishedAt: new Date().toISOString(),
-			statusMessage: reason,
-		});
+		await failBeforeContainer(record.id, `Cannot start run: ${reason}`, reason);
 		return;
 	}
 
+	// Only when the Actor has the toggle on; a refusal fails the run before any container is created.
+	let debugPlan: DebugPlan | undefined;
+	if (actor.localDebug) {
+		const target = await driver.inspectDebugTarget(build.imageId);
+		const result = resolveDebugPlan(actor.localDebug, target);
+		if (result.kind === 'refused') {
+			const message = `Cannot start run: ${describeDebugRefusal(actor.id, actor.localDebug.port, result)}`;
+			await failBeforeContainer(record.id, message, message);
+			return;
+		}
+		const plan = result.plan;
+		debugPlan = plan;
+		// Persisted on the run record itself, not derived later from the Actor's toggle (which could
+		// change after this run started), so the console can show the attach address after the fact.
+		await runs.update(record.id, (current) =>
+			current ? { ...current, localDebug: { language: plan.language, port: plan.port } } : current,
+		);
+	}
+
 	const version = findVersion(actor, build.versionNumber);
-	const env = buildEnv(record, actor, version, options);
+	const env = buildEnv(record, actor, version, options, debugPlan);
 	// Both-or-neither, enforced by `DevFolderMount`'s type (`driver/types.ts`) - a mount is only ever
 	// added when the Actor actually has a non-empty registered dev folder AND this *run's own resolved
 	// build* has a known, non-empty image working directory (`actor-driver.md`: "The mount is applied
@@ -272,6 +321,7 @@ export async function runInBackground(
 					// The timeout budget is per run, not per container - a restart gets only what is left.
 					timeoutSecs: remainingTimeoutSecs(record),
 					devMount,
+					debug: debugPlan ? { language: debugPlan.language, port: debugPlan.port } : undefined,
 				},
 				(chunk) => appendLog(record.id, chunk),
 				(sample) => publishSystemInfo(record.id, sample, record.options),
@@ -313,9 +363,15 @@ export async function runInBackground(
 		}
 	} catch (error) {
 		await flushLog(record.id);
+		// This is the one place that knows both the Actor id and its stored language preference, so it
+		// composes the port-conflict remediation from the driver's typed error.
+		const statusMessage =
+			error instanceof DebugPortInUseError && actor.localDebug
+				? describeDebugPortConflict(actor.id, actor.localDebug.language, error.port)
+				: (error as Error).message;
 		await transitionJobStatus(runs, record.id, 'FAILED', {
 			finishedAt: new Date().toISOString(),
-			statusMessage: (error as Error).message,
+			statusMessage,
 		});
 	} finally {
 		// A run that ends for real must not leave an armed migration-stop timer behind.

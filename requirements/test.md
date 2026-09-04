@@ -9,6 +9,10 @@
 # Mandatory end-to-end tests
 
 - All end-to-end tests can use only Apify cli commands to emulate user workflow.
+- **One narrow, explicit exception**: the debug-mode e2e test (`actor-driver.md`'s "Debug mode" section)
+  may connect directly to the published debug port to emulate an IDE attaching a debugger, since no
+  `apify` command can express that. Every other assertion in that test (the pause, the attach log line,
+  the abort) still goes through `apify` commands only, same as every other e2e case.
 - For asserting the test results, the tests must inspect the return values of the Apify cli commands.
 - The e2e suite requires a reachable Docker daemon (it builds and runs real Actor containers) and
   detects its absence, failing in such case.

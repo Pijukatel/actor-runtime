@@ -33,6 +33,7 @@ export function stubDockerForRun() {
 		wait: vi.fn(async () => waitPromise),
 		remove: vi.fn(async (_options?: Record<string, unknown>) => undefined),
 		stop: vi.fn(async () => undefined),
+		putArchive: vi.fn(async (_file: unknown, _options: unknown) => undefined),
 	};
 
 	// Real dockerode demuxing splits stdout/stderr apart by frame header; this stub doesn't need that

@@ -30,6 +30,20 @@ Local Actor runtime is an Actor development tool for developing, running, and de
   hardcodes a `/v2`-suffixed base URL). From then on, edit locally, recompile locally (`tsc` or the
   language-appropriate equivalent), and `apify call` again - no `apify push`/build in between. Submitting
   `--body '""'` clears the registration. Dependency changes still need a real rebuild.
+- To debug an Actor with a real IDE debugger, turn on debug mode for it once:
+  `apify api POST /actor-runtime/debug/<actorId> --body '{"enabled": true}'` (add `"language": "node"` or
+  `"python"` if auto-detection can't classify the image, and/or `"port": <n>` to override the language
+  default - `9229` Node, `5678` Python). Every subsequent `apify call` against that Actor then starts
+  paused, waiting for a debugger, with the attach address printed in the run's own log; connect PyCharm's
+  "Attach to DAP" / VS Code's "Python: Remote Attach" (Python) or VS Code's "Attach" (Node) to
+  `127.0.0.1:<port>` to continue past the pause. **An Actor pushed with no `Dockerfile` of its own needs a
+  change**: this runtime's injected default Dockerfile inherits its base image's default,
+  `CMD ["npm", "start", "--silent"]`, which debug mode refuses (it would attach to npm, not the Actor).
+  Give the Actor a `Dockerfile` whose `CMD` invokes `node` directly (e.g. `CMD ["node", "dist/main.js"]`)
+  to fix it. The run's own `--timeout` is NOT extended for the time spent attaching, so pass a larger one
+  when you expect a slow attach. Clear the toggle with
+  `apify api POST /actor-runtime/debug/<actorId> --body '{"enabled": false}'` to go back to running
+  normally.
 - To test how an Actor handles platform migrations: while a run is `RUNNING`, call
   `apify api POST /actor-runtime/migrate/<runId>`, or press the Migrate button on the run's console
   detail page. The run gets the platform migration experience: a `migrating` event, its container

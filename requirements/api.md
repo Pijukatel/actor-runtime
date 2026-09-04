@@ -144,6 +144,44 @@
 - The console's own dev-folder form (`console.md`) does **not** go through this endpoint - it posts to a
   console-local, unauthenticated route on the console's own port - but the two surfaces accept and
   reject exactly the same inputs with the same outcomes.
+- **`POST /actor-runtime/debug/:actorId`** - sets (or clears) the Actor's persistent debug-mode toggle
+  (`actor-driver.md`'s "Debug mode" section). `:actorId` accepts the same forms as the rest of the API.
+    - **Authenticated** the same way as every `/v2` route, and scoped to the caller's own Actors.
+    - **No build-first precondition** - the toggle itself needs no build to exist.
+    - **Request body**: a strict JSON object with exactly these fields:
+        - `enabled` (required, boolean).
+        - `language` (optional, one of `"auto"` / `"node"` / `"python"`; defaults to `"auto"`).
+        - `port` (optional, integer `1024..65535`; absent means "use the resolved language's own
+          default port at run start" - never a stored literal).
+          Any other key present is rejected. Every accepted call fully replaces the prior state for that
+          Actor (never a partial merge) - a field the body omits resets to its own default, it does not keep
+          whatever a previous call set. `{"enabled": false}` clears the whole toggle, whatever else the body
+          names.
+    - **Response**: on success, `{ data: { localDebug } }`, where `localDebug` is `null` when debug mode
+      is off, or `{ language, port }` when on - `port` here is a nominal default (`5678`) for an
+      unresolved `language: "auto"`, purely for display; the port a given run actually publishes depends
+      on that run's own resolved language (`actor-driver.md`). Same doubles-as-read-back contract as the
+      dev-folder endpoint - no separate `GET`.
+    - **Error responses**: `400` `invalid-request` for every malformed body (not a JSON object, an
+      unknown field, a missing/non-boolean `enabled`, an invalid `language`, or a `port` outside
+      `1024..65535`) - no state change on rejection.
+    - Worked examples:
+        ```
+        POST /actor-runtime/debug/<actorId> --body '{"enabled": true}'
+        -> { "data": { "localDebug": { "language": "auto", "port": 5678 } } }
+
+        POST /actor-runtime/debug/<actorId> --body '{"enabled": true, "language": "node", "port": 9229}'
+        -> { "data": { "localDebug": { "language": "node", "port": 9229 } } }
+
+        POST /actor-runtime/debug/<actorId> --body '{"enabled": false}'
+        -> { "data": { "localDebug": null } }
+
+        POST /actor-runtime/debug/<actorId> --body '{"enabled": true, "prot": 9229}'
+        -> 400 invalid-request "Unknown field \"prot\" - allowed fields are \"enabled\", \"language\", \"port\"."
+        ```
+    - The console's own debug-mode form (`console.md`) does **not** go through this endpoint - same
+      console-local, unauthenticated split as the dev-folder form - but both surfaces accept and reject
+      exactly the same inputs with the same outcomes.
 - **`GET /actor-runtime/events/:runId`** - a websocket upgrade, reachable at exactly this one path on
   the fixed API port (`system.md`). It carries the run's platform events: `systemInfo` once a second
   (`actor-driver.md`), a one-off `aborting`-plus-`persistState` pair under `?gracefully=` (below), and a

@@ -14,6 +14,7 @@ import { mountRuns } from './routes/runs.js';
 import { mountLogs } from './routes/logs.js';
 import { mountRunStorageAliases } from './routes/run-storage-aliases.js';
 import { mountDevFolder } from './routes/dev-folder.js';
+import { mountDebugMode } from './routes/debug-mode.js';
 import { mountMigrate } from './routes/migrate.js';
 import { mountApiFallback } from './routes/api-fallback.js';
 import { attemptFallback, type LocalError } from '../services/api-fallback.js';
@@ -49,6 +50,7 @@ export function createApiServer(deps: ApiServerDeps): Express {
 	const actorRuntime = express.Router();
 	actorRuntime.use(auth());
 	mountDevFolder(actorRuntime, deps);
+	mountDebugMode(actorRuntime);
 	mountMigrate(actorRuntime, deps);
 	mountApiFallback(actorRuntime);
 	app.use('/actor-runtime', actorRuntime);

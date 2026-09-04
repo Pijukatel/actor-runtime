@@ -64,6 +64,63 @@
   despite the mount covering the whole working directory.
 - **Registering or clearing a dev folder never bumps the Actor's `modifiedAt`.**
 
+# Debug mode
+
+- Debug mode is a **persistent per-Actor toggle**, set and read through the local-only endpoint
+  `POST /actor-runtime/debug/:actorId` (`api.md`) or a form on the console's Actor detail view
+  (`console.md`), with identical outcomes for the same input on both surfaces. It is not a per-run flag:
+  turning it on for an Actor pauses every subsequent run of that Actor until the toggle is cleared, and
+  stock `apify call`'s invocation/flags/exit behavior never change - the workflow is: toggle once, then
+  run normally.
+- The toggle stores `enabled`, `language` (`auto` - the default - `node`, or `python`), and an optional
+  `port` override. A `POST` fully replaces the prior state for that Actor (never a partial merge): a
+  field the body omits resets to its own default rather than keeping whatever the previous call set.
+  Submitting `{"enabled": false}` clears the whole toggle back to unset, regardless of what else the body
+  names.
+- **Language resolution happens at run start**, not at toggle time, since the toggle itself requires no
+  build to exist yet. `language: "auto"` detects Node vs. Python from the run's resolved build image; an
+  image it cannot classify is refused (see below) rather than guessed at. An explicit `language:
+"node"`/`"python"` override always wins, skipping detection (and any refusal it could produce)
+  entirely - it exists for images the heuristic cannot classify.
+- **Default debug ports are language-specific**: `5678` for Python, `9229` for Node, each ecosystem's own
+  IDE-default convention - applied once the run's language has resolved (the toggle's own read-back
+  shows a nominal `5678` for an unresolved `language: "auto"`, purely for display). An explicit `port`
+  override always wins over the resolved language's own default.
+- **Activation never touches the container's `Cmd`/`Entrypoint`** - a debug run starts paused, waiting
+  for a debugger, with zero changes required to the Actor's own source, Dockerfile, or
+  `requirements.txt`. For Python, the runtime injects a `debugpy` payload into the container; execution
+  proceeds to the developer's own first breakpoint once a debugger attaches - the runtime never sets a
+  breakpoint of its own.
+- **If the runtime cannot supply the Python debugpy payload** (e.g. it is not running from its own built
+  image), the run fails with a clear message rather than starting undebugged.
+- **The debug port is published on the host, bound to `127.0.0.1`.** A host port already in use fails the
+  run, naming the port and the `port` override as the fix.
+- **The run log carries one line, before the container is created**, stating: that the run is paused
+  waiting for a debugger; the resolved language; the debug tool and (for Python) its injected version;
+  the listen address inside the container and the published host address; the attach action for the
+  relevant IDE (PyCharm's "Attach to DAP" / VS Code's "Python: Remote Attach" for Python; VS Code's
+  "Attach" / Chrome DevTools for Node); and that the run's timeout is unchanged and not extended for
+  debugging.
+- **The run's timeout is completely unaffected by debug mode.** The configured `timeoutSecs` (default
+  300s) is measured from container start regardless of whether a debugger ever attaches - a
+  paused-waiting session gets no extra grace period, and the run still finalises `TIMED-OUT` (with its
+  container removed) exactly like any other run whose timeout elapses. Passing a larger
+  `apify call --timeout` is the way to get more time.
+- **Non-debuggable images fail the run, loudly, before any container is created**, the same way every
+  other pre-container failure does. A package-manager launcher (`npm start`, `yarn start`, `pnpm
+start`, ...) is refused by name, naming both the `CMD` fix and how to clear debug mode. An
+  unclassifiable `language: "auto"` image is refused the same way, naming the `language` override as the
+  fix. Neither refusal ever leaves a container behind. This includes any Actor pushed with no
+  `Dockerfile` of its own: the runtime's injected default Dockerfile inherits its base image's own
+  `npm start` default, so it is refused exactly like any other package-manager-launched image.
+- **The resolved plan is persisted on the run record itself** (local-only, never on `/v2` - see
+  `storage.md`), available before the container starts - this is what lets the console show an attach
+  address after the fact (`console.md`), even for a run started by someone else's `apify call`, and even
+  after the run has finished.
+- **Debug mode composes with the dev-folder bind mount** - the two features are independent and both
+  apply to the same run when both are configured for an Actor, e.g. edit -> recompile -> `apify call` ->
+  breakpoint, with no rebuild in between.
+
 # Networking
 
 - On startup, the runtime ensures a Docker network `apify-local` exists and joins it under the fixed

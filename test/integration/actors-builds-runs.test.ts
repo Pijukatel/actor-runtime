@@ -3,6 +3,35 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { startTestServer, type TestServerHandle } from './helpers/test-server.js';
 import { getRegistries } from '../../src/storage/registries.js';
 import { recordTaggedBuild, updateActor } from '../../src/services/actors.js';
+import type { Driver } from '../../src/driver/types.js';
+
+/** An available driver whose `startRun` is never expected to be reached in the tests that use it - every
+ * build seeded against it has no `imageId`, so `runInBackground` fails the run before calling any driver
+ * method at all. */
+function availableDriverWithNoImage(): Driver {
+	return {
+		available: true,
+		async init() {},
+		async startBuild() {
+			throw new Error('not used by this stub');
+		},
+		async abortBuild() {},
+		async startRun() {
+			throw new Error('not used by this stub - the seeded build has no imageId');
+		},
+		async abortRun() {},
+		async reconcileOrphans() {},
+		async probeDevFolder() {
+			throw new Error('not used by this stub');
+		},
+		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
+		async inspectDebugTarget() {
+			throw new Error('not used by this stub');
+		},
+	};
+}
 
 describe('actors / versions / builds / runs (via real apify-client)', () => {
 	let server: TestServerHandle;
@@ -234,9 +263,43 @@ describe('actors / versions / builds / runs (via real apify-client)', () => {
 			final = (await server.client.run(run.id).get())!;
 		}
 		expect(final.status).toBe('FAILED');
+		// The bare driver-unavailable reason, no "Cannot start run: " prefix and no literal "undefined" -
+		// the caller composes that prefix only for the log line it passes to `failBeforeContainer`, which
+		// itself prefixes nothing and stores `statusMessage` verbatim, matching `services/builds.ts`'s own
+		// driver-unavailable path, which stores `driver.unavailableReason` as-is.
+		expect(final.statusMessage).toBe('Docker is not available in the test environment');
 
 		const list = await server.client.runs().list();
 		expect(list.items.some((r) => r.id === run.id)).toBe(true);
+	});
+
+	it('a run against a build with no imageId fails fast with the bare "Build has no image to run" statusMessage (no prefix)', async () => {
+		// `bootstrapStorage` is a process-wide singleton (`storage/bootstrap.ts`) - the outer `beforeEach`'s
+		// default (`unavailableDriver`) server must be fully closed before a second one can be started
+		// against a different driver; `server` is reassigned so the outer `afterEach`'s own `close()` still
+		// tears down whichever server this test ends up with.
+		await server.close();
+		server = await startTestServer(availableDriverWithNoImage());
+
+		const actor = await server.client.actors().create({ name: 'run-no-image-actor' });
+		const { builds } = getRegistries();
+		const fakeBuildId = 'fakeBuildIdNoImage1';
+		await builds.set(fakeBuildId, {
+			id: fakeBuildId,
+			userId: actor.userId,
+			actorId: actor.id,
+			versionNumber: '0.0',
+			buildNumber: '0.0.1',
+			tag: 'latest',
+			status: 'SUCCEEDED',
+			startedAt: new Date().toISOString(),
+			finishedAt: new Date().toISOString(),
+		});
+		await updateActor(actor.id, (current) => recordTaggedBuild(current, 'latest', fakeBuildId, '0.0.1'));
+
+		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(run.status).toBe('FAILED');
+		expect(run.statusMessage).toBe('Build has no image to run');
 	});
 
 	it('deletes a build for real: gone from get and list; unknown id 404s (record-not-found)', async () => {

@@ -25,6 +25,11 @@
   console) still works.
 - Both ports are fixed and not configurable.
 - Port 3333 also serves the per-run events websocket (`api.md`); no additional port is published for it.
+- **Debug mode is the one exception to "no other Actor container port is ever published"**
+  (`actor-driver.md`'s "Debug mode" section): when debug mode is on for an Actor, that Actor's runs get a
+  port published on the host, bound to `127.0.0.1` (`5678` Python / `9229` Node by default, per-Actor
+  overridable) - the runtime's own two ports above are unaffected, and no port is published for an Actor
+  that never turned debug mode on.
 - Required `docker run` flags: mount the host Docker socket read-write
   (`-v /var/run/docker.sock:/var/run/docker.sock`) so the runtime can build and run Actor containers,
   and mount a persistent data directory (`-v <host-dir>:/data`, e.g. `-v "$(pwd)/data:/data"`) so

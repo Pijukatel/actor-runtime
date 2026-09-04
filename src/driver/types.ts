@@ -18,6 +18,15 @@ export interface DevFolderMount {
 	imageWorkingDirectory: string;
 }
 
+/** What a debug run's container needs beyond the ordinary `RunContext` shape - resolved language and
+ * port to expose-and-publish. Debug env vars (`NODE_OPTIONS`/`PYTHONPATH`) are already merged into
+ * `RunContext.env` by this point; `debug` carries only what `startRun` acts on directly (port
+ * binding, the attach log line, the debugpy payload upload). */
+export interface DebugRunTarget {
+	language: 'node' | 'python';
+	port: number;
+}
+
 export interface RunContext {
 	runId: string;
 	imageId: string;
@@ -25,6 +34,22 @@ export interface RunContext {
 	memoryMbytes: number;
 	timeoutSecs: number;
 	devMount?: DevFolderMount;
+	debug?: DebugRunTarget;
+}
+
+/** What `Driver.inspectDebugTarget` reads off a run's resolved build image, for
+ * `services/debug-mode.ts: resolveDebugPlan`. `cmd` is `Config.Cmd` verbatim (shell-form, unparsed).
+ * `entrypoint` is `Config.Entrypoint` normalized to an array. `env` carries only the four vars the
+ * language heuristic needs. */
+export interface InspectedDebugTarget {
+	cmd?: string[];
+	entrypoint?: string[];
+	env: {
+		PYTHONPATH?: string;
+		NODE_OPTIONS?: string;
+		PYTHON_VERSION?: string;
+		NODE_VERSION?: string;
+	};
 }
 
 export interface BuildOutcome {
@@ -89,6 +114,19 @@ export class DriverTimedOutError extends Error {
 	}
 }
 
+/** Thrown by `Driver.startRun` when a debug run's host debug port is already bound by something else.
+ * Carries only the port; `services/runs.ts` builds the user-facing message via
+ * `services/debug-mode.ts: describeDebugPortConflict`. */
+export class DebugPortInUseError extends Error {
+	readonly port: number;
+
+	constructor(port: number) {
+		super(`Debug port ${port} is already in use`);
+		this.name = 'DebugPortInUseError';
+		this.port = port;
+	}
+}
+
 /**
  * The Docker driver's surface. `available` reflects whether the host Docker socket was reachable at
  * startup - when it is not (this sandbox has none), builds and runs fail fast with a clear status
@@ -136,4 +174,8 @@ export interface Driver {
 	 * reuses the same image without rebuilding. Never the Actor's own build - registering a dev folder
 	 * must work for an Actor that has never been built at all. */
 	ensureProbeImage(): Promise<string>;
+
+	/** Reads back the image's `Config.Cmd`/`Config.Entrypoint` and env for
+	 * `services/debug-mode.ts: resolveDebugPlan`. Called only when the run's Actor has debug mode on. */
+	inspectDebugTarget(imageId: string): Promise<InspectedDebugTarget>;
 }

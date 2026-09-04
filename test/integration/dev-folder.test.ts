@@ -61,6 +61,9 @@ function devFolderDriver(
 		async ensureProbeImage() {
 			return STUB_PROBE_IMAGE_ID;
 		},
+		async inspectDebugTarget() {
+			throw new Error('not used by this stub');
+		},
 		async probeDevFolder(candidatePath: string, imageId: string) {
 			probeDevFolderCalls.push([candidatePath, imageId]);
 			return outcome;
@@ -789,6 +792,9 @@ function devMountCapturingDriver(): {
 		async abortRun() {},
 		async reconcileOrphans() {},
 		async ensureProbeImage() {
+			throw new Error('not used by this stub');
+		},
+		async inspectDebugTarget() {
 			throw new Error('not used by this stub');
 		},
 		async probeDevFolder() {

@@ -20,3 +20,20 @@ export const CONTAINER_EVENTS_WS_BASE_URL = `ws://${CONTAINER_API_ALIAS}:${API_P
 export const CONSOLE_BASE_URL = `http://localhost:${CONSOLE_PORT}`;
 
 export const DEFAULT_DATA_DIR = process.env.ACTOR_RUNTIME_DATA_DIR ?? '/data';
+
+/** Where the Python debug-mode payload lives inside the runtime's own image. Read fresh on every call
+ * (not cached) so tests can point `ACTOR_RUNTIME_DEBUGPY_PAYLOAD_DIR` at a fixture directory. */
+function debugpyPayloadDir(): string {
+	return process.env.ACTOR_RUNTIME_DEBUGPY_PAYLOAD_DIR ?? '/opt/apify-debug-payload';
+}
+
+/** The prebuilt tar `docker-driver.ts` streams into a Python debug run's container. */
+export function debugpyPayloadTarPath(): string {
+	return `${debugpyPayloadDir()}/debugpy-payload.tar`;
+}
+
+/** The debugpy version baked into the payload, written at image-build time so it never drifts from a
+ * hardcoded copy. */
+export function debugpyVersionFilePath(): string {
+	return `${debugpyPayloadDir()}/debugpy-version.txt`;
+}

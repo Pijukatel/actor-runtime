@@ -27,14 +27,16 @@
  * The rest of the runtime (storages, actors-as-records, console) is unaffected.
  */
 import { PassThrough } from 'node:stream';
+import { readFile } from 'node:fs/promises';
 import Docker from 'dockerode';
 import * as tar from 'tar-stream';
 
-import { CONTAINER_API_ALIAS } from '../config.js';
+import { CONTAINER_API_ALIAS, debugpyPayloadTarPath, debugpyVersionFilePath } from '../config.js';
 import { CPU_PERIOD_US, cpuQuotaFor, dedicatedCpusFor } from '../resources.js';
 import { normalizeEntryName } from './tar-entry-name.js';
 import type { SourceFile } from '../storage/entities.js';
 import {
+	DebugPortInUseError,
 	DriverTimedOutError,
 	type BuildContext,
 	type BuildOutcome,
@@ -42,6 +44,7 @@ import {
 	type DevFolderProbeFailureReason,
 	type DevFolderProbeOutcome,
 	type Driver,
+	type InspectedDebugTarget,
 	type RunContext,
 	type RunOutcome,
 	type RunResourceSample,
@@ -80,6 +83,10 @@ const BIND_SOURCE_MISSING_SUBSTRING = 'bind source path does not exist';
  * rejection shape `classifyProbeError` reports as "not a directory" rather than a generic "could not
  * verify", and never as "does not exist". */
 const NOT_A_DIRECTORY_SUBSTRING = 'not a directory';
+/** Docker daemon rejection substrings for "host port already bound" - covers both the classic and
+ * newer moby wording. */
+const PORT_IN_USE_SUBSTRINGS = ['port is already allocated', 'address already in use'];
+
 /** Per-run CPU/memory sampling cadence - decided, not tunable via env in this PR. A single module
  * constant, so it is trivially adjustable later if per-second `stats()` calls against the daemon (up to
  * one per concurrently running Actor, `system.md`'s scale budget) ever prove too much load. */
@@ -118,6 +125,12 @@ function classifyProbeError(error: unknown): DevFolderProbeFailureReason {
 	if (error.message.includes(BIND_SOURCE_MISSING_SUBSTRING)) return 'not-found';
 	if (error.message.includes(NOT_A_DIRECTORY_SUBSTRING)) return 'not-a-directory';
 	return 'unknown';
+}
+
+/** True when a `container.start()` rejection means the host debug port is already bound. */
+function isPortInUseError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return PORT_IN_USE_SUBSTRINGS.some((substring) => message.includes(substring));
 }
 
 function sourceFileToBuffer(file: SourceFile): Buffer {
@@ -286,6 +299,8 @@ export class DockerDriver implements Driver {
 	 * twice at once; cleared on failure so a later call gets to retry rather than replaying the same
 	 * rejection forever. */
 	private probeImageBuild: Promise<string> | undefined;
+	/** Python debug payload tar + debugpy version, read from disk at most once and cached. */
+	private debugPayload: { tar: Buffer; debugpyVersion: string } | undefined;
 
 	available = false;
 	unavailableReason: string | undefined;
@@ -479,6 +494,35 @@ export class DockerDriver implements Driver {
 	}
 
 	/**
+	 * Reads back `Config.Cmd`/`Config.Entrypoint` and env for `resolveDebugPlan`
+	 * (`services/debug-mode.ts`). An inspect failure here is not tolerated - it propagates rather than
+	 * being treated as "no Cmd, no Entrypoint, no env", which would misreport as unclassifiable.
+	 */
+	async inspectDebugTarget(imageId: string): Promise<InspectedDebugTarget> {
+		const info = await this.docker.getImage(imageId).inspect();
+		const envList = info.Config.Env ?? [];
+		const envMap: Record<string, string> = {};
+		for (const entry of envList) {
+			const separatorIndex = entry.indexOf('=');
+			if (separatorIndex === -1) continue;
+			envMap[entry.slice(0, separatorIndex)] = entry.slice(separatorIndex + 1);
+		}
+		// Entrypoint arrives as either a string or a string array; normalized to an array here.
+		const entrypointRaw = info.Config.Entrypoint;
+		const entrypoint = Array.isArray(entrypointRaw) ? entrypointRaw : entrypointRaw ? [entrypointRaw] : undefined;
+		return {
+			cmd: info.Config.Cmd ?? undefined,
+			entrypoint,
+			env: {
+				PYTHONPATH: envMap.PYTHONPATH,
+				NODE_OPTIONS: envMap.NODE_OPTIONS,
+				PYTHON_VERSION: envMap.PYTHON_VERSION,
+				NODE_VERSION: envMap.NODE_VERSION,
+			},
+		};
+	}
+
+	/**
 	 * Genuinely interrupts the in-flight build: aborts the `AbortController` passed to `buildImage` as
 	 * `abortSignal`, which destroys the underlying HTTP request to the Docker daemon (see the class
 	 * doc comment). A no-op if the build already finished (its controller was already cleaned up) - the
@@ -512,10 +556,28 @@ export class DockerDriver implements Driver {
 			);
 		}
 
+		// Loaded and logged before `createContainer` so a missing payload fails the run before any
+		// container exists, and the attach line lands in the log even if container creation fails.
+		let debugPayload: { tar: Buffer; debugpyVersion: string } | undefined;
+		if (ctx.debug) {
+			if (ctx.debug.language === 'python') {
+				debugPayload = await this.loadDebugPayload();
+				onLog(
+					this.buildDebugLogLine(
+						{ language: 'python', port: ctx.debug.port, debugpyVersion: debugPayload.debugpyVersion },
+						ctx.timeoutSecs,
+					),
+				);
+			} else {
+				onLog(this.buildDebugLogLine({ language: 'node', port: ctx.debug.port }, ctx.timeoutSecs));
+			}
+		}
+
 		const container = await this.docker.createContainer({
 			Image: ctx.imageId,
 			Env: env,
 			Labels: { [RUN_LABEL]: ctx.runId },
+			...(ctx.debug ? { ExposedPorts: { [`${ctx.debug.port}/tcp`]: {} } } : {}),
 			HostConfig: {
 				NetworkMode: NETWORK_NAME,
 				Memory: ctx.memoryMbytes * 1024 * 1024,
@@ -526,6 +588,15 @@ export class DockerDriver implements Driver {
 				CpuQuota: cpuQuotaFor(ctx.memoryMbytes),
 				AutoRemove: false,
 				...(ctx.devMount ? { Mounts: this.buildDevMounts(ctx.devMount) } : {}),
+				// Fixed 127.0.0.1-bound publish - lands on the developer's own host, not wherever the
+				// runtime process itself runs.
+				...(ctx.debug
+					? {
+							PortBindings: {
+								[`${ctx.debug.port}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(ctx.debug.port) }],
+							},
+						}
+					: {}),
 			},
 			Tty: false,
 		});
@@ -539,7 +610,19 @@ export class DockerDriver implements Driver {
 		let timeout: ReturnType<typeof setTimeout> | undefined;
 
 		try {
-			await container.start();
+			// Inside the try so a failed upload still reaches the finally below and removes the container.
+			if (debugPayload) {
+				await container.putArchive(debugPayload.tar, { path: '/' });
+			}
+
+			try {
+				await container.start();
+			} catch (error) {
+				if (ctx.debug && isPortInUseError(error)) {
+					throw new DebugPortInUseError(ctx.debug.port);
+				}
+				throw error;
+			}
 
 			// Only started when someone is actually listening - an unconditional sampler would issue
 			// `container.stats()` calls no caller asked for (and against a stub `dockerode` in tests that
@@ -648,6 +731,54 @@ export class DockerDriver implements Driver {
 			{ Type: 'bind', Source: devMount.localDevFolder, Target: devMount.imageWorkingDirectory },
 			{ Type: 'volume', Source: '', Target: `${devMount.imageWorkingDirectory}/node_modules` },
 		];
+	}
+
+	/** Reads the Python debug payload tar and debugpy version off disk, caching a successful read.
+	 * Outside the runtime's own built image (e.g. `pnpm dev`) these files don't exist; the rejection
+	 * propagates so the run fails before `createContainer`, never as a silent non-debug start. */
+	private async loadDebugPayload(): Promise<{ tar: Buffer; debugpyVersion: string }> {
+		if (this.debugPayload) return this.debugPayload;
+		let tarBuffer: Buffer;
+		let versionText: string;
+		try {
+			[tarBuffer, versionText] = await Promise.all([
+				readFile(debugpyPayloadTarPath()),
+				readFile(debugpyVersionFilePath(), 'utf8'),
+			]);
+		} catch (error) {
+			throw new Error(
+				`Cannot start a Python debug run: the runtime's debugpy payload is missing (${(error as Error).message}). ` +
+					`This runtime only injects debugpy when it is running from its own built image (its Dockerfile ` +
+					`bakes this payload in) - debug mode for Python Actors does not work when the runtime itself runs ` +
+					`from source (e.g. \`pnpm dev\`).`,
+			);
+		}
+		this.debugPayload = { tar: tarBuffer, debugpyVersion: versionText.trim() };
+		return this.debugPayload;
+	}
+
+	/** The run log's "paused, waiting for a debugger" line, printed before `createContainer`. */
+	private buildDebugLogLine(
+		debug: { language: 'node'; port: number } | { language: 'python'; port: number; debugpyVersion: string },
+		timeoutSecs: number,
+	): string {
+		const { language, port } = debug;
+		const tool =
+			language === 'python'
+				? `Python (debugpy ${debug.debugpyVersion}, injected by the runtime)`
+				: `Node (its own built-in inspector)`;
+		const attach =
+			language === 'python'
+				? `attach PyCharm's "Attach to DAP" or VS Code's "Python: Remote Attach" there`
+				: `attach VS Code's "Attach" or Chrome DevTools' "Open dedicated DevTools for Node" there`;
+		return (
+			`Debug mode: this run is paused before its first line, waiting for a debugger. ${tool} is listening ` +
+			`inside the container on 0.0.0.0:${port}, published on the host at 127.0.0.1:${port} - ${attach}. Set ` +
+			`your breakpoints as part of that attach - the runtime does not stop synthetically beyond the initial ` +
+			`wait, so code runs to your first breakpoint once the IDE delivers it. The run's ${timeoutSecs}s timeout ` +
+			`is already running and is NOT extended for debugging; pass a larger \`apify call --timeout\` when you ` +
+			`expect a long session.\n`
+		);
 	}
 
 	/**

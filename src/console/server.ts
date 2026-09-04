@@ -5,25 +5,28 @@
  * shared rather than reimplemented.
  *
  * The console itself has no login of its own - it is unauthenticated, and every route is a read except
- * three mutations (`console.md`): the dev-folder form on the Actor detail view, the Migrate button on
- * the run detail view, and the `/settings` form below. With multiple users it does not scope reads to
- * any one of them: every list/detail route below reads through the `listAll*`/`get*ById` cross-user
- * service functions (see e.g. `services/actors.ts: listAllActors`), never the API's own per-user
- * `listOwned*`/`getOwned*`, and every list row and detail view shows the object's owner `userId`
- * (`console.md`: "Frontend shows for each object the owner (userId)"). The dev-folder form and the
- * Migrate button write cross-user the same way - a deliberate deviation from the API's own
- * strictly-owner-scoped writes, not an accident; the `/settings` form is runtime-global by nature
- * (`api.md`'s "Upstream fallback" section), so ownership doesn't apply to it at all.
+ * four mutations (`console.md`): the dev-folder form and the debug-mode form, both on the Actor detail
+ * view, the Migrate button on the run detail view, and the `/settings` form below. With multiple users
+ * it does not scope reads to any one of them: every list/detail route below reads through the
+ * `listAll*`/`get*ById` cross-user service functions (see e.g. `services/actors.ts: listAllActors`),
+ * never the API's own per-user `listOwned*`/`getOwned*`, and every list row and detail view shows the
+ * object's owner `userId` (`console.md`: "Frontend shows for each object the owner (userId)"). The
+ * dev-folder form, the debug-mode form, and the Migrate button all write cross-user the same way - a
+ * deliberate deviation from the API's own strictly-owner-scoped writes, not an accident; the `/settings`
+ * form is runtime-global by nature (`api.md`'s "Upstream fallback" section), so ownership doesn't apply
+ * to it at all.
  */
 import express, { type Express, type Request } from 'express';
 
 import { getActorById, listAllActors } from '../services/actors.js';
+import type { ActorRecord } from '../storage/entities.js';
 import {
 	describeDevFolderFailure,
 	devFolderStatus,
 	setDevFolder,
 	type DevFolderStatus,
 } from '../services/dev-folder.js';
+import { debugStatus, setDebugMode } from '../services/debug-mode.js';
 import { getBuildById, listAllBuilds } from '../services/builds.js';
 import { getRunById, listAllRuns } from '../services/runs.js';
 import { migrateRun } from '../services/migrations.js';
@@ -37,6 +40,7 @@ import { ansiToHtml } from './ansi.js';
 import { newestFirst } from './order.js';
 import {
 	apiFallbackWarning,
+	debugModeForm,
 	definitionList,
 	devFolderForm,
 	escapeHtml,
@@ -56,21 +60,20 @@ function storageLink(prefix: '/datasets' | '/key-value-stores' | '/request-queue
 }
 
 /** Whether `req` carries positive evidence of being a cross-site form submission, for any of the
- * console's three mutating `POST` routes. The console is deliberately unauthenticated - anyone who can
+ * console's four mutating `POST` routes. The console is deliberately unauthenticated - anyone who can
  * reach it can already flip a toggle, register a dev folder, or migrate a run (`console.md`) - but all
- * three routes are unauthenticated, state-changing form `POST`s reachable from any origin, and a
- * cross-site page silently driving one is a wider threat model than "reachable": that's true of each
- * route on its own, and one of them (`/settings`) also enables credential egress once fallback is
+ * four routes are unauthenticated, state-changing form `POST`s reachable from any origin, and a
+ * cross-site page silently driving any one of them is a wider threat model than "reachable": that's true
+ * of each route on its own, and one of them (`/settings`) also enables credential egress once fallback is
  * switched on, which raises the stakes further. Every modern browser sends `Sec-Fetch-Site` on a form
- * submission (a same-origin one - the only way a human actually uses these forms - is always
+ * submission (a same-origin one - the only way a human actually uses any of these forms - is always
  * `same-origin` or `none`); a request without the header at all (an older browser, or a non-browser
  * caller like `curl`, which `console.md`'s unauthenticated-by-design model already has to tolerate)
- * reports `false` here - only a header that positively says otherwise blocks the request. This closes
- * off the specific cross-site-form vector without adding authentication or changing any route's
- * documented behaviour for a legitimate same-origin submission. Written as a plain predicate (checked
- * at the top of each handler) rather than an Express middleware, so it needs no generic parameter
- * shared across the handler chain - `req.params` keeps the type each route's own path literal already
- * gives it. */
+ * reports `false` here - only a header that positively says otherwise blocks the request. This closes off
+ * the specific cross-site-form vector without adding authentication or changing any route's documented
+ * behaviour for a legitimate same-origin submission. Written as a plain predicate (checked at the top of
+ * each handler) rather than an Express middleware, so it needs no generic parameter shared across the
+ * handler chain - `req.params` keeps the type each route's own path literal already gives it. */
 function isCrossSiteWrite(req: Request): boolean {
 	const site = req.header('sec-fetch-site');
 	return site !== undefined && site !== 'same-origin' && site !== 'none';
@@ -95,12 +98,28 @@ function devFolderSection(actorId: string, status: DevFolderStatus, errorMessage
 	);
 }
 
+/** The debug-mode toggle form + status row on the Actor detail view. Full API-body parity
+ * (`enabled`/`language`/`port`), not a checkbox-only carve-out. Passes the raw stored `localDebug` (not
+ * `debugStatus`'s display-computed version) through to `debugModeForm`, which needs the raw value to
+ * decide what to pre-fill. */
+function debugModeSection(actorId: string, localDebug: ActorRecord['localDebug'], errorMessage?: string): string {
+	const status = debugStatus({ localDebug });
+	return (
+		'<h2>Debug mode</h2>' +
+		definitionList([
+			['language', status.localDebug?.language ?? '(debug mode is off)'],
+			['port', status.localDebug?.port ?? ''],
+		]) +
+		debugModeForm(actorId, localDebug ?? null, errorMessage)
+	);
+}
+
 export function createConsoleServer(deps: ConsoleServerDeps): Express {
 	const app = express();
 	app.disable('x-powered-by');
-	// The dev-folder form, the run detail view's Migrate button, and the `/settings` form below are the
-	// console's only three writes - every other route is a plain `GET` (`console.md`'s "Every route is a
-	// read except..." list).
+	// The dev-folder form, the debug-mode form, the run detail view's Migrate button, and the `/settings`
+	// form below are the console's only four writes - every other route is a plain `GET` (`console.md`'s
+	// "Every route is a read except..." list).
 	app.use(express.urlencoded({ extended: false }));
 
 	app.get('/', async (_req, res) => {
@@ -129,6 +148,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			return;
 		}
 		const devFolderError = typeof req.query.devFolderError === 'string' ? req.query.devFolderError : undefined;
+		const debugModeError = typeof req.query.debugModeError === 'string' ? req.query.debugModeError : undefined;
 		const body =
 			definitionList([
 				['id', actor.id],
@@ -150,11 +170,12 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				1,
 				'/builds',
 			) +
-			devFolderSection(actor.id, devFolderStatus(actor), devFolderError);
+			devFolderSection(actor.id, devFolderStatus(actor), devFolderError) +
+			debugModeSection(actor.id, actor.localDebug, debugModeError);
 		res.send(layout(`Actor ${actor.name}`, body));
 	});
 
-	/** One of the console's two mutations - funnels through the same `setDevFolder` the API endpoint uses,
+	/** One of the console's four mutations - funnels through the same `setDevFolder` the API endpoint uses,
 	 * resolving the Actor cross-user by the id already in the page URL (no token) rather than through
 	 * `resolveOwnedActor`. A failure redirects back with `describeDevFolderFailure`'s message in a query
 	 * param, so it's surfaced inline rather than swallowed by the redirect. */
@@ -178,6 +199,39 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		if (result.kind !== 'ok') {
 			const message = describeDevFolderFailure(result);
 			res.redirect(`/actors/${encodeURIComponent(actor.id)}?devFolderError=${encodeURIComponent(message)}`);
+			return;
+		}
+		res.redirect(`/actors/${encodeURIComponent(actor.id)}`);
+	});
+
+	/** One of the console's four mutations - funnels through the same `setDebugMode` the API endpoint
+	 * uses, resolving the Actor cross-user by the id already in the page URL, like the dev-folder form
+	 * above. A failure redirects back with the classified message in a query param. */
+	app.post('/actors/:id/debug', async (req, res) => {
+		if (isCrossSiteWrite(req)) {
+			res.status(403).send('Cross-site form submissions are not allowed.');
+			return;
+		}
+		const actor = await getActorById(req.params.id);
+		if (!actor) {
+			res.status(404).send(layout('Not found', '<p>Actor not found.</p>'));
+			return;
+		}
+		const body = req.body as Record<string, unknown> | undefined;
+		const enabled = body?.enabled === 'on';
+		const language = typeof body?.language === 'string' ? body.language : 'auto';
+		const portRaw = typeof body?.port === 'string' ? body.port.trim() : '';
+		const requestBody: Record<string, unknown> = { enabled };
+		if (enabled) {
+			requestBody.language = language;
+			if (portRaw !== '') requestBody.port = Number(portRaw);
+		}
+
+		const result = await setDebugMode(actor, requestBody);
+		if (result.kind !== 'ok') {
+			res.redirect(
+				`/actors/${encodeURIComponent(actor.id)}?debugModeError=${encodeURIComponent(result.message)}`,
+			);
 			return;
 		}
 		res.redirect(`/actors/${encodeURIComponent(actor.id)}`);
@@ -295,21 +349,26 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			(run.status === 'RUNNING'
 				? migrateRunForm(run.id)
 				: `<p class="empty">Only a RUNNING run can be migrated (current status: ${escapeHtml(run.status)}).</p>`);
+		const rows: Array<[string, unknown]> = [
+			['id', run.id],
+			['userId', run.userId],
+			['actorId', run.actorId],
+			['buildId', run.buildId],
+			['status', run.status],
+			['startedAt', run.startedAt],
+			['finishedAt', run.finishedAt ?? ''],
+			['migrationCount', run.stats?.migrationCount ?? 0],
+			['rebootCount', run.stats?.rebootCount ?? 0],
+			['defaultDatasetId', storageLink('/datasets', run.defaultDatasetId)],
+			['defaultKeyValueStoreId', storageLink('/key-value-stores', run.defaultKeyValueStoreId)],
+			['defaultRequestQueueId', storageLink('/request-queues', run.defaultRequestQueueId)],
+		];
+		// Only present for a run that resolved a debug plan; never on the emulated `/v2` run object.
+		if (run.localDebug) {
+			rows.push(['debug', `${run.localDebug.language}, attach at 127.0.0.1:${run.localDebug.port}`]);
+		}
 		const body =
-			definitionList([
-				['id', run.id],
-				['userId', run.userId],
-				['actorId', run.actorId],
-				['buildId', run.buildId],
-				['status', run.status],
-				['startedAt', run.startedAt],
-				['finishedAt', run.finishedAt ?? ''],
-				['migrationCount', run.stats?.migrationCount ?? 0],
-				['rebootCount', run.stats?.rebootCount ?? 0],
-				['defaultDatasetId', storageLink('/datasets', run.defaultDatasetId)],
-				['defaultKeyValueStoreId', storageLink('/key-value-stores', run.defaultKeyValueStoreId)],
-				['defaultRequestQueueId', storageLink('/request-queues', run.defaultRequestQueueId)],
-			]) +
+			definitionList(rows) +
 			migrateSection +
 			'<h2>Log</h2><pre>' +
 			(log ? ansiToHtml(log) : '(empty)') +
@@ -317,7 +376,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		res.send(layout(`Run ${run.id}`, body));
 	});
 
-	/** The console's third write (`console.md`) - the same `migrateRun` as the API endpoint, cross-user
+	/** One of the console's four writes (`console.md`) - the same `migrateRun` as the API endpoint, cross-user
 	 * like the dev-folder form. */
 	app.post('/runs/:id/migrate', async (req, res) => {
 		if (isCrossSiteWrite(req)) {
@@ -485,9 +544,9 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 
 	// --- Settings: the shared upstream-fallback toggle state (`services/api-fallback.ts`), read/written
 	// through the same module the API's `GET`/`POST /actor-runtime/api-fallback` route uses - never
-	// through the API port itself (the dev-folder form's precedent). This is one of the console's three
-	// mutations, alongside the dev-folder form and the run detail view's Migrate button - `console.md`'s
-	// "every route is a read except..." names all three.
+	// through the API port itself (the dev-folder form's precedent). This is one of the console's four
+	// mutations, alongside the dev-folder form, the debug-mode form, and the run detail view's Migrate
+	// button - `console.md`'s "every route is a read except..." names all four.
 
 	app.get('/settings', async (_req, res) => {
 		const state = getApiFallbackState();
