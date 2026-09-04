@@ -4,16 +4,11 @@ name: Release Docker image
 # as one multi-arch manifest per tag, so a single tag serves x86_64 Linux/Windows-WSL2/Intel Mac and
 # arm64 (Apple Silicon, Ampere) alike.
 #
-# By default it builds whatever branch you dispatched it from ("Use workflow from"), so there is no
-# second branch to remember to change. The `branch` input only exists to override that - to run a
-# newer version of this workflow against an older ref.
+# It always builds the branch it was dispatched from ("Use workflow from") - there is no ref input, so
+# there is no second branch to keep in sync with the one you picked.
 on:
     workflow_dispatch:
         inputs:
-            branch:
-                description: Ref to build - leave empty to build the branch this workflow runs from
-                required: false
-                default: ''
             image:
                 description: Docker Hub repository to push to
                 required: true
@@ -38,10 +33,9 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 60
         steps:
-            # `inputs.branch || github.ref_name`: an empty input falls back to the dispatched branch.
+            # No `ref:` - checkout defaults to the commit the workflow was dispatched from, which is
+            # exactly the branch picked in "Use workflow from".
             - uses: actions/checkout@v4
-              with:
-                  ref: ${{ inputs.branch || github.ref_name }}
 
             # Fail here rather than three slow build steps later, with the fix named.
             - name: Check Docker Hub credentials are configured
@@ -62,7 +56,7 @@ jobs:
               id: tags
               env:
                   IMAGE: ${{ inputs.image }}
-                  BRANCH: ${{ inputs.branch || github.ref_name }}
+                  BRANCH: ${{ github.ref_name }}
                   EXTRA_TAG: ${{ inputs.extra_tag }}
                   LATEST: ${{ inputs.latest }}
               run: |
@@ -120,7 +114,7 @@ jobs:
                       org.opencontainers.image.description=A minimal, self-contained local Apify platform in a single Docker image.
                       org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
                       org.opencontainers.image.revision=${{ steps.tags.outputs.revision }}
-                      org.opencontainers.image.version=${{ inputs.branch || github.ref_name }}
+                      org.opencontainers.image.version=${{ github.ref_name }}
 
             - name: Summary
               env:
