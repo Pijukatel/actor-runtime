@@ -121,14 +121,16 @@ Images currently go to the temporary dev repository
 will move to an Apify-owned namespace later).
 
 The **Release Docker image** workflow (`.github/workflows/release.yml`) is manual only: Actions ->
-Release Docker image -> Run workflow, then pick the branch to build (plus, optionally, an extra tag
-such as `v0.1.0`, whether to also move `:latest`, and which platforms to build). It pushes one
-multi-arch manifest per tag - `linux/amd64` and `linux/arm64` by default - so the same tag serves
-x86_64 and Apple Silicon.
+Release Docker image -> Run workflow, pick the branch in **Use workflow from**, and run it. That is
+the only branch to choose - the workflow always builds the branch it was dispatched from. Everything
+else is optional: an extra tag such as `v0.1.0`, whether to also move `:latest`, and which platforms
+to build.
 
-Every run publishes `<branch>-<short-sha>` (immutable) and `<branch>` (moving). It needs two
-repository secrets: `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access token with
-Read/Write from <https://hub.docker.com/settings/security>).
+It pushes one multi-arch manifest per tag - `linux/amd64` and `linux/arm64` by default - so the same
+tag serves x86_64 and Apple Silicon. Every run publishes `<branch>-<short-sha>` (immutable) and
+`<branch>` (moving), with `/` in a branch name slugified to `-`. It needs two repository secrets:
+`DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access token with Read/Write from
+<https://hub.docker.com/settings/security>).
 
 ## Development
 

@@ -1,15 +1,14 @@
 name: Release Docker image
 
-# Manual-only: pick a branch (or any ref - tag/SHA works too) and this builds the runtime image for
-# every platform in `platforms` and pushes it to Docker Hub as one multi-arch manifest per tag, so a
-# single tag serves x86_64 Linux/Windows-WSL2/Intel Mac and arm64 (Apple Silicon, Ampere) alike.
+# Manual-only: builds the runtime image for every platform in `platforms` and pushes it to Docker Hub
+# as one multi-arch manifest per tag, so a single tag serves x86_64 Linux/Windows-WSL2/Intel Mac and
+# arm64 (Apple Silicon, Ampere) alike.
+#
+# It always builds the branch it was dispatched from ("Use workflow from") - there is no ref input, so
+# there is no second branch to keep in sync with the one you picked.
 on:
     workflow_dispatch:
         inputs:
-            branch:
-                description: Branch (or tag/SHA) to build the image from
-                required: true
-                default: master
             image:
                 description: Docker Hub repository to push to
                 required: true
@@ -34,9 +33,9 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 60
         steps:
+            # No `ref:` - checkout defaults to the commit the workflow was dispatched from, which is
+            # exactly the branch picked in "Use workflow from".
             - uses: actions/checkout@v4
-              with:
-                  ref: ${{ inputs.branch }}
 
             # Fail here rather than three slow build steps later, with the fix named.
             - name: Check Docker Hub credentials are configured
@@ -57,7 +56,7 @@ jobs:
               id: tags
               env:
                   IMAGE: ${{ inputs.image }}
-                  BRANCH: ${{ inputs.branch }}
+                  BRANCH: ${{ github.ref_name }}
                   EXTRA_TAG: ${{ inputs.extra_tag }}
                   LATEST: ${{ inputs.latest }}
               run: |
@@ -104,15 +103,18 @@ jobs:
                   tags: ${{ steps.tags.outputs.tags }}
                   provenance: mode=max
                   sbom: true
-                  # Keyed per platform set so a run for one platform list doesn't evict another's cache.
-                  cache-from: type=gha,scope=release-${{ inputs.platforms }}
-                  cache-to: type=gha,mode=max,scope=release-${{ inputs.platforms }}
+                  # One shared scope: a `type=gha` value is itself a comma-separated key=value list,
+                  # so interpolating the (comma-separated) platform list into `scope` would end the
+                  # value early and buildx would reject the leftover as a key. Sharing the scope also
+                  # lets a single-platform run reuse the layers a multi-arch run already cached.
+                  cache-from: type=gha,scope=release
+                  cache-to: type=gha,mode=max,scope=release
                   labels: |
                       org.opencontainers.image.title=actor-runtime
                       org.opencontainers.image.description=A minimal, self-contained local Apify platform in a single Docker image.
                       org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
                       org.opencontainers.image.revision=${{ steps.tags.outputs.revision }}
-                      org.opencontainers.image.version=${{ inputs.branch }}
+                      org.opencontainers.image.version=${{ github.ref_name }}
 
             - name: Summary
               env:
