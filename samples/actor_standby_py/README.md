@@ -1,6 +1,6 @@
 # Python Standby sample Actor
 
-An Actor server for trying Actor Standby against the local runtime; `sample_actor_standby_ts` is the same
+An Actor server for trying Actor Standby against the local runtime; `samples/actor_standby_ts` is the same
 server in TypeScript. `.actor/actor.json` sets `usesStandbyMode`, so `apify push` enables Standby.
 
 ```bash

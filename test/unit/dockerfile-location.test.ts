@@ -16,7 +16,7 @@ function actorJson(spec: Record<string, unknown> | string): SourceFile {
 }
 
 describe('resolveDockerfileLocation', () => {
-	it('A: resolves the "dockerfile" field to .actor/Dockerfile (sample_actor_crawler layout)', () => {
+	it('A: resolves the "dockerfile" field to .actor/Dockerfile (samples/actor_crawler layout)', () => {
 		const result = resolveDockerfileLocation([
 			actorJson({ dockerfile: './Dockerfile' }),
 			text('.actor/Dockerfile', 'FROM python:3.11-slim\n'),
@@ -32,7 +32,7 @@ describe('resolveDockerfileLocation', () => {
 		]);
 	});
 
-	it('B: resolves "../Dockerfile" to the root Dockerfile (sample_actor_ts/py layout) - byte-identical to today\'s implicit default', () => {
+	it('B: resolves "../Dockerfile" to the root Dockerfile (samples/actor_ts/py layout) - byte-identical to today\'s implicit default', () => {
 		const result = resolveDockerfileLocation([
 			actorJson({ dockerfile: '../Dockerfile' }),
 			text('Dockerfile', 'FROM node:20\n'),
