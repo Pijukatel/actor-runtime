@@ -1,7 +1,7 @@
 """Python Actor Standby sample for actor-runtime.
 
 An HTTP server that the platform (or the runtime) starts on demand and sends requests to. Mirrors
-`sample_actor_standby_ts` endpoint for endpoint:
+`samples/actor_standby_ts` endpoint for endpoint:
 
     GET  /                 what this server offers, and which run is answering
     GET  /hello?name=Ada   a greeting; pushes one item to the run's default dataset

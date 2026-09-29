@@ -42,7 +42,7 @@ const REPO_ROOT = join(__dirname, '..', '..', '..');
 export const CRAWL_START_URL = 'https://demo-webstore.apify.org/';
 
 export interface BrowserViewSample {
-	/** Directory under the repository root. */
+	/** Directory under `samples/`. */
 	dir: string;
 	label: string;
 	baseImage: string;
@@ -112,7 +112,7 @@ export function describeBrowserViewSuite(sample: BrowserViewSample): void {
 				loginApifyCli(REPO_ROOT, isolatedApifyHome);
 
 				const pushOutput = apify(['push', '--json'], {
-					cwd: join(REPO_ROOT, sample.dir),
+					cwd: join(REPO_ROOT, 'samples', sample.dir),
 					env: apifyEnv(isolatedApifyHome),
 				});
 				const push = JSON.parse(pushOutput) as PushResult;
@@ -133,7 +133,7 @@ export function describeBrowserViewSuite(sample: BrowserViewSample): void {
 			`${sample.label} sample: toggle on -> run: the log names the viewer URL, the viewer websocket reaches a live RFB server while the run crawls, the console links to the page, and the run finishes with the input-dependent item count`,
 			async () => {
 				const env = apifyEnv(isolatedApifyHome);
-				const actorDir = join(REPO_ROOT, sample.dir);
+				const actorDir = join(REPO_ROOT, 'samples', sample.dir);
 				const actorId = pushedActorId;
 
 				const toggle = apify(
@@ -213,7 +213,7 @@ export function describeBrowserViewSuite(sample: BrowserViewSample): void {
 			'with the toggle cleared, a plain `apify call` of the same Actor runs exactly as before (no mirror, same crawl)',
 			() => {
 				const env = apifyEnv(isolatedApifyHome);
-				const actorDir = join(REPO_ROOT, sample.dir);
+				const actorDir = join(REPO_ROOT, 'samples', sample.dir);
 				const actorId = pushedActorId;
 				apify(['api', 'POST', `/actor-runtime/browser-view/${actorId}`, '--body', '{"enabled": false}'], {
 					cwd: REPO_ROOT,

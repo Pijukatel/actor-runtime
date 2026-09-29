@@ -24,7 +24,7 @@ export APIFY_CLIENT_BASE_URL=http://localhost:3333
 export APIFY_CONSOLE_URL=http://localhost:3000
 ```
 
-The sample Actors (`sample_actor_*`) crawl the live web, so running them needs network access.
+The sample Actors (`samples/actor_*`) crawl the live web, so running them needs network access.
 
 ## Specification
 

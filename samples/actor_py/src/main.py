@@ -1,6 +1,6 @@
 """Python sample actor for actor-runtime.
 
-Mirrors `sample_actor_ts`: crawls a live site (`startUrl` input, defaulting to
+Mirrors `samples/actor_ts`: crawls a live site (`startUrl` input, defaulting to
 `https://crawlee.dev/`) up to `maxPages` pages with `ParselCrawler` over the Actor's default
 request queue, pushes one dataset item per page, and charges the same pay-per-event events.
 """

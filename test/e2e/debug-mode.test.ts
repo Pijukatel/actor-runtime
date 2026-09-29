@@ -11,8 +11,8 @@
  * `apify api POST actors/<id>/runs` - the run record comes back immediately (`READY`, about to become
  * `RUNNING`), so this test can poll its log and abort it explicitly.
  *
- * Each sample Actor's own image invokes its interpreter directly already (`sample_actor_ts/Dockerfile`:
- * `CMD ["node", "dist/main.js"]`; `sample_actor_py/Dockerfile`: `CMD ["python3", "-m", "src"]`), so
+ * Each sample Actor's own image invokes its interpreter directly already (`samples/actor_ts/Dockerfile`:
+ * `CMD ["node", "dist/main.js"]`; `samples/actor_py/Dockerfile`: `CMD ["python3", "-m", "src"]`), so
  * `language: "auto"` resolves correctly for both with zero Actor-side changes - exactly the "zero
  * cooperation" property this feature promises.
  */
@@ -201,10 +201,10 @@ describe('per-Actor debug mode: pause, published port, and abort while paused (r
 	});
 
 	it(
-		'Node Actor (sample_actor_ts, CMD invokes node directly): pauses before user code, publishes 9229, answers the inspector protocol, then aborts cleanly while paused',
+		'Node Actor (samples/actor_ts, CMD invokes node directly): pauses before user code, publishes 9229, answers the inspector protocol, then aborts cleanly while paused',
 		async () => {
 			const env = apifyEnv(isolatedApifyHome);
-			const actorDir = join(REPO_ROOT, 'sample_actor_ts');
+			const actorDir = join(REPO_ROOT, 'samples', 'actor_ts');
 
 			const pushOutput = apify(['push', '--json'], { cwd: actorDir, env });
 			const push = JSON.parse(pushOutput) as PushResult;
@@ -266,10 +266,10 @@ describe('per-Actor debug mode: pause, published port, and abort while paused (r
 	);
 
 	it(
-		'Python Actor (sample_actor_py, CMD invokes python3 directly): pauses before user code, publishes 5678, accepts a TCP connection, then aborts cleanly while paused',
+		'Python Actor (samples/actor_py, CMD invokes python3 directly): pauses before user code, publishes 5678, accepts a TCP connection, then aborts cleanly while paused',
 		async () => {
 			const env = apifyEnv(isolatedApifyHome);
-			const actorDir = join(REPO_ROOT, 'sample_actor_py');
+			const actorDir = join(REPO_ROOT, 'samples', 'actor_py');
 
 			const pushOutput = apify(['push', '--json'], { cwd: actorDir, env });
 			const push = JSON.parse(pushOutput) as PushResult;
