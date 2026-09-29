@@ -107,9 +107,8 @@ export interface ConsoleServerDeps {
 /** `@novnc/novnc`'s `exports` points at `core/rfb.js`; the package root is two levels up from it. */
 const NOVNC_ROOT = dirname(dirname(createRequire(import.meta.url).resolve('@novnc/novnc')));
 
-/** The dev-folder registration form + its one read-only status row, rendered on the Actor detail view
- * (`console.md`'s "Local dev-folder registration form" section). Deliberately shows only the registered
- * folder, never a build's working directory or a "mount will apply" claim - whether a mount actually
+/** The dev-folder registration form, rendered on the Actor detail view (`console.md`'s "Local dev-folder
+ * registration form" section). Deliberately shows only the registered folder, never a build's working directory or a "mount will apply" claim - whether a mount actually
  * applies depends on which build a given run resolves, which this Actor-level view has no way to know in
  * advance (`services/dev-folder.ts: devFolderStatus`'s doc comment). `errorMessage` is threaded through
  * from the POST handler's redirect query param below, since a redirect itself carries no state of its
@@ -122,7 +121,6 @@ function devFolderSection(
 ): string {
 	return (
 		'<h2>Local dev folder</h2>' +
-		definitionList([['localDevFolder', status.localDevFolder ?? '(none registered)']]) +
 		devFolderForm(actorId, status.localDevFolder ?? '', errorMessage) +
 		liveDevFolderForm(actorId, liveDevFolderEnabled)
 	);

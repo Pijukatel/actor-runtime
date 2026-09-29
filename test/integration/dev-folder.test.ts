@@ -599,13 +599,14 @@ describe('console: dev-folder registration form on the Actor detail view', () =>
 		await server.close();
 	});
 
-	it('renders the one status row and the form for an Actor with no registration yet', async () => {
+	it('renders an empty form for an Actor with no registration yet', async () => {
 		await setUpConsole(devFolderDriver({ ok: true }));
 		const actor = await server.client.actors().create({ name: 'devfolder-render-actor' });
 
 		const detail = await axios.get(`${consoleBaseUrl}/actors/${actor.id}`);
 		expect(detail.status).toBe(200);
-		expect(detail.data).toContain('(none registered)');
+		expect(detail.data).toContain('name="localDevFolder" value=""');
+		expect(detail.data).not.toContain('<dt>localDevFolder</dt>');
 		// No build working directory or "mount will apply" claim - registration is Actor-level and has no
 		// per-run build to speak for (`services/dev-folder.ts: devFolderStatus`'s doc comment).
 		expect(detail.data).not.toContain('imageWorkingDirectory');
@@ -673,7 +674,7 @@ describe('console: dev-folder registration form on the Actor detail view', () =>
 		expect(submit.headers.location).toBe(`/actors/${actor.id}`);
 
 		const detail = await axios.get(`${consoleBaseUrl}/actors/${actor.id}`);
-		expect(detail.data).toContain('(none registered)');
+		expect(detail.data).toContain('name="localDevFolder" value=""');
 		expect(detail.data).not.toContain('/abs/old-path');
 
 		const stored = await getRegistries().actors.get(actor.id);
@@ -698,7 +699,6 @@ describe('console: dev-folder registration form on the Actor detail view', () =>
 
 		const detail = await axios.get(`${consoleBaseUrl}${submit.headers.location}`);
 		expect(detail.data).toContain('/abs/existing-path');
-		expect(detail.data).not.toContain('(none registered)');
 
 		const stored = await getRegistries().actors.get(actor.id);
 		expect(stored?.localDevFolder).toBe('/abs/existing-path');
