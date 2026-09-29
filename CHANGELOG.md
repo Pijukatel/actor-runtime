@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 
 - Show human-readable names instead of IDs in console ([#83](https://github.com/apify/actor-runtime/pull/83)) ([25abc8f](https://github.com/apify/actor-runtime/commit/25abc8fc4f2928bb912640f00aa1874f5b80a242)) by [@Pijukatel](https://github.com/Pijukatel)
 - **console:** Save options in the background, dropdowns for debug and browser view ([#84](https://github.com/apify/actor-runtime/pull/84)) ([8130961](https://github.com/apify/actor-runtime/commit/813096184d578f5ae32433f6dbc2ebb08b08394c)) by [@Pijukatel](https://github.com/Pijukatel)
+- Warn when a run gets a real Apify Proxy password, add setting to disable it ([#85](https://github.com/apify/actor-runtime/pull/85)) ([b033648](https://github.com/apify/actor-runtime/commit/b0336480170c797e7e00f32191f5dcd2099d5419)) by [@Pijukatel](https://github.com/Pijukatel)
 
 
 <!-- git-cliff-unreleased-end -->
