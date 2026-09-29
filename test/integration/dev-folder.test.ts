@@ -9,7 +9,7 @@
  */
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import axios from 'axios';
 
 import { startTestServer, type TestServerHandle } from './helpers/test-server.js';
@@ -18,7 +18,6 @@ import { getRegistries } from '../../src/storage/registries.js';
 import { RUNTIME_LOG_PREFIX } from '../../src/runtime-log.js';
 import { generateId } from '../../src/storage/ids.js';
 import { recordTaggedBuild, updateActor } from '../../src/services/actors.js';
-import { setLiveDevFolderEnabled } from '../../src/services/live-dev-folder.js';
 import type { ActorRecord, BuildRecord } from '../../src/storage/entities.js';
 import type { Driver, DevFolderMount, DevFolderProbeOutcome } from '../../src/driver/types.js';
 
@@ -823,10 +822,6 @@ function devMountCapturingDriver(): {
 describe('run-start devMount derivation (actor fields -> RunContext.devMount, services/runs.ts)', () => {
 	let server: TestServerHandle;
 
-	beforeEach(() => {
-		setLiveDevFolderEnabled(true);
-	});
-
 	afterEach(async () => {
 		await server.close();
 	});
@@ -836,7 +831,11 @@ describe('run-start devMount derivation (actor fields -> RunContext.devMount, se
 		server = await startTestServer(capturing.driver);
 		const actor = await server.client.actors().create({ name: 'devmount-present-actor' });
 		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
-		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+		await updateActor(actor.id, (current) => ({
+			...current,
+			localDevFolder: '/abs/dev/src',
+			localDevFolderEnabled: true,
+		}));
 
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 		expect(run.status).toBe('SUCCEEDED');
@@ -856,7 +855,11 @@ describe('run-start devMount derivation (actor fields -> RunContext.devMount, se
 		server = await startTestServer(capturing.driver);
 		const actor = await server.client.actors().create({ name: 'devmount-marked-runtime-lines' });
 		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
-		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+		await updateActor(actor.id, (current) => ({
+			...current,
+			localDevFolder: '/abs/dev/src',
+			localDevFolderEnabled: true,
+		}));
 
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 		const log = (await server.client.log(run.id).get())!;
@@ -895,7 +898,11 @@ describe('run-start devMount derivation (actor fields -> RunContext.devMount, se
 		server = await startTestServer(capturing.driver);
 		const actor = await server.client.actors().create({ name: 'devmount-cleared-actor' });
 		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
-		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+		await updateActor(actor.id, (current) => ({
+			...current,
+			localDevFolder: '/abs/dev/src',
+			localDevFolderEnabled: true,
+		}));
 		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: undefined }));
 
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
@@ -911,7 +918,11 @@ describe('run-start devMount derivation (actor fields -> RunContext.devMount, se
 		// Built more recently than `latest`, under a different tag, with a different working directory -
 		// this must never leak into a tag-less (`latest`) run's devMount.
 		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'staging', '/app');
-		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+		await updateActor(actor.id, (current) => ({
+			...current,
+			localDevFolder: '/abs/dev/src',
+			localDevFolderEnabled: true,
+		}));
 
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 		expect(run.status).toBe('SUCCEEDED');
@@ -927,7 +938,11 @@ describe('run-start devMount derivation (actor fields -> RunContext.devMount, se
 		const actor = await server.client.actors().create({ name: 'devmount-no-working-directory-actor' });
 		// No working directory recorded - what an image with no `WORKDIR` (or `/`) produces.
 		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest');
-		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+		await updateActor(actor.id, (current) => ({
+			...current,
+			localDevFolder: '/abs/dev/src',
+			localDevFolderEnabled: true,
+		}));
 
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 		expect(run.status).toBe('SUCCEEDED');
@@ -958,7 +973,11 @@ describe('run-start devMount derivation (actor fields -> RunContext.devMount, se
 		const actor = await server.client.actors().create({ name: 'devmount-non-latest-run-actor' });
 		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
 		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'staging', '/app');
-		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+		await updateActor(actor.id, (current) => ({
+			...current,
+			localDevFolder: '/abs/dev/src',
+			localDevFolderEnabled: true,
+		}));
 
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5, build: 'staging' });
 		expect(run.status).toBe('SUCCEEDED');
@@ -982,10 +1001,6 @@ async function startRunRaw(server: TestServerHandle, actorId: string, query: str
 describe('per-run opt-out: POST /v2/actors/:actorId/runs?devFolder=false (services/runs.ts)', () => {
 	let server: TestServerHandle;
 
-	beforeEach(() => {
-		setLiveDevFolderEnabled(true);
-	});
-
 	afterEach(async () => {
 		await server.close();
 	});
@@ -995,7 +1010,11 @@ describe('per-run opt-out: POST /v2/actors/:actorId/runs?devFolder=false (servic
 		server = await startTestServer(capturing.driver);
 		const actor = await server.client.actors().create({ name: 'devmount-optout-actor' });
 		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
-		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+		await updateActor(actor.id, (current) => ({
+			...current,
+			localDevFolder: '/abs/dev/src',
+			localDevFolderEnabled: true,
+		}));
 
 		const run = await startRunRaw(server, actor.id, 'devFolder=false');
 		expect(run.status).toBe('SUCCEEDED');
@@ -1010,7 +1029,11 @@ describe('per-run opt-out: POST /v2/actors/:actorId/runs?devFolder=false (servic
 		server = await startTestServer(capturing.driver);
 		const actor = await server.client.actors().create({ name: 'devmount-optout-once-actor' });
 		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
-		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+		await updateActor(actor.id, (current) => ({
+			...current,
+			localDevFolder: '/abs/dev/src',
+			localDevFolderEnabled: true,
+		}));
 
 		await startRunRaw(server, actor.id, 'devFolder=false');
 		expect(capturing.getCapturedDevMount()).toBeUndefined();
@@ -1029,7 +1052,11 @@ describe('per-run opt-out: POST /v2/actors/:actorId/runs?devFolder=false (servic
 		server = await startTestServer(capturing.driver);
 		const actor = await server.client.actors().create({ name: 'devmount-optin-actor' });
 		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
-		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+		await updateActor(actor.id, (current) => ({
+			...current,
+			localDevFolder: '/abs/dev/src',
+			localDevFolderEnabled: true,
+		}));
 
 		const run = await startRunRaw(server, actor.id, 'devFolder=true');
 		expect(run.status).toBe('SUCCEEDED');
@@ -1045,7 +1072,11 @@ describe('per-run opt-out: POST /v2/actors/:actorId/runs?devFolder=false (servic
 		server = await startTestServer(capturing.driver);
 		const actor = await server.client.actors().create({ name: 'devmount-optout-no-working-directory' });
 		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest');
-		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+		await updateActor(actor.id, (current) => ({
+			...current,
+			localDevFolder: '/abs/dev/src',
+			localDevFolderEnabled: true,
+		}));
 
 		const run = await startRunRaw(server, actor.id, 'devFolder=false');
 		expect(run.status).toBe('SUCCEEDED');
@@ -1068,17 +1099,19 @@ describe('per-run opt-out: POST /v2/actors/:actorId/runs?devFolder=false (servic
 	});
 });
 
-async function liveDevFolderRequest(server: TestServerHandle, method: 'get' | 'post', body?: string) {
-	return axios.request({
-		method,
-		url: `${server.baseUrl}/actor-runtime/live-dev-folder`,
-		data: body,
-		headers: { Authorization: `Bearer ${server.token}`, 'Content-Type': 'application/json' },
+function postLiveDevFolder(
+	server: TestServerHandle,
+	actorId: string,
+	body: string,
+	token: string | undefined = server.token,
+) {
+	return axios.post(`${server.baseUrl}/actor-runtime/live-dev-folder/${actorId}`, body, {
+		headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' },
 		validateStatus: () => true,
 	});
 }
 
-describe('the live dev folder setting (off by default)', () => {
+describe('POST /actor-runtime/live-dev-folder/:actorId (off by default, per Actor)', () => {
 	let server: TestServerHandle;
 
 	afterEach(async () => {
@@ -1098,7 +1131,7 @@ describe('the live dev folder setting (off by default)', () => {
 		expect(await server.client.log(run.id).get()).not.toMatch(/dev folder/i);
 	});
 
-	it('while off, a registered folder on a build with no working directory logs nothing, and neither does devFolder=false', async () => {
+	it('while off, a build with no working directory and a devFolder=false run log nothing either', async () => {
 		const capturing = devMountCapturingDriver();
 		server = await startTestServer(capturing.driver);
 		const actor = await server.client.actors().create({ name: 'live-dev-folder-off-no-workdir-actor' });
@@ -1113,57 +1146,93 @@ describe('the live dev folder setting (off by default)', () => {
 		expect(await server.client.log(optedOut.id).get()).not.toMatch(/dev folder/i);
 	});
 
-	it('GET reports it off by default; POST {"enabled": true} turns mounting on for the next run', async () => {
+	it('enabling it mounts the folder for that Actor only, and disabling it stops the mount again', async () => {
 		const capturing = devMountCapturingDriver();
 		server = await startTestServer(capturing.driver);
 		const actor = await server.client.actors().create({ name: 'live-dev-folder-toggle-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
-		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+		const other = await server.client.actors().create({ name: 'live-dev-folder-other-actor' });
+		for (const a of [actor, other]) {
+			await seedSucceededBuild((await getRegistries().actors.get(a.id))!, 'latest', '/usr/src/app');
+			await updateActor(a.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+		}
+		const { modifiedAt } = (await getRegistries().actors.get(actor.id))!;
 
-		const initial = await liveDevFolderRequest(server, 'get');
-		expect(initial.status).toBe(200);
-		expect(initial.data.data).toEqual({ enabled: false });
-
-		const enabled = await liveDevFolderRequest(server, 'post', JSON.stringify({ enabled: true }));
+		const enabled = await postLiveDevFolder(server, actor.id, JSON.stringify({ enabled: true }));
 		expect(enabled.status).toBe(200);
 		expect(enabled.data.data).toEqual({ enabled: true });
-		expect((await liveDevFolderRequest(server, 'get')).data.data).toEqual({ enabled: true });
+		expect((await getRegistries().actors.get(actor.id))!.modifiedAt).toBe(modifiedAt);
 
 		await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 		expect(capturing.getCapturedDevMount()).toEqual({
 			localDevFolder: '/abs/dev/src',
 			imageWorkingDirectory: '/usr/src/app',
 		});
+		await server.client.actor(other.id).start({}, { waitForFinish: 5 });
+		expect(capturing.getCapturedDevMount()).toBeUndefined();
 
-		const disabled = await liveDevFolderRequest(server, 'post', JSON.stringify({ enabled: false }));
+		const disabled = await postLiveDevFolder(server, actor.id, JSON.stringify({ enabled: false }));
 		expect(disabled.data.data).toEqual({ enabled: false });
+		await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(capturing.getCapturedDevMount()).toBeUndefined();
 	});
 
-	it('is also served at /v2/actor-runtime/live-dev-folder and requires authentication', async () => {
+	it('is also served at /v2/actor-runtime/live-dev-folder/:actorId, requires authentication, and 404s for an unknown Actor', async () => {
 		server = await startTestServer(devFolderDriver({ ok: true }));
-		const viaAlias = await axios.get(`${server.baseUrl}/v2/actor-runtime/live-dev-folder`, {
-			headers: { Authorization: `Bearer ${server.token}` },
-			validateStatus: () => true,
-		});
-		expect(viaAlias.status).toBe(200);
-		expect(viaAlias.data.data).toEqual({ enabled: false });
+		const actor = await server.client.actors().create({ name: 'live-dev-folder-alias-actor' });
 
-		const anonymous = await axios.post(`${server.baseUrl}/actor-runtime/live-dev-folder`, '{"enabled":true}', {
-			headers: { 'Content-Type': 'application/json' },
-			validateStatus: () => true,
-		});
-		expect(anonymous.status).toBe(401);
-		expect((await liveDevFolderRequest(server, 'get')).data.data).toEqual({ enabled: false });
+		const viaAlias = await axios.post(
+			`${server.baseUrl}/v2/actor-runtime/live-dev-folder/${actor.id}`,
+			'{"enabled":true}',
+			{ headers: { Authorization: `Bearer ${server.token}` }, validateStatus: () => true },
+		);
+		expect(viaAlias.status).toBe(200);
+		expect(viaAlias.data.data).toEqual({ enabled: true });
+
+		expect((await postLiveDevFolder(server, actor.id, '{"enabled":false}', '')).status).toBe(401);
+		expect((await postLiveDevFolder(server, 'nonexistent-actor-id', '{"enabled":true}')).status).toBe(404);
+		expect((await getRegistries().actors.get(actor.id))!.localDevFolderEnabled).toBe(true);
 	});
 
 	it.each(['true', '[]', 'null', '{}', '{"enabled":"yes"}', '{"enabled":true,"extra":1}'])(
 		'rejects the malformed body %s with 400 invalid-request and no state change',
 		async (body) => {
 			server = await startTestServer(devFolderDriver({ ok: true }));
-			const res = await liveDevFolderRequest(server, 'post', body);
+			const actor = await server.client.actors().create({ name: 'live-dev-folder-malformed-actor' });
+			const res = await postLiveDevFolder(server, actor.id, body);
 			expect(res.status).toBe(400);
 			expect(res.data.error.type).toBe('invalid-request');
-			expect((await liveDevFolderRequest(server, 'get')).data.data).toEqual({ enabled: false });
+			expect((await getRegistries().actors.get(actor.id))!.localDevFolderEnabled).toBeUndefined();
 		},
 	);
+
+	it('the console checkbox on the Actor detail view sets and clears it', async () => {
+		server = await startTestServer(devFolderDriver({ ok: true }));
+		const app = createConsoleServer({ driver: server.driver });
+		const consoleServer: Server = await new Promise((resolve) => {
+			const s = app.listen(0, () => resolve(s));
+		});
+		try {
+			const consoleBaseUrl = `http://127.0.0.1:${(consoleServer.address() as AddressInfo).port}`;
+			const actor = await server.client.actors().create({ name: 'live-dev-folder-console-actor' });
+			const submit = (body: string) =>
+				axios.post(`${consoleBaseUrl}/actors/${actor.id}/live-dev-folder`, body, {
+					headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+					maxRedirects: 0,
+					validateStatus: () => true,
+				});
+
+			const before = await axios.get(`${consoleBaseUrl}/actors/${actor.id}`);
+			expect(before.data).toContain(`action="/actors/${actor.id}/live-dev-folder" data-autosave`);
+			expect(before.data).toContain('name="enabled">');
+
+			expect((await submit('enabled=on')).status).toBe(302);
+			expect((await getRegistries().actors.get(actor.id))!.localDevFolderEnabled).toBe(true);
+			expect((await axios.get(`${consoleBaseUrl}/actors/${actor.id}`)).data).toContain('name="enabled" checked');
+
+			await submit('');
+			expect((await getRegistries().actors.get(actor.id))!.localDevFolderEnabled).toBeUndefined();
+		} finally {
+			await new Promise<void>((resolve) => consoleServer.close(() => resolve()));
+		}
+	});
 });

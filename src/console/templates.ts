@@ -160,6 +160,15 @@ export function devFolderForm(actorId: string, currentValue: string, errorMessag
 	);
 }
 
+export function liveDevFolderForm(actorId: string, enabled: boolean): string {
+	return (
+		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/live-dev-folder" data-autosave>` +
+		`<label><input type="checkbox" name="enabled"${enabled ? ' checked' : ''}> Use live dev folder ` +
+		'(runs mount the registered dev folder over the built image)</label>' +
+		'</form>'
+	);
+}
+
 function selectOptions(selected: string, options: Array<[string, string]>): string {
 	return options
 		.map(([value, label]) => `<option value="${value}"${selected === value ? ' selected' : ''}>${label}</option>`)
@@ -407,15 +416,11 @@ export function apiFallbackWarning(): string {
 	return '<p class="warning">Enabling either option below forwards the caller\'s own Apify token to the upstream API shown above.</p>';
 }
 
-/** The `/settings` page's one form (`console.md`): four checkboxes, always submitting all
+/** The `/settings` page's one form (`console.md`): three checkboxes, always submitting all
  * checkboxes' current state together - an unchecked box is simply absent from the submitted body, which
  * the POST route (`console/server.ts`) reads as `false` for that field, never as "leave unchanged" (the
  * console form's own single-submit contract, unlike the API route's genuinely partial `POST`). */
-export function settingsForm(
-	state: ApiFallbackState,
-	apifyProxyEnabled: boolean,
-	liveDevFolderEnabled: boolean,
-): string {
+export function settingsForm(state: ApiFallbackState, apifyProxyEnabled: boolean): string {
 	const checkedAttr = (enabled: boolean) => (enabled ? ' checked' : '');
 	return (
 		'<form method="post" action="/settings" data-autosave>' +
@@ -428,9 +433,6 @@ export function settingsForm(
 		'<p><label><input type="checkbox" name="apifyProxyEnabled"' +
 		checkedAttr(apifyProxyEnabled) +
 		'> Use Apify Proxy (gives Actors the real proxy password; their proxy traffic is billed to your Apify account)</label></p>' +
-		'<p><label><input type="checkbox" name="liveDevFolderEnabled"' +
-		checkedAttr(liveDevFolderEnabled) +
-		"> Use live dev folder (runs mount the Actor's registered local dev folder over the built image)</label></p>" +
 		'</form>'
 	);
 }

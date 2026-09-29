@@ -32,6 +32,7 @@ import {
 } from '../services/dev-folder.js';
 import { debugStatus, setDebugMode } from '../services/debug-mode.js';
 import { browserViewStatus, setBrowserView } from '../services/browser-view.js';
+import { liveDevFolderStatus, setLiveDevFolder } from '../services/live-dev-folder.js';
 import { getBuildById, listAllBuilds } from '../services/builds.js';
 import { getRunById, listAllRuns } from '../services/runs.js';
 import { standbyUrl } from '../services/standby-config.js';
@@ -56,6 +57,7 @@ import {
 	debugModeForm,
 	definitionList,
 	devFolderForm,
+	liveDevFolderForm,
 	escapeHtml,
 	formatUsd,
 	layout,
@@ -70,7 +72,6 @@ import {
 import { CONSOLE_CSS } from './styles.js';
 import { getApiFallbackState, setApiFallbackState } from '../services/api-fallback.js';
 import { isApifyProxyEnabled, setApifyProxyEnabled } from '../services/apify-proxy.js';
-import { isLiveDevFolderEnabled, setLiveDevFolderEnabled } from '../services/live-dev-folder.js';
 import { upstreamApiBaseUrl } from '../services/identity-resolution.js';
 import type { Driver } from '../driver/types.js';
 
@@ -113,11 +114,17 @@ const NOVNC_ROOT = dirname(dirname(createRequire(import.meta.url).resolve('@novn
  * advance (`services/dev-folder.ts: devFolderStatus`'s doc comment). `errorMessage` is threaded through
  * from the POST handler's redirect query param below, since a redirect itself carries no state of its
  * own. */
-function devFolderSection(actorId: string, status: DevFolderStatus, errorMessage?: string): string {
+function devFolderSection(
+	actorId: string,
+	status: DevFolderStatus,
+	liveDevFolderEnabled: boolean,
+	errorMessage?: string,
+): string {
 	return (
 		'<h2>Local dev folder</h2>' +
 		definitionList([['localDevFolder', status.localDevFolder ?? '(none registered)']]) +
-		devFolderForm(actorId, status.localDevFolder ?? '', errorMessage)
+		devFolderForm(actorId, status.localDevFolder ?? '', errorMessage) +
+		liveDevFolderForm(actorId, liveDevFolderEnabled)
 	);
 }
 
@@ -274,7 +281,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				'/builds',
 			) +
 			pricingSection(actor.id, actor.pricingInfos, pricingError) +
-			devFolderSection(actor.id, devFolderStatus(actor), devFolderError) +
+			devFolderSection(actor.id, devFolderStatus(actor), liveDevFolderStatus(actor).enabled, devFolderError) +
 			debugModeSection(actor.id, actor.localDebug, debugModeError) +
 			browserViewSection(actor.id, actor.localBrowserView, browserViewError) +
 			(await standbySection(actor));
@@ -308,6 +315,21 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			res.redirect(`/actors/${encodeURIComponent(actor.id)}?pricingError=${encodeURIComponent(result.message)}`);
 			return;
 		}
+		res.redirect(`/actors/${encodeURIComponent(actor.id)}`);
+	});
+
+	app.post('/actors/:id/live-dev-folder', async (req, res) => {
+		if (isCrossSiteWrite(req)) {
+			res.status(403).send('Cross-site form submissions are not allowed.');
+			return;
+		}
+		const actor = await getActorById(req.params.id);
+		if (!actor) {
+			res.status(404).send(layout('Not found', '<p>Actor not found.</p>'));
+			return;
+		}
+		const body = req.body as Record<string, unknown> | undefined;
+		await setLiveDevFolder(actor, { enabled: body?.enabled === 'on' });
 		res.redirect(`/actors/${encodeURIComponent(actor.id)}`);
 	});
 
@@ -798,10 +820,9 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				['fallbackNotFoundEnabled', state.fallbackNotFoundEnabled],
 				['upstreamBaseUrl', upstreamApiBaseUrl()],
 				['apifyProxyEnabled', isApifyProxyEnabled()],
-				['liveDevFolderEnabled', isLiveDevFolderEnabled()],
 			]) +
 			'<h2>Change settings</h2>' +
-			settingsForm(state, isApifyProxyEnabled(), isLiveDevFolderEnabled()) +
+			settingsForm(state, isApifyProxyEnabled()) +
 			'</section>';
 		res.send(layout('Settings', body));
 	});
@@ -822,7 +843,6 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			fallbackNotFoundEnabled: body?.fallbackNotFoundEnabled === 'on',
 		});
 		setApifyProxyEnabled(body?.apifyProxyEnabled === 'on');
-		setLiveDevFolderEnabled(body?.liveDevFolderEnabled === 'on');
 		res.redirect('/settings');
 	});
 

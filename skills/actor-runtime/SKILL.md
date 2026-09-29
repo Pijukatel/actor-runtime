@@ -97,14 +97,14 @@ build, so changing them needs an `apify push`.
 
 ## Iterate without rebuilding (dev folder)
 
-`apify push` registers the pushed directory as the Actor's **dev folder**. The live dev folder is
-**off by default**: turn it on once per runtime start, and the runtime then bind-mounts the registered
-folder into every later run (the build log's `Registered live dev folder` line confirms it). Edit
-locally, recompile locally (`tsc`, or the language equivalent), and `apify call` again - no
-`apify push`, no rebuild:
+After that first `apify push`, the runtime registers the pushed directory as the Actor's **dev
+folder**. The live dev folder is **off by default**; once it is enabled for the Actor, the runtime
+bind-mounts that folder into every later run (the build log's `Registered live dev folder` line
+confirms it). Edit locally, recompile locally (`tsc`, or the language equivalent), and `apify call`
+again - no `apify push`, no rebuild:
 
 ```sh
-apify api POST /actor-runtime/live-dev-folder --body '{"enabled": true}'   # once; back off after a restart
+apify api POST /actor-runtime/live-dev-folder/<actorId> --body '{"enabled": true}'   # once per Actor
 # edit src/main.ts
 npm run build
 apify call --input '{"maxPages":3}'   # picks up the new dist/
@@ -113,9 +113,8 @@ apify call --input '{"maxPages":3}'   # picks up the new dist/
 - A local recompile is picked up by the **next** run's container start, not by a run already going.
 - `node_modules` still comes from the built image, so a new dependency in `package.json` does need a
   real `apify push`. Only source edits skip the rebuild.
-- While the setting is off, a registered folder is ignored silently - runs use the built image. Read it
-  with `apify api GET /actor-runtime/live-dev-folder`; the console's Settings page has the same
-  "Use live dev folder" checkbox.
+- Disable it with `--body '{"enabled": false}'`; the Actor's console page has the same checkbox. While
+  it is off, the registered folder is ignored silently.
 - `apify call --no-dev-folder` runs once from the built image alone, leaving the registration alone.
 - Register a different folder by hand with
   `apify api POST /actor-runtime/dev-folder/<actorId> --body '"/abs/path/to/src"'`; clear it with

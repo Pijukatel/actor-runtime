@@ -11,7 +11,6 @@ import { startTestServer, type TestServerHandle } from './helpers/test-server.js
 import { createConsoleServer } from '../../src/console/server.js';
 import { getRegistries } from '../../src/storage/registries.js';
 import { updateActor } from '../../src/services/actors.js';
-import { setLiveDevFolderEnabled } from '../../src/services/live-dev-folder.js';
 import {
 	DebugPortInUseError,
 	type Driver,
@@ -697,8 +696,11 @@ describe('run-start debug-plan resolution (services/runs.ts, through the real st
 		server = await startTestServer(capturing.driver);
 		const actor = await pushAndBuild(server, 'run-debug-and-devmount-actor');
 		await post(server.baseUrl, actor.id, { enabled: true }, server.token);
-		setLiveDevFolderEnabled(true);
-		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+		await updateActor(actor.id, (current) => ({
+			...current,
+			localDevFolder: '/abs/dev/src',
+			localDevFolderEnabled: true,
+		}));
 
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 		expect(run.status).toBe('SUCCEEDED');

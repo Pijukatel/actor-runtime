@@ -42,13 +42,12 @@ Your Actor's own output is passed through unchanged.
 
 ### Edit without rebuilding
 
-`apify push` registers the pushed folder as the Actor's **dev folder**. With the live dev folder turned
-on, every later run mounts it over the built image, so you edit, recompile locally and call again. It is
-off by default and back off after a restart; turn it on with the "Use live dev folder" checkbox on the
-console's Settings page, or:
+`apify push` registers the pushed folder as the Actor's **dev folder**. Once you enable the live dev
+folder for the Actor (off by default; also a checkbox on the Actor's console page), every later run mounts
+it over the built image, so you edit, recompile locally and call again:
 
 ```bash
-apify api POST /actor-runtime/live-dev-folder --body '{"enabled": true}'
+apify api POST /actor-runtime/live-dev-folder/<actorId> --body '{"enabled": true}'
 npm run build
 apify call
 ```

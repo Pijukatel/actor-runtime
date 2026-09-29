@@ -13,7 +13,6 @@ import { resolveInputSchemaLocation } from './input-schema-location.js';
 import { resolveActorMemorySettings } from './actor-memory.js';
 import { appendLog, appendRuntimeLog, flushLog, markLogTerminal } from './logs.js';
 import { registeredDevFolderBuildLine } from './dev-folder.js';
-import { isLiveDevFolderEnabled } from './live-dev-folder.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 
 /**
@@ -259,8 +258,8 @@ export async function runBuildInBackground(
 		);
 		// Re-read: `apify push` registers the folder right before starting the build, and the console can
 		// change it mid-build. No working directory means no mount - the run log explains that instead.
-		const { localDevFolder } = (await getRegistries().actors.get(actor.id)) ?? actor;
-		if (isLiveDevFolderEnabled() && localDevFolder && outcome.imageWorkingDirectory) {
+		const { localDevFolder, localDevFolderEnabled } = (await getRegistries().actors.get(actor.id)) ?? actor;
+		if (localDevFolderEnabled && localDevFolder && outcome.imageWorkingDirectory) {
 			appendRuntimeLog(record.id, registeredDevFolderBuildLine(localDevFolder, outcome.imageWorkingDirectory));
 		}
 		// Flush before writing the terminal status, not after (mirrors the same fix in

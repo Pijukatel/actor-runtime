@@ -11,7 +11,6 @@ import { openRegistries, resetRegistriesForTests } from '../../../src/storage/re
 import { resetUsersForTests } from '../../../src/services/users.js';
 import { resetApiFallbackStateForTests } from '../../../src/services/api-fallback.js';
 import { resetApifyProxyEnabledForTests } from '../../../src/services/apify-proxy.js';
-import { resetLiveDevFolderEnabledForTests } from '../../../src/services/live-dev-folder.js';
 import { createApiServer } from '../../../src/api/server.js';
 import { attachEventsWebSocket } from '../../../src/api/events-ws.js';
 import { resetLogsForTests, stopLogFlusher } from '../../../src/services/logs.js';
@@ -518,7 +517,6 @@ export async function startTestServer(
 			resetUsersForTests();
 			resetApiFallbackStateForTests();
 			resetApifyProxyEnabledForTests();
-			resetLiveDevFolderEnabledForTests();
 			// A background write (late log flush, run-record update) can land while the tree is
 			// being removed, recreating entries under an already-emptied directory — seen in CI as
 			// ENOTEMPTY. fs.rm retries exactly that class of error when maxRetries is set.

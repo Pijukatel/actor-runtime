@@ -6,7 +6,6 @@ import { createStorage } from './storages.js';
 import { openKeyValueStore } from '../storage/open.js';
 import { DebugPortInUseError, type BrowserViewerHandle, type Driver } from '../driver/types.js';
 import { REAL_APIFY_PROXY_WARNING } from './apify-proxy.js';
-import { isLiveDevFolderEnabled } from './live-dev-folder.js';
 import { appendLog, appendRuntimeLog, flushLog, markLogTerminal } from './logs.js';
 import { markEventsTerminal, publishAborting, publishPersistState, publishSystemInfo } from './events-channel.js';
 import { clearRunRestartState, consumeRunRestart } from './migrations.js';
@@ -398,7 +397,7 @@ export async function runInBackground(
 	// directory, gets `devMount: undefined`, which `docker-driver.ts`'s `startRun` treats identically to
 	// "no `Mounts` key at all" - the regression guarantee that an unregistered/cleared Actor's run
 	// container is unaffected.
-	const localDevFolder = isLiveDevFolderEnabled() ? actor.localDevFolder : undefined;
+	const localDevFolder = actor.localDevFolderEnabled ? actor.localDevFolder : undefined;
 	const devMountApplicable =
 		localDevFolder && build.imageWorkingDirectory
 			? { localDevFolder, imageWorkingDirectory: build.imageWorkingDirectory }

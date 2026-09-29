@@ -33,8 +33,8 @@ import {
 	apifyAllOutput,
 	apifyEnv,
 	createIsolatedApifyHome,
-	loginApifyCli,
 	enableLiveDevFolder,
+	loginApifyCli,
 	removeIsolatedApifyHome,
 	type ApiEnvelope,
 	type CallResult,
@@ -62,6 +62,7 @@ interface DevFolderApiResult {
 }
 
 function registerDevFolder(actorId: string, path: string, env: NodeJS.ProcessEnv): DevFolderApiResult {
+	enableLiveDevFolder(actorId, REPO_ROOT, env);
 	// The exact CLI invocation `requirements/api.md`'s `/actor-runtime/*` section documents - the clean
 	// form, no `../`, which `apify api` resolves onto `/v2/actor-runtime/dev-folder/<actorId>` (the alias
 	// `server.ts` mounts solely for this ergonomics reason). `cwd: REPO_ROOT` matters here since
@@ -95,7 +96,6 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 
 			isolatedApifyHome = createIsolatedApifyHome();
 			loginApifyCli(REPO_ROOT, isolatedApifyHome);
-			enableLiveDevFolder(REPO_ROOT, isolatedApifyHome);
 
 			// A throwaway copy of the sample Actor - this suite edits `src/main.ts` and runs local builds
 			// against it, and neither must ever touch the committed `samples/actor_ts` tree. `node_modules`/
