@@ -19,14 +19,13 @@
 - The system is isolated environment that is started by running the docker container.
 - The system user interface is accessible on localhost with specific ports for console frontend and API.
 - The user interacts with the system through the Apify cli.
-- On startup the container prints a banner naming the API port (default 3333) and the console port (default 3000),
+- On startup the container prints a banner naming the API port and the console port,
   plus a warning if the host's Docker socket could not be reached - builds and runs then fail fast
   with a clear status message, while every other endpoint (storages, actor/build/run records,
   console) still works.
-- Both ports are configurable through the runtime's own environment: `ACTOR_RUNTIME_API_PORT` and
-  `ACTOR_RUNTIME_CONSOLE_PORT`. The runtime refuses to start when either is not a valid TCP port or both
-  are the same. Each is published on the same port number on the host (`-p N:N`); every URL the runtime
-  hands out (console links, standby URLs, browser view, the Actor containers' API URL) uses the configured ports.
+- The API port (default 3333) and console port (default 3000) are set by `ACTOR_RUNTIME_API_PORT` and
+  `ACTOR_RUNTIME_CONSOLE_PORT`, published under the same numbers on the host. Every URL the runtime shows
+  uses them. An invalid or clashing port stops the runtime at startup with an error.
 - The API port also serves the per-run events websocket and standby Actors (`api.md`); no additional port is
   published for either.
 - **Debug mode is the one exception to "no other Actor container port is ever published"**
@@ -40,7 +39,7 @@
   and mount a persistent data directory (`-v <host-dir>:/data`, e.g. `-v "$(pwd)/data:/data"`) so
   storages survive a restart and are easy to inspect from the host; the directory must exist before the
   runtime starts. Publish both ports
-  (`-p 3333:3333 -p 3000:3000` for the defaults). The canonical start command is:
+  (`-p 3333:3333 -p 3000:3000`). The canonical start command is:
 
     ```bash
     docker build -t actor-runtime .
