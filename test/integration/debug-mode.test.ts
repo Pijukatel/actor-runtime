@@ -287,7 +287,7 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		const detail = await axios.get(`${consoleBaseUrl}/actors/${actor.id}`);
 		expect(detail.status).toBe(200);
 		expect(detail.data).toContain('(debug mode is off)');
-		expect(detail.data).toContain(`<form method="post" action="/actors/${actor.id}/debug">`);
+		expect(detail.data).toContain(`<form method="post" action="/actors/${actor.id}/debug" data-autosave>`);
 	});
 
 	it('submitting the form with enabled+language+port produces the same outcome the API would for the same input', async () => {

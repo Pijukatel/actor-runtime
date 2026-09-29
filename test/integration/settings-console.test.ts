@@ -71,11 +71,10 @@ describe('console: /settings page and the fallback nav indicator', () => {
 
 	it('renders one form with two checkboxes that save on change and no submit button', async () => {
 		const res = await axios.get(`${consoleBaseUrl}/settings`);
-		expect(res.data).toContain('<form method="post" action="/settings">');
 		expect(res.data).toContain('name="fallbackUnimplementedEnabled"');
 		expect(res.data).toContain('name="fallbackNotFoundEnabled"');
 		expect((res.data.match(/<form/g) ?? []).length).toBe(1);
-		expect((res.data.match(/onchange="this\.form\.submit\(\)"/g) ?? []).length).toBe(2);
+		expect(res.data).toContain('<form method="post" action="/settings" data-autosave>');
 		expect(res.data).not.toContain('<button type="submit">');
 	});
 

@@ -215,7 +215,7 @@ describe('console: browser-view form on the Actor detail view', () => {
 
 		const detail = await axios.get(`${consoleBaseUrl}/actors/${actor.id}`);
 		expect(detail.data).toContain('(browser view is off)');
-		expect(detail.data).toContain(`<form method="post" action="/actors/${actor.id}/browser-view">`);
+		expect(detail.data).toContain(`<form method="post" action="/actors/${actor.id}/browser-view" data-autosave>`);
 	});
 
 	it('submitting enabled+interactive persists the same state the API would, and shows it', async () => {

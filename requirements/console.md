@@ -67,6 +67,11 @@
 - A submission that fails validation redirects back to the same detail page with the classified error
   message shown inline, never swallowed by the redirect.
 
+## Saving options
+
+- Toggle forms (debug mode, browser view, settings) save in the background without reloading the page;
+  the status shown next to them, and any validation error, update in place.
+
 ## Debug-mode form (Actor detail view)
 
 - The Actor detail view shows the Actor's debug-mode toggle status - `(debug mode is off)`, or the
@@ -75,7 +80,7 @@
   `language` (a select, `auto`/`node`/`python`), and `port` (a number input, blank meaning "no
   override"). Submitting always sends all three fields together: an unchecked `enabled` box clears the
   toggle regardless of what the other two fields hold.
-- Changing `enabled` or `language` submits the form immediately; a Save button applies `port`.
+- Changing `enabled` or `language` saves immediately; a Save button applies `port`.
 - For any given input, the form and the API endpoint produce the same outcome.
 - A submission that fails validation redirects back to the same detail page with the classified error
   message shown inline, never silently applied.

@@ -38,6 +38,49 @@ function fallbackNavEntry(): string {
 	return `<a href="/settings">${label}</a>`;
 }
 
+/**
+ * Saves `form[data-autosave]` in the background - on a checkbox/select change, or a submit - through the
+ * same POST route a plain submit would hit, then swaps each `[data-live]` element (matched by id) for the
+ * version in the page the route redirects to, so status rows and inline errors stay server-rendered.
+ * Submissions of one form are serialized, and only the latest one's page is applied, so rapid clicks
+ * cannot land out of order. Any failure falls back to a plain submit.
+ */
+const AUTOSAVE_SCRIPT = `
+const inFlight = new WeakMap();
+async function save(form) {
+	const state = inFlight.get(form);
+	if (state) { state.again = true; return; }
+	inFlight.set(form, { again: false });
+	let page;
+	try {
+		do {
+			inFlight.get(form).again = false;
+			const res = await fetch(form.action, { method: 'POST', body: new URLSearchParams(new FormData(form)) });
+			if (!res.ok) throw new Error(res.statusText);
+			page = await res.text();
+		} while (inFlight.get(form).again);
+	} catch {
+		inFlight.delete(form);
+		form.submit();
+		return;
+	}
+	inFlight.delete(form);
+	const focused = document.activeElement?.name;
+	const fresh = new DOMParser().parseFromString(page, 'text/html');
+	for (const el of fresh.querySelectorAll('[data-live][id]')) document.getElementById(el.id)?.replaceWith(el);
+	if (focused) document.querySelector('#' + form.closest('[data-live]')?.id + ' [name="' + focused + '"]')?.focus();
+}
+document.addEventListener('change', (e) => {
+	const form = e.target.closest('form[data-autosave]');
+	if (form && e.target.matches('input[type=checkbox], select')) save(form);
+});
+document.addEventListener('submit', (e) => {
+	if (!e.target.matches('form[data-autosave]')) return;
+	e.preventDefault();
+	save(e.target);
+});
+`;
+
 export function layout(title: string, body: string): string {
 	const nav = [...NAV.map(([href, label]) => `<a href="${href}">${label}</a>`), fallbackNavEntry()].join('');
 	return `<!doctype html>
@@ -52,13 +95,14 @@ export function layout(title: string, body: string): string {
 <header class="topbar">
 <div class="topbar-inner">
 <span class="brand">Apify <span>actor-runtime</span></span>
-<nav>${nav}</nav>
+<nav id="nav" data-live>${nav}</nav>
 </div>
 </header>
 <main>
 <h1>${escapeHtml(title)}</h1>
 ${body}
 </main>
+<script>${AUTOSAVE_SCRIPT}</script>
 </body>
 </html>`;
 }
@@ -100,9 +144,6 @@ export function table(
 	return `<table>${head}${body}</table>`;
 }
 
-/** Checkboxes and selects save on change, so a form made only of them needs no Save button. */
-const SUBMIT_ON_CHANGE = ' onchange="this.form.submit()"';
-
 /** The dev-folder registration form on the Actor detail view - a single text field plus a submit
  * button, styled via this file's shared `<style>` block (`.error`/`.wide-input`/`.empty`), matching
  * every other console page's convention of no inline `style=` attributes. */
@@ -137,9 +178,9 @@ export function debugModeForm(
 		`<option value="${value}"${language === value ? ' selected' : ''}>${label}</option>`;
 	return (
 		errorHtml +
-		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/debug">` +
-		`<label><input type="checkbox" name="enabled"${current ? ' checked' : ''}${SUBMIT_ON_CHANGE}> enabled</label> ` +
-		`<label>language: <select name="language"${SUBMIT_ON_CHANGE}>` +
+		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/debug" data-autosave>` +
+		`<label><input type="checkbox" name="enabled"${current ? ' checked' : ''}> enabled</label> ` +
+		`<label>language: <select name="language">` +
 		option('auto', 'auto') +
 		option('node', 'node') +
 		option('python', 'python') +
@@ -162,9 +203,9 @@ export function browserViewForm(
 	const errorHtml = errorMessage ? `<p class="error"><strong>Error:</strong> ${escapeHtml(errorMessage)}</p>` : '';
 	return (
 		errorHtml +
-		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/browser-view">` +
-		`<label><input type="checkbox" name="enabled"${current ? ' checked' : ''}${SUBMIT_ON_CHANGE}> enabled</label> ` +
-		`<label><input type="checkbox" name="interactive"${current?.interactive ? ' checked' : ''}${SUBMIT_ON_CHANGE}> interactive ` +
+		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/browser-view" data-autosave>` +
+		`<label><input type="checkbox" name="enabled"${current ? ' checked' : ''}> enabled</label> ` +
+		`<label><input type="checkbox" name="interactive"${current?.interactive ? ' checked' : ''}> interactive ` +
 		'(deliver mouse/keyboard input from the viewer)</label>' +
 		'</form>' +
 		'<p class="empty">When on, every run of this Actor gets a live mirror of its display, linked from the ' +
@@ -363,14 +404,12 @@ export function apiFallbackWarning(): string {
 export function settingsForm(state: ApiFallbackState): string {
 	const checkedAttr = (enabled: boolean) => (enabled ? ' checked' : '');
 	return (
-		'<form method="post" action="/settings">' +
+		'<form method="post" action="/settings" data-autosave>' +
 		'<p><label><input type="checkbox" name="fallbackUnimplementedEnabled"' +
 		checkedAttr(state.fallbackUnimplementedEnabled) +
-		SUBMIT_ON_CHANGE +
 		'> Fall back for unimplemented endpoints</label></p>' +
 		'<p><label><input type="checkbox" name="fallbackNotFoundEnabled"' +
 		checkedAttr(state.fallbackNotFoundEnabled) +
-		SUBMIT_ON_CHANGE +
 		'> Fall back for not-found records</label></p>' +
 		'</form>'
 	);
