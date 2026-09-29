@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 <!-- git-cliff-unreleased-start -->
 ## 0.1.1 - **not yet released**
 
+### 🚀 Features
+
+- Show human-readable names instead of IDs in console ([#83](https://github.com/apify/actor-runtime/pull/83)) ([25abc8f](https://github.com/apify/actor-runtime/commit/25abc8fc4f2928bb912640f00aa1874f5b80a242)) by [@Pijukatel](https://github.com/Pijukatel)
+
 
 <!-- git-cliff-unreleased-end -->
 ## [0.1.0](https://github.com/apify/actor-runtime/releases/tag/v0.1.0) (2026-09-29)

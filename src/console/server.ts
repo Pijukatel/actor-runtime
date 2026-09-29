@@ -10,7 +10,7 @@
  * it does not scope reads to any one of them: every list/detail route below reads through the
  * `listAll*`/`get*ById` cross-user service functions (see e.g. `services/actors.ts: listAllActors`),
  * never the API's own per-user `listOwned*`/`getOwned*`, and every list row and detail view shows the
- * object's owner `userId` (`console.md`: "Frontend shows for each object the owner (userId)"). The
+ * object's owner by username, or its Actor as `username~actorname` (`console.md`). The
  * dev-folder form, the debug-mode form, and the Migrate button all write cross-user the same way - a
  * deliberate deviation from the API's own strictly-owner-scoped writes, not an accident; the `/settings`
  * form is runtime-global by nature (`api.md`'s "Upstream fallback" section), so ownership doesn't apply
@@ -47,6 +47,7 @@ import { openDataset, openKeyValueStore, openRequestQueue } from '../storage/ope
 import { pageKeys } from '../services/kv-key-listing.js';
 import { applyDatasetProjection, type DatasetItem } from '../services/dataset-projection.js';
 import { ansiToHtml } from './ansi.js';
+import { createNameResolver } from './names.js';
 import { newestFirst } from './order.js';
 import {
 	apiFallbackWarning,
@@ -182,16 +183,19 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 
 	app.get('/actors', async (_req, res) => {
 		const actors = await listAllActors();
-		const rows = actors.map((a) => [
-			a.id,
-			a.userId,
-			a.name,
-			a.title ?? '',
-			String(a.versions.length),
-			Object.keys(a.taggedBuilds).join(', '),
-		]);
+		const names = createNameResolver();
+		const rows = await Promise.all(
+			actors.map(async (a) => [
+				a.id,
+				await names.userName(a.userId),
+				a.name,
+				a.title ?? '',
+				String(a.versions.length),
+				Object.keys(a.taggedBuilds).join(', '),
+			]),
+		);
 		res.send(
-			layout('Actors', table(['id', 'userId', 'name', 'title', 'versions', 'tagged builds'], rows, 0, '/actors')),
+			layout('Actors', table(['id', 'user', 'name', 'title', 'versions', 'tagged builds'], rows, 0, '/actors')),
 		);
 	});
 
@@ -249,7 +253,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		const body =
 			definitionList([
 				['id', actor.id],
-				['userId', actor.userId],
+				['user', await createNameResolver().userName(actor.userId)],
 				['name', actor.name],
 				['title', actor.title ?? ''],
 				['createdAt', actor.createdAt],
@@ -435,13 +439,11 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 
 	app.get('/builds', async (_req, res) => {
 		const builds = newestFirst(await listAllBuilds());
-		const rows = builds.map((b) => [b.id, b.userId, b.actorId, b.buildNumber, b.status, b.startedAt]);
-		res.send(
-			layout(
-				'Builds',
-				table(['id', 'userId', 'actorId', 'buildNumber', 'status', 'startedAt'], rows, 0, '/builds'),
-			),
+		const names = createNameResolver();
+		const rows = await Promise.all(
+			builds.map(async (b) => [b.id, await names.actorLink(b.actorId), b.buildNumber, b.status, b.startedAt]),
 		);
+		res.send(layout('Builds', table(['id', 'actor', 'buildNumber', 'status', 'startedAt'], rows, 0, '/builds')));
 	});
 
 	app.get('/builds/:id', async (req, res) => {
@@ -454,8 +456,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		const body =
 			definitionList([
 				['id', build.id],
-				['userId', build.userId],
-				['actorId', build.actorId],
+				['actor', await createNameResolver().actorLink(build.actorId)],
 				['versionNumber', build.versionNumber],
 				['buildNumber', build.buildNumber],
 				['tag', build.tag],
@@ -472,24 +473,21 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 
 	app.get('/runs', async (_req, res) => {
 		const runs = newestFirst(await listAllRuns());
-		const rows = runs.map((r) => [
-			r.id,
-			r.userId,
-			r.actorId,
-			r.status,
-			r.startedAt,
-			storageLink('/datasets', r.defaultDatasetId),
-			formatUsd(computeRunUsage(r, getRunTelemetry(r.id)).usageTotalUsd),
-		]);
+		const names = createNameResolver();
+		const rows = await Promise.all(
+			runs.map(async (r) => [
+				r.id,
+				await names.actorLink(r.actorId),
+				r.status,
+				r.startedAt,
+				storageLink('/datasets', r.defaultDatasetId),
+				formatUsd(computeRunUsage(r, getRunTelemetry(r.id)).usageTotalUsd),
+			]),
+		);
 		res.send(
 			layout(
 				'Runs',
-				table(
-					['id', 'userId', 'actorId', 'status', 'startedAt', 'defaultDatasetId', 'usageTotalUsd'],
-					rows,
-					0,
-					'/runs',
-				),
+				table(['id', 'actor', 'status', 'startedAt', 'defaultDatasetId', 'usageTotalUsd'], rows, 0, '/runs'),
 			),
 		);
 	});
@@ -514,9 +512,8 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				: `<p class="empty">Only a RUNNING run can be migrated (current status: ${escapeHtml(run.status)}).</p>`);
 		const rows: Array<[string, unknown]> = [
 			['id', run.id],
-			['userId', run.userId],
-			['actorId', run.actorId],
-			['buildId', run.buildId],
+			['actor', await createNameResolver().actorLink(run.actorId)],
+			['build', { text: run.buildNumber, href: `/builds/${encodeURIComponent(run.buildId)}` }],
 			['status', run.status],
 			['startedAt', run.startedAt],
 			['finishedAt', run.finishedAt ?? ''],
@@ -636,21 +633,24 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		const entries = newestFirst([
 			...builds.map((b) => ({
 				id: b.id,
-				userId: b.userId,
+				actorId: b.actorId,
 				kind: 'build' as const,
 				status: b.status,
 				startedAt: b.startedAt,
 			})),
 			...runs.map((r) => ({
 				id: r.id,
-				userId: r.userId,
+				actorId: r.actorId,
 				kind: 'run' as const,
 				status: r.status,
 				startedAt: r.startedAt,
 			})),
 		]);
-		const rows = entries.map((e) => [e.id, e.userId, e.kind, e.status]);
-		res.send(layout('Logs', table(['id', 'userId', 'kind', 'status'], rows, 0, '/logs')));
+		const names = createNameResolver();
+		const rows = await Promise.all(
+			entries.map(async (e) => [e.id, await names.actorLink(e.actorId), e.kind, e.status]),
+		);
+		res.send(layout('Logs', table(['id', 'actor', 'kind', 'status'], rows, 0, '/logs')));
 	});
 
 	app.get('/logs/:id', async (req, res) => {
@@ -671,8 +671,11 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 
 	app.get('/datasets', async (_req, res) => {
 		const records = await listAllStorages('dataset');
-		const rows = records.map((r) => [r.id, r.userId, r.name ?? '', r.createdAt]);
-		res.send(layout('Datasets', table(['id', 'userId', 'name', 'createdAt'], rows, 0, '/datasets')));
+		const names = createNameResolver();
+		const rows = await Promise.all(
+			records.map(async (r) => [r.id, await names.userName(r.userId), r.name ?? '', r.createdAt]),
+		);
+		res.send(layout('Datasets', table(['id', 'user', 'name', 'createdAt'], rows, 0, '/datasets')));
 	});
 
 	app.get('/datasets/:id', async (req, res) => {
@@ -688,7 +691,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		const body =
 			definitionList([
 				['id', record.id],
-				['userId', record.userId],
+				['user', await createNameResolver().userName(record.userId)],
 				['name', record.name ?? ''],
 				['itemCount', info.itemCount],
 				['createdAt', info.createdAt.toISOString()],
@@ -702,10 +705,11 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 
 	app.get('/key-value-stores', async (_req, res) => {
 		const records = await listAllStorages('keyValueStore');
-		const rows = records.map((r) => [r.id, r.userId, r.name ?? '', r.createdAt]);
-		res.send(
-			layout('Key-value stores', table(['id', 'userId', 'name', 'createdAt'], rows, 0, '/key-value-stores')),
+		const names = createNameResolver();
+		const rows = await Promise.all(
+			records.map(async (r) => [r.id, await names.userName(r.userId), r.name ?? '', r.createdAt]),
 		);
+		res.send(layout('Key-value stores', table(['id', 'user', 'name', 'createdAt'], rows, 0, '/key-value-stores')));
 	});
 
 	app.get('/key-value-stores/:id', async (req, res) => {
@@ -723,7 +727,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		const body =
 			definitionList([
 				['id', record.id],
-				['userId', record.userId],
+				['user', await createNameResolver().userName(record.userId)],
 				['name', record.name ?? ''],
 				['createdAt', record.createdAt],
 				['keyCount', allKeys.length],
@@ -738,8 +742,11 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 
 	app.get('/request-queues', async (_req, res) => {
 		const records = await listAllStorages('requestQueue');
-		const rows = records.map((r) => [r.id, r.userId, r.name ?? '', r.createdAt]);
-		res.send(layout('Request queues', table(['id', 'userId', 'name', 'createdAt'], rows, 0, '/request-queues')));
+		const names = createNameResolver();
+		const rows = await Promise.all(
+			records.map(async (r) => [r.id, await names.userName(r.userId), r.name ?? '', r.createdAt]),
+		);
+		res.send(layout('Request queues', table(['id', 'user', 'name', 'createdAt'], rows, 0, '/request-queues')));
 	});
 
 	app.get('/request-queues/:id', async (req, res) => {
@@ -759,7 +766,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		const body =
 			definitionList([
 				['id', record.id],
-				['userId', record.userId],
+				['user', await createNameResolver().userName(record.userId)],
 				['name', record.name ?? ''],
 				['totalRequestCount', info.totalRequestCount],
 				['handledRequestCount', info.handledRequestCount],

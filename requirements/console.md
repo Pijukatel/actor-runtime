@@ -2,7 +2,9 @@
 
 - Console frontend is a page that allows inspecting each user's objects across the whole runtime.
 - Server-rendered HTML on its own port (`system.md`); the console reflects the same live state the API serves.
-- Frontend shows for each object the owner (`userId`).
+- Frontend shows human-readable names instead of ids where possible: the owner by username, an Actor as
+  `username~actorname` linked to its detail view (builds, runs and logs show only that, no separate owner),
+  and a run's build by its build number.
 - The console has no login of its own, so with multiple users it lists and shows every user's objects
   rather than scoping to one - the API's own endpoints stay strictly scoped to the calling token's user
   (`storage.md`'s "Users" section).
