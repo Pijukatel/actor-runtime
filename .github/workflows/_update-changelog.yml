@@ -51,10 +51,11 @@ jobs:
 
             - name: Update CHANGELOG.md
               env:
+                  ARTIFACT_NAME: ${{ inputs.changelog_artifact_name }}
                   DOWNLOADED_CHANGELOG: ${{ runner.temp }}/changelog/CHANGELOG.md
               run: |
                   if [ ! -s "$DOWNLOADED_CHANGELOG" ]; then
-                    echo "::error::Artifact '${{ inputs.changelog_artifact_name }}' holds no non-empty CHANGELOG.md"
+                    echo "::error::Artifact '${ARTIFACT_NAME}' holds no non-empty CHANGELOG.md"
                     exit 1
                   fi
                   mv "$DOWNLOADED_CHANGELOG" CHANGELOG.md
