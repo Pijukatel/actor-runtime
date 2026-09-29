@@ -25,7 +25,7 @@
   console) still works.
 - The API port (default 3333) and console port (default 3000) are set by `ACTOR_RUNTIME_API_PORT` and
   `ACTOR_RUNTIME_CONSOLE_PORT`, published under the same numbers on the host. Every URL the runtime shows
-  uses them. An invalid or clashing port stops the runtime at startup with an error.
+  uses them.
 - The API port also serves the per-run events websocket and standby Actors (`api.md`); no additional port is
   published for either.
 - **Debug mode is the one exception to "no other Actor container port is ever published"**
