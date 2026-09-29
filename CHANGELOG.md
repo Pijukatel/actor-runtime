@@ -2,8 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-<!-- git-cliff-unreleased-start -->
-## 0.1.0 - **not yet released**
+## [0.1.0](https://github.com/apify/actor-runtime/releases/tag/v0.1.0) (2026-09-29)
 
 ### 🚀 Features
 
@@ -33,4 +32,3 @@ All notable changes to this project will be documented in this file.
 - Make Abort responsive ([#64](https://github.com/apify/actor-runtime/pull/64)) ([c495314](https://github.com/apify/actor-runtime/commit/c495314cced81b393a4566f19b7860e5de239ed1)) by [@Pijukatel](https://github.com/Pijukatel)
 
 
-<!-- git-cliff-unreleased-end -->
