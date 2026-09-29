@@ -8,6 +8,8 @@ export interface BuildContext {
 	timeoutSecs: number;
 	/** Tar-relative path to the Dockerfile to build, passed as dockerode's `dockerfile` build option. */
 	dockerfilePath: string;
+	/** Docker build arguments (`ARG` in the Dockerfile); absent means none. */
+	buildArgs?: Record<string, string>;
 }
 
 /** Host folder + image working directory, carried together so "both or neither" is enforced by the

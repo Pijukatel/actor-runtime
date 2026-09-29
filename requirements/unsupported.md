@@ -35,7 +35,7 @@ real account, not in the runtime.
 
 - Building from Git repository, archive or Gist
 - Build on push (Git integration)
-- Secret and build-time environment variables
+- Encrypted storage of secret environment variables
 - Generated per-build OpenAPI definition
 - Output, key-value store and web server schemas
 - Publishing to Apify Store

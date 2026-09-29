@@ -1,4 +1,5 @@
-import type { ActorRecord, BuildRecord, RunRecord } from '../../storage/entities.js';
+import type { ActorRecord, ActorVersionRecord, BuildRecord, RunRecord } from '../../storage/entities.js';
+import { publicEnvVar } from '../../services/env-vars.js';
 import { getRunTelemetry } from '../../services/events-channel.js';
 import { computeRunUsage } from '../../services/run-usage.js';
 import { standbyUrl, type StandbyUrlAudience } from '../../services/standby-config.js';
@@ -9,6 +10,13 @@ const DEFAULT_RUN_BUILD_TAG = 'latest';
 /** Matches `services/runs.ts`'s `DISK_MBYTES_PER_MEMORY_MBYTE` - backfilled here only for run records
  * that predate `options.diskMbytes`; every real run always has it set already. */
 const DISK_MBYTES_PER_MEMORY_MBYTE = 2;
+
+/** Every version the API returns goes through here, so a secret env var's value never leaves the runtime. */
+export function versionDto(version: ActorVersionRecord) {
+	return version.envVars
+		? { ...version, envVars: version.envVars.map((envVar) => publicEnvVar(envVar, true)) }
+		: version;
+}
 
 export function actorDto(actor: ActorRecord, username: string, audience: StandbyUrlAudience = 'host') {
 	return {
@@ -21,7 +29,7 @@ export function actorDto(actor: ActorRecord, username: string, audience: Standby
 		createdAt: actor.createdAt,
 		modifiedAt: actor.modifiedAt,
 		stats: { totalRuns: 0, totalUsers: 1 },
-		versions: actor.versions,
+		versions: actor.versions.map(versionDto),
 		defaultRunOptions: { build: 'latest', timeoutSecs: 300, memoryMbytes: 1024 },
 		deploymentKey: actor.id,
 		pricingInfos: actor.pricingInfos ?? [],

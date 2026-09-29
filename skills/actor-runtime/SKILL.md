@@ -95,6 +95,27 @@ or not, is then clamped to the Actor's `minMemoryMbytes` / `maxMemoryMbytes`, an
 An expression that fails falls back to 1024 MB with a warning in the run log. The fields come from the
 build, so changing them needs an `apify push`.
 
+## Environment variables and secrets
+
+Declared in `.actor/actor.json` and sent by `apify push`, as on the platform:
+
+```sh
+apify secrets add myApiKey 'sk-...'   # stored by the CLI on your machine
+# .actor/actor.json: "environmentVariables": { "MODE": "dev", "API_KEY": "@myApiKey" }
+apify push
+```
+
+- Every run gets the version's env vars; the runtime's own `APIFY_*`/`ACTOR_*` vars always win over one
+  with the same name.
+- A secret's value is never returned by the API (a short `valueHash` changes when it does), but the
+  runtime keeps it unencrypted in its data directory.
+- They reach the **build** only with `applyEnvVarsToBuild` on, as Docker build arguments, secrets
+  included; the Dockerfile reads each with `ARG NAME`:
+  `apify api PUT v2/actors/<actorId>/versions/0.0 --body '{"applyEnvVarsToBuild": true}'`. A later
+  `apify push` keeps the setting.
+- `v2/actors/<actorId>/versions/<version>/env-vars` manages them one at a time. A change applies to the
+  next run, or to the next build for build arguments.
+
 ## Iterate without rebuilding (dev folder)
 
 After that first `apify push`, the runtime registers the pushed directory as the Actor's **dev

@@ -53,12 +53,22 @@ export interface InputSchema {
 	required?: string[];
 }
 
+/** Stored in plain text: the runtime is a single-tenant dev tool, and a secret is only ever hidden from
+ * API responses (`api/dto/actors.ts: versionDto`), never from the Actor it belongs to. */
+export interface ActorEnvVarRecord {
+	name: string;
+	value: string;
+	isSecret?: boolean;
+}
+
 export interface ActorVersionRecord {
 	versionNumber: string;
 	buildTag: string;
 	sourceType: SourceType;
 	sourceFiles: SourceFile[];
-	envVars?: Array<{ name: string; value: string }>;
+	envVars?: ActorEnvVarRecord[];
+	/** Passes `envVars`, secrets included, to the image build as Docker build arguments. */
+	applyEnvVarsToBuild?: boolean;
 }
 
 /** Caller-facing language selector for the debug toggle. `'auto'` resolves from the built image at run

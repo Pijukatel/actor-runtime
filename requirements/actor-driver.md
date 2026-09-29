@@ -257,9 +257,14 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 # Environment variables in every Actor container
 
 - The Actor version's own `envVars` (accepted and stored on `POST`/`PUT
-.../actors/:actorId/versions`) are applied to the run's container environment, but every
+.../actors/:actorId/versions` and managed one by one under `.../versions/:versionNumber/env-vars`), secrets
+  included, are applied to the run's container environment, but every
   platform-owned var listed below takes precedence: a version cannot override `APIFY_TOKEN`, the
   default storage ids, or any other contract var the runtime itself sets.
+- A secret env var (`isSecret`) is never returned by the API: version responses carry a short `valueHash`
+  instead of its `value`, which changes when the value does, and env-var responses omit the value.
+- With the version's `applyEnvVarsToBuild` on, its `envVars`, secrets included, are passed to the image
+  build as Docker build arguments, as on the platform. The build log names them, never their values.
 - `APIFY_IS_AT_HOME=1` (mirrors the real platform; an SDK/client instantiated
   in the container reports `isAtHome`/`is_at_home = true`).
 - `APIFY_META_ORIGIN` — `STANDBY` for a standby run, `API` for every other run

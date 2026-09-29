@@ -11,6 +11,7 @@ import { qualifyDockerfileImageReferences } from './dockerfile-image-refs.js';
 import { resolveDockerfileLocation } from './dockerfile-location.js';
 import { resolveInputSchemaLocation } from './input-schema-location.js';
 import { resolveActorMemorySettings } from './actor-memory.js';
+import { buildArgsOf } from './env-vars.js';
 import { appendLog, appendRuntimeLog, flushLog, markLogTerminal } from './logs.js';
 import { registeredDevFolderBuildLine } from './dev-folder.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
@@ -244,6 +245,14 @@ export async function runBuildInBackground(
 		(line) => appendRuntimeLog(record.id, line),
 	);
 
+	const buildArgs = buildArgsOf(version);
+	if (buildArgs) {
+		appendRuntimeLog(
+			record.id,
+			`Passing the version's environment variables to the build as build arguments: ${Object.keys(buildArgs).join(', ')}`,
+		);
+	}
+
 	try {
 		const outcome = await driver.startBuild(
 			{
@@ -253,6 +262,7 @@ export async function runBuildInBackground(
 				useCache: options.useCache,
 				timeoutSecs: DEFAULT_BUILD_TIMEOUT_SECS,
 				dockerfilePath: dockerfileResolution.dockerfilePath,
+				...(buildArgs ? { buildArgs } : {}),
 			},
 			(chunk) => appendLog(record.id, chunk),
 		);

@@ -96,3 +96,22 @@ export function cannotChargeApifyEvent(eventName: string): ApiError {
 		`Event "${eventName}" is system event and cannot be charged.`,
 	);
 }
+
+/** Matches the real platform's `tools.schemaValidationUserFriendlyError`, e.g. for a malformed env var. */
+export function schemaValidation(message: string): ApiError {
+	return new ApiError(400, 'schema-validation', message);
+}
+
+/** Matches the real platform's `actor.envVarAlreadyExists`. */
+export function envVarAlreadyExists(): ApiError {
+	return new ApiError(403, 'env-var-already-exists', 'Environment variable with this name already exists');
+}
+
+/** Matches the real platform's `actor.cannotRenameEnvVar`. */
+export function cannotRenameEnvVar(): ApiError {
+	return new ApiError(
+		403,
+		'cannot-rename-env-var',
+		'Environment variable cannot be renamed. An environment variable with the given new name already exists.',
+	);
+}

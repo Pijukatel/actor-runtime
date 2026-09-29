@@ -598,6 +598,26 @@ describe('DockerDriver.startBuild - dockerfile option (the resolved path is hand
 		expect(options).toMatchObject({ dockerfile: '.actor/Dockerfile' });
 	});
 
+	it('hands ctx.buildArgs to buildImage as "buildargs", and omits the option when there are none', async () => {
+		const stub = stubDockerCapturingBuildImageOptions();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+		const ctx = {
+			buildId: 'build-args',
+			actorName: 'my-actor',
+			sourceFiles: [],
+			useCache: true,
+			timeoutSecs: 60,
+			dockerfilePath: 'Dockerfile',
+		};
+
+		await driver.startBuild({ ...ctx, buildArgs: { MY_ARG: 'value' } }, () => {});
+		await driver.startBuild(ctx, () => {});
+
+		expect(stub.buildImage.mock.calls[0]![1]).toMatchObject({ buildargs: { MY_ARG: 'value' } });
+		expect(stub.buildImage.mock.calls[1]![1]).not.toHaveProperty('buildargs');
+	});
+
 	it('always sets the "dockerfile" option, even for the plain root-"Dockerfile" case that coincides with Docker\'s own implicit default', async () => {
 		const stub = stubDockerCapturingBuildImageOptions();
 		const driver = new DockerDriver(stub.docker);
