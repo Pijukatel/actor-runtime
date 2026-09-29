@@ -407,7 +407,7 @@ export function apiFallbackWarning(): string {
 	return '<p class="warning">Enabling either option below forwards the caller\'s own Apify token to the upstream API shown above.</p>';
 }
 
-/** The `/settings` page's one form (`console.md`): two checkboxes, each saving on change, always submitting both
+/** The `/settings` page's one form (`console.md`): two checkboxes, always submitting both
  * checkboxes' current state together - an unchecked box is simply absent from the submitted body, which
  * the POST route (`console/server.ts`) reads as `false` for that field, never as "leave unchanged" (the
  * console form's own single-submit contract, unlike the API route's genuinely partial `POST`). */

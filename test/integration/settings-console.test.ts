@@ -69,7 +69,7 @@ describe('console: /settings page and the fallback nav indicator', () => {
 		expect(after.data).toMatch(/<dt>fallbackUnimplementedEnabled<\/dt>\s*<dd>true<\/dd>/);
 	});
 
-	it('renders one form with two checkboxes that save on change and no submit button', async () => {
+	it('renders one autosaving form with two checkboxes', async () => {
 		const res = await axios.get(`${consoleBaseUrl}/settings`);
 		expect(res.data).toContain('name="fallbackUnimplementedEnabled"');
 		expect(res.data).toContain('name="fallbackNotFoundEnabled"');

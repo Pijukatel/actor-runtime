@@ -71,25 +71,22 @@
 
 ## Saving options
 
-- Toggle forms (debug mode, browser view, settings) save in the background without reloading the page;
-  the status shown next to them, and any validation error, update in place.
+- Debug-mode, browser-view and settings forms save on change, without a page reload.
 
 ## Debug-mode form (Actor detail view)
 
 - The Actor detail view shows the Actor's debug-mode toggle status - `(debug mode is off)`, or the
   resolved `language`/`port` when on - the same status the API endpoint reports (`api.md`).
-- A form on the same view has a debug select (`No`/`auto`/`node`/`python`) and a `port` number input
-  (blank meaning "no override", disabled while debug is `No`). `No` clears the toggle; any other choice
-  turns it on with that `language`. Every change saves immediately; there is no Save button.
+- A form on the same view has a select (`No`/`auto`/`node`/`python`) and a `port` input (blank means
+  no override). `No` turns debug mode off; any other choice turns it on with that `language`.
 - For any given input, the form and the API endpoint produce the same outcome.
 - A submission that fails validation redirects back to the same detail page with the classified error
   message shown inline, never silently applied.
 
 ## Browser-view form (Actor detail view)
 
-- The Actor detail view shows the browser-view toggle status and a select: `No` (off), `Passive`
-  (view-only), or `Interactive`. Changing it saves immediately; there is no Save button. For any input,
-  the form and the API produce the same outcome.
+- The Actor detail view shows the browser-view toggle status and a select: `No`, `Passive` (view-only),
+  or `Interactive`. For any input, the form and the API produce the same outcome.
 
 ## Browser view page (`/runs/:runId/browser`)
 
@@ -115,7 +112,7 @@
 - `/settings` shows `fallbackUnimplementedEnabled`, `fallbackNotFoundEnabled`, and `upstreamBaseUrl`
   (the same values the API's toggle endpoint reports), plus a warning that enabling either toggle
   forwards the caller's own Apify token to that URL.
-- The Settings page saves on every checkbox change, with no Save button, and sets both toggles at once. Unlike the API's partial `POST` (`api.md`),
+- The Settings page lets a caller set both toggles at once. Unlike the API's partial `POST` (`api.md`),
   submitting the form always sets both toggles explicitly - leaving one unchecked sets it to `false`,
   never "leave this toggle unchanged". A change made through either surface is immediately visible on
   the other, and via the API's own `GET`, with no restart needed either way.
