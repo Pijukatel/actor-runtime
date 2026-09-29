@@ -75,7 +75,8 @@
   (`storage.md`); the mount a run applies always uses the one from _that run's own resolved build_,
   never any other build the Actor happens to have.
 - **The mount is off by default**: it applies only after the live dev folder is enabled for the Actor
-  (`POST /actor-runtime/live-dev-folder/:actorId` or the console's Actor detail view).
+  (`POST /actor-runtime/live-dev-folder/:actorId` or the console's Actor detail view); until then, a run's
+  log says the registered folder is not mounted.
 - **The mount is applied only when both a registered dev folder and a known working directory exist**
   for the run's resolved build; either missing means the run starts exactly as if the feature did not
   exist.

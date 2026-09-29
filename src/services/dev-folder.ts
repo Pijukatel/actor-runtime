@@ -142,6 +142,15 @@ export function registeredDevFolderBuildLine(localDevFolder: string, imageWorkin
 	);
 }
 
+/** A folder registered by `apify push` alone is easy to mistake for a live one. */
+export function liveDevFolderDisabledLine(actorId: string, localDevFolder: string): string {
+	return (
+		`Not mounting the registered local dev folder ${localDevFolder}: live dev folder is off for this Actor. ` +
+		`To use it, run \`apify api POST /actor-runtime/live-dev-folder/${actorId} --body '{"enabled": true}'\` ` +
+		'or check "Use live dev folder" on the Actor\'s console page.'
+	);
+}
+
 /** Printed when a registered dev folder cannot be mounted because the run's build has no working
  * directory (an image with no `WORKDIR`, or `/`). The run is unaffected; only the silence is. */
 export function unknownWorkingDirectoryLine(localDevFolder: string): string {

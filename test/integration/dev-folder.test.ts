@@ -1118,7 +1118,7 @@ describe('POST /actor-runtime/live-dev-folder/:actorId (off by default, per Acto
 		await server.close();
 	});
 
-	it('while off, a registered folder is neither mounted nor mentioned in the run log', async () => {
+	it('while off, a registered folder is not mounted, and the run log says why', async () => {
 		const capturing = devMountCapturingDriver();
 		server = await startTestServer(capturing.driver);
 		const actor = await server.client.actors().create({ name: 'live-dev-folder-off-actor' });
@@ -1128,20 +1128,25 @@ describe('POST /actor-runtime/live-dev-folder/:actorId (off by default, per Acto
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 		expect(run.status).toBe('SUCCEEDED');
 		expect(capturing.getCapturedDevMount()).toBeUndefined();
-		expect(await server.client.log(run.id).get()).not.toMatch(/dev folder/i);
+		const log = await server.client.log(run.id).get();
+		expect(log).toContain(
+			'Not mounting the registered local dev folder /abs/dev/src: live dev folder is off for this Actor.',
+		);
+		expect(log).toContain(`/actor-runtime/live-dev-folder/${actor.id}`);
+		expect(log).not.toContain('Live dev folder mode');
+		expect(log).not.toContain('has no working directory');
 	});
 
-	it('while off, a build with no working directory and a devFolder=false run log nothing either', async () => {
+	it('while off, an unregistered Actor and a devFolder=false run log nothing about it', async () => {
 		const capturing = devMountCapturingDriver();
 		server = await startTestServer(capturing.driver);
-		const actor = await server.client.actors().create({ name: 'live-dev-folder-off-no-workdir-actor' });
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest');
-		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+		const actor = await server.client.actors().create({ name: 'live-dev-folder-off-optout-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
 
 		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 		expect(await server.client.log(run.id).get()).not.toMatch(/dev folder/i);
 
-		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
+		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
 		const optedOut = await startRunRaw(server, actor.id, 'devFolder=false');
 		expect(await server.client.log(optedOut.id).get()).not.toMatch(/dev folder/i);
 	});

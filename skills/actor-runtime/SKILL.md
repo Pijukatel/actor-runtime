@@ -114,7 +114,7 @@ apify call --input '{"maxPages":3}'   # picks up the new dist/
 - `node_modules` still comes from the built image, so a new dependency in `package.json` does need a
   real `apify push`. Only source edits skip the rebuild.
 - Disable it with `--body '{"enabled": false}'`; the Actor's console page has the same checkbox. While
-  it is off, the registered folder is ignored silently.
+  it is off, each run's log says the registered folder is not mounted.
 - `apify call --no-dev-folder` runs once from the built image alone, leaving the registration alone.
 - Register a different folder by hand with
   `apify api POST /actor-runtime/dev-folder/<actorId> --body '"/abs/path/to/src"'`; clear it with
