@@ -28,7 +28,6 @@ jobs:
             startsWith(github.event.head_commit.message, 'style')
         runs-on: ubuntu-latest
         outputs:
-            version_number: ${{ steps.release_prepare.outputs.version_number }}
             changelog_artifact_name: ${{ steps.release_prepare.outputs.changelog_artifact_name }}
         steps:
             - uses: apify/actions/git-cliff-release@v1.6.1
@@ -43,10 +42,9 @@ jobs:
         needs: [release_prepare]
         permissions:
             contents: write
-        uses: apify/workflows/.github/workflows/bump_and_update_changelog.yaml@main
+        uses: ./.github/workflows/_update-changelog.yml
         with:
-            # Nothing is published until a stable release, so package.json keeps the released version.
-            ecosystem: none
-            version_number: ${{ needs.release_prepare.outputs.version_number }}
+            # No version_number: nothing is published until a stable release, so package.json keeps the
+            # released version.
             changelog_artifact_name: ${{ needs.release_prepare.outputs.changelog_artifact_name }}
         secrets: inherit

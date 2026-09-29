@@ -5,8 +5,8 @@ name: Release
 # master, the GitHub release is tagged on that commit, and the image built from it is published as
 # `v<version>` and `latest`.
 #
-# Changelog generation and the bump commit are the ones crawlee-python releases with, shared through
-# apify/actions and apify/workflows.
+# Changelog generation is the git-cliff setup crawlee-python releases with (apify/actions); the bump
+# commit is `_update-changelog.yml`.
 on:
     workflow_dispatch:
         inputs:
@@ -78,9 +78,8 @@ jobs:
         needs: [release_prepare]
         permissions:
             contents: write
-        uses: apify/workflows/.github/workflows/bump_and_update_changelog.yaml@main
+        uses: ./.github/workflows/_update-changelog.yml
         with:
-            ecosystem: node
             version_number: ${{ needs.release_prepare.outputs.version_number }}
             changelog_artifact_name: ${{ needs.release_prepare.outputs.changelog_artifact_name }}
         secrets: inherit
