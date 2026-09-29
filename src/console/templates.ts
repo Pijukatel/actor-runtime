@@ -100,6 +100,9 @@ export function table(
 	return `<table>${head}${body}</table>`;
 }
 
+/** Checkboxes and selects save on change, so a form made only of them needs no Save button. */
+const SUBMIT_ON_CHANGE = ' onchange="this.form.submit()"';
+
 /** The dev-folder registration form on the Actor detail view - a single text field plus a submit
  * button, styled via this file's shared `<style>` block (`.error`/`.wide-input`/`.empty`), matching
  * every other console page's convention of no inline `style=` attributes. */
@@ -135,8 +138,8 @@ export function debugModeForm(
 	return (
 		errorHtml +
 		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/debug">` +
-		`<label><input type="checkbox" name="enabled"${current ? ' checked' : ''}> enabled</label> ` +
-		`<label>language: <select name="language">` +
+		`<label><input type="checkbox" name="enabled"${current ? ' checked' : ''}${SUBMIT_ON_CHANGE}> enabled</label> ` +
+		`<label>language: <select name="language"${SUBMIT_ON_CHANGE}>` +
 		option('auto', 'auto') +
 		option('node', 'node') +
 		option('python', 'python') +
@@ -145,7 +148,7 @@ export function debugModeForm(
 		'placeholder="(default)"></label> ' +
 		'<button type="submit">Save</button>' +
 		'</form>' +
-		'<p class="empty">Uncheck "enabled" and submit to turn debug mode off. Leave "port" blank to use the ' +
+		'<p class="empty">"enabled" and "language" save on change; "Save" applies the port. Leave "port" blank to use the ' +
 		"resolved language's own default port (5678 Python / 9229 Node) at run start.</p>"
 	);
 }
@@ -160,10 +163,9 @@ export function browserViewForm(
 	return (
 		errorHtml +
 		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/browser-view">` +
-		`<label><input type="checkbox" name="enabled"${current ? ' checked' : ''}> enabled</label> ` +
-		`<label><input type="checkbox" name="interactive"${current?.interactive ? ' checked' : ''}> interactive ` +
-		'(deliver mouse/keyboard input from the viewer)</label> ' +
-		'<button type="submit">Save</button>' +
+		`<label><input type="checkbox" name="enabled"${current ? ' checked' : ''}${SUBMIT_ON_CHANGE}> enabled</label> ` +
+		`<label><input type="checkbox" name="interactive"${current?.interactive ? ' checked' : ''}${SUBMIT_ON_CHANGE}> interactive ` +
+		'(deliver mouse/keyboard input from the viewer)</label>' +
 		'</form>' +
 		'<p class="empty">When on, every run of this Actor gets a live mirror of its display, linked from the ' +
 		"run's page. The browser must run headful to show anything (Crawlee JS: <code>headless: false</code>, " +
@@ -354,7 +356,7 @@ export function apiFallbackWarning(): string {
 	return '<p class="warning">Enabling either option below forwards the caller\'s own Apify token to the upstream API shown above.</p>';
 }
 
-/** The `/settings` page's one form (`console.md`): two checkboxes, one submit, always submitting both
+/** The `/settings` page's one form (`console.md`): two checkboxes, each saving on change, always submitting both
  * checkboxes' current state together - an unchecked box is simply absent from the submitted body, which
  * the POST route (`console/server.ts`) reads as `false` for that field, never as "leave unchanged" (the
  * console form's own single-submit contract, unlike the API route's genuinely partial `POST`). */
@@ -364,11 +366,12 @@ export function settingsForm(state: ApiFallbackState): string {
 		'<form method="post" action="/settings">' +
 		'<p><label><input type="checkbox" name="fallbackUnimplementedEnabled"' +
 		checkedAttr(state.fallbackUnimplementedEnabled) +
+		SUBMIT_ON_CHANGE +
 		'> Fall back for unimplemented endpoints</label></p>' +
 		'<p><label><input type="checkbox" name="fallbackNotFoundEnabled"' +
 		checkedAttr(state.fallbackNotFoundEnabled) +
+		SUBMIT_ON_CHANGE +
 		'> Fall back for not-found records</label></p>' +
-		'<button type="submit">Save</button>' +
 		'</form>'
 	);
 }

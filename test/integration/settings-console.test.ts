@@ -69,13 +69,14 @@ describe('console: /settings page and the fallback nav indicator', () => {
 		expect(after.data).toMatch(/<dt>fallbackUnimplementedEnabled<\/dt>\s*<dd>true<\/dd>/);
 	});
 
-	it('renders one form with two checkboxes and a single submit', async () => {
+	it('renders one form with two checkboxes that save on change and no submit button', async () => {
 		const res = await axios.get(`${consoleBaseUrl}/settings`);
 		expect(res.data).toContain('<form method="post" action="/settings">');
 		expect(res.data).toContain('name="fallbackUnimplementedEnabled"');
 		expect(res.data).toContain('name="fallbackNotFoundEnabled"');
 		expect((res.data.match(/<form/g) ?? []).length).toBe(1);
-		expect((res.data.match(/<button type="submit">/g) ?? []).length).toBe(1);
+		expect((res.data.match(/onchange="this\.form\.submit\(\)"/g) ?? []).length).toBe(2);
+		expect(res.data).not.toContain('<button type="submit">');
 	});
 
 	it('unchecking only one checkbox and submitting turns that one off while leaving the other on - an absent box is read as false, not "unchanged"', async () => {

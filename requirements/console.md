@@ -75,6 +75,7 @@
   `language` (a select, `auto`/`node`/`python`), and `port` (a number input, blank meaning "no
   override"). Submitting always sends all three fields together: an unchecked `enabled` box clears the
   toggle regardless of what the other two fields hold.
+- Changing `enabled` or `language` submits the form immediately; a Save button applies `port`.
 - For any given input, the form and the API endpoint produce the same outcome.
 - A submission that fails validation redirects back to the same detail page with the classified error
   message shown inline, never silently applied.
@@ -82,7 +83,8 @@
 ## Browser-view form (Actor detail view)
 
 - The Actor detail view shows the browser-view toggle status and a form with the API body's two fields,
-  `enabled` and `interactive`, as checkboxes. For any input, the form and the API produce the same outcome.
+  `enabled` and `interactive`, as checkboxes. Ticking either box saves immediately; there is no Save button.
+  For any input, the form and the API produce the same outcome.
 
 ## Browser view page (`/runs/:runId/browser`)
 
@@ -108,7 +110,7 @@
 - `/settings` shows `fallbackUnimplementedEnabled`, `fallbackNotFoundEnabled`, and `upstreamBaseUrl`
   (the same values the API's toggle endpoint reports), plus a warning that enabling either toggle
   forwards the caller's own Apify token to that URL.
-- The Settings page lets a caller set both toggles at once. Unlike the API's partial `POST` (`api.md`),
+- The Settings page saves on every checkbox change, with no Save button, and sets both toggles at once. Unlike the API's partial `POST` (`api.md`),
   submitting the form always sets both toggles explicitly - leaving one unchecked sets it to `false`,
   never "leave this toggle unchanged". A change made through either surface is immediately visible on
   the other, and via the API's own `GET`, with no restart needed either way.
