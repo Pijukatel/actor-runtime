@@ -421,23 +421,59 @@ describe('console pages (HTTP fetch)', () => {
 		expect(res.status).toBe(404);
 	});
 
-	it('shows the owner userId on every list page and every detail view (console.md: "Frontend shows for each object the owner (userId)")', async () => {
+	it('shows the owner by username, and the Actor as username~actorname, instead of raw ids', async () => {
 		const actor = await server.client.actors().create({ name: 'owner-display-actor' });
 		const dataset = await server.client.datasets().getOrCreate('owner-display-dataset');
 		const me = await server.client.user('me').get();
+		const qualified = `${me.username}~owner-display-actor`;
+		const { builds, runs } = getRegistries();
+		const startedAt = '2024-01-01T00:00:00.000Z';
+		const build: BuildRecord = {
+			id: generateId(),
+			userId: me.id,
+			actorId: actor.id,
+			versionNumber: '0.0',
+			buildNumber: '0.0.7',
+			tag: 'latest',
+			status: 'SUCCEEDED',
+			startedAt,
+			finishedAt: startedAt,
+			imageId: 'fake-image:latest',
+		};
+		await builds.set(build.id, build);
+		const run: RunRecord = {
+			id: generateId(),
+			userId: me.id,
+			actorId: actor.id,
+			buildId: build.id,
+			buildNumber: build.buildNumber,
+			status: 'SUCCEEDED',
+			startedAt,
+			finishedAt: startedAt,
+			defaultDatasetId: 'd',
+			defaultKeyValueStoreId: 'k',
+			defaultRequestQueueId: 'r',
+			options: { memoryMbytes: 1024, timeoutSecs: 300 },
+			meta: { origin: 'API' },
+		};
+		await runs.set(run.id, run);
 
-		const actorsList = await axios.get(`${consoleBaseUrl}/actors`);
-		expect(actorsList.data).toContain('userId');
-		expect(actorsList.data).toContain(me.id);
+		const userPages = ['/actors', `/actors/${actor.id}`, '/datasets', `/datasets/${dataset.id}`];
+		for (const path of userPages) {
+			const page = (await axios.get(`${consoleBaseUrl}${path}`)).data as string;
+			expect(page, path).toContain(me.username);
+			expect(page, path).not.toContain(me.id);
+		}
 
-		const actorDetail = await axios.get(`${consoleBaseUrl}/actors/${actor.id}`);
-		expect(actorDetail.data).toContain(me.id);
+		const actorPages = ['/builds', `/builds/${build.id}`, '/runs', `/runs/${run.id}`, '/logs'];
+		for (const path of actorPages) {
+			const page = (await axios.get(`${consoleBaseUrl}${path}`)).data as string;
+			expect(page, path).toContain(`<a href="/actors/${actor.id}">${qualified}</a>`);
+			expect(page, path).not.toContain(me.id);
+		}
 
-		const datasetsList = await axios.get(`${consoleBaseUrl}/datasets`);
-		expect(datasetsList.data).toContain('userId');
-
-		const datasetDetail = await axios.get(`${consoleBaseUrl}/datasets/${dataset.id}`);
-		expect(datasetDetail.data).toContain(me.id);
+		const runDetail = (await axios.get(`${consoleBaseUrl}/runs/${run.id}`)).data as string;
+		expect(runDetail).toContain(`<a href="/builds/${build.id}">0.0.7</a>`);
 	});
 
 	it('lists objects across ALL users, not just one (view-only local dev console, no login of its own)', async () => {
@@ -449,20 +485,20 @@ describe('console pages (HTTP fetch)', () => {
 
 		const actorMine = await server.client.actors().create({ name: 'console-cross-user-mine' });
 		const actorOther = await otherClient.actors().create({ name: 'console-cross-user-other' });
-		const meId = (await server.client.user('me').get()).id;
-		const otherId = (await otherClient.user('me').get()).id;
-		expect(meId).not.toBe(otherId);
+		const meName = (await server.client.user('me').get()).username;
+		const otherName = (await otherClient.user('me').get()).username;
+		expect(meName).not.toBe(otherName);
 
 		const actorsList = await axios.get(`${consoleBaseUrl}/actors`);
 		expect(actorsList.data).toContain(actorMine.id);
 		expect(actorsList.data).toContain(actorOther.id);
-		expect(actorsList.data).toContain(meId);
-		expect(actorsList.data).toContain(otherId);
+		expect(actorsList.data).toContain(meName);
+		expect(actorsList.data).toContain(otherName);
 
 		// The other user's actor detail page renders too - the console has no per-user scoping of its own.
 		const otherDetail = await axios.get(`${consoleBaseUrl}/actors/${actorOther.id}`);
 		expect(otherDetail.status).toBe(200);
-		expect(otherDetail.data).toContain(otherId);
+		expect(otherDetail.data).toContain(otherName);
 
 		const datasetMine = await server.client.datasets().getOrCreate('console-cross-user-dataset-mine');
 		const datasetOther = await otherClient.datasets().getOrCreate('console-cross-user-dataset-other');
