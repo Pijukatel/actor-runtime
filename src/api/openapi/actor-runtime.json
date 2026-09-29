@@ -13,7 +13,7 @@
 	"servers": [
 		{
 			"url": "/",
-			"description": "Canonical mount on the runtime's API port (3333 by default, fixed - see requirements/system.md)."
+			"description": "Canonical mount on the runtime's API port - 3333 unless `ACTOR_RUNTIME_API_PORT` moves it (see requirements/system.md). Every `:3333` in this document is that default."
 		},
 		{
 			"url": "/v2",

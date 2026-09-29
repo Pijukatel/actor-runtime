@@ -1,134 +1,110 @@
-name: Release Docker image
+name: Release
 
-# Manual-only: builds the runtime image for every platform in `platforms` and pushes it to Docker Hub
-# as one multi-arch manifest per tag, so a single tag serves x86_64 Linux/Windows-WSL2/Intel Mac and
-# arm64 (Apple Silicon, Ampere) alike.
+# Manual-only: cuts a stable release from master. The version follows the conventional commits since the
+# last release (or the bump picked below), CHANGELOG.md and package.json are bumped in a commit pushed to
+# master, the GitHub release is tagged on that commit, and the image built from it is published as
+# `v<version>` and `latest`.
 #
-# It always builds the branch it was dispatched from ("Use workflow from") - there is no ref input, so
-# there is no second branch to keep in sync with the one you picked.
+# Changelog generation is the git-cliff setup crawlee-python releases with (apify/actions); the bump
+# commit is `_update-changelog.yml`.
 on:
     workflow_dispatch:
         inputs:
-            image:
-                description: Docker Hub repository to push to
+            release_type:
+                description: Release type
                 required: true
-                default: apify/actor-runtime
-            extra_tag:
-                description: Optional extra tag to publish alongside the branch tags (e.g. v0.1.0)
+                type: choice
+                default: auto
+                options:
+                    - auto
+                    - custom
+                    - patch
+                    - minor
+                    - major
+            custom_version:
+                description: The custom version to bump to (only for "custom" type)
                 required: false
+                type: string
                 default: ''
-            latest:
-                description: Also publish this build as :latest
-                type: boolean
-                required: false
-                default: false
-            platforms:
-                description: Target platforms for the multi-arch manifest
-                required: true
-                default: linux/amd64,linux/arm64
+
+concurrency:
+    group: release
+    cancel-in-progress: false
+
+permissions:
+    contents: read
 
 jobs:
-    release:
-        name: Build and push ${{ inputs.image }}
+    wait_for_checks:
+        name: Wait for required checks
         runs-on: ubuntu-latest
-        timeout-minutes: 60
+        permissions:
+            checks: read
         steps:
-            # No `ref:` - checkout defaults to the commit the workflow was dispatched from, which is
-            # exactly the branch picked in "Use workflow from".
-            - uses: actions/checkout@v4
-
-            # Fail here rather than three slow build steps later, with the fix named. The credentials
-            # are the Apify service account's, the same ones apify-actor-docker publishes with; they
-            # reach this repository's Actions secrets through the org's secret-manager sync, so a missing
-            # value is fixed there, not by adding a secret here by hand.
-            - name: Check Docker Hub credentials are configured
-              env:
-                  DOCKERHUB_USERNAME: ${{ secrets.APIFY_SERVICE_ACCOUNT_DOCKERHUB_USERNAME }}
-                  DOCKERHUB_TOKEN: ${{ secrets.APIFY_SERVICE_ACCOUNT_DOCKERHUB_TOKEN }}
+            # Every release pushes its bump commit to master, so a release from any other branch would
+            # leave that branch's changes out of the tagged commit.
+            - name: Require master
+              if: github.ref != 'refs/heads/master'
               run: |
-                  if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
-                    echo "::error::Missing APIFY_SERVICE_ACCOUNT_DOCKERHUB_USERNAME / APIFY_SERVICE_ACCOUNT_DOCKERHUB_TOKEN" \
-                      "repository secrets. They are synced from the org's secret manager - check that its" \
-                      "GitHub integration for this repository includes both."
-                    exit 1
-                  fi
+                  echo "::error::Releases are cut from master, not '${{ github.ref_name }}'."
+                  exit 1
 
-            # A Docker tag may only contain [A-Za-z0-9_.-] and must start with an alphanumeric, so a
-            # branch name like `feat/foo` cannot be used as a tag verbatim.
-            - name: Compute image tags
-              id: tags
-              env:
-                  IMAGE: ${{ inputs.image }}
-                  BRANCH: ${{ github.ref_name }}
-                  EXTRA_TAG: ${{ inputs.extra_tag }}
-                  LATEST: ${{ inputs.latest }}
-              run: |
-                  set -euo pipefail
-                  slug=$(printf '%s' "$BRANCH" | tr -c 'A-Za-z0-9_.-' '-' | sed 's/^[^A-Za-z0-9]*//' | cut -c1-100)
-                  if [ -z "$slug" ]; then
-                    echo "::error::Branch '$BRANCH' contains no characters usable in a Docker tag."
-                    exit 1
-                  fi
-                  sha=$(git rev-parse --short HEAD)
-                  # The `<branch>-<sha>` tag is the immutable one - `<branch>` and `latest` move.
-                  tags="${IMAGE}:${slug}-${sha}"
-                  tags="${tags}"$'\n'"${IMAGE}:${slug}"
-                  if [ -n "$EXTRA_TAG" ]; then
-                    tags="${tags}"$'\n'"${IMAGE}:${EXTRA_TAG}"
-                  fi
-                  if [ "$LATEST" = "true" ]; then
-                    tags="${tags}"$'\n'"${IMAGE}:latest"
-                  fi
-                  {
-                    echo 'tags<<EOF'
-                    echo "$tags"
-                    echo 'EOF'
-                  } >> "$GITHUB_OUTPUT"
-                  echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-            # Emulation for any target platform the runner isn't. Only the final stage is emulated -
-            # the Dockerfile's builder stages are pinned to $BUILDPLATFORM and run natively.
-            - uses: docker/setup-qemu-action@v3
-            - uses: docker/setup-buildx-action@v3
-
-            - name: Login to DockerHub
-              uses: docker/login-action@v4
+            - name: Wait for checks
+              uses: apify/actions/wait-for-checks@v1.6.1
               with:
-                  username: ${{ secrets.APIFY_SERVICE_ACCOUNT_DOCKERHUB_USERNAME }}
-                  password: ${{ secrets.APIFY_SERVICE_ACCOUNT_DOCKERHUB_TOKEN }}
+                  ref: ${{ github.sha }}
+                  check-regexp: '^(Build, lint, unit \+ integration tests|e2e )'
 
-            - name: Build and push
-              id: build
-              uses: docker/build-push-action@v6
+    release_prepare:
+        name: Release prepare
+        needs: [wait_for_checks]
+        runs-on: ubuntu-latest
+        outputs:
+            version_number: ${{ steps.release_prepare.outputs.version_number }}
+            tag_name: ${{ steps.release_prepare.outputs.tag_name }}
+            release_notes: ${{ steps.release_prepare.outputs.release_notes }}
+            changelog_artifact_name: ${{ steps.release_prepare.outputs.changelog_artifact_name }}
+        steps:
+            - uses: apify/actions/git-cliff-release@v1.6.1
+              name: Release prepare
+              id: release_prepare
               with:
-                  context: .
-                  platforms: ${{ inputs.platforms }}
-                  push: true
-                  tags: ${{ steps.tags.outputs.tags }}
-                  provenance: mode=max
-                  sbom: true
-                  # One shared scope: a `type=gha` value is itself a comma-separated key=value list,
-                  # so interpolating the (comma-separated) platform list into `scope` would end the
-                  # value early and buildx would reject the leftover as a key. Sharing the scope also
-                  # lets a single-platform run reuse the layers a multi-arch run already cached.
-                  cache-from: type=gha,scope=release
-                  cache-to: type=gha,mode=max,scope=release
-                  labels: |
-                      org.opencontainers.image.title=actor-runtime
-                      org.opencontainers.image.description=A minimal, self-contained local Apify platform in a single Docker image.
-                      org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-                      org.opencontainers.image.revision=${{ steps.tags.outputs.revision }}
-                      org.opencontainers.image.version=${{ github.ref_name }}
+                  release_type: ${{ inputs.release_type }}
+                  custom_version: ${{ inputs.custom_version }}
+                  existing_changelog_path: CHANGELOG.md
 
-            - name: Summary
-              env:
-                  TAGS: ${{ steps.tags.outputs.tags }}
-                  DIGEST: ${{ steps.build.outputs.digest }}
-              run: |
-                  {
-                    echo "### Pushed \`${{ inputs.platforms }}\`"
-                    echo
-                    echo "Digest: \`${DIGEST}\`"
-                    echo
-                    echo "$TAGS" | sed 's/^/- `/; s/$/`/'
-                  } >> "$GITHUB_STEP_SUMMARY"
+    changelog_update:
+        name: Changelog update
+        needs: [release_prepare]
+        permissions:
+            contents: write
+        uses: ./.github/workflows/_update-changelog.yml
+        with:
+            version_number: ${{ needs.release_prepare.outputs.version_number }}
+            changelog_artifact_name: ${{ needs.release_prepare.outputs.changelog_artifact_name }}
+        secrets: inherit
+
+    github_release:
+        name: GitHub release
+        needs: [release_prepare, changelog_update]
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+        steps:
+            - name: GitHub release
+              uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+              with:
+                  tag_name: ${{ needs.release_prepare.outputs.tag_name }}
+                  name: ${{ needs.release_prepare.outputs.version_number }}
+                  target_commitish: ${{ needs.changelog_update.outputs.changelog_commitish }}
+                  body: ${{ needs.release_prepare.outputs.release_notes }}
+
+    docker_image:
+        name: Docker image
+        needs: [release_prepare, changelog_update, github_release]
+        uses: ./.github/workflows/build-image.yml
+        with:
+            ref: ${{ needs.changelog_update.outputs.changelog_commitish }}
+            extra_tag: ${{ needs.release_prepare.outputs.tag_name }}
+            latest: true
+        secrets: inherit

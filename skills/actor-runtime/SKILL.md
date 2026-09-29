@@ -7,7 +7,7 @@ description: Drive the local Apify Actor runtime - a self-contained local Apify 
 
 These are the operating instructions for the Actor runtime the reader is talking to: a local Apify
 platform serving an Apify-compatible API on `http://localhost:3333` and a console UI on
-`http://localhost:3000`. It emulates the subset of the Apify API needed to develop, run and debug
+`http://localhost:3000` (the defaults - see "Other ports" below). It emulates the subset of the Apify API needed to develop, run and debug
 Actors locally, so no change needs a rebuild on the real platform to be tried out.
 
 It is not the Apify platform. Actors, builds, runs and storages created here exist only in this
@@ -34,6 +34,14 @@ one the CLI is currently aimed at with `apify runtime status`.
 Any non-empty token authenticates - `apify login --token local-dev-token` is enough. Set
 `APIFY_DISABLE_KEYRING=1` first in a sandbox with no OS keyring. To act as a second user, pass a
 different token on a single call: `apify api v2/datasets -H '{"authorization": "Bearer OTHER"}'`.
+
+### Other ports
+
+When 3333 or 3000 is taken on this machine, start the runtime on other ports:
+`apify runtime start --api-port 4333 --console-port 4000`. The CLI remembers them for later starts and
+for `apify runtime connect`; with a hand-started container, set `-e ACTOR_RUNTIME_API_PORT=4333
+-e ACTOR_RUNTIME_CONSOLE_PORT=4000` and publish the same numbers (`-p 4333:4333 -p 4000:4000`). Every URL
+in this document then uses those ports instead, `apify-api:3333` included.
 
 ## The normal loop
 

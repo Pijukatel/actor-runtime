@@ -1,0 +1,159 @@
+name: Build Docker image
+
+# Builds the runtime image for every platform in `platforms` and pushes it to Docker Hub as one
+# multi-arch manifest per tag, so a single tag serves x86_64 Linux/Windows-WSL2/Intel Mac and arm64
+# (Apple Silicon, Ampere) alike.
+#
+# Dispatched by hand, it always builds the branch it was dispatched from ("Use workflow from") - manual
+# dispatch has no ref input, so there is no second branch to keep in sync with the one you picked.
+# `release.yml` calls it with `ref` set to the release commit, which is not the commit it was dispatched from.
+on:
+    workflow_dispatch:
+        inputs:
+            image:
+                description: Docker Hub repository to push to
+                required: true
+                default: apify/actor-runtime
+            extra_tag:
+                description: Optional extra tag to publish alongside the branch tags (e.g. v0.1.0)
+                required: false
+                default: ''
+            latest:
+                description: Also publish this build as :latest
+                type: boolean
+                required: false
+                default: false
+            platforms:
+                description: Target platforms for the multi-arch manifest
+                required: true
+                default: linux/amd64,linux/arm64
+    workflow_call:
+        inputs:
+            ref:
+                description: Commit to build, instead of the one the caller was dispatched from
+                type: string
+                required: true
+            image:
+                type: string
+                required: false
+                default: apify/actor-runtime
+            extra_tag:
+                type: string
+                required: false
+                default: ''
+            latest:
+                type: boolean
+                required: false
+                default: false
+            platforms:
+                type: string
+                required: false
+                default: linux/amd64,linux/arm64
+
+jobs:
+    release:
+        name: Build and push ${{ inputs.image }}
+        runs-on: ubuntu-latest
+        timeout-minutes: 60
+        steps:
+            # An empty `ref` (manual dispatch) checks out the commit the workflow was dispatched from, which
+            # is exactly the branch picked in "Use workflow from".
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.ref }}
+
+            # Fail here rather than three slow build steps later, with the fix named. The credentials
+            # are the Apify service account's, the same ones apify-actor-docker publishes with; they
+            # reach this repository's Actions secrets through the org's secret-manager sync, so a missing
+            # value is fixed there, not by adding a secret here by hand.
+            - name: Check Docker Hub credentials are configured
+              env:
+                  DOCKERHUB_USERNAME: ${{ secrets.APIFY_SERVICE_ACCOUNT_DOCKERHUB_USERNAME }}
+                  DOCKERHUB_TOKEN: ${{ secrets.APIFY_SERVICE_ACCOUNT_DOCKERHUB_TOKEN }}
+              run: |
+                  if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+                    echo "::error::Missing APIFY_SERVICE_ACCOUNT_DOCKERHUB_USERNAME / APIFY_SERVICE_ACCOUNT_DOCKERHUB_TOKEN" \
+                      "repository secrets. They are synced from the org's secret manager - check that its" \
+                      "GitHub integration for this repository includes both."
+                    exit 1
+                  fi
+
+            # A Docker tag may only contain [A-Za-z0-9_.-] and must start with an alphanumeric, so a
+            # branch name like `feat/foo` cannot be used as a tag verbatim.
+            - name: Compute image tags
+              id: tags
+              env:
+                  IMAGE: ${{ inputs.image }}
+                  BRANCH: ${{ github.ref_name }}
+                  EXTRA_TAG: ${{ inputs.extra_tag }}
+                  LATEST: ${{ inputs.latest }}
+              run: |
+                  set -euo pipefail
+                  slug=$(printf '%s' "$BRANCH" | tr -c 'A-Za-z0-9_.-' '-' | sed 's/^[^A-Za-z0-9]*//' | cut -c1-100)
+                  if [ -z "$slug" ]; then
+                    echo "::error::Branch '$BRANCH' contains no characters usable in a Docker tag."
+                    exit 1
+                  fi
+                  sha=$(git rev-parse --short HEAD)
+                  # The `<branch>-<sha>` tag is the immutable one - `<branch>` and `latest` move.
+                  tags="${IMAGE}:${slug}-${sha}"
+                  tags="${tags}"$'\n'"${IMAGE}:${slug}"
+                  if [ -n "$EXTRA_TAG" ]; then
+                    tags="${tags}"$'\n'"${IMAGE}:${EXTRA_TAG}"
+                  fi
+                  if [ "$LATEST" = "true" ]; then
+                    tags="${tags}"$'\n'"${IMAGE}:latest"
+                  fi
+                  {
+                    echo 'tags<<EOF'
+                    echo "$tags"
+                    echo 'EOF'
+                  } >> "$GITHUB_OUTPUT"
+                  echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+            # Emulation for any target platform the runner isn't. Only the final stage is emulated -
+            # the Dockerfile's builder stages are pinned to $BUILDPLATFORM and run natively.
+            - uses: docker/setup-qemu-action@v3
+            - uses: docker/setup-buildx-action@v3
+
+            - name: Login to DockerHub
+              uses: docker/login-action@v4
+              with:
+                  username: ${{ secrets.APIFY_SERVICE_ACCOUNT_DOCKERHUB_USERNAME }}
+                  password: ${{ secrets.APIFY_SERVICE_ACCOUNT_DOCKERHUB_TOKEN }}
+
+            - name: Build and push
+              id: build
+              uses: docker/build-push-action@v6
+              with:
+                  context: .
+                  platforms: ${{ inputs.platforms }}
+                  push: true
+                  tags: ${{ steps.tags.outputs.tags }}
+                  provenance: mode=max
+                  sbom: true
+                  # One shared scope: a `type=gha` value is itself a comma-separated key=value list,
+                  # so interpolating the (comma-separated) platform list into `scope` would end the
+                  # value early and buildx would reject the leftover as a key. Sharing the scope also
+                  # lets a single-platform run reuse the layers a multi-arch run already cached.
+                  cache-from: type=gha,scope=release
+                  cache-to: type=gha,mode=max,scope=release
+                  labels: |
+                      org.opencontainers.image.title=actor-runtime
+                      org.opencontainers.image.description=A minimal, self-contained local Apify platform in a single Docker image.
+                      org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+                      org.opencontainers.image.revision=${{ steps.tags.outputs.revision }}
+                      org.opencontainers.image.version=${{ inputs.extra_tag || github.ref_name }}
+
+            - name: Summary
+              env:
+                  TAGS: ${{ steps.tags.outputs.tags }}
+                  DIGEST: ${{ steps.build.outputs.digest }}
+              run: |
+                  {
+                    echo "### Pushed \`${{ inputs.platforms }}\`"
+                    echo
+                    echo "Digest: \`${DIGEST}\`"
+                    echo
+                    echo "$TAGS" | sed 's/^/- `/; s/$/`/'
+                  } >> "$GITHUB_STEP_SUMMARY"
