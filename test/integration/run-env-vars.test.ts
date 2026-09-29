@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { startTestServer, type TestServerHandle } from './helpers/test-server.js';
 import { CONTAINER_EVENTS_WS_BASE_URL } from '../../src/config.js';
+import { REAL_APIFY_PROXY_WARNING, setApifyProxyEnabled } from '../../src/services/apify-proxy.js';
 import type { Driver } from '../../src/driver/types.js';
 
 /**
@@ -141,6 +142,41 @@ describe('actor version envVars are applied to the run container env', () => {
 			// ever exercised (grepping the suite for `PROXY_PASSWORD` found zero hits) - this is the
 			// "present" arm, covering `requirements/actor-driver.md`'s `APIFY_PROXY_PASSWORD` contract.
 			expect(getCapturedEnv()?.APIFY_PROXY_PASSWORD).toBe('super-secret-proxy-password');
+			const log = (await server.client.log(run.id).get()) ?? '';
+			expect(log.split(REAL_APIFY_PROXY_WARNING).length - 1).toBe(1);
+		} finally {
+			if (previous === undefined) delete process.env.APIFY_PROXY_PASSWORD;
+			else process.env.APIFY_PROXY_PASSWORD = previous;
+		}
+	});
+
+	it('APIFY_PROXY_PASSWORD is empty, with no warning, when Use Apify Proxy is turned off - even with a password configured', async () => {
+		const previous = process.env.APIFY_PROXY_PASSWORD;
+		process.env.APIFY_PROXY_PASSWORD = 'super-secret-proxy-password';
+		setApifyProxyEnabled(false);
+		try {
+			const actor = await server.client.actors().create({ name: 'proxy-disabled-actor' });
+			await server.client
+				.actor(actor.id)
+				.versions()
+				.create({
+					versionNumber: '0.0',
+					buildTag: 'latest',
+					sourceType: 'SOURCE_FILES' as never,
+					sourceFiles: [],
+				} as never);
+
+			const build = await server.client.actor(actor.id).build('0.0', { waitForFinish: 5 });
+			expect(build.status).toBe('SUCCEEDED');
+
+			const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+			expect(run.status).toBe('SUCCEEDED');
+
+			expect(getCapturedEnv()?.APIFY_PROXY_PASSWORD).toBe('');
+			expect((await server.client.log(run.id).get()) ?? '').not.toContain(REAL_APIFY_PROXY_WARNING);
+			// The SDKs treat an empty `APIFY_PROXY_PASSWORD` as unset and ask `/users/me` for one instead.
+			const me = await server.client.user('me').get();
+			expect((me as unknown as { proxy?: unknown }).proxy).toBeUndefined();
 		} finally {
 			if (previous === undefined) delete process.env.APIFY_PROXY_PASSWORD;
 			else process.env.APIFY_PROXY_PASSWORD = previous;

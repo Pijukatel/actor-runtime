@@ -118,6 +118,9 @@
   the other, and via the API's own `GET`, with no restart needed either way.
 - The console has no login, so anyone who can reach it can flip either toggle for every caller of the
   API.
+- The same form also holds a "Use Apify Proxy" checkbox, `apifyProxyEnabled`, on by default and back on
+  after every restart. Turned off, runs get an empty `APIFY_PROXY_PASSWORD` and `/users/me` omits `proxy`
+  (`actor-driver.md`); like the fallback toggles, an unchecked box on submit turns it off.
 
 ## Actor Standby (Actor detail view)
 

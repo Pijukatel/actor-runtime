@@ -69,6 +69,7 @@ import {
 } from './templates.js';
 import { CONSOLE_CSS } from './styles.js';
 import { getApiFallbackState, setApiFallbackState } from '../services/api-fallback.js';
+import { isApifyProxyEnabled, setApifyProxyEnabled } from '../services/apify-proxy.js';
 import { upstreamApiBaseUrl } from '../services/identity-resolution.js';
 import type { Driver } from '../driver/types.js';
 
@@ -795,9 +796,10 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				['fallbackUnimplementedEnabled', state.fallbackUnimplementedEnabled],
 				['fallbackNotFoundEnabled', state.fallbackNotFoundEnabled],
 				['upstreamBaseUrl', upstreamApiBaseUrl()],
+				['apifyProxyEnabled', isApifyProxyEnabled()],
 			]) +
 			'<h2>Change settings</h2>' +
-			settingsForm(state) +
+			settingsForm(state, isApifyProxyEnabled()) +
 			'</section>';
 		res.send(layout('Settings', body));
 	});
@@ -817,6 +819,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			fallbackUnimplementedEnabled: body?.fallbackUnimplementedEnabled === 'on',
 			fallbackNotFoundEnabled: body?.fallbackNotFoundEnabled === 'on',
 		});
+		setApifyProxyEnabled(body?.apifyProxyEnabled === 'on');
 		res.redirect('/settings');
 	});
 

@@ -1,6 +1,7 @@
 import type { UserRecord } from '../storage/entities.js';
 import { getRegistries } from '../storage/registries.js';
 import { KeyedMutex } from '../storage/mutex.js';
+import { isApifyProxyEnabled } from './apify-proxy.js';
 import { fetchRealIdentity, upstreamApiBaseUrl } from './identity-resolution.js';
 
 /** Serialises "resolve token -> create-if-missing" per token, so two concurrent first-requests for the
@@ -118,8 +119,11 @@ export async function getUserById(userId: string): Promise<UserRecord | null> {
  * always wins when set; otherwise the password harvested for `user` at creation time, if any; otherwise
  * `undefined`. Never a placeholder - callers must omit the field/env var entirely rather than invent a
  * value, exactly like `APIFY_PROXY_PASSWORD` already does for run containers (`actor-driver.md`).
+ * An empty string while the console's "Use Apify Proxy" setting is off (`services/apify-proxy.ts`):
+ * run containers then get it explicitly empty, and `/users/me` omits `proxy` as for no password at all.
  */
 export function resolveProxyPassword(user: UserRecord): string | undefined {
+	if (!isApifyProxyEnabled()) return '';
 	return process.env.APIFY_PROXY_PASSWORD ?? user.proxyPassword;
 }
 
