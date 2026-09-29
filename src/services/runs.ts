@@ -398,7 +398,6 @@ export async function runInBackground(
 	// directory, gets `devMount: undefined`, which `docker-driver.ts`'s `startRun` treats identically to
 	// "no `Mounts` key at all" - the regression guarantee that an unregistered/cleared Actor's run
 	// container is unaffected.
-	// With the live dev folder setting off, a registration is inert: no mount and none of the lines below.
 	const localDevFolder = isLiveDevFolderEnabled() ? actor.localDevFolder : undefined;
 	const devMountApplicable =
 		localDevFolder && build.imageWorkingDirectory

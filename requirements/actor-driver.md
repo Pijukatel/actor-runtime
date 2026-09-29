@@ -74,14 +74,11 @@
 - The working directory the mount covers is recorded **per build**, never on the Actor
   (`storage.md`); the mount a run applies always uses the one from _that run's own resolved build_,
   never any other build the Actor happens to have.
-- **The live dev folder is off by default**: a runtime-wide toggle,
-  `/actor-runtime/live-dev-folder` (`api.md`) or the "Use live dev folder" checkbox on the console's
-  Settings page (`console.md`), must be turned on first. It is back off after every restart. While it
-  is off, a registered dev folder is kept but has no effect: no mount, and no dev-folder lines in build
-  or run logs.
-- **The mount is applied only when the live dev folder is on, and both a registered dev folder and a
-  known working directory exist** for the run's resolved build; any of these missing means the run
-  starts exactly as if the feature did not exist.
+- **The mount is off by default**: it applies only after the live dev folder setting is enabled (console
+  Settings page or `/actor-runtime/live-dev-folder`).
+- **The mount is applied only when both a registered dev folder and a known working directory exist**
+  for the run's resolved build; either missing means the run starts exactly as if the feature did not
+  exist.
 - **A single run can opt out** of the mount (`?devFolder=false` on run start, `api.md`) without touching
   the registration. When a mount is skipped this way, the run's log says so.
 - The registration status the console and API report is the registered folder alone - never that a
