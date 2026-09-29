@@ -40,6 +40,16 @@ Your Actor's own output is passed through unchanged.
 - **Test pay-per-event pricing for free.** See what a run charges and costs, without spending money.
 - **Relay missing calls to the platform.** Send calls the runtime cannot answer to the real Apify API.
 
+Most of these are driven by endpoints under `/actor-runtime/*`, which the real Apify API does not have.
+The runtime describes that namespace in an OpenAPI document and serves it, so you never have to guess
+what a given runtime supports - and, since the platform answers `404` there, the same call also tells you
+whether you are pointed at a runtime at all:
+
+```bash
+apify api GET /actor-runtime            # every runtime-specific endpoint, its body and its responses
+curl -s http://localhost:3333/actor-runtime/openapi.json | jq .paths   # same document, for tooling
+```
+
 ### Edit without rebuilding
 
 `apify push` registers the pushed folder as the Actor's **dev folder**. Every later run mounts it over

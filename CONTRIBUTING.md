@@ -30,7 +30,8 @@ The sample Actors (`samples/actor_*`) crawl the live web, so running them needs 
 
 The behavioural spec lives in `requirements/*.md`: `system.md`, `api.md`, `storage.md`,
 `actor-driver.md`, `cli.md`, `console.md` and `test.md`. `unsupported.md` lists the platform behaviour
-the runtime deliberately leaves out.
+the runtime deliberately leaves out. The one exception is the runtime-only `/actor-runtime/*` namespace,
+whose contract is the OpenAPI document `src/api/openapi/actor-runtime.json`; `api.md` only points at it.
 
 User-facing documentation lives in `skills/actor-runtime/SKILL.md`, which ships inside the image. When
 a change alters what the runtime does for its users, update it in the same commit. Contribution

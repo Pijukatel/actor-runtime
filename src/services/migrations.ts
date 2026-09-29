@@ -1,5 +1,5 @@
 /**
- * Emulated migrations and reboots (`requirements/api.md`, "Migration emulation"). A migration is not a
+ * Emulated migrations and reboots (the `migrateRun` operation in `src/api/openapi/actor-runtime.json`). A migration is not a
  * run status - the run keeps running while its container is replaced, so this module only tracks which
  * container stops must restart the run instead of finishing it.
  */

@@ -13,7 +13,7 @@
  * object's owner by username, or its Actor as `username~actorname` (`console.md`). The
  * dev-folder form, the debug-mode form, and the Migrate button all write cross-user the same way - a
  * deliberate deviation from the API's own strictly-owner-scoped writes, not an accident; the `/settings`
- * form is runtime-global by nature (`api.md`'s "Upstream fallback" section), so ownership doesn't apply
+ * form is runtime-global by nature (`src/api/openapi/actor-runtime.json`'s `api-fallback` operations), so ownership doesn't apply
  * to it at all.
  */
 import { createRequire } from 'node:module';

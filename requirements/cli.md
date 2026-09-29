@@ -43,6 +43,19 @@
   With neither source, `/users/me`'s `proxy` field is omitted and no `APIFY_PROXY_PASSWORD` is set
   on run containers - never a placeholder.
 
+## Enumerating the runtime's own endpoints
+
+- The runtime-specific endpoints (`/actor-runtime/*`, `api.md`) have no counterpart on the Apify
+  platform, so a client cannot learn them from the platform's own OpenAPI specification. The runtime
+  therefore serves its own specification for that namespace, and the CLI reads it with a single stock
+  call: **`apify api GET /actor-runtime`** - one response enumerating every runtime-specific endpoint,
+  its request body, and its responses.
+- No token is needed for that call, and the real Apify platform answers `404` on the same path, so it
+  doubles as "is the CLI pointed at a local Actor runtime, and which one?" - the document's
+  `info.version` is the runtime's own version.
+- A client that asks for something in that namespace which the specification does not describe is told
+  so in those terms: `404` naming `GET /actor-runtime`, or `405` with an `Allow` header (`api.md`).
+
 ## Supported commands (POC)
 
 - `apify push` - creates the Actor and Actor version from local source and triggers
@@ -71,7 +84,7 @@
   `apify-cli` fetches its actor-templates manifest from the internet. Every later
   push/call/log-stream/storage-access, and every build of an already-pulled base image, needs no
   outbound network access (see `system.md`'s offline-after-first-build note) - unless the opt-in
-  upstream API fallback is enabled (`api.md`, "Upstream fallback"), in which case an eligible local
+  upstream API fallback is enabled (`api.md`, and the `api-fallback` operation in the runtime API specification it references), in which case an eligible local
   miss makes one outbound request to the configured upstream instead of failing offline.
 - The bundled sample Actors crawl the live web (`https://crawlee.dev/` by default), so an `apify call`
   that runs one of them needs outbound network access from the Actor container even though the

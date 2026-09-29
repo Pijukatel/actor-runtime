@@ -1,5 +1,5 @@
 /**
- * Covers the upstream API fallback (`api.md`'s "Upstream fallback" section, `services/api-fallback.ts`):
+ * Covers the upstream API fallback (the `api-fallback` operations in `src/api/openapi/actor-runtime.json`, `services/api-fallback.ts`):
  * the `GET`/`POST /actor-runtime/api-fallback` toggle-state endpoint, the eligibility mapping (both
  * toggles, in isolation and together), the fail-closed guarantee, own-token-only forwarding, and the two
  * marker headers - against a stubbed upstream (`helpers/stub-upstream.ts`, the pattern
@@ -70,7 +70,7 @@ function startHeadersThenDieUpstream(): Promise<StubUpstream> {
 }
 
 /** A fixed `2xx` JSON response with a distinguishing header - the shape every successful-relay test
- * below checks the caller receives unchanged (`api.md`'s "A successful relay" bullet). */
+ * below checks the caller receives unchanged (the specification's "A successful relay" paragraph). */
 function fixedOkResponse(distinguishingValue: string) {
 	return () => ({
 		status: 200,
@@ -312,7 +312,7 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 	}
 
 	/** Seeds and returns a non-terminal (`RUNNING`) run owned by the test's default token, so
-	 * `DELETE /v2/actor-runs/:runId` throws `cannot-remove-running-run` - one of the error types `api.md`'s
+	 * `DELETE /v2/actor-runs/:runId` throws `cannot-remove-running-run` - one of the error types the specification's
 	 * "Which local outcome each toggle covers" bullet lists as never relayed, regardless of either
 	 * toggle's state. */
 	async function seedRunningRun(): Promise<string> {
@@ -435,11 +435,13 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
 			try {
 				// Express's own default mount matching is case-insensitive, so this reaches the same
-				// `actor-runtime` sub-router as the lowercase path above, finds no matching PUT route, and
-				// falls through to the terminal catch-all with the original casing intact in `originalUrl`.
+				// `actor-runtime` sub-router as the lowercase path above and finds no matching PUT route.
+				// The namespace's own unmatched handler answers it from the runtime's OpenAPI document
+				// (`405`, since the path itself is documented for GET/POST) and never reaches the
+				// app-level catch-all - either way, nothing about it is eligible for relaying.
 				const res = await call('put', '/v2/ACTOR-RUNTIME/api-fallback');
-				expect(res.status).toBe(404);
-				expect(res.data.error.type).toBe('not-found');
+				expect(res.status).toBe(405);
+				expect(res.data.error.type).toBe('method-not-allowed');
 				expect(res.headers['x-actor-runtime-fallback']).toBeUndefined();
 				expect(stub.hitCount()).toBe(0);
 			} finally {
@@ -662,7 +664,7 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 		});
 
 		// The response-header relay contract, pinned in both directions rather than left incidental
-		// (`api.md`'s "What a successful relay looks like"): `Set-Cookie` is the one repeated header name
+		// (the specification's "A successful relay" paragraph): `Set-Cookie` is the one repeated header name
 		// this runtime's HTTP client can hand back as genuinely separate entries, and the one name where
 		// comma-joining would corrupt the value (a cookie's own attributes routinely contain a comma, e.g.
 		// `Expires=Wed, 21 Oct 2026 07:28:00 GMT`) - so it is always relayed as one line per cookie. Every
@@ -705,7 +707,7 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 			return res;
 		}
 
-		/** `api.md`'s "Fail-closed guarantee" bullet requires the original local error to be reproduced
+		/** The specification's "Fail-closed guarantee" paragraph requires the original local error to be reproduced
 		 * unchanged - checked here as the header *name* set plus every value except `date`, whose value
 		 * legitimately differs run-to-run (its mere presence on both sides is asserted instead). This is
 		 * what would have caught the fail-closed mid-body-death path silently dropping

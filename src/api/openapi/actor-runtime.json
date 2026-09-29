@@ -1,0 +1,938 @@
+{
+	"openapi": "3.1.0",
+	"info": {
+		"title": "Apify local Actor runtime API",
+		"version": "0.1.0",
+		"summary": "The local-runtime-only endpoints that have no counterpart on the Apify platform.",
+		"description": "Everything under `/actor-runtime/*` is specific to this local Actor runtime: developer-convenience controls (live dev folder, debug mode, browser view, migration emulation, upstream API fallback, the per-run events channel) that the real Apify platform API does not have. The emulated subset of the platform API itself is *not* described here - that surface follows https://docs.apify.com/api/openapi.json.\n\nThis document is the normative specification for the namespace: `requirements/api.md` states only that it exists and references it, rather than repeating any of it. What this runtime adds to a handful of otherwise faithful *platform* endpoints is listed under `x-actor-runtime-platform-notes` at the root of this document, so a client enumerating it sees every local deviation in one place.\n\nThe runtime serves this document from itself, so a client can discover what a given runtime supports: `GET /actor-runtime` returns it in the API's `{data}` envelope (readable through `apify api GET /actor-runtime`), `GET /actor-runtime/openapi.json` returns it bare for OpenAPI tooling. Both are unauthenticated; every other operation here is authenticated like every `/v2` route and scoped to the caller's own Actors/runs, except the events websocket, which scopes on its run id alone. Every operation is served at both `/actor-runtime/*` and `/v2/actor-runtime/*` (see `servers`).\n\nA request under `/actor-runtime/*` that this document does not describe never reaches the emulated platform API and is never relayed upstream: an undescribed path answers `404 not-found`, a described path addressed with an undescribed method answers `405 method-not-allowed` with an `Allow` header, and a plain HTTP request to a websocket path answers `426 upgrade-required`.",
+		"license": {
+			"name": "Apache-2.0",
+			"identifier": "Apache-2.0"
+		}
+	},
+	"servers": [
+		{
+			"url": "/",
+			"description": "Canonical mount on the runtime's API port - 3333 unless `ACTOR_RUNTIME_API_PORT` moves it (see requirements/system.md). Every `:3333` in this document is that default."
+		},
+		{
+			"url": "/v2",
+			"description": "Alias mount serving the exact same routes, so `apify api <method> /actor-runtime/...` reaches them: the CLI builds every URL against a base that already ends in `/v2`."
+		}
+	],
+	"security": [
+		{
+			"bearerAuth": []
+		},
+		{
+			"tokenQuery": []
+		}
+	],
+	"x-actor-runtime-platform-extensions": [
+		{
+			"method": "POST",
+			"path": "/v2/actors/{actorId}/runs",
+			"parameter": "devFolder",
+			"description": "`?devFolder=false` runs from the built image alone, ignoring the Actor's registered live dev folder for that one run; the registration itself is unchanged. Any other value, or no parameter, means the default behaviour. A runtime-only query parameter on an otherwise faithful platform endpoint, listed here so a client enumerating this document sees every local deviation in one place."
+		}
+	],
+	"paths": {
+		"/actor-runtime": {
+			"get": {
+				"operationId": "getActorRuntimeSpecification",
+				"summary": "Enumerate the runtime-specific API",
+				"description": "Returns this OpenAPI document, `{data}`-enveloped like every other JSON response on this API, so `apify api GET /actor-runtime` prints it. Unauthenticated: the document is static, identical for every caller, and carries no user data - a client can therefore identify a local Actor runtime and enumerate its runtime-specific endpoints before it has a token.",
+				"security": [],
+				"responses": {
+					"200": {
+						"description": "The runtime-specific OpenAPI document.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"required": ["data"],
+									"properties": {
+										"data": {
+											"$ref": "#/components/schemas/OpenApiDocument"
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/actor-runtime/openapi.json": {
+			"get": {
+				"operationId": "getActorRuntimeOpenApiDocument",
+				"summary": "The bare OpenAPI document",
+				"description": "The same document as `GET /actor-runtime`, served without the `{data}` envelope so standard OpenAPI tooling can consume the URL directly. One of the documented exceptions to the envelope rule in `requirements/api.md`. Unauthenticated for the same reason.",
+				"security": [],
+				"responses": {
+					"200": {
+						"description": "The runtime-specific OpenAPI document, unenveloped.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/OpenApiDocument"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/actor-runtime/skill": {
+			"get": {
+				"operationId": "getActorRuntimeSkill",
+				"summary": "This runtime's own Agent Skill",
+				"description": "Serves `skills/actor-runtime/SKILL.md` - the shipped, agent-facing instructions for driving this runtime - from inside the running image, so an agent can load them without the repository checkout. Markdown by default; `?format=json` returns the `{data}`-enveloped `{ name, description, content }` parsed from the file's front matter plus its full body. Unauthenticated, because explaining how to authenticate against this runtime is one of the things the skill does: a caller must be able to read it before it holds a token. `500` `skill-unavailable` when the file is missing from the image - a deployment fault, not a bad request.",
+				"security": [],
+				"parameters": [
+					{
+						"name": "format",
+						"in": "query",
+						"required": false,
+						"description": "`json` for the enveloped, parsed form. Any other value (or none) serves the raw markdown.",
+						"schema": {
+							"type": "string",
+							"enum": ["json"]
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The skill, as markdown by default or as `{data}`-enveloped JSON under `?format=json`.",
+						"content": {
+							"text/markdown": {
+								"schema": {
+									"type": "string"
+								}
+							},
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"required": ["data"],
+									"properties": {
+										"data": {
+											"$ref": "#/components/schemas/SkillDocument"
+										}
+									}
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "`skill-unavailable` - the skill file is not present in this image.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorResponse"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/actor-runtime/dev-folder/{actorId}": {
+			"post": {
+				"operationId": "setActorDevFolder",
+				"summary": "Register or clear an Actor's live dev folder",
+				"description": "Registers the host directory bind-mounted over the image's working directory on every subsequent run of this Actor, so source edits take effect without a rebuild (`requirements/actor-driver.md`). Submitting `\"\"` clears the registration. The path is checked when it is registered and again at every run start, so a folder deleted after registration fails the run rather than running against an empty directory; a single run can opt out with `?devFolder=false` (see `x-actor-runtime-platform-notes`).\n\nScoped to the caller's own Actors. There is no build-first precondition: registration works for an Actor that has never been built. The response body doubles as the read-back - there is deliberately no separate `GET`.\n\nThe console's own dev-folder form is a console-local, unauthenticated route on the console's port and does not go through this endpoint, but both surfaces accept and reject exactly the same inputs with the same outcomes.",
+				"parameters": [
+					{
+						"$ref": "#/components/parameters/ActorId"
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"description": "A JSON string: the absolute path to register, or `\"\"` to clear.",
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "string"
+							},
+							"examples": {
+								"register": {
+									"summary": "Register a folder",
+									"value": "/abs/path/to/src"
+								},
+								"clear": {
+									"summary": "Clear the registration",
+									"value": ""
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The registration after the change.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"required": ["data"],
+									"properties": {
+										"data": {
+											"$ref": "#/components/schemas/DevFolderStatus"
+										}
+									}
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "Rejected, with no state change. Error `type` names the reason: `invalid-request` (the body is not a JSON string, or the string is not a valid absolute path), `dev-folder-path-not-found` (the path does not exist on the host), `dev-folder-not-a-directory` (the path exists but is not a directory), `dev-folder-check-failed` (the path could not be verified, for any other reason).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorResponse"
+								}
+							}
+						}
+					},
+					"401": {
+						"$ref": "#/components/responses/Unauthenticated"
+					},
+					"404": {
+						"$ref": "#/components/responses/RecordNotFound"
+					},
+					"500": {
+						"description": "`internal-error` - an operational fault unrelated to the submitted path.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorResponse"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`dev-folder-check-unavailable` - Docker itself is unreachable, so the path could not be checked.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorResponse"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/actor-runtime/debug/{actorId}": {
+			"post": {
+				"operationId": "setActorDebugMode",
+				"summary": "Set or clear an Actor's debug-mode toggle",
+				"description": "While debug mode is on, every run of this Actor starts paused waiting for a debugger, with the attach address printed in the run's own log and the debug port published on `127.0.0.1` (`requirements/actor-driver.md`).\n\nScoped to the caller's own Actors; no build-first precondition. Every accepted call fully replaces the prior state - never a partial merge, so a field the body omits resets to its own default rather than keeping what a previous call set. `{\"enabled\": false}` clears the whole toggle, whatever else the body names. The response doubles as the read-back; there is no separate `GET`.\n\nThe console's own debug-mode form is a console-local, unauthenticated route and does not go through this endpoint, but both surfaces accept and reject exactly the same inputs with the same outcomes.",
+				"parameters": [
+					{
+						"$ref": "#/components/parameters/ActorId"
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/DebugModeRequest"
+							},
+							"examples": {
+								"enableAutoDetected": {
+									"summary": "Turn on, auto-detect the language",
+									"value": {
+										"enabled": true
+									}
+								},
+								"enableNode": {
+									"summary": "Turn on for Node on an explicit port",
+									"value": {
+										"enabled": true,
+										"language": "node",
+										"port": 9229
+									}
+								},
+								"disable": {
+									"summary": "Turn off",
+									"value": {
+										"enabled": false
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The toggle after the change.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"required": ["data"],
+									"properties": {
+										"data": {
+											"$ref": "#/components/schemas/DebugStatus"
+										}
+									}
+								},
+								"examples": {
+									"enabledAutoDetected": {
+										"value": {
+											"data": {
+												"localDebug": {
+													"language": "auto",
+													"port": 5678
+												}
+											}
+										}
+									},
+									"enabledNode": {
+										"value": {
+											"data": {
+												"localDebug": {
+													"language": "node",
+													"port": 9229
+												}
+											}
+										}
+									},
+									"disabled": {
+										"value": {
+											"data": {
+												"localDebug": null
+											}
+										}
+									}
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid-request`, with no state change: the body is not a JSON object, names an unknown field, misses `enabled` or gives it a non-boolean, sets an invalid `language`, or sets a `port` outside `1024..65535`. Example message for an unknown field: `Unknown field \"prot\" - allowed fields are \"enabled\", \"language\", \"port\".`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorResponse"
+								}
+							}
+						}
+					},
+					"401": {
+						"$ref": "#/components/responses/Unauthenticated"
+					},
+					"404": {
+						"$ref": "#/components/responses/RecordNotFound"
+					}
+				}
+			}
+		},
+		"/actor-runtime/browser-view/{actorId}": {
+			"post": {
+				"operationId": "setActorBrowserView",
+				"summary": "Set or clear an Actor's browser-view toggle",
+				"description": "While browser view is on, every run of this Actor prints a viewer URL in its log - a live view of the display the Actor's browser draws on, served on the console's port (`requirements/actor-driver.md`). `interactive` also forwards mouse and keyboard input.\n\nScoped to the caller's own Actors; no build-first precondition. A call fully replaces the prior state; `{\"enabled\": false}` clears it. The response doubles as the read-back; there is no separate `GET`.",
+				"parameters": [
+					{
+						"$ref": "#/components/parameters/ActorId"
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/BrowserViewRequest"
+							},
+							"examples": {
+								"watch": {
+									"summary": "Watch only",
+									"value": {
+										"enabled": true
+									}
+								},
+								"interact": {
+									"summary": "Watch and control",
+									"value": {
+										"enabled": true,
+										"interactive": true
+									}
+								},
+								"disable": {
+									"summary": "Turn off",
+									"value": {
+										"enabled": false
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The toggle after the change.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"required": ["data"],
+									"properties": {
+										"data": {
+											"$ref": "#/components/schemas/BrowserViewStatus"
+										}
+									}
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid-request`, with no state change - any body other than `{\"enabled\": boolean, \"interactive\"?: boolean}`.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorResponse"
+								}
+							}
+						}
+					},
+					"401": {
+						"$ref": "#/components/responses/Unauthenticated"
+					},
+					"404": {
+						"$ref": "#/components/responses/RecordNotFound"
+					}
+				}
+			}
+		},
+		"/actor-runtime/migrate/{runId}": {
+			"post": {
+				"operationId": "migrateRun",
+				"summary": "Emulate a platform migration of a running run",
+				"description": "A platform migration is not a run status: the run stays `RUNNING` while its container is killed and a new one starts for the same run - same run id, env vars and default storages, in-memory state gone. This endpoint emulates that observable experience on demand.\n\nIt publishes a `migrating` frame (empty payload) on the run's events channel immediately, stops the container 5 seconds later (the platform promises only \"a few seconds\"), then restarts the same run. Status stays `RUNNING`; `startedAt`, `finishedAt`, `exitCode`, the default storage ids and the container env are unchanged, and `stats.migrationCount` increments once per performed stop. The timeout budget is per run, not per container: a restarted container gets only the remaining `timeoutSecs`. The run's log is cumulative across restarts, with a one-line marker between the incarnations' output.\n\nResponds immediately with the run object, the same shape `abort`/`reboot` return. A second call during the open window joins it: same response, no second frame and no second window. An abort (graceful or hard) landing during the window or the restart wins - the run ends `ABORTED`, never restarted.\n\nThe console's run detail view exposes the same trigger as a Migrate button. The platform's own `POST /v2/actor-runs/{runId}/reboot` is implemented too - see `x-actor-runtime-platform-notes`.",
+				"parameters": [
+					{
+						"$ref": "#/components/parameters/RunId"
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The run object, read back after the migration was scheduled.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"required": ["data"],
+									"properties": {
+										"data": {
+											"$ref": "#/components/schemas/Run"
+										}
+									}
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid-request` - the run is non-terminal but has no container to migrate (`READY` or `ABORTING`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorResponse"
+								}
+							}
+						}
+					},
+					"401": {
+						"$ref": "#/components/responses/Unauthenticated"
+					},
+					"403": {
+						"description": "`job-finished` - the run has already finished.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorResponse"
+								}
+							}
+						}
+					},
+					"404": {
+						"$ref": "#/components/responses/RecordNotFound"
+					}
+				}
+			}
+		},
+		"/actor-runtime/standby/{standbyLabel}": {
+			"get": {
+				"operationId": "proxyStandbyRequest",
+				"summary": "Reach an Actor's Standby server through the runtime",
+				"description": "Forwards the request to one of the Actor's Standby runs, starting runs as the standby pool requires, and streams the Actor's own response back. This is the path-based half of the runtime's two standby addressings; the other is the platform-shaped host form `http://<standbyLabel>.localhost:3333/`, where the Actor owns `/` of its own origin as it does on `*.apify.actor`. Both are served on the API port, and an Actor object's `standbyUrl` names the one that fits the caller (see this document's `x-actor-runtime-platform-notes`).\n\n**Every method and every sub-path reach the Actor**, not just the `GET` this entry declares: whatever follows the label is the path the Actor's server sees, the request body streams through untouched, and a websocket upgrade is proxied too. The operation is declared once because the runtime forwards the request rather than interpreting it - the request and response shapes are the Actor's own, not this API's.\n\n**Authentication is the API's** - `Authorization: Bearer`, `x-apify-authorization` or `?token=` - and the token is forwarded to the Actor unchanged, so an Actor may use its caller's token itself. Only the token owner's own Actors are served; this runtime has no cross-tenant standby.\n\n**Errors this layer produces**, all before the Actor is reached: `400` `standby-not-enabled` (the Actor has no `actorStandby.isEnabled`), `400` `invalid-input`/`invalid-input-schema` (a standby run that passes the Actor's input cannot build one), `401` `user-not-authenticated`, `404` `record-not-found` (no such Actor of the caller's, or no build tagged for standby), `502` `standby-bad-gateway`, `503` `standby-run-failed`, `503` `standby-run-finished`, `504` `standby-run-not-ready`. None of them is ever relayed upstream: this router answers ahead of the API's body parser and of the upstream fallback entirely (`setApiFallbackState`).\n\nStandby itself - the pool, the per-run request limits, the idle timeout, the configuration on the Actor - is the platform's own feature, implemented faithfully; only the two addresses above are local.",
+				"parameters": [
+					{
+						"$ref": "#/components/parameters/StandbyLabel"
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The Actor's own response, relayed verbatim - status, headers and body are the Actor's. Any status the Actor returns reaches the caller unchanged; the codes below are this router's own."
+					},
+					"400": {
+						"description": "`standby-not-enabled`, or `invalid-input`/`invalid-input-schema` when the Actor's input cannot be built for the standby run.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorResponse"
+								}
+							}
+						}
+					},
+					"401": {
+						"$ref": "#/components/responses/Unauthenticated"
+					},
+					"404": {
+						"$ref": "#/components/responses/RecordNotFound"
+					},
+					"502": {
+						"description": "`standby-bad-gateway` - the standby run did not answer.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorResponse"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`standby-run-failed` - a standby run could not be started; or `standby-run-finished` - the run serving the request ended first.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorResponse"
+								}
+							}
+						}
+					},
+					"504": {
+						"description": "`standby-run-not-ready` - the run did not start listening on `ACTOR_STANDBY_PORT` in time.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorResponse"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/actor-runtime/api-fallback": {
+			"get": {
+				"operationId": "getApiFallbackState",
+				"summary": "Read the upstream API fallback state",
+				"responses": {
+					"200": {
+						"$ref": "#/components/responses/ApiFallbackState"
+					},
+					"401": {
+						"$ref": "#/components/responses/Unauthenticated"
+					}
+				},
+				"description": "Reads both toggles and the platform they would relay to. The toggles' full contract is on the `POST` below."
+			},
+			"post": {
+				"operationId": "setApiFallbackState",
+				"summary": "Turn upstream API fallback on or off",
+				"description": "Two independent toggles gate whether a request this runtime cannot satisfy locally is relayed to the real Apify platform instead of failing. Both default to `false`, and a restart always brings both back to `false`, regardless of how they were last set. Either can be on without the other; all four combinations are valid. This `POST` is a partial update: a field the body doesn't mention keeps its current value. `upstreamBaseUrl` is reported on every response for visibility but is read-only - no request body can change it.\n\n**Which local outcome each toggle covers** (exhaustive - every other response is never eligible, under any toggle combination):\n- `fallbackUnimplementedEnabled` covers a request the runtime does not serve at all: a local `404` or `501`. From the caller's point of view both mean \"nothing local answers this\", so one toggle covers both.\n- `fallbackNotFoundEnabled` covers a request that reaches a route this runtime does serve, but whose specific record id doesn't exist locally (`record-not-found`).\n- Every other error type - `invalid-request`, `invalid-input`, `invalid-input-schema`, `user-not-authenticated`, `cannot-remove-running-run`, `deleting-unfinished-build`, any `dev-folder-*` type, `internal-error` - is never relayed, whatever either toggle is set to. Neither is anything under `/actor-runtime/*` itself, which has no counterpart upstream, the standby addresses (`proxyStandbyRequest`) included - those are answered by a router that runs ahead of the fallback, so no `standby-*` error ever reaches it.\n\n**All HTTP methods are eligible for both toggles, writes included**: a `POST`/`PUT`/`DELETE` that would otherwise 404/501 locally is relayed exactly like a `GET` when its toggle is on - and, if the platform accepts it, becomes a real write against the caller's real account. This is a deliberate consequence of opting in, not an oversight. An eligible request reaches the platform at most once, so a relayed write is never duplicated.\n\n**A successful relay** returns the platform's response status and body to the caller unchanged, marked with two response headers: `x-actor-runtime-fallback: <upstreamBaseUrl>` naming which platform served it, and `x-actor-runtime-fallback-trigger: unimplemented` or `record-not-found` naming which toggle let it through. Only a final `2xx` status counts as successful.\n\n**Fail-closed guarantee**: anything else - a non-`2xx` response, a timeout, or the platform being unreachable - reproduces the exact response the caller would have gotten with both toggles off: the original local error, unchanged, with neither marker header present. The platform's own status or body is never surfaced to the caller.\n\n**Only the caller's own presented token is ever forwarded.** A relayed request's `Authorization` header is always the exact bearer token the caller themselves sent on that request - never a different or runtime-internal credential, and never sent at all for a request this runtime didn't authenticate. Enabling either toggle therefore means the caller's own Apify token reaches the configured `upstreamBaseUrl` on every eligible request; this is the risk being opted into.\n\n**Never splits one request between the two sources**: where one request resolves several records in turn - `GET /v2/actors/{actorId}/runs/last*` resolves the Actor, then its newest run, then that run's log or storage - the first record decides where all of them come from. An Actor that resolves locally is answered locally, every later miss included; only a request whose first record is unknown here is eligible, and then as the caller's original request, which the platform resolves end to end.\n\n**Never enriches a call that already succeeds locally**: a collection endpoint (e.g. `GET /v2/datasets`) that already returns `200` from local data never consults either toggle and never gains platform objects. Fallback only ever resolves an otherwise-failing request; it does not make a local listing \"complete\".",
+				"requestBody": {
+					"required": true,
+					"description": "A JSON object naming either toggle, or both.",
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/ApiFallbackPatch"
+							},
+							"examples": {
+								"both": {
+									"value": {
+										"fallbackUnimplementedEnabled": true,
+										"fallbackNotFoundEnabled": true
+									}
+								},
+								"one": {
+									"value": {
+										"fallbackNotFoundEnabled": true
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"$ref": "#/components/responses/ApiFallbackState"
+					},
+					"400": {
+						"description": "`invalid-request`, with no state change: the body is not a JSON object, is present but empty (`{}`), names a key other than the two toggles, or gives a present key a non-boolean value.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorResponse"
+								}
+							}
+						}
+					},
+					"401": {
+						"$ref": "#/components/responses/Unauthenticated"
+					}
+				}
+			}
+		},
+		"/actor-runtime/events/{runId}": {
+			"get": {
+				"operationId": "connectRunEvents",
+				"summary": "The run's platform events websocket",
+				"description": "A websocket upgrade, not a JSON response - the channel the Apify SDKs consume as the platform events socket. It carries `systemInfo` once a second, a one-off `aborting`-plus-`persistState` pair on a graceful abort, and a one-off `migrating` frame when a migration is triggered. Each frame is a single text message, `{\"name\": \"...\", \"data\": {...}}`.\n\nUnauthenticated by decision: the run id in the path is the only thing it scopes on, and a connection only ever receives that run's own frames. An unknown or already-terminal run id gets a completed upgrade followed immediately by a `1008` close with a reason, never a non-101 HTTP status - the Python SDK treats a refused first connection as fatal to the Actor. A connection to a live run stays open until the run ends, when the server closes it with `1000`. A migration or reboot restart is not the run ending: the restarted container reconnects to the same path.\n\nThis operation is served by the HTTP server's upgrade handler rather than by a route, so a plain `GET` that is not a websocket handshake answers `426 upgrade-required`.",
+				"security": [],
+				"x-actor-runtime-transport": "websocket",
+				"parameters": [
+					{
+						"$ref": "#/components/parameters/RunId"
+					}
+				],
+				"responses": {
+					"101": {
+						"description": "Switching protocols - the websocket is open. Cross-run isolation is structural; an unknown or terminal run is closed with `1008` right after the upgrade completes."
+					},
+					"426": {
+						"description": "`upgrade-required` - the request reached this path without a websocket handshake.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorResponse"
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	},
+	"components": {
+		"securitySchemes": {
+			"bearerAuth": {
+				"type": "http",
+				"scheme": "bearer",
+				"description": "The same per-token identity every `/v2` route uses: any non-empty token authenticates as that token's own user, created on first sighting."
+			},
+			"tokenQuery": {
+				"type": "apiKey",
+				"in": "query",
+				"name": "token",
+				"description": "The same token as `bearerAuth`, passed as a query parameter instead."
+			}
+		},
+		"parameters": {
+			"ActorId": {
+				"name": "actorId",
+				"in": "path",
+				"required": true,
+				"description": "The Actor's id, its plain `name`, or a `~name` (the caller's own), `username~name` or `userId~name` reference - the same forms every other endpoint on this API accepts. Names and usernames match case-insensitively. An empty name is `400` `invalid-request`; anything else that does not resolve, another user's Actor included, is `404` `record-not-found`.",
+				"schema": {
+					"type": "string"
+				}
+			},
+			"RunId": {
+				"name": "runId",
+				"in": "path",
+				"required": true,
+				"description": "The run's id.",
+				"schema": {
+					"type": "string"
+				}
+			},
+			"StandbyLabel": {
+				"name": "standbyLabel",
+				"in": "path",
+				"required": true,
+				"description": "The Actor's standby address: the platform's `<username>--<actor-name>` label, or the Actor's id. Matched case-insensitively against the caller's own Actors only; anything else is `404` `record-not-found`.",
+				"schema": {
+					"type": "string"
+				}
+			}
+		},
+		"responses": {
+			"Unauthenticated": {
+				"description": "`user-not-authenticated` - no token was presented. No state change.",
+				"content": {
+					"application/json": {
+						"schema": {
+							"$ref": "#/components/schemas/ErrorResponse"
+						}
+					}
+				}
+			},
+			"RecordNotFound": {
+				"description": "`record-not-found` - no such record, or it belongs to another user. Ownership scoping is not distinguishable from absence, by design.",
+				"content": {
+					"application/json": {
+						"schema": {
+							"$ref": "#/components/schemas/ErrorResponse"
+						}
+					}
+				}
+			},
+			"ApiFallbackState": {
+				"description": "The fallback state, as of immediately after the call.",
+				"content": {
+					"application/json": {
+						"schema": {
+							"type": "object",
+							"required": ["data"],
+							"properties": {
+								"data": {
+									"$ref": "#/components/schemas/ApiFallbackState"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"schemas": {
+			"ErrorResponse": {
+				"type": "object",
+				"required": ["error"],
+				"description": "The error envelope every endpoint on this API shares. `type` is what clients branch on.",
+				"properties": {
+					"error": {
+						"type": "object",
+						"required": ["type", "message"],
+						"properties": {
+							"type": {
+								"type": "string"
+							},
+							"message": {
+								"type": "string"
+							}
+						}
+					}
+				}
+			},
+			"OpenApiDocument": {
+				"type": "object",
+				"description": "An OpenAPI 3.1 document - this one.",
+				"required": ["openapi", "info", "paths"],
+				"properties": {
+					"openapi": {
+						"type": "string"
+					},
+					"info": {
+						"type": "object"
+					},
+					"paths": {
+						"type": "object"
+					}
+				},
+				"additionalProperties": true
+			},
+			"DevFolderStatus": {
+				"type": "object",
+				"required": ["localDevFolder"],
+				"properties": {
+					"localDevFolder": {
+						"type": ["string", "null"],
+						"description": "The registered absolute host path, or `null` when no folder is registered. The same value the console's Actor detail page shows."
+					}
+				}
+			},
+			"DebugModeRequest": {
+				"type": "object",
+				"required": ["enabled"],
+				"additionalProperties": false,
+				"properties": {
+					"enabled": {
+						"type": "boolean"
+					},
+					"language": {
+						"type": "string",
+						"enum": ["auto", "node", "python"],
+						"default": "auto",
+						"description": "`auto` classifies the Actor's image at run start."
+					},
+					"port": {
+						"type": "integer",
+						"minimum": 1024,
+						"maximum": 65535,
+						"description": "Absent means \"use the resolved language's own default port at run start\" (`9229` Node, `5678` Python) - never a stored literal."
+					}
+				}
+			},
+			"DebugStatus": {
+				"type": "object",
+				"required": ["localDebug"],
+				"properties": {
+					"localDebug": {
+						"oneOf": [
+							{
+								"type": "object",
+								"required": ["language", "port"],
+								"properties": {
+									"language": {
+										"type": "string",
+										"enum": ["auto", "node", "python"]
+									},
+									"port": {
+										"type": "integer",
+										"description": "For an unresolved `auto`, a nominal default (`5678`) shown purely for display: the port a given run actually publishes depends on that run's own resolved language."
+									}
+								}
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "`null` when debug mode is off."
+					}
+				}
+			},
+			"BrowserViewRequest": {
+				"type": "object",
+				"required": ["enabled"],
+				"additionalProperties": false,
+				"properties": {
+					"enabled": {
+						"type": "boolean"
+					},
+					"interactive": {
+						"type": "boolean",
+						"default": false,
+						"description": "Also forward mouse and keyboard input to the Actor's browser."
+					}
+				}
+			},
+			"BrowserViewStatus": {
+				"type": "object",
+				"required": ["localBrowserView"],
+				"properties": {
+					"localBrowserView": {
+						"oneOf": [
+							{
+								"type": "object",
+								"required": ["interactive"],
+								"properties": {
+									"interactive": {
+										"type": "boolean"
+									}
+								}
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "`null` when browser view is off."
+					}
+				}
+			},
+			"ApiFallbackPatch": {
+				"type": "object",
+				"minProperties": 1,
+				"additionalProperties": false,
+				"properties": {
+					"fallbackUnimplementedEnabled": {
+						"type": "boolean",
+						"description": "Relay a request nothing local answers (a local `404` or `501`)."
+					},
+					"fallbackNotFoundEnabled": {
+						"type": "boolean",
+						"description": "Relay a request that reaches a route this runtime serves, but whose record id does not exist locally (`record-not-found`)."
+					}
+				}
+			},
+			"ApiFallbackState": {
+				"type": "object",
+				"required": ["fallbackUnimplementedEnabled", "fallbackNotFoundEnabled", "upstreamBaseUrl"],
+				"properties": {
+					"fallbackUnimplementedEnabled": {
+						"type": "boolean"
+					},
+					"fallbackNotFoundEnabled": {
+						"type": "boolean"
+					},
+					"upstreamBaseUrl": {
+						"type": "string",
+						"format": "uri",
+						"description": "The platform this runtime would relay to (`https://api.apify.com` by default, or `APIFY_UPSTREAM_API_BASE_URL`). Reported for visibility, read-only: no request body can change it."
+					}
+				}
+			},
+			"Run": {
+				"type": "object",
+				"description": "An Actor run object, the same shape the emulated platform endpoints (`POST /v2/actor-runs/{runId}/abort`, `.../reboot`) return. `stats` carries `migrationCount`, `rebootCount`, `restartCount` and `resurrectCount`.",
+				"required": ["id", "status"],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"actId": {
+						"type": "string"
+					},
+					"status": {
+						"type": "string"
+					},
+					"stats": {
+						"type": "object"
+					}
+				},
+				"additionalProperties": true
+			},
+			"SkillDocument": {
+				"type": "object",
+				"description": "The skill's YAML front matter (`name`, `description`) alongside the whole markdown file.",
+				"required": ["name", "description", "content"],
+				"properties": {
+					"name": {
+						"type": "string",
+						"description": "The skill's `name` field; empty when the front matter is missing or malformed."
+					},
+					"description": {
+						"type": "string",
+						"description": "The skill's `description` field; empty on the same terms as `name`."
+					},
+					"content": {
+						"type": "string",
+						"description": "The complete markdown file, front matter included."
+					}
+				}
+			}
+		}
+	},
+	"x-actor-runtime-platform-notes": [
+		{
+			"method": "POST",
+			"path": "/v2/actors/{actorId}/runs",
+			"parameter": "devFolder",
+			"summary": "Run once from the built image alone",
+			"description": "`?devFolder=false` runs from the built image alone, ignoring the Actor's registered live dev folder for that one run; the registration itself is unchanged. Any other value, or no parameter, means the default behaviour. The run's own log records that it was used."
+		},
+		{
+			"method": "POST",
+			"path": "/v2/actor-runs/{runId}/abort",
+			"parameter": "gracefully",
+			"summary": "Graceful abort, with the platform’s warning frames and grace period",
+			"description": "`POST /v2/actor-runs/{runId}/abort` accepts an optional `?gracefully=` boolean. Omitted or `false`: the run aborts immediately. `true` on a running run: the record moves to `ABORTING` at once, an `aborting` frame plus a `persistState {\"isMigrating\": false}` frame (in that order, matching the platform) are published on the run's events channel, and the container is stopped 30 seconds later. The request responds as soon as the run is `ABORTING`, not when the window ends. The window ends as soon as the run's container exits, finalising the run `ABORTED` then. `true` on a run with no container (still `READY`, or already terminal) behaves as if omitted. A second abort arriving during an open window: another `?gracefully=true` joins that window and neither restarts it nor stops the container early; a non-graceful one cancels it and stops the container at once. An abort stops the container immediately: an Actor gets no wind-down time beyond the window above."
+		},
+		{
+			"method": "POST",
+			"path": "/v2/actor-runs/{runId}/reboot",
+			"summary": "Reboot, the endpoint the SDKs call from their own migrating handler",
+			"description": "The real platform endpoint the SDKs call from their default `migrating` handler, implemented here: it stops and restarts the run's container immediately (no warning frame), cancels an open migration window, and increments `stats.rebootCount`. A finished run is `403 job-finished`; a non-terminal run with no container (`READY`, `ABORTING`) gets the count bump but no restart. The run object's `stats` carries `migrationCount`, `rebootCount`, `restartCount` and `resurrectCount` (the latter two always `0` here), initialized to `0` at run creation like the platform."
+		},
+		{
+			"method": "GET",
+			"path": "/v2/actors/{actorId}",
+			"summary": "`standbyUrl` names a local standby address, chosen by the caller",
+			"description": "An Actor with Standby enabled reports a `standbyUrl` that exists only here: `http://<username>--<actor-name>.localhost:3333` for a client on the host, and `http://apify-api:3333/actor-runtime/standby/<username>--<actor-name>` for a request arriving from an Actor container, which is picked from the request's own `Host` - the platform's value does not vary by caller. Clients that cannot resolve `*.localhost` use the same path form on `localhost`. Both addresses are the `proxyStandbyRequest` operation of this namespace; everything else about Actor Standby is the platform's own behaviour, implemented faithfully, except that only the Actor's owner is served."
+		}
+	]
+}

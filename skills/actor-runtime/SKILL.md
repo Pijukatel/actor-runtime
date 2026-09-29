@@ -284,6 +284,11 @@ a later step misses. Only a call naming an Actor this runtime does not know is r
   `apify api GET v2/datasets/~my-results/items`. Names match case-insensitively. A bare name without
   `~` is an id, except for an Actor, where it is also tried as a name. Another user's resource is not
   found here - the runtime only ever shows your own.
+- `apify api GET /actor-runtime` prints this runtime's own OpenAPI document - every `/actor-runtime/*`
+  endpoint above, and what it adds to the platform endpoints it extends. No token needed, and the real
+  Apify platform has no such endpoint, so a `404` there means you are talking to the platform rather
+  than to a runtime. `http://localhost:3333/actor-runtime/openapi.json` serves it unenveloped, for
+  OpenAPI tooling.
 - Or unauthenticated by URL: `http://localhost:3333/v2/datasets?token=TOKEN`.
 - The `runs/last` shortcuts address an Actor's newest run without knowing its id:
   `apify api GET v2/actors/<actorId>/runs/last`, and the same under `/log`, `/dataset/items`,

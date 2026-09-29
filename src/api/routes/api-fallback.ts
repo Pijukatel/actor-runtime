@@ -1,5 +1,5 @@
 /**
- * `GET`/`POST /actor-runtime/api-fallback` (`api.md`'s "Upstream fallback" section) - mounted on the
+ * `GET`/`POST /actor-runtime/api-fallback` (specified by the `getApiFallbackState`/`setApiFallbackState` operations in `../openapi/actor-runtime.json`) - mounted on the
  * same `/actor-runtime` sub-router `dev-folder.ts` already registers on, so it shares that router's
  * single `auth()` registration (`server.ts`) rather than adding its own, and is served at both mounts
  * (`/actor-runtime/api-fallback` and `/v2/actor-runtime/api-fallback`) the same way the dev-folder route

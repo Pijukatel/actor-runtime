@@ -1,5 +1,5 @@
 /**
- * Migration emulation and reboot (`requirements/api.md`, "Migration emulation"): the
+ * Migration emulation and reboot (the `migrateRun` operation in `src/api/openapi/actor-runtime.json`): the
  * `POST /actor-runtime/migrate/:runId` and `POST /v2/actor-runs/:runId/reboot` contracts. The console's
  * Migrate button is covered in `migrate-console.test.ts`. Fake-timer discipline follows
  * `graceful-abort.test.ts` (only `setTimeout`/`clearTimeout` faked).

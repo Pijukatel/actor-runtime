@@ -1,5 +1,5 @@
 /**
- * Upstream API fallback (`api.md`'s "Upstream fallback" section): when a call locally misses - either
+ * Upstream API fallback (the `setApiFallbackState` operation in `src/api/openapi/actor-runtime.json`): when a call locally misses - either
  * because nothing in this runtime serves the path/method at all, or because it does but the specific
  * record id doesn't exist - and the matching toggle is on, the request is replayed against the real
  * Apify platform instead of failing, and a successful reply's status/body/headers are relayed back
@@ -101,7 +101,7 @@ const EXCLUDED_RESPONSE_HEADERS = new Set([
 
 export type FallbackTrigger = 'unimplemented' | 'record-not-found';
 
-/** The exhaustive mapping from a local error's `type` to the toggle that gates it (`api.md`). Every
+/** The exhaustive mapping from a local error's `type` to the toggle that gates it (`openapi/actor-runtime.json`). Every
  * other error `type` - `invalid-request`, `user-not-authenticated`, `cannot-remove-running-run`,
  * `deleting-unfinished-build`, any `dev-folder-*` type, `internal-error` - is never eligible, `null`. */
 function triggerForErrorType(type: string): FallbackTrigger | null {

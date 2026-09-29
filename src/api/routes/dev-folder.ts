@@ -9,8 +9,9 @@
  * only one of the two mounts ever matches a given request, that `auth()` still runs exactly once per
  * request either way.
  *
- * Canonical body is a JSON string: `'"/abs/path"'` to set, `'""'` to clear (`api.md`). A JSON value that
- * parses but isn't a string is rejected the same way a malformed body is.
+ * Canonical body is a JSON string: `'"/abs/path"'` to set, `'""'` to clear (the `setActorDevFolder`
+ * operation in `src/api/openapi/actor-runtime.json`). A JSON value that parses but isn't a string is
+ * rejected the same way a malformed body is.
  *
  * Ownership-scoped like every other Actor write on this API port: `resolveActorParam`, so a caller can
  * only ever register a dev folder for their own Actor.

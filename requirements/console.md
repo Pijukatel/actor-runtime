@@ -107,7 +107,7 @@
 ## Settings page
 
 - Every page's header navigation includes a link to `/settings`, the one page for the upstream API
-  fallback toggles (`api.md`'s "Upstream fallback" section); the link itself shows each toggle's current
+  fallback toggles (specified by the runtime API specification `api.md` references); the link itself shows each toggle's current
   value.
 - `/settings` shows `fallbackUnimplementedEnabled`, `fallbackNotFoundEnabled`, and `upstreamBaseUrl`
   (the same values the API's toggle endpoint reports), plus a warning that enabling either toggle

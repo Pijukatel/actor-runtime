@@ -5,7 +5,8 @@
  *
  * Canonical body is a strict JSON object: `{"enabled": true}` (defaults `language` to `"auto"`, no port
  * override), `{"enabled": true, "language": "node", "port": 9229}`, or `{"enabled": false}` to clear -
- * every other shape (an unknown field included) is `400 invalid-request` (`api.md`).
+ * every other shape (an unknown field included) is `400 invalid-request` (the `setActorDebugMode`
+ * operation in `src/api/openapi/actor-runtime.json`).
  *
  * Ownership-scoped exactly like `dev-folder.ts`: `resolveActorParam`, so a caller can only ever toggle
  * debug mode for their own Actor.
@@ -33,7 +34,7 @@ export function mountDebugMode(router: Router): void {
 			if (result.kind !== 'ok') throw invalidRequest(result.message);
 
 			// The response body doubles as the read-back - there is deliberately no separate `GET` for this
-			// yet, same as the dev-folder endpoint (`api.md`).
+			// yet, same as the dev-folder endpoint - neither is described in `../openapi/actor-runtime.json`.
 			sendData(res, debugStatus(result.actor));
 		}),
 	);

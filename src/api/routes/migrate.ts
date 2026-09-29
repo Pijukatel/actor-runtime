@@ -1,6 +1,6 @@
 /**
  * `POST /actor-runtime/migrate/:runId` - triggers an emulated migration of one run
- * (`requirements/api.md`, "Migration emulation"). In the local-runtime-only namespace because the real
+ * (the `migrateRun` operation in `src/api/openapi/actor-runtime.json`). In the local-runtime-only namespace because the real
  * platform has no migrate API.
  */
 import type { Router } from 'express';

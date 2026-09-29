@@ -19,6 +19,7 @@ import { mountDebugMode } from './routes/debug-mode.js';
 import { mountBrowserView } from './routes/browser-view.js';
 import { mountMigrate } from './routes/migrate.js';
 import { mountApiFallback } from './routes/api-fallback.js';
+import { mountActorRuntimeSpec, mountActorRuntimeUnmatched } from './routes/actor-runtime-spec.js';
 import { mountSkill } from './routes/skill.js';
 import { standbyProxy } from './standby-proxy.js';
 import { attemptFallback, type LocalError } from '../services/api-fallback.js';
@@ -53,20 +54,32 @@ export function createApiServer(deps: ApiServerDeps): Express {
 	// module mounted on this router (`mountDevFolder`, `mountMigrate`, `mountApiFallback`) rather than each registering
 	// its own - they are the same router instance, so a second registration would just run `auth()`
 	// twice per request for no benefit.
+	// What the namespace contains is specified by `openapi/actor-runtime.json`, which the runtime serves
+	// from itself (`routes/actor-runtime-spec.ts`) and decides its own 404/405/426 from.
 	// Registered ahead of the `auth()`-wrapped router below so Express answers `/skill` here and lets
 	// every other `/actor-runtime/*` path fall through to it - see `routes/skill.ts` for why it is public.
+	// It is registered on its own router rather than on the one below because that one ends in a terminal
+	// handler (`mountActorRuntimeUnmatched`), which would answer `/skill` instead of letting it through.
 	const actorRuntimePublic = express.Router();
 	mountSkill(actorRuntimePublic);
 	app.use('/actor-runtime', actorRuntimePublic);
 	app.use('/v2/actor-runtime', actorRuntimePublic);
 
 	const actorRuntime = express.Router();
+	// Registered before this router's `auth()` on purpose, so the namespace can be enumerated without a
+	// token - see `routes/actor-runtime-spec.ts`. Everything after `auth()` below is authenticated as
+	// usual.
+	mountActorRuntimeSpec(actorRuntime);
 	actorRuntime.use(auth());
 	mountDevFolder(actorRuntime, deps);
 	mountDebugMode(actorRuntime);
 	mountBrowserView(actorRuntime);
 	mountMigrate(actorRuntime, deps);
 	mountApiFallback(actorRuntime);
+	// Last on this router: everything that matched no route above is answered from the namespace's own
+	// OpenAPI document rather than falling through to the app-level catch-all, which knows only the
+	// emulated platform surface.
+	mountActorRuntimeUnmatched(actorRuntime);
 	app.use('/actor-runtime', actorRuntime);
 	// Also served at `/v2/actor-runtime/*` - the *same* router instance, no duplicated route logic - solely
 	// because `apify api`'s own URL-building hardcodes a `/v2`-suffixed base (`${baseUrl}/${endpoint}`,

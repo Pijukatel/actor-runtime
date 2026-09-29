@@ -608,7 +608,8 @@ function cancelGracefulAbort(runId: string): boolean {
  * `gracefully` on a `RUNNING` run publishes the platform's `aborting` + `persistState` frame pair and
  * returns the `ABORTING` record straight away, leaving `GRACEFUL_ABORT_WINDOW_MS` to run in the
  * background; other states take the immediate path. A second concurrent graceful abort joins the window,
- * a hard one cancels it - see `requirements/api.md`.
+ * a hard one cancels it - see the abort entry in `src/api/openapi/actor-runtime.json`'s
+ * `x-actor-runtime-platform-notes`.
  *
  * Both flags come from `onBeforeTransition`, read inside the same mutex-serialized write that performs
  * the transition: a preceding `get()` could observe a stale status, and only the hook can tell "this call
