@@ -126,12 +126,14 @@ function devFolderSection(actorId: string, status: DevFolderStatus, errorMessage
 function debugModeSection(actorId: string, localDebug: ActorRecord['localDebug'], errorMessage?: string): string {
 	const status = debugStatus({ localDebug });
 	return (
+		'<section id="debug-mode" data-live>' +
 		'<h2>Debug mode</h2>' +
 		definitionList([
 			['language', status.localDebug?.language ?? '(debug mode is off)'],
 			['port', status.localDebug?.port ?? ''],
 		]) +
-		debugModeForm(actorId, localDebug ?? null, errorMessage)
+		debugModeForm(actorId, localDebug ?? null, errorMessage) +
+		'</section>'
 	);
 }
 
@@ -142,6 +144,7 @@ function browserViewSection(
 ): string {
 	const status = browserViewStatus({ localBrowserView });
 	return (
+		'<section id="browser-view" data-live>' +
 		'<h2>Browser view</h2>' +
 		definitionList([
 			[
@@ -151,7 +154,8 @@ function browserViewSection(
 					: '(browser view is off)',
 			],
 		]) +
-		browserViewForm(actorId, localBrowserView ?? null, errorMessage)
+		browserViewForm(actorId, localBrowserView ?? null, errorMessage) +
+		'</section>'
 	);
 }
 
@@ -317,9 +321,10 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			return;
 		}
 		const body = req.body as Record<string, unknown> | undefined;
-		const enabled = body?.enabled === 'on';
+		const mode = typeof body?.mode === 'string' ? body.mode : 'off';
+		const enabled = mode !== 'off';
 		const requestBody: Record<string, unknown> = { enabled };
-		if (enabled) requestBody.interactive = body?.interactive === 'on';
+		if (enabled) requestBody.interactive = mode === 'interactive';
 
 		const result = await setBrowserView(actor, requestBody);
 		if (result.kind !== 'ok') {
@@ -374,8 +379,8 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			return;
 		}
 		const body = req.body as Record<string, unknown> | undefined;
-		const enabled = body?.enabled === 'on';
-		const language = typeof body?.language === 'string' ? body.language : 'auto';
+		const language = typeof body?.language === 'string' ? body.language : 'off';
+		const enabled = language !== 'off';
 		const portRaw = typeof body?.port === 'string' ? body.port.trim() : '';
 		const requestBody: Record<string, unknown> = { enabled };
 		if (enabled) {
@@ -785,13 +790,15 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		const state = getApiFallbackState();
 		const body =
 			apiFallbackWarning() +
+			'<section id="settings" data-live>' +
 			definitionList([
 				['fallbackUnimplementedEnabled', state.fallbackUnimplementedEnabled],
 				['fallbackNotFoundEnabled', state.fallbackNotFoundEnabled],
 				['upstreamBaseUrl', upstreamApiBaseUrl()],
 			]) +
 			'<h2>Change settings</h2>' +
-			settingsForm(state);
+			settingsForm(state) +
+			'</section>';
 		res.send(layout('Settings', body));
 	});
 

@@ -69,22 +69,24 @@
 - A submission that fails validation redirects back to the same detail page with the classified error
   message shown inline, never swallowed by the redirect.
 
+## Saving options
+
+- Debug-mode, browser-view and settings forms save on change, without a page reload.
+
 ## Debug-mode form (Actor detail view)
 
 - The Actor detail view shows the Actor's debug-mode toggle status - `(debug mode is off)`, or the
   resolved `language`/`port` when on - the same status the API endpoint reports (`api.md`).
-- A form on the same view exposes the same three fields the API body accepts - `enabled` (a checkbox),
-  `language` (a select, `auto`/`node`/`python`), and `port` (a number input, blank meaning "no
-  override"). Submitting always sends all three fields together: an unchecked `enabled` box clears the
-  toggle regardless of what the other two fields hold.
+- A form on the same view has a select (`No`/`auto`/`node`/`python`) and a `port` input (blank means
+  no override). `No` turns debug mode off; any other choice turns it on with that `language`.
 - For any given input, the form and the API endpoint produce the same outcome.
 - A submission that fails validation redirects back to the same detail page with the classified error
   message shown inline, never silently applied.
 
 ## Browser-view form (Actor detail view)
 
-- The Actor detail view shows the browser-view toggle status and a form with the API body's two fields,
-  `enabled` and `interactive`, as checkboxes. For any input, the form and the API produce the same outcome.
+- The Actor detail view shows the browser-view toggle status and a select: `No`, `Passive` (view-only),
+  or `Interactive`. For any input, the form and the API produce the same outcome.
 
 ## Browser view page (`/runs/:runId/browser`)
 

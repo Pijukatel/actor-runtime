@@ -38,6 +38,49 @@ function fallbackNavEntry(): string {
 	return `<a href="/settings">${label}</a>`;
 }
 
+/**
+ * Saves `form[data-autosave]` in the background - on any field's change, or a submit - through the
+ * same POST route a plain submit would hit, then swaps each `[data-live]` element (matched by id) for the
+ * version in the page the route redirects to, so status rows and inline errors stay server-rendered.
+ * Submissions of one form are serialized, and only the latest one's page is applied, so rapid clicks
+ * cannot land out of order. Any failure falls back to a plain submit.
+ */
+const AUTOSAVE_SCRIPT = `
+const inFlight = new WeakMap();
+async function save(form) {
+	const state = inFlight.get(form);
+	if (state) { state.again = true; return; }
+	inFlight.set(form, { again: false });
+	let page;
+	try {
+		do {
+			inFlight.get(form).again = false;
+			const res = await fetch(form.action, { method: 'POST', body: new URLSearchParams(new FormData(form)) });
+			if (!res.ok) throw new Error(res.statusText);
+			page = await res.text();
+		} while (inFlight.get(form).again);
+	} catch {
+		inFlight.delete(form);
+		form.submit();
+		return;
+	}
+	inFlight.delete(form);
+	const focused = document.activeElement?.name;
+	const fresh = new DOMParser().parseFromString(page, 'text/html');
+	for (const el of fresh.querySelectorAll('[data-live][id]')) document.getElementById(el.id)?.replaceWith(el);
+	if (focused) document.querySelector('#' + form.closest('[data-live]')?.id + ' [name="' + focused + '"]')?.focus();
+}
+document.addEventListener('change', (e) => {
+	const form = e.target.closest('form[data-autosave]');
+	if (form) save(form);
+});
+document.addEventListener('submit', (e) => {
+	if (!e.target.matches('form[data-autosave]')) return;
+	e.preventDefault();
+	save(e.target);
+});
+`;
+
 export function layout(title: string, body: string): string {
 	const nav = [...NAV.map(([href, label]) => `<a href="${href}">${label}</a>`), fallbackNavEntry()].join('');
 	return `<!doctype html>
@@ -52,13 +95,14 @@ export function layout(title: string, body: string): string {
 <header class="topbar">
 <div class="topbar-inner">
 <span class="brand">Apify <span>actor-runtime</span></span>
-<nav>${nav}</nav>
+<nav id="nav" data-live>${nav}</nav>
 </div>
 </header>
 <main>
 <h1>${escapeHtml(title)}</h1>
 ${body}
 </main>
+<script>${AUTOSAVE_SCRIPT}</script>
 </body>
 </html>`;
 }
@@ -116,8 +160,14 @@ export function devFolderForm(actorId: string, currentValue: string, errorMessag
 	);
 }
 
-/** The debug-mode toggle form on the Actor detail view - full parity with the API body's three fields
- * (`enabled`/`language`/`port`), submitted together, never a partial-merge PATCH.
+function selectOptions(selected: string, options: Array<[string, string]>): string {
+	return options
+		.map(([value, label]) => `<option value="${value}"${selected === value ? ' selected' : ''}>${label}</option>`)
+		.join('');
+}
+
+/** The debug-mode form on the Actor detail view: one select (`off` or the API's `language`) plus the
+ * API's `port`, submitted together, never a partial-merge PATCH.
  *
  * `current` must be the *raw stored* `ActorLocalDebug`, not `debugStatus`'s display-computed value:
  * rendering the computed default port would pre-fill the port input, so an unrelated resubmission would
@@ -128,45 +178,48 @@ export function debugModeForm(
 	errorMessage?: string,
 ): string {
 	const errorHtml = errorMessage ? `<p class="error"><strong>Error:</strong> ${escapeHtml(errorMessage)}</p>` : '';
-	const language = current?.language ?? 'auto';
+	const language = current ? (current.language ?? 'auto') : 'off';
 	const portValue = current?.port !== undefined ? String(current.port) : '';
-	const option = (value: string, label: string) =>
-		`<option value="${value}"${language === value ? ' selected' : ''}>${label}</option>`;
 	return (
 		errorHtml +
-		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/debug">` +
-		`<label><input type="checkbox" name="enabled"${current ? ' checked' : ''}> enabled</label> ` +
-		`<label>language: <select name="language">` +
-		option('auto', 'auto') +
-		option('node', 'node') +
-		option('python', 'python') +
+		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/debug" data-autosave>` +
+		'<label>debug: <select name="language">' +
+		selectOptions(language, [
+			['off', 'No'],
+			['auto', 'Auto'],
+			['node', 'Node'],
+			['python', 'Python'],
+		]) +
 		'</select></label> ' +
 		`<label>port: <input type="number" name="port" value="${escapeHtml(portValue)}" min="1024" max="65535" ` +
-		'placeholder="(default)"></label> ' +
-		'<button type="submit">Save</button>' +
+		`placeholder="(default)"${current ? '' : ' disabled'}></label>` +
 		'</form>' +
-		'<p class="empty">Uncheck "enabled" and submit to turn debug mode off. Leave "port" blank to use the ' +
+		'<p class="empty">Leave "port" blank to use the ' +
 		"resolved language's own default port (5678 Python / 9229 Node) at run start.</p>"
 	);
 }
 
-/** The browser-view toggle form; both API fields, submitted together like `debugModeForm`. */
+/** The browser-view form; one select covering both API fields, submitted together like `debugModeForm`. */
 export function browserViewForm(
 	actorId: string,
 	current: ActorLocalBrowserView | null | undefined,
 	errorMessage?: string,
 ): string {
 	const errorHtml = errorMessage ? `<p class="error"><strong>Error:</strong> ${escapeHtml(errorMessage)}</p>` : '';
+	const mode = current ? (current.interactive ? 'interactive' : 'passive') : 'off';
 	return (
 		errorHtml +
-		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/browser-view">` +
-		`<label><input type="checkbox" name="enabled"${current ? ' checked' : ''}> enabled</label> ` +
-		`<label><input type="checkbox" name="interactive"${current?.interactive ? ' checked' : ''}> interactive ` +
-		'(deliver mouse/keyboard input from the viewer)</label> ' +
-		'<button type="submit">Save</button>' +
+		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/browser-view" data-autosave>` +
+		'<label>browser view: <select name="mode">' +
+		selectOptions(mode, [
+			['off', 'No'],
+			['passive', 'Passive'],
+			['interactive', 'Interactive'],
+		]) +
+		'</select></label>' +
 		'</form>' +
 		'<p class="empty">When on, every run of this Actor gets a live mirror of its display, linked from the ' +
-		"run's page. The browser must run headful to show anything (Crawlee JS: <code>headless: false</code>, " +
+		"run's page; Interactive also delivers mouse/keyboard input from the viewer. The browser must run headful to show anything (Crawlee JS: <code>headless: false</code>, " +
 		'Python: <code>headless=False</code>).</p>'
 	);
 }
@@ -354,21 +407,20 @@ export function apiFallbackWarning(): string {
 	return '<p class="warning">Enabling either option below forwards the caller\'s own Apify token to the upstream API shown above.</p>';
 }
 
-/** The `/settings` page's one form (`console.md`): two checkboxes, one submit, always submitting both
+/** The `/settings` page's one form (`console.md`): two checkboxes, always submitting both
  * checkboxes' current state together - an unchecked box is simply absent from the submitted body, which
  * the POST route (`console/server.ts`) reads as `false` for that field, never as "leave unchanged" (the
  * console form's own single-submit contract, unlike the API route's genuinely partial `POST`). */
 export function settingsForm(state: ApiFallbackState): string {
 	const checkedAttr = (enabled: boolean) => (enabled ? ' checked' : '');
 	return (
-		'<form method="post" action="/settings">' +
+		'<form method="post" action="/settings" data-autosave>' +
 		'<p><label><input type="checkbox" name="fallbackUnimplementedEnabled"' +
 		checkedAttr(state.fallbackUnimplementedEnabled) +
 		'> Fall back for unimplemented endpoints</label></p>' +
 		'<p><label><input type="checkbox" name="fallbackNotFoundEnabled"' +
 		checkedAttr(state.fallbackNotFoundEnabled) +
 		'> Fall back for not-found records</label></p>' +
-		'<button type="submit">Save</button>' +
 		'</form>'
 	);
 }
