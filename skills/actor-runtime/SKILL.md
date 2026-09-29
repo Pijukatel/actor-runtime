@@ -101,7 +101,12 @@ After that first `apify push`, the runtime registers the pushed directory as the
 folder**. The live dev folder is **off by default**; once it is enabled for the Actor, the runtime
 bind-mounts that folder into every later run (the build log's `Registered live dev folder` line
 confirms it). Edit locally, recompile locally (`tsc`, or the language equivalent), and `apify call`
-again - no `apify push`, no rebuild:
+again - no `apify push`, no rebuild.
+
+It pays off most for plain Python or JavaScript Actors whose source runs as-is, with no compile or
+other build step. For Actors that compile, generate files at build time, or use a non-standard image
+layout, the mounted folder has to match what the image expects at run time, which is easy to get
+wrong - there, `apify push` after each change is often the more reliable loop.
 
 ```sh
 apify api POST /actor-runtime/live-dev-folder/<actorId> --body '{"enabled": true}'   # once per Actor
