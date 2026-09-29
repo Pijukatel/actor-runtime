@@ -317,9 +317,10 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			return;
 		}
 		const body = req.body as Record<string, unknown> | undefined;
-		const enabled = body?.enabled === 'on';
+		const mode = typeof body?.mode === 'string' ? body.mode : 'off';
+		const enabled = mode !== 'off';
 		const requestBody: Record<string, unknown> = { enabled };
-		if (enabled) requestBody.interactive = body?.interactive === 'on';
+		if (enabled) requestBody.interactive = mode === 'interactive';
 
 		const result = await setBrowserView(actor, requestBody);
 		if (result.kind !== 'ok') {
@@ -374,8 +375,8 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			return;
 		}
 		const body = req.body as Record<string, unknown> | undefined;
-		const enabled = body?.enabled === 'on';
-		const language = typeof body?.language === 'string' ? body.language : 'auto';
+		const language = typeof body?.language === 'string' ? body.language : 'off';
+		const enabled = language !== 'off';
 		const portRaw = typeof body?.port === 'string' ? body.port.trim() : '';
 		const requestBody: Record<string, unknown> = { enabled };
 		if (enabled) {

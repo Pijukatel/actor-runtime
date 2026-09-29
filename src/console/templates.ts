@@ -39,7 +39,7 @@ function fallbackNavEntry(): string {
 }
 
 /**
- * Saves `form[data-autosave]` in the background - on a checkbox/select change, or a submit - through the
+ * Saves `form[data-autosave]` in the background - on any field's change, or a submit - through the
  * same POST route a plain submit would hit, then swaps each `[data-live]` element (matched by id) for the
  * version in the page the route redirects to, so status rows and inline errors stay server-rendered.
  * Submissions of one form are serialized, and only the latest one's page is applied, so rapid clicks
@@ -72,7 +72,7 @@ async function save(form) {
 }
 document.addEventListener('change', (e) => {
 	const form = e.target.closest('form[data-autosave]');
-	if (form && e.target.matches('input[type=checkbox], select')) save(form);
+	if (form) save(form);
 });
 document.addEventListener('submit', (e) => {
 	if (!e.target.matches('form[data-autosave]')) return;
@@ -160,8 +160,14 @@ export function devFolderForm(actorId: string, currentValue: string, errorMessag
 	);
 }
 
-/** The debug-mode toggle form on the Actor detail view - full parity with the API body's three fields
- * (`enabled`/`language`/`port`), submitted together, never a partial-merge PATCH.
+function selectOptions(selected: string, options: Array<[string, string]>): string {
+	return options
+		.map(([value, label]) => `<option value="${value}"${selected === value ? ' selected' : ''}>${label}</option>`)
+		.join('');
+}
+
+/** The debug-mode form on the Actor detail view: one select (`off` or the API's `language`) plus the
+ * API's `port`, submitted together, never a partial-merge PATCH.
  *
  * `current` must be the *raw stored* `ActorLocalDebug`, not `debugStatus`'s display-computed value:
  * rendering the computed default port would pre-fill the port input, so an unrelated resubmission would
@@ -172,44 +178,48 @@ export function debugModeForm(
 	errorMessage?: string,
 ): string {
 	const errorHtml = errorMessage ? `<p class="error"><strong>Error:</strong> ${escapeHtml(errorMessage)}</p>` : '';
-	const language = current?.language ?? 'auto';
+	const language = current ? (current.language ?? 'auto') : 'off';
 	const portValue = current?.port !== undefined ? String(current.port) : '';
-	const option = (value: string, label: string) =>
-		`<option value="${value}"${language === value ? ' selected' : ''}>${label}</option>`;
 	return (
 		errorHtml +
 		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/debug" data-autosave>` +
-		`<label><input type="checkbox" name="enabled"${current ? ' checked' : ''}> enabled</label> ` +
-		`<label>language: <select name="language">` +
-		option('auto', 'auto') +
-		option('node', 'node') +
-		option('python', 'python') +
+		'<label>debug: <select name="language">' +
+		selectOptions(language, [
+			['off', 'No'],
+			['auto', 'Auto'],
+			['node', 'Node'],
+			['python', 'Python'],
+		]) +
 		'</select></label> ' +
 		`<label>port: <input type="number" name="port" value="${escapeHtml(portValue)}" min="1024" max="65535" ` +
-		'placeholder="(default)"></label> ' +
-		'<button type="submit">Save</button>' +
+		`placeholder="(default)"${current ? '' : ' disabled'}></label>` +
 		'</form>' +
-		'<p class="empty">"enabled" and "language" save on change; "Save" applies the port. Leave "port" blank to use the ' +
+		'<p class="empty">Leave "port" blank to use the ' +
 		"resolved language's own default port (5678 Python / 9229 Node) at run start.</p>"
 	);
 }
 
-/** The browser-view toggle form; both API fields, submitted together like `debugModeForm`. */
+/** The browser-view form; one select covering both API fields, submitted together like `debugModeForm`. */
 export function browserViewForm(
 	actorId: string,
 	current: ActorLocalBrowserView | null | undefined,
 	errorMessage?: string,
 ): string {
 	const errorHtml = errorMessage ? `<p class="error"><strong>Error:</strong> ${escapeHtml(errorMessage)}</p>` : '';
+	const mode = current ? (current.interactive ? 'interactive' : 'passive') : 'off';
 	return (
 		errorHtml +
 		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/browser-view" data-autosave>` +
-		`<label><input type="checkbox" name="enabled"${current ? ' checked' : ''}> enabled</label> ` +
-		`<label><input type="checkbox" name="interactive"${current?.interactive ? ' checked' : ''}> interactive ` +
-		'(deliver mouse/keyboard input from the viewer)</label>' +
+		'<label>browser view: <select name="mode">' +
+		selectOptions(mode, [
+			['off', 'No'],
+			['passive', 'Passive'],
+			['interactive', 'Interactive'],
+		]) +
+		'</select></label>' +
 		'</form>' +
 		'<p class="empty">When on, every run of this Actor gets a live mirror of its display, linked from the ' +
-		"run's page. The browser must run headful to show anything (Crawlee JS: <code>headless: false</code>, " +
+		"run's page; Interactive also delivers mouse/keyboard input from the viewer. The browser must run headful to show anything (Crawlee JS: <code>headless: false</code>, " +
 		'Python: <code>headless=False</code>).</p>'
 	);
 }
