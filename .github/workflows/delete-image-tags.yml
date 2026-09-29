@@ -1,15 +1,15 @@
 name: Delete Docker image tags
 
 # Manual-only: deletes tags from https://hub.docker.com/r/apify/actor-runtime/tags, the repository
-# `release.yml` publishes to. Meant for cleaning up the per-branch and per-commit tags it leaves
+# `build-image.yml` publishes to. Meant for cleaning up the per-branch and per-commit tags it leaves
 # behind (`<branch>`, `<branch>-<sha>`) once a branch is gone.
 #
 # The repository is hardcoded, not an input: this workflow deletes, so the blast radius stays the one
-# repository it is written for. Pushing elsewhere is a `release.yml` input; cleaning up elsewhere is
+# repository it is written for. Pushing elsewhere is a `build-image.yml` input; cleaning up elsewhere is
 # not this workflow's job.
 #
 # `master` and `latest` are never deleted, whatever is asked for: they are the tags users pull, and
-# the moving tags `release.yml` maintains. `main` is protected the same way, so a future default-branch
+# the moving tags `build-image.yml` maintains. `main` is protected the same way, so a future default-branch
 # rename cannot be undone from here. Everything else in the repository is fair game.
 #
 # Deleting a tag only removes the tag; the underlying manifest and layers stay until Docker Hub's own
@@ -34,7 +34,7 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 15
         steps:
-            # Same credentials, same failure mode as `release.yml`: fail up front with the fix named,
+            # Same credentials, same failure mode as `build-image.yml`: fail up front with the fix named,
             # rather than after a successful login-less API call returns an unhelpful 401. They are the
             # Apify service account's, synced into this repository's Actions secrets by the org's secret
             # manager - a missing value is fixed there, not by adding a secret here by hand. The token
