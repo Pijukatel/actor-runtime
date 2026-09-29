@@ -94,7 +94,8 @@ build, so changing them needs an `apify push`.
 ## Iterate without rebuilding (dev folder)
 
 After that first `apify push`, the runtime registers the pushed directory as the Actor's **dev
-folder** and bind-mounts it into every later run. Edit locally, recompile locally (`tsc`, or the
+folder** (the build log's `Registered live dev folder` line confirms it) and bind-mounts it into every
+later run. Edit locally, recompile locally (`tsc`, or the
 language equivalent), and `apify call` again - no `apify push`, no rebuild:
 
 ```sh

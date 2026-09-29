@@ -131,6 +131,17 @@ export function devFolderStatus(actor: ActorRecord): DevFolderStatus {
 	return { localDevFolder: actor.localDevFolder ?? null };
 }
 
+/** Printed at the end of a successful build, so whoever pushed learns their folder is live without the
+ * CLI having to know anything about the runtime. */
+export function registeredDevFolderBuildLine(localDevFolder: string, imageWorkingDirectory: string): string {
+	return (
+		`Registered live dev folder: ${localDevFolder}. Runs mount it over this build's working directory ` +
+		`${imageWorkingDirectory}, so local edits apply on the next \`apify call\` without another push. A compiled ` +
+		'Actor (e.g. TypeScript) needs its local build first. Use `apify call --no-dev-folder` to run from the ' +
+		'built image alone.'
+	);
+}
+
 /** Printed when a registered dev folder cannot be mounted because the run's build has no working
  * directory (an image with no `WORKDIR`, or `/`). The run is unaffected; only the silence is. */
 export function unknownWorkingDirectoryLine(localDevFolder: string): string {

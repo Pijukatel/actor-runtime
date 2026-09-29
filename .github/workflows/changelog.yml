@@ -1,0 +1,50 @@
+name: Update changelog
+
+# Keeps the "not yet released" section at the top of CHANGELOG.md in step with master, the way
+# crawlee-python's beta releases do. Only commit types that make it into the changelog trigger it; the
+# commit it pushes carries [skip ci], so it does not trigger itself or CI.
+on:
+    push:
+        branches:
+            - master
+        tags-ignore:
+            - '**'
+
+concurrency:
+    group: release
+    cancel-in-progress: false
+
+permissions:
+    contents: read
+
+jobs:
+    release_prepare:
+        name: Release prepare
+        if: >-
+            startsWith(github.event.head_commit.message, 'feat') ||
+            startsWith(github.event.head_commit.message, 'fix') ||
+            startsWith(github.event.head_commit.message, 'perf') ||
+            startsWith(github.event.head_commit.message, 'refactor') ||
+            startsWith(github.event.head_commit.message, 'style')
+        runs-on: ubuntu-latest
+        outputs:
+            changelog_artifact_name: ${{ steps.release_prepare.outputs.changelog_artifact_name }}
+        steps:
+            - uses: apify/actions/git-cliff-release@v1.6.1
+              name: Release prepare
+              id: release_prepare
+              with:
+                  release_type: prerelease
+                  existing_changelog_path: CHANGELOG.md
+
+    changelog_update:
+        name: Changelog update
+        needs: [release_prepare]
+        permissions:
+            contents: write
+        uses: ./.github/workflows/_update-changelog.yml
+        with:
+            # No version_number: nothing is published until a stable release, so package.json keeps the
+            # released version.
+            changelog_artifact_name: ${{ needs.release_prepare.outputs.changelog_artifact_name }}
+        secrets: inherit

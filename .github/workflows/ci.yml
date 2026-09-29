@@ -92,7 +92,7 @@ jobs:
 
     e2e-arm64:
         name: e2e actor-dev-loop (apify-cli + docker on arm64)
-        # The only arm64 coverage in CI: `release.yml` builds multi-arch but is dispatch-only, so an
+        # The only arm64 coverage in CI: `build-image.yml` builds multi-arch but runs only on dispatch or release, so an
         # arm64 break would otherwise surface at release time. Native, so nothing here is emulated.
         runs-on: ubuntu-24.04-arm
         timeout-minutes: 30
