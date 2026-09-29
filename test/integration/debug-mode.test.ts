@@ -287,22 +287,18 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		const detail = await axios.get(`${consoleBaseUrl}/actors/${actor.id}`);
 		expect(detail.status).toBe(200);
 		expect(detail.data).toContain('(debug mode is off)');
-		expect(detail.data).toContain(`<form method="post" action="/actors/${actor.id}/debug">`);
+		expect(detail.data).toContain(`<form method="post" action="/actors/${actor.id}/debug" data-autosave>`);
 	});
 
-	it('submitting the form with enabled+language+port produces the same outcome the API would for the same input', async () => {
+	it('submitting the form with language+port produces the same outcome the API would for the same input', async () => {
 		await setUpConsole();
 		const actor = await server.client.actors().create({ name: 'debug-console-submit-actor' });
 
-		const submit = await axios.post(
-			`${consoleBaseUrl}/actors/${actor.id}/debug`,
-			'enabled=on&language=node&port=9229',
-			{
-				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-				maxRedirects: 0,
-				validateStatus: () => true,
-			},
-		);
+		const submit = await axios.post(`${consoleBaseUrl}/actors/${actor.id}/debug`, 'language=node&port=9229', {
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			maxRedirects: 0,
+			validateStatus: () => true,
+		});
 		expect(submit.status).toBe(302);
 		expect(submit.headers.location).toBe(`/actors/${actor.id}`);
 
@@ -335,15 +331,11 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		await setUpConsole(capturing.driver);
 		const actor = await pushAndBuild(server, 'debug-console-resubmit-language-only-actor');
 
-		const firstSubmit = await axios.post(
-			`${consoleBaseUrl}/actors/${actor.id}/debug`,
-			'enabled=on&language=auto&port=',
-			{
-				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-				maxRedirects: 0,
-				validateStatus: () => true,
-			},
-		);
+		const firstSubmit = await axios.post(`${consoleBaseUrl}/actors/${actor.id}/debug`, 'language=auto&port=', {
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			maxRedirects: 0,
+			validateStatus: () => true,
+		});
 		expect(firstSubmit.status).toBe(302);
 		expect(
 			await getRegistries()
@@ -356,15 +348,11 @@ describe('console: debug-mode form on the Actor detail view', () => {
 			'<input type="number" name="port" value="" min="1024" max="65535" placeholder="(default)">',
 		);
 
-		const secondSubmit = await axios.post(
-			`${consoleBaseUrl}/actors/${actor.id}/debug`,
-			'enabled=on&language=node&port=',
-			{
-				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-				maxRedirects: 0,
-				validateStatus: () => true,
-			},
-		);
+		const secondSubmit = await axios.post(`${consoleBaseUrl}/actors/${actor.id}/debug`, 'language=node&port=', {
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			maxRedirects: 0,
+			validateStatus: () => true,
+		});
 		expect(secondSubmit.status).toBe(302);
 
 		const stored = await getRegistries().actors.get(actor.id);
@@ -377,12 +365,12 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		expect(ctx.env.NODE_OPTIONS).toBe('--inspect-brk=0.0.0.0:9229');
 	});
 
-	it('submitting with "enabled" unchecked clears the toggle, same as {"enabled": false} on the API', async () => {
+	it('submitting debug "No" clears the toggle, same as {"enabled": false} on the API', async () => {
 		await setUpConsole();
 		const actor = await server.client.actors().create({ name: 'debug-console-clear-actor' });
 		await post(server.baseUrl, actor.id, { enabled: true, language: 'python' }, server.token);
 
-		const submit = await axios.post(`${consoleBaseUrl}/actors/${actor.id}/debug`, 'language=auto&port=', {
+		const submit = await axios.post(`${consoleBaseUrl}/actors/${actor.id}/debug`, 'language=off&port=9229', {
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 			maxRedirects: 0,
 			validateStatus: () => true,
@@ -400,15 +388,11 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		await setUpConsole();
 		const actor = await server.client.actors().create({ name: 'debug-console-invalid-actor' });
 
-		const submit = await axios.post(
-			`${consoleBaseUrl}/actors/${actor.id}/debug`,
-			'enabled=on&language=node&port=80',
-			{
-				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-				maxRedirects: 0,
-				validateStatus: () => true,
-			},
-		);
+		const submit = await axios.post(`${consoleBaseUrl}/actors/${actor.id}/debug`, 'language=node&port=80', {
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			maxRedirects: 0,
+			validateStatus: () => true,
+		});
 		expect(submit.status).toBe(302);
 		expect(submit.headers.location).toContain('debugModeError=');
 
@@ -420,15 +404,11 @@ describe('console: debug-mode form on the Actor detail view', () => {
 		await setUpConsole();
 		const actor = await server.client.actors().create({ name: 'debug-console-cross-site-actor' });
 
-		const submit = await axios.post(
-			`${consoleBaseUrl}/actors/${actor.id}/debug`,
-			'enabled=on&language=node&port=9229',
-			{
-				headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Sec-Fetch-Site': 'cross-site' },
-				maxRedirects: 0,
-				validateStatus: () => true,
-			},
-		);
+		const submit = await axios.post(`${consoleBaseUrl}/actors/${actor.id}/debug`, 'language=node&port=9229', {
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Sec-Fetch-Site': 'cross-site' },
+			maxRedirects: 0,
+			validateStatus: () => true,
+		});
 		expect(submit.status).toBe(403);
 
 		const stored = await getRegistries().actors.get(actor.id);
@@ -437,7 +417,7 @@ describe('console: debug-mode form on the Actor detail view', () => {
 
 	it('a 404 for a nonexistent Actor id renders Not found, not a 500', async () => {
 		await setUpConsole();
-		const res = await axios.post(`${consoleBaseUrl}/actors/totally-made-up-id/debug`, 'enabled=on', {
+		const res = await axios.post(`${consoleBaseUrl}/actors/totally-made-up-id/debug`, 'language=auto', {
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 			validateStatus: () => true,
 		});
