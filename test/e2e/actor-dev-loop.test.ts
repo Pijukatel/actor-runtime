@@ -70,8 +70,8 @@ describe('full Actor dev loop via apify-cli (requires Docker)', () => {
 	});
 
 	const cases = [
-		{ actorDir: join(REPO_ROOT, 'sample_actor_ts'), label: 'TypeScript sample actor' },
-		{ actorDir: join(REPO_ROOT, 'sample_actor_py'), label: 'Python sample actor' },
+		{ actorDir: join(REPO_ROOT, 'samples', 'actor_ts'), label: 'TypeScript sample actor' },
+		{ actorDir: join(REPO_ROOT, 'samples', 'actor_py'), label: 'Python sample actor' },
 	];
 
 	for (const { actorDir, label } of cases) {
@@ -108,11 +108,11 @@ describe('full Actor dev loop via apify-cli (requires Docker)', () => {
 	}
 
 	it(
-		'sample_actor_crawler: push -> build succeeds (build-only - its Dockerfile lives at .actor/Dockerfile, ' +
+		'samples/actor_crawler: push -> build succeeds (build-only - its Dockerfile lives at .actor/Dockerfile, ' +
 			'the layout that used to fail with a daemon-side "Cannot locate specified Dockerfile" error)',
 		() => {
 			const env = apifyEnv(isolatedApifyHome);
-			const actorDir = join(REPO_ROOT, 'sample_actor_crawler');
+			const actorDir = join(REPO_ROOT, 'samples', 'actor_crawler');
 
 			const pushOutput = apify(['push', '--json'], { cwd: actorDir, env });
 			const push = JSON.parse(pushOutput) as PushResult;
@@ -125,7 +125,7 @@ describe('full Actor dev loop via apify-cli (requires Docker)', () => {
 	it('the run log contains the crawler per-page lines', () => {
 		const env = apifyEnv(isolatedApifyHome);
 		const callOutput = apify(['call', '--input', JSON.stringify({ maxPages: 1 }), '--json'], {
-			cwd: join(REPO_ROOT, 'sample_actor_ts'),
+			cwd: join(REPO_ROOT, 'samples', 'actor_ts'),
 			env,
 		});
 		const call = JSON.parse(callOutput) as CallResult;
@@ -136,7 +136,7 @@ describe('full Actor dev loop via apify-cli (requires Docker)', () => {
 
 	it("a call with no input at all runs on the input schema's defaults, and one the schema rejects never starts", () => {
 		const env = apifyEnv(isolatedApifyHome);
-		const actorDir = join(REPO_ROOT, 'sample_actor_ts');
+		const actorDir = join(REPO_ROOT, 'samples', 'actor_ts');
 
 		const callOutput = apify(['call', '--json'], { cwd: actorDir, env });
 		const call = JSON.parse(callOutput) as CallResult;
@@ -176,7 +176,7 @@ describe('full Actor dev loop via apify-cli (requires Docker)', () => {
 	it('apify api reads back the run and its default dataset (requirements/cli.md: `apify api`)', () => {
 		const env = apifyEnv(isolatedApifyHome);
 		const callOutput = apify(['call', '--input', JSON.stringify({ maxPages: 1 }), '--json'], {
-			cwd: join(REPO_ROOT, 'sample_actor_ts'),
+			cwd: join(REPO_ROOT, 'samples', 'actor_ts'),
 			env,
 		});
 		const call = JSON.parse(callOutput) as CallResult;

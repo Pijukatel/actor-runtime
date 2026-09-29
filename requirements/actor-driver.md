@@ -157,8 +157,8 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
   command, environment, network and ports are those of an ordinary run, and whether the view is on, off, or
   being watched changes nothing about the browser.
 - The runtime never changes the browser's headless mode. A headless browser shows an empty display; an
-  Actor that wants to be watched runs its browser headful (the bundled `sample_actor_playwright` and
-  `sample_actor_playwright_py` do). The Actor image must provide an X display; the Apify Playwright and
+  Actor that wants to be watched runs its browser headful (the bundled `samples/actor_playwright` and
+  `samples/actor_playwright_py` do). The Actor image must provide an X display; the Apify Playwright and
   Puppeteer base images do.
 - The view lives exactly as long as the run, survives a migration/reboot of the run, and is gone once the run
   ends. It composes with debug mode and the dev-folder bind mount.

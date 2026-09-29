@@ -72,7 +72,7 @@ apify login --token local-dev-token
 
 ## 3. Push and run your Actor
 
-No Actor yet? Create one with [`apify create`](https://docs.apify.com/cli/docs/quick-start), or use `sample_actor_ts` from this repository.
+No Actor yet? Create one with [`apify create`](https://docs.apify.com/cli/docs/quick-start), or use `samples/actor_ts` from this repository.
 
 1. Navigate to your Actor directory:
 

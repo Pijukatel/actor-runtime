@@ -30,11 +30,11 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
-const SAMPLE_ACTOR_DIR = join(REPO_ROOT, 'sample_actor_ts');
-const PYTHON_SAMPLE_ACTOR_DIR = join(REPO_ROOT, 'sample_actor_py');
+const SAMPLE_ACTOR_DIR = join(REPO_ROOT, 'samples', 'actor_ts');
+const PYTHON_SAMPLE_ACTOR_DIR = join(REPO_ROOT, 'samples', 'actor_py');
 const CONTAINER_NAME = 'actor-runtime-e2e-pay-per-event';
 const IMAGE_TAG = 'actor-runtime:e2e-pay-per-event';
-/** `sample_actor_ts/Dockerfile`'s and `sample_actor_py/Dockerfile`'s base images. */
+/** `samples/actor_ts/Dockerfile`'s and `samples/actor_py/Dockerfile`'s base images. */
 const SAMPLE_BASE_IMAGE = 'apify/actor-node:24';
 const PYTHON_SAMPLE_BASE_IMAGE = 'apify/actor-python:3.13';
 

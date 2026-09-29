@@ -161,7 +161,7 @@ apify api PUT /v2/actors/<actorId> --body '{"pricingInfos":[{"pricingModel":"PAY
 
 Both bundled samples already charge `page-scraped` per page and `crawl-finished` once at the end, and
 carry the matching pricing in `pricing.json` - including both synthetic events, so one run shows all
-four being charged: `apify api PUT /v2/actors/<actorId> --body "$(cat sample_actor_ts/pricing.json)"`
+four being charged: `apify api PUT /v2/actors/<actorId> --body "$(cat samples/actor_ts/pricing.json)"`
 prices one in a single call.
 
 From then on every run of the Actor is a pay-per-event run: the SDKs read `pricingInfo` and
@@ -230,9 +230,9 @@ curl "http://localhost:3333/actor-runtime/standby/<username>--<actor-name>/some/
 - A request that cannot be served says why: `standby-not-enabled`, `standby-run-finished` (the run
   crashed before its server came up - read its log), `standby-run-not-ready` (nothing listened on the port
   within 180 s).
-- `apify call` still starts an ordinary `API` run of the same Actor. `sample_actor_standby_ts` and
-  `sample_actor_standby_py` are complete Actor servers (JSON, request body, Server-Sent Events, websocket,
-  graceful shutdown) to start from; `sample_actor_standby_web` serves a web page and, in an ordinary run,
+- `apify call` still starts an ordinary `API` run of the same Actor. `samples/actor_standby_ts` and
+  `samples/actor_standby_py` are complete Actor servers (JSON, request body, Server-Sent Events, websocket,
+  graceful shutdown) to start from; `samples/actor_standby_web` serves a web page and, in an ordinary run,
   calls a standby Actor from its container. Multi-tenant Standby and Standby for tasks are not emulated.
 
 ## Test how an Actor handles a platform migration

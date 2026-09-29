@@ -1,6 +1,6 @@
 /**
  * TypeScript Actor Standby sample for actor-runtime: an HTTP server that the platform (or the runtime)
- * starts on demand and sends requests to. Mirrored endpoint for endpoint by `sample_actor_standby_py`.
+ * starts on demand and sends requests to. Mirrored endpoint for endpoint by `samples/actor_standby_py`.
  *
  *   GET  /                 what this server offers, and which run is answering
  *   GET  /hello?name=Ada   a greeting; pushes one item to the run's default dataset

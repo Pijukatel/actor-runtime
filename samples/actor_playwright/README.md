@@ -9,7 +9,7 @@ The one change from the template is `headless: false`: the browser draws on the 
 actor-runtime's **browser view** can show it. Watching changes nothing about the run.
 
 ```bash
-cd sample_actor_playwright
+cd samples/actor_playwright
 apify push
 apify api POST /actor-runtime/browser-view/<actorId> --body '{"enabled": true}'
 apify call --input '{"maxRequestsPerCrawl": 5}'

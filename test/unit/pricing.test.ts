@@ -315,7 +315,7 @@ describe('validatePricingInfosUpdate (the append-only history)', () => {
 describe('the pricing the bundled samples ship', () => {
 	// The README tells a developer to PUT these files at the Actor verbatim, so what the runtime would
 	// answer to that is worth knowing here rather than from a 400 at the terminal.
-	it.each(['sample_actor_ts', 'sample_actor_py'])(
+	it.each(['samples/actor_ts', 'samples/actor_py'])(
 		'%s/pricing.json is accepted and prices both synthetic events',
 		(sample) => {
 			const { pricingInfos } = JSON.parse(readFileSync(join(REPO_ROOT, sample, 'pricing.json'), 'utf8')) as {

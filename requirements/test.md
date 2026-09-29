@@ -25,7 +25,7 @@
   `CONTAINER_CLI` and `DOCKER_HOST`. CI runs every e2e file, browser view included, against Docker and
   against both the oldest and the newest supported Podman.
 - The sample Actors crawl a live site (`https://crawlee.dev/` by default), so the e2e suite also requires outbound network access from Actor containers. This is separate from the runtime's own offline capability (see the offline notes in `system.md` and `cli.md`).
-- CI must pre-pull the sample Actors' base images (`apify/actor-node:24`, `apify/actor-python:3.13`, and `python:3.11-slim` for `sample_actor_crawler`) before running the e2e suite, so push/call assertion timing is not dominated by first-time image pulls. The browser-view e2e test pre-pulls the two Playwright samples' base images itself.
+- CI must pre-pull the sample Actors' base images (`apify/actor-node:24`, `apify/actor-python:3.13`, and `python:3.11-slim` for `samples/actor_crawler`) before running the e2e suite, so push/call assertion timing is not dominated by first-time image pulls. The browser-view e2e test pre-pulls the two Playwright samples' base images itself.
 - Pre-pulling carries the same fallback the runtime's builds do (`actor-driver.md`); every other pull
   failure still fails the suite.
 
@@ -41,11 +41,11 @@ Test case must verify full Actor development flow:
 
 ## Browser view
 
-- For each Playwright sample Actor (`sample_actor_playwright`, `sample_actor_playwright_py`): push, turn browser view on, start a run
+- For each Playwright sample Actor (`samples/actor_playwright`, `samples/actor_playwright_py`): push, turn browser view on, start a run
 - Assert the run log names the viewer URL, the view is reachable while the run is going, the run finishes `SUCCEEDED` with an input-dependent `itemCount`, and the view is gone once the run has ended
 - With the toggle cleared, a plain `apify call` of the same Actor runs with no browser-view line in its log
 
 ## Actor Standby
 
 - Each standby sample, pushed: its requests share one `STANDBY` run, which ends `SUCCEEDED` once idle, and
-  the next request starts a new one; `sample_actor_standby_web` is also reachable from another Actor's run.
+  the next request starts a new one; `samples/actor_standby_web` is also reachable from another Actor's run.

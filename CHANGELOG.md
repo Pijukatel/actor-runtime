@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+<!-- git-cliff-unreleased-start -->
+## 0.1.1 - **not yet released**
+
+
+<!-- git-cliff-unreleased-end -->
 ## [0.1.0](https://github.com/apify/actor-runtime/releases/tag/v0.1.0) (2026-09-29)
 
 ### 🚀 Features

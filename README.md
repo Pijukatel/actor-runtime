@@ -123,7 +123,7 @@ console page has a **Migrate** button that does the same.
 ### Test pay-per-event pricing for free
 
 Give the Actor a pay-per-event pricing, and every run charges events as it would on the platform. No
-money is spent. The bundled `sample_actor_ts` and `sample_actor_py` charge events, and include the
+money is spent. The bundled `samples/actor_ts` and `samples/actor_py` charge events, and include the
 matching pricing in `pricing.json`:
 
 ```bash
@@ -156,7 +156,7 @@ An Actor with Standby enabled - `"usesStandbyMode": true` in `.actor/actor.json`
 through the API - is served over HTTP at its `standbyUrl`, on the API port:
 
 ```bash
-cd sample_actor_standby_ts     # or sample_actor_standby_py
+cd samples/actor_standby_ts     # or samples/actor_standby_py
 apify push
 curl "http://<username>--my-standby-actor-ts.localhost:3333/hello?name=Ada&token=<token>"
 ```
@@ -168,7 +168,7 @@ Actor works as on `*.apify.actor`. Clients that do not resolve `*.localhost` use
 
 The two samples are the same server in TypeScript and Python - JSON endpoints, a request body echo, a
 Server-Sent Events stream, a websocket and stats kept across runs; each README lists the calls.
-`sample_actor_standby_web` serves a web page with root-relative links, and in an ordinary run calls a
+`samples/actor_standby_web` serves a web page with root-relative links, and in an ordinary run calls a
 standby Actor from inside its container.
 
 Requests are handed to standby runs the runtime starts, scales by `desiredRequestsPerActorRun` /

@@ -1,5 +1,5 @@
 /**
- * One run with debug mode, a live dev folder and browser view all on. `sample_actor_playwright` is the
+ * One run with debug mode, a live dev folder and browser view all on. `samples/actor_playwright` is the
  * only sample that can carry all three - headful for the view, `CMD ["node", ...]` for debug mode.
  * Started via `apify api`, never `apify call`, which a paused run would block indefinitely.
  */
@@ -37,7 +37,7 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
-const SAMPLE_ACTOR_DIR = join(REPO_ROOT, 'sample_actor_playwright');
+const SAMPLE_ACTOR_DIR = join(REPO_ROOT, 'samples', 'actor_playwright');
 const CONTAINER_NAME = 'actor-runtime-e2e-all-modes';
 const IMAGE_TAG = 'actor-runtime:e2e-all-modes';
 

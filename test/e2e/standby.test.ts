@@ -2,7 +2,7 @@
  * Actor Standby end to end (`test.md`'s "Actor Standby"), for both standby samples: `apify push` enables
  * Standby from `.actor/actor.json`, requests to the Actor's standby URL are served by one standby run,
  * an idle run is wound down, and the next request starts a fresh one that sees the previous run's
- * totals. `sample_actor_standby_web` covers the two kinds of callers: an external client at the
+ * totals. `samples/actor_standby_web` covers the two kinds of callers: an external client at the
  * platform-shaped `*.localhost` standby URL, and another Actor's run calling from its container. The
  * requests themselves are plain HTTP and a websocket - the narrow exception `test.md` allows, since no
  * `apify` command sends one; every other assertion reads `apify` output.
@@ -127,7 +127,7 @@ describe('Actor Standby via apify-cli (requires Docker)', () => {
 		if (isolatedApifyHome) removeIsolatedApifyHome(isolatedApifyHome);
 	});
 
-	for (const sample of ['sample_actor_standby_ts', 'sample_actor_standby_py']) {
+	for (const sample of ['samples/actor_standby_ts', 'samples/actor_standby_py']) {
 		it(
 			`${sample}: push enables Standby; one STANDBY run serves every endpoint and is wound down once idle`,
 			async () => {
@@ -212,8 +212,8 @@ describe('Actor Standby via apify-cli (requires Docker)', () => {
 		);
 	}
 
-	describe('sample_actor_standby_web', () => {
-		const actorDir = join(REPO_ROOT, 'sample_actor_standby_web');
+	describe('samples/actor_standby_web', () => {
+		const actorDir = join(REPO_ROOT, 'samples', 'actor_standby_web');
 		let actorId: string;
 		let standbyUrl: string;
 

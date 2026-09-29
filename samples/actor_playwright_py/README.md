@@ -10,7 +10,7 @@ on the base image's Xvfb display, so actor-runtime's **browser view** can show i
 the run.
 
 ```bash
-cd sample_actor_playwright_py
+cd samples/actor_playwright_py
 apify push
 apify api POST /actor-runtime/browser-view/<actorId> --body '{"enabled": true}'
 apify call --input '{"max_requests_per_crawl": 5}'
