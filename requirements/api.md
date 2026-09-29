@@ -182,6 +182,12 @@
 - The console's own dev-folder form (`console.md`) does **not** go through this endpoint - it posts to a
   console-local, unauthenticated route on the console's own port - but the two surfaces accept and
   reject exactly the same inputs with the same outcomes.
+- **`GET /actor-runtime/live-dev-folder`** returns `{ "data": { "enabled": <bool> } }` - whether a
+  registered dev folder is mounted into runs at all (`actor-driver.md`). Off by default and after every
+  restart.
+- **`POST /actor-runtime/live-dev-folder`** with body `{ "enabled": <bool> }` sets it and responds like
+  `GET`. Authenticated like every route in this namespace. Any other body (not an object, a missing or
+  non-boolean `enabled`, any other key) is `400` `invalid-request`, with no state change.
 - **`POST /v2/actors/:actorId/runs?devFolder=false`** - runs from the built image alone, ignoring the
   registered dev folder for that one run only; the registration itself is unchanged. Any other value, or
   no parameter, means the default behaviour.

@@ -34,6 +34,7 @@ import {
 	apifyEnv,
 	createIsolatedApifyHome,
 	loginApifyCli,
+	enableLiveDevFolder,
 	removeIsolatedApifyHome,
 	type ApiEnvelope,
 	type CallResult,
@@ -94,6 +95,7 @@ describe('local dev-folder bind mount: edit-compile-call loop with no rebuild (r
 
 			isolatedApifyHome = createIsolatedApifyHome();
 			loginApifyCli(REPO_ROOT, isolatedApifyHome);
+			enableLiveDevFolder(REPO_ROOT, isolatedApifyHome);
 
 			// A throwaway copy of the sample Actor - this suite edits `src/main.ts` and runs local builds
 			// against it, and neither must ever touch the committed `samples/actor_ts` tree. `node_modules`/

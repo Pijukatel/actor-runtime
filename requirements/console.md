@@ -121,6 +121,9 @@
 - The same form also holds a "Use Apify Proxy" checkbox, `apifyProxyEnabled`, on by default and back on
   after every restart. Turned off, runs get an empty `APIFY_PROXY_PASSWORD` and `/users/me` omits `proxy`
   (`actor-driver.md`); like the fallback toggles, an unchecked box on submit turns it off.
+- The same form also holds a "Use live dev folder" checkbox, `liveDevFolderEnabled`, off by default and
+  back off after every restart - the same state as `/actor-runtime/live-dev-folder` (`api.md`). Only
+  while it is on do runs mount a registered dev folder (`actor-driver.md`).
 
 ## Actor Standby (Actor detail view)
 

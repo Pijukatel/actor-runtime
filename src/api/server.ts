@@ -19,6 +19,7 @@ import { mountDebugMode } from './routes/debug-mode.js';
 import { mountBrowserView } from './routes/browser-view.js';
 import { mountMigrate } from './routes/migrate.js';
 import { mountApiFallback } from './routes/api-fallback.js';
+import { mountLiveDevFolder } from './routes/live-dev-folder.js';
 import { mountSkill } from './routes/skill.js';
 import { standbyProxy } from './standby-proxy.js';
 import { attemptFallback, type LocalError } from '../services/api-fallback.js';
@@ -67,6 +68,7 @@ export function createApiServer(deps: ApiServerDeps): Express {
 	mountBrowserView(actorRuntime);
 	mountMigrate(actorRuntime, deps);
 	mountApiFallback(actorRuntime);
+	mountLiveDevFolder(actorRuntime);
 	app.use('/actor-runtime', actorRuntime);
 	// Also served at `/v2/actor-runtime/*` - the *same* router instance, no duplicated route logic - solely
 	// because `apify api`'s own URL-building hardcodes a `/v2`-suffixed base (`${baseUrl}/${endpoint}`,

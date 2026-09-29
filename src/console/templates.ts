@@ -407,11 +407,15 @@ export function apiFallbackWarning(): string {
 	return '<p class="warning">Enabling either option below forwards the caller\'s own Apify token to the upstream API shown above.</p>';
 }
 
-/** The `/settings` page's one form (`console.md`): three checkboxes, always submitting all
+/** The `/settings` page's one form (`console.md`): four checkboxes, always submitting all
  * checkboxes' current state together - an unchecked box is simply absent from the submitted body, which
  * the POST route (`console/server.ts`) reads as `false` for that field, never as "leave unchanged" (the
  * console form's own single-submit contract, unlike the API route's genuinely partial `POST`). */
-export function settingsForm(state: ApiFallbackState, apifyProxyEnabled: boolean): string {
+export function settingsForm(
+	state: ApiFallbackState,
+	apifyProxyEnabled: boolean,
+	liveDevFolderEnabled: boolean,
+): string {
 	const checkedAttr = (enabled: boolean) => (enabled ? ' checked' : '');
 	return (
 		'<form method="post" action="/settings" data-autosave>' +
@@ -424,6 +428,9 @@ export function settingsForm(state: ApiFallbackState, apifyProxyEnabled: boolean
 		'<p><label><input type="checkbox" name="apifyProxyEnabled"' +
 		checkedAttr(apifyProxyEnabled) +
 		'> Use Apify Proxy (gives Actors the real proxy password; their proxy traffic is billed to your Apify account)</label></p>' +
+		'<p><label><input type="checkbox" name="liveDevFolderEnabled"' +
+		checkedAttr(liveDevFolderEnabled) +
+		"> Use live dev folder (runs mount the Actor's registered local dev folder over the built image)</label></p>" +
 		'</form>'
 	);
 }

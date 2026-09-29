@@ -70,6 +70,7 @@ import {
 import { CONSOLE_CSS } from './styles.js';
 import { getApiFallbackState, setApiFallbackState } from '../services/api-fallback.js';
 import { isApifyProxyEnabled, setApifyProxyEnabled } from '../services/apify-proxy.js';
+import { isLiveDevFolderEnabled, setLiveDevFolderEnabled } from '../services/live-dev-folder.js';
 import { upstreamApiBaseUrl } from '../services/identity-resolution.js';
 import type { Driver } from '../driver/types.js';
 
@@ -797,9 +798,10 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				['fallbackNotFoundEnabled', state.fallbackNotFoundEnabled],
 				['upstreamBaseUrl', upstreamApiBaseUrl()],
 				['apifyProxyEnabled', isApifyProxyEnabled()],
+				['liveDevFolderEnabled', isLiveDevFolderEnabled()],
 			]) +
 			'<h2>Change settings</h2>' +
-			settingsForm(state, isApifyProxyEnabled()) +
+			settingsForm(state, isApifyProxyEnabled(), isLiveDevFolderEnabled()) +
 			'</section>';
 		res.send(layout('Settings', body));
 	});
@@ -820,6 +822,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			fallbackNotFoundEnabled: body?.fallbackNotFoundEnabled === 'on',
 		});
 		setApifyProxyEnabled(body?.apifyProxyEnabled === 'on');
+		setLiveDevFolderEnabled(body?.liveDevFolderEnabled === 'on');
 		res.redirect('/settings');
 	});
 

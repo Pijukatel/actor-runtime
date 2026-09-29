@@ -12,6 +12,7 @@ import axios from 'axios';
 import { createConsoleServer } from '../../src/console/server.js';
 import { setApiFallbackState } from '../../src/services/api-fallback.js';
 import { isApifyProxyEnabled, setApifyProxyEnabled } from '../../src/services/apify-proxy.js';
+import { isLiveDevFolderEnabled } from '../../src/services/live-dev-folder.js';
 import { startTestServer, type TestServerHandle } from './helpers/test-server.js';
 
 describe('console: /settings page and the fallback nav indicator', () => {
@@ -70,11 +71,12 @@ describe('console: /settings page and the fallback nav indicator', () => {
 		expect(after.data).toMatch(/<dt>fallbackUnimplementedEnabled<\/dt>\s*<dd>true<\/dd>/);
 	});
 
-	it('renders one autosaving form with three checkboxes', async () => {
+	it('renders one autosaving form with four checkboxes', async () => {
 		const res = await axios.get(`${consoleBaseUrl}/settings`);
 		expect(res.data).toContain('name="fallbackUnimplementedEnabled"');
 		expect(res.data).toContain('name="fallbackNotFoundEnabled"');
 		expect(res.data).toContain('name="apifyProxyEnabled" checked');
+		expect(res.data).toContain('name="liveDevFolderEnabled">');
 		expect((res.data.match(/<form/g) ?? []).length).toBe(1);
 		expect(res.data).toContain('<form method="post" action="/settings" data-autosave>');
 		expect(res.data).not.toContain('<button type="submit">');
@@ -208,6 +210,30 @@ describe('console: /settings page and the fallback nav indicator', () => {
 		await post('apifyProxyEnabled=on');
 		expect(isApifyProxyEnabled()).toBe(true);
 		setApifyProxyEnabled(true);
+	});
+
+	it('Use live dev folder is off by default and follows its checkbox, visible through the API too', async () => {
+		expect(isLiveDevFolderEnabled()).toBe(false);
+		const page = await axios.get(`${consoleBaseUrl}/settings`);
+		expect(page.data).toMatch(/<dt>liveDevFolderEnabled<\/dt>\s*<dd>false<\/dd>/);
+
+		const post = (body: string) =>
+			axios.post(`${consoleBaseUrl}/settings`, body, {
+				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+				maxRedirects: 0,
+				validateStatus: () => true,
+			});
+		await post('apifyProxyEnabled=on&liveDevFolderEnabled=on');
+		expect(isLiveDevFolderEnabled()).toBe(true);
+		const on = await axios.get(`${consoleBaseUrl}/settings`);
+		expect(on.data).toContain('name="liveDevFolderEnabled" checked');
+		const apiState = await axios.get(`${server.baseUrl}/actor-runtime/live-dev-folder`, {
+			headers: { Authorization: `Bearer ${server.token}` },
+		});
+		expect(apiState.data.data).toEqual({ enabled: true });
+
+		await post('apifyProxyEnabled=on');
+		expect(isLiveDevFolderEnabled()).toBe(false);
 	});
 
 	describe('the nav indicator, on every page, for all four toggle combinations', () => {

@@ -9,7 +9,7 @@
  */
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import axios from 'axios';
 
 import { startTestServer, type TestServerHandle } from './helpers/test-server.js';
@@ -18,6 +18,7 @@ import { getRegistries } from '../../src/storage/registries.js';
 import { RUNTIME_LOG_PREFIX } from '../../src/runtime-log.js';
 import { generateId } from '../../src/storage/ids.js';
 import { recordTaggedBuild, updateActor } from '../../src/services/actors.js';
+import { setLiveDevFolderEnabled } from '../../src/services/live-dev-folder.js';
 import type { ActorRecord, BuildRecord } from '../../src/storage/entities.js';
 import type { Driver, DevFolderMount, DevFolderProbeOutcome } from '../../src/driver/types.js';
 
@@ -822,6 +823,10 @@ function devMountCapturingDriver(): {
 describe('run-start devMount derivation (actor fields -> RunContext.devMount, services/runs.ts)', () => {
 	let server: TestServerHandle;
 
+	beforeEach(() => {
+		setLiveDevFolderEnabled(true);
+	});
+
 	afterEach(async () => {
 		await server.close();
 	});
@@ -977,6 +982,10 @@ async function startRunRaw(server: TestServerHandle, actorId: string, query: str
 describe('per-run opt-out: POST /v2/actors/:actorId/runs?devFolder=false (services/runs.ts)', () => {
 	let server: TestServerHandle;
 
+	beforeEach(() => {
+		setLiveDevFolderEnabled(true);
+	});
+
 	afterEach(async () => {
 		await server.close();
 	});
@@ -1057,4 +1066,104 @@ describe('per-run opt-out: POST /v2/actors/:actorId/runs?devFolder=false (servic
 		expect(capturing.getCapturedDevMount()).toBeUndefined();
 		expect(await server.client.log(run.id).get()).not.toContain('Skipping the registered local dev folder');
 	});
+});
+
+async function liveDevFolderRequest(server: TestServerHandle, method: 'get' | 'post', body?: string) {
+	return axios.request({
+		method,
+		url: `${server.baseUrl}/actor-runtime/live-dev-folder`,
+		data: body,
+		headers: { Authorization: `Bearer ${server.token}`, 'Content-Type': 'application/json' },
+		validateStatus: () => true,
+	});
+}
+
+describe('the live dev folder setting (off by default)', () => {
+	let server: TestServerHandle;
+
+	afterEach(async () => {
+		await server.close();
+	});
+
+	it('while off, a registered folder is neither mounted nor mentioned in the run log', async () => {
+		const capturing = devMountCapturingDriver();
+		server = await startTestServer(capturing.driver);
+		const actor = await server.client.actors().create({ name: 'live-dev-folder-off-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
+		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+
+		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(run.status).toBe('SUCCEEDED');
+		expect(capturing.getCapturedDevMount()).toBeUndefined();
+		expect(await server.client.log(run.id).get()).not.toMatch(/dev folder/i);
+	});
+
+	it('while off, a registered folder on a build with no working directory logs nothing, and neither does devFolder=false', async () => {
+		const capturing = devMountCapturingDriver();
+		server = await startTestServer(capturing.driver);
+		const actor = await server.client.actors().create({ name: 'live-dev-folder-off-no-workdir-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest');
+		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+
+		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(await server.client.log(run.id).get()).not.toMatch(/dev folder/i);
+
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
+		const optedOut = await startRunRaw(server, actor.id, 'devFolder=false');
+		expect(await server.client.log(optedOut.id).get()).not.toMatch(/dev folder/i);
+	});
+
+	it('GET reports it off by default; POST {"enabled": true} turns mounting on for the next run', async () => {
+		const capturing = devMountCapturingDriver();
+		server = await startTestServer(capturing.driver);
+		const actor = await server.client.actors().create({ name: 'live-dev-folder-toggle-actor' });
+		await seedSucceededBuild((await getRegistries().actors.get(actor.id))!, 'latest', '/usr/src/app');
+		await updateActor(actor.id, (current) => ({ ...current, localDevFolder: '/abs/dev/src' }));
+
+		const initial = await liveDevFolderRequest(server, 'get');
+		expect(initial.status).toBe(200);
+		expect(initial.data.data).toEqual({ enabled: false });
+
+		const enabled = await liveDevFolderRequest(server, 'post', JSON.stringify({ enabled: true }));
+		expect(enabled.status).toBe(200);
+		expect(enabled.data.data).toEqual({ enabled: true });
+		expect((await liveDevFolderRequest(server, 'get')).data.data).toEqual({ enabled: true });
+
+		await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(capturing.getCapturedDevMount()).toEqual({
+			localDevFolder: '/abs/dev/src',
+			imageWorkingDirectory: '/usr/src/app',
+		});
+
+		const disabled = await liveDevFolderRequest(server, 'post', JSON.stringify({ enabled: false }));
+		expect(disabled.data.data).toEqual({ enabled: false });
+	});
+
+	it('is also served at /v2/actor-runtime/live-dev-folder and requires authentication', async () => {
+		server = await startTestServer(devFolderDriver({ ok: true }));
+		const viaAlias = await axios.get(`${server.baseUrl}/v2/actor-runtime/live-dev-folder`, {
+			headers: { Authorization: `Bearer ${server.token}` },
+			validateStatus: () => true,
+		});
+		expect(viaAlias.status).toBe(200);
+		expect(viaAlias.data.data).toEqual({ enabled: false });
+
+		const anonymous = await axios.post(`${server.baseUrl}/actor-runtime/live-dev-folder`, '{"enabled":true}', {
+			headers: { 'Content-Type': 'application/json' },
+			validateStatus: () => true,
+		});
+		expect(anonymous.status).toBe(401);
+		expect((await liveDevFolderRequest(server, 'get')).data.data).toEqual({ enabled: false });
+	});
+
+	it.each(['true', '[]', 'null', '{}', '{"enabled":"yes"}', '{"enabled":true,"extra":1}'])(
+		'rejects the malformed body %s with 400 invalid-request and no state change',
+		async (body) => {
+			server = await startTestServer(devFolderDriver({ ok: true }));
+			const res = await liveDevFolderRequest(server, 'post', body);
+			expect(res.status).toBe(400);
+			expect(res.data.error.type).toBe('invalid-request');
+			expect((await liveDevFolderRequest(server, 'get')).data.data).toEqual({ enabled: false });
+		},
+	);
 });

@@ -28,6 +28,7 @@ import {
 	apifyEnv,
 	createIsolatedApifyHome,
 	loginApifyCli,
+	enableLiveDevFolder,
 	removeIsolatedApifyHome,
 	type ApiEnvelope,
 	type CallResult,
@@ -131,6 +132,7 @@ describe('non-standard Actors: unusual base image, custom entry point, unusual w
 
 			isolatedApifyHome = createIsolatedApifyHome();
 			loginApifyCli(REPO_ROOT, isolatedApifyHome);
+			enableLiveDevFolder(REPO_ROOT, isolatedApifyHome);
 		},
 		10 * 60 * 1000,
 	);

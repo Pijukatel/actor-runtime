@@ -29,6 +29,7 @@ import {
 	apifyEnv,
 	createIsolatedApifyHome,
 	loginApifyCli,
+	enableLiveDevFolder,
 	removeIsolatedApifyHome,
 	type ApiEnvelope,
 	type DatasetInfoResult,
@@ -161,6 +162,7 @@ describe('all advanced modes at once: debug + live dev folder + browser view on 
 
 			isolatedApifyHome = createIsolatedApifyHome();
 			loginApifyCli(REPO_ROOT, isolatedApifyHome);
+			enableLiveDevFolder(REPO_ROOT, isolatedApifyHome);
 
 			actorDir = mkdtempSync(join(tmpdir(), 'actor-runtime-e2e-all-modes-actor-'));
 			const excluded = [join(SAMPLE_ACTOR_DIR, 'node_modules'), join(SAMPLE_ACTOR_DIR, 'dist')];
