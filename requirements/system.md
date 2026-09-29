@@ -19,24 +19,26 @@
 - The system is isolated environment that is started by running the docker container.
 - The system user interface is accessible on localhost with specific ports for console frontend and API.
 - The user interacts with the system through the Apify cli.
-- On startup the container prints a banner naming the API port (3333) and the console port (3000),
+- On startup the container prints a banner naming the API port and the console port,
   plus a warning if the host's Docker socket could not be reached - builds and runs then fail fast
   with a clear status message, while every other endpoint (storages, actor/build/run records,
   console) still works.
-- Both ports are fixed and not configurable.
-- Port 3333 also serves the per-run events websocket and standby Actors (`api.md`); no additional port is
+- The API port (default 3333) and console port (default 3000) are set by `ACTOR_RUNTIME_API_PORT` and
+  `ACTOR_RUNTIME_CONSOLE_PORT`, published under the same numbers on the host. Every URL the runtime shows
+  uses them.
+- The API port also serves the per-run events websocket and standby Actors (`api.md`); no additional port is
   published for either.
 - **Debug mode is the one exception to "no other Actor container port is ever published"**
   (`actor-driver.md`'s "Debug mode" section): when debug mode is on for an Actor, that Actor's runs get a
   port published on the host, bound to `127.0.0.1` (`5678` Python / `9229` Node by default, per-Actor
   overridable) - the runtime's own two ports above are unaffected, and no port is published for an Actor
   that never turned debug mode on.
-- Browser view (`actor-driver.md`) publishes no port on the host; the view is served on the console's port 3000.
+- Browser view (`actor-driver.md`) publishes no port on the host; the view is served on the console's port.
 - Required `docker run` flags: mount the host's Docker-Engine-API socket read-write
   (`-v /var/run/docker.sock:/var/run/docker.sock`) so the runtime can build and run Actor containers,
   and mount a persistent data directory (`-v <host-dir>:/data`, e.g. `-v "$(pwd)/data:/data"`) so
   storages survive a restart and are easy to inspect from the host; the directory must exist before the
-  runtime starts. Publish both fixed ports
+  runtime starts. Publish both ports
   (`-p 3333:3333 -p 3000:3000`). The canonical start command is:
 
     ```bash

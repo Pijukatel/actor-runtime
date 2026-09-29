@@ -165,7 +165,7 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 
 # Networking
 
-- Every Actor container reaches the runtime's API at `http://apify-api:3333`, whatever the host's own
+- Every Actor container reaches the runtime's API at `http://apify-api:<API port>`, whatever the host's own
   networking, whichever supported engine runs the containers, and however the runtime itself was started
   (as a container or not). The runtime provides the `apify-local` network with the DNS alias `apify-api`
   for this; when it has to reach the same goal another way, it says so at startup.

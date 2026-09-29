@@ -96,6 +96,7 @@ COPY --from=browser-viewer-payload /payload/version.txt /opt/apify-browser-viewe
 VOLUME ["/data"]
 ENV ACTOR_RUNTIME_DATA_DIR=/data
 
+# Defaults; ACTOR_RUNTIME_API_PORT / ACTOR_RUNTIME_CONSOLE_PORT move them.
 EXPOSE 3333 3000
 
 CMD ["node", "dist/index.js"]

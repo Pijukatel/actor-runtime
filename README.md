@@ -22,6 +22,8 @@ The console is at [http://localhost:3000](http://localhost:3000). The full walkt
 Skill: `apify runtime skill` prints it, and `apify runtime skill --install` installs it for your coding
 agent.
 
+Port 3333 or 3000 already taken? `apify runtime start --api-port 4333 --console-port 4000` moves them.
+
 If you are not logged in, any non-empty token works (`apify login --token local-dev-token`).
 
 In build and run logs, everything the runtime itself says opens with a blue `[actor-runtime]` prefix.
@@ -188,8 +190,10 @@ podman run --rm -p 3333:3333 -p 3000:3000 \
 - For rootful Podman, mount `/run/podman/podman.sock` and run with `sudo`. For rootless Docker, mount
   `$XDG_RUNTIME_DIR/docker.sock`. To mount the socket at another path, also set
   `-e DOCKER_HOST=unix:///that/path`.
-- Podman 3.4 (Ubuntu 22.04's stock package) and newer are supported. Keep `-p 3333:3333` published on
-  all interfaces: under Podman 3.x and rootless Podman, Actors reach the API through it.
+- To use other ports, set `-e ACTOR_RUNTIME_API_PORT=4333 -e ACTOR_RUNTIME_CONSOLE_PORT=4000` and publish
+  the same numbers on the host (`-p 4333:4333 -p 4000:4000`).
+- Podman 3.4 (Ubuntu 22.04's stock package) and newer are supported. Keep the API port published on
+  all interfaces (`-p 3333:3333` by default): under Podman 3.x and rootless Podman, Actors reach the API through it.
 - Podman does not create a missing bind-mount directory, hence `mkdir -p data`. `apify runtime start`
   creates its data directory itself.
 - Short image names in an Actor's `FROM` line (`apify/actor-node:20`) resolve to Docker Hub, as on the
