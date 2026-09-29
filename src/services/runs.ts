@@ -5,6 +5,7 @@ import { getRegistries } from '../storage/registries.js';
 import { createStorage } from './storages.js';
 import { openKeyValueStore } from '../storage/open.js';
 import { DebugPortInUseError, type BrowserViewerHandle, type Driver } from '../driver/types.js';
+import { REAL_APIFY_PROXY_WARNING } from './apify-proxy.js';
 import { appendLog, appendRuntimeLog, flushLog, markLogTerminal } from './logs.js';
 import { markEventsTerminal, publishAborting, publishPersistState, publishSystemInfo } from './events-channel.js';
 import { clearRunRestartState, consumeRunRestart } from './migrations.js';
@@ -280,6 +281,7 @@ export async function startRun(
 	if (memoryWarning) appendRuntimeLog(record.id, memoryWarning);
 	const startCharge = actorStartChargeMessage(record);
 	if (startCharge) appendRuntimeLog(record.id, startCharge);
+	if (options.proxyPassword) appendRuntimeLog(record.id, REAL_APIFY_PROXY_WARNING);
 
 	void runInBackground(driver, actor, record, options).catch(async (error: unknown) => {
 		// Every *expected* failure mode inside `runInBackground` is already caught internally and mapped

@@ -169,7 +169,12 @@ Single-tenant only - see `requirements/actor-driver.md`'s "Actor Standby".
 
 Set `APIFY_PROXY_PASSWORD` in the runtime container's environment
 (`docker run -e APIFY_PROXY_PASSWORD=...`) to pass it into every Actor container. If it is unset, Actor
-containers don't get the variable at all.
+containers get the proxy password of the real Apify account a token belongs to, when known, or no
+variable at all.
+
+Proxy traffic through the real Apify Proxy is billed to your Apify account, so every run that gets a
+proxy password logs a warning. Uncheck "Use Apify Proxy" on the console's Settings page to stop handing
+the password to Actors (on by default, back on after a restart).
 
 ## Running with Podman instead of Docker
 

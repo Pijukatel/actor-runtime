@@ -11,6 +11,7 @@ import axios from 'axios';
 
 import { createConsoleServer } from '../../src/console/server.js';
 import { setApiFallbackState } from '../../src/services/api-fallback.js';
+import { isApifyProxyEnabled, setApifyProxyEnabled } from '../../src/services/apify-proxy.js';
 import { startTestServer, type TestServerHandle } from './helpers/test-server.js';
 
 describe('console: /settings page and the fallback nav indicator', () => {
@@ -69,11 +70,12 @@ describe('console: /settings page and the fallback nav indicator', () => {
 		expect(after.data).toMatch(/<dt>fallbackUnimplementedEnabled<\/dt>\s*<dd>true<\/dd>/);
 	});
 
-	it('renders one form with two checkboxes and a single submit', async () => {
+	it('renders one form with three checkboxes and a single submit', async () => {
 		const res = await axios.get(`${consoleBaseUrl}/settings`);
 		expect(res.data).toContain('<form method="post" action="/settings">');
 		expect(res.data).toContain('name="fallbackUnimplementedEnabled"');
 		expect(res.data).toContain('name="fallbackNotFoundEnabled"');
+		expect(res.data).toContain('name="apifyProxyEnabled" checked');
 		expect((res.data.match(/<form/g) ?? []).length).toBe(1);
 		expect((res.data.match(/<button type="submit">/g) ?? []).length).toBe(1);
 	});
@@ -184,6 +186,28 @@ describe('console: /settings page and the fallback nav indicator', () => {
 			fallbackNotFoundEnabled: false,
 			upstreamBaseUrl: 'https://api.apify.com',
 		});
+	});
+
+	it('Use Apify Proxy is on by default and follows its checkbox like the fallback toggles', async () => {
+		expect(isApifyProxyEnabled()).toBe(true);
+		const page = await axios.get(`${consoleBaseUrl}/settings`);
+		expect(page.data).toMatch(/<dt>apifyProxyEnabled<\/dt>\s*<dd>true<\/dd>/);
+
+		const post = (body: string) =>
+			axios.post(`${consoleBaseUrl}/settings`, body, {
+				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+				maxRedirects: 0,
+				validateStatus: () => true,
+			});
+		await post('fallbackNotFoundEnabled=on');
+		expect(isApifyProxyEnabled()).toBe(false);
+		const off = await axios.get(`${consoleBaseUrl}/settings`);
+		expect(off.data).toMatch(/<dt>apifyProxyEnabled<\/dt>\s*<dd>false<\/dd>/);
+		expect(off.data).not.toContain('name="apifyProxyEnabled" checked');
+
+		await post('apifyProxyEnabled=on');
+		expect(isApifyProxyEnabled()).toBe(true);
+		setApifyProxyEnabled(true);
 	});
 
 	describe('the nav indicator, on every page, for all four toggle combinations', () => {
