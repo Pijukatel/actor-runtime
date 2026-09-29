@@ -19,8 +19,10 @@ export function resetApifyProxyEnabledForTests(): void {
 	enabled = true;
 }
 
-/** Written once per run whose container gets a proxy password: from then on its proxy traffic is real and
- * billed, which is easy to miss in a runtime that otherwise keeps everything local. */
+/** Written once per run whose container gets a proxy password: whether the Actor then uses the real
+ * proxy is up to its code, and any such traffic is billed - easy to miss in a runtime that otherwise
+ * keeps everything local. */
 export const REAL_APIFY_PROXY_WARNING =
-	'WARNING: This run uses the real Apify Proxy (APIFY_PROXY_PASSWORD is set), so its proxy traffic is ' +
-	'billed to your Apify account. Turn off "Use Apify Proxy" on the console\'s Settings page to prevent this.';
+	'WARNING: This run was given a real Apify Proxy password (APIFY_PROXY_PASSWORD), so the Actor can use ' +
+	'the real Apify Proxy, billed to your Apify account. To disable it, turn off "Use Apify Proxy" on the ' +
+	"console's Settings page.";

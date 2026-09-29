@@ -110,6 +110,7 @@ export interface StartRunOptions {
 	origin?: 'API' | 'STANDBY';
 	/** The Actor's standby URL, given to every run as `ACTOR_STANDBY_URL`, as on the platform. */
 	standbyUrl?: string;
+	/** `''` sets `APIFY_PROXY_PASSWORD` explicitly empty (the Apify Proxy setting turned off). */
 	proxyPassword?: string;
 	apiBaseUrl: string;
 	token: string;
@@ -193,7 +194,7 @@ function buildEnv(
 		ACTOR_WEB_SERVER_PORT: containerServerPort,
 	};
 	if (options.standbyUrl) env.ACTOR_STANDBY_URL = options.standbyUrl;
-	if (options.proxyPassword) env.APIFY_PROXY_PASSWORD = options.proxyPassword;
+	if (options.proxyPassword !== undefined) env.APIFY_PROXY_PASSWORD = options.proxyPassword;
 	// Deliberately not accompanied by `APIFY_ACTOR_PRICING_INFO`/`APIFY_CHARGED_ACTOR_EVENT_COUNTS`: with
 	// both set the SDKs skip their fetch of the run object, and a container restarted by a migration would
 	// then read charge counts frozen at run start.

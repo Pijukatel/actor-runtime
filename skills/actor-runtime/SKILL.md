@@ -83,9 +83,9 @@ valid: Field input.maxPages must be >= 1`); no run is created and no container s
 - Two local differences: Apify Proxy groups are not checked (any `apifyProxyGroups` selection is
   accepted), and encrypted secret input fields are not supported.
 - Apify Proxy is **real**: when a proxy password is known (the runtime's `APIFY_PROXY_PASSWORD`, or the
-  real account behind the token), runs get it, their proxy traffic is billed to that Apify account, and
-  the run log carries a warning saying so. Unchecking "Use Apify Proxy" on the console's Settings page
-  (on by default) stops handing the password to Actors.
+  real account behind the token), runs get it, so the Actor can use the real proxy, billed to that Apify
+  account; the run log carries a warning saying so. Unchecking "Use Apify Proxy" on the console's
+  Settings page (on by default) sets `APIFY_PROXY_PASSWORD` to an empty string instead.
 
 ## Run memory
 

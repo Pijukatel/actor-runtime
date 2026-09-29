@@ -150,7 +150,7 @@ describe('actor version envVars are applied to the run container env', () => {
 		}
 	});
 
-	it('APIFY_PROXY_PASSWORD is absent, with no warning, when Use Apify Proxy is turned off - even with a password configured', async () => {
+	it('APIFY_PROXY_PASSWORD is empty, with no warning, when Use Apify Proxy is turned off - even with a password configured', async () => {
 		const previous = process.env.APIFY_PROXY_PASSWORD;
 		process.env.APIFY_PROXY_PASSWORD = 'super-secret-proxy-password';
 		setApifyProxyEnabled(false);
@@ -172,9 +172,9 @@ describe('actor version envVars are applied to the run container env', () => {
 			const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 			expect(run.status).toBe('SUCCEEDED');
 
-			expect(Object.hasOwn(getCapturedEnv()!, 'APIFY_PROXY_PASSWORD')).toBe(false);
+			expect(getCapturedEnv()?.APIFY_PROXY_PASSWORD).toBe('');
 			expect((await server.client.log(run.id).get()) ?? '').not.toContain(REAL_APIFY_PROXY_WARNING);
-			// An SDK without the env var asks `/users/me` for the password instead.
+			// The SDKs treat an empty `APIFY_PROXY_PASSWORD` as unset and ask `/users/me` for one instead.
 			const me = await server.client.user('me').get();
 			expect((me as unknown as { proxy?: unknown }).proxy).toBeUndefined();
 		} finally {

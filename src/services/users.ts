@@ -119,10 +119,11 @@ export async function getUserById(userId: string): Promise<UserRecord | null> {
  * always wins when set; otherwise the password harvested for `user` at creation time, if any; otherwise
  * `undefined`. Never a placeholder - callers must omit the field/env var entirely rather than invent a
  * value, exactly like `APIFY_PROXY_PASSWORD` already does for run containers (`actor-driver.md`).
- * Always `undefined` while the console's "Use Apify Proxy" setting is off (`services/apify-proxy.ts`).
+ * An empty string while the console's "Use Apify Proxy" setting is off (`services/apify-proxy.ts`):
+ * run containers then get it explicitly empty, and `/users/me` omits `proxy` as for no password at all.
  */
 export function resolveProxyPassword(user: UserRecord): string | undefined {
-	if (!isApifyProxyEnabled()) return undefined;
+	if (!isApifyProxyEnabled()) return '';
 	return process.env.APIFY_PROXY_PASSWORD ?? user.proxyPassword;
 }
 

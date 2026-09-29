@@ -172,9 +172,9 @@ Set `APIFY_PROXY_PASSWORD` in the runtime container's environment
 containers get the proxy password of the real Apify account a token belongs to, when known, or no
 variable at all.
 
-Proxy traffic through the real Apify Proxy is billed to your Apify account, so every run that gets a
-proxy password logs a warning. Uncheck "Use Apify Proxy" on the console's Settings page to stop handing
-the password to Actors (on by default, back on after a restart).
+With the password, an Actor can use the real Apify Proxy, billed to your Apify account, so every run
+that gets one logs a warning. Uncheck "Use Apify Proxy" on the console's Settings page to give Actors an
+empty `APIFY_PROXY_PASSWORD` instead (on by default, back on after a restart).
 
 ## Running with Podman instead of Docker
 

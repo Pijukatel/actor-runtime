@@ -272,10 +272,10 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 - `APIFY_PROXY_PASSWORD` — set when a value is known, from either of two sources in precedence order:
   (1) `APIFY_PROXY_PASSWORD` set in the runtime's own environment (README.md's "Apify Proxy" section) —
   always wins when set; otherwise (2) the proxy password obtained for the run owner's own account during
-  User bootstrap (`cli.md`). If neither source has a value, or the console's "Use Apify Proxy" setting
-  is off (`console.md`), the key is absent entirely — never a placeholder. A run that gets it has one
-  warning line in its log saying its proxy traffic uses the real Apify Proxy and is billed to the Apify
-  account.
+  User bootstrap (`cli.md`). If neither source has a value, the key is absent entirely — never a
+  placeholder. With the console's "Use Apify Proxy" setting off (`console.md`), it is set to an empty
+  string. A run given a password has one warning line in its log saying the Actor can use the real
+  Apify Proxy, billed to the Apify account, and that the Settings page can disable it.
 - `ACTOR_EVENTS_WEBSOCKET_URL` / `APIFY_ACTOR_EVENTS_WS_URL` — the run's own events channel
   (`api.md`), carrying no credential.
 - `ACTOR_MEMORY_MBYTES` / `APIFY_MEMORY_MBYTES` — the run's requested `memoryMbytes`.
