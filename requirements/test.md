@@ -49,3 +49,15 @@ Test case must verify full Actor development flow:
 
 - Each standby sample, pushed: its requests share one `STANDBY` run, which ends `SUCCEEDED` once idle, and
   the next request starts a new one; `samples/actor_standby_web` is also reachable from another Actor's run.
+
+## Monorepo Actors
+
+- Both Actors of `samples/actor_monorepo` share a Dockerfile, an input schema and a package outside their
+  own folders: `apify push` from each Actor's folder builds it from the monorepo's Docker context, the
+  build log names the shared Dockerfile and schema, and `apify call` runs it with the shared package and
+  its own `ACTOR_PATH_IN_DOCKER_CONTEXT`, asserted from the dataset items.
+- The shared input schema supplies the defaults and rejects an invalid input.
+- Monorepo support is not in a published `apify-cli` yet, so this file runs with the CLI named by
+  `ACTOR_RUNTIME_E2E_APIFY_CLI` (a built `dist/apify.js`) and is not in CI until it is.
+- `ACTOR_RUNTIME_E2E_IMAGE` names an already built runtime image to test instead of building one, for a
+  machine whose container builds cannot reach the registries the runtime's Dockerfile needs.

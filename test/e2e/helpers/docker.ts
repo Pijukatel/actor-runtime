@@ -37,7 +37,16 @@ export function isDockerAvailable(): boolean {
 	}
 }
 
+/** Set to an already built runtime image to test that instead of building one from this checkout - for
+ * a machine whose container builds cannot reach the package registries the runtime's Dockerfile needs. */
+const PREBUILT_RUNTIME_IMAGE_ENV_VAR = 'ACTOR_RUNTIME_E2E_IMAGE';
+
 export function buildRuntimeImage(repoRoot: string, tag: string): void {
+	const prebuilt = process.env[PREBUILT_RUNTIME_IMAGE_ENV_VAR];
+	if (prebuilt) {
+		execFileSync(CONTAINER_CLI, ['tag', prebuilt, tag], { stdio: 'inherit' });
+		return;
+	}
 	execFileSync(CONTAINER_CLI, ['build', '-t', tag, repoRoot], { stdio: 'inherit' });
 }
 

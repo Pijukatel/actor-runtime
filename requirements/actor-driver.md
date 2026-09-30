@@ -45,9 +45,12 @@
   Actor's own folder.
 - The build gets the build argument `ACTOR_PATH_IN_DOCKER_CONTEXT`, the Actor's folder relative to the
   context, which the platform's builder also passes.
-- The runtime never fetches from Git: the pushed files are the developer's working copy. Its Git remote,
-  branch, commit and whether it had uncommitted changes are only reported, in the build log and on the
-  console. Rebuilding without a new push builds the last pushed context.
+- The build uses the context's files exactly as they are on disk at push time - uncommitted edits and
+  new, untracked files included; only files the context's `.gitignore` or `.actorignore` excludes are
+  left out. The runtime never fetches from Git itself.
+- The working copy's Git remote, branch and commit, and whether it had uncommitted changes, are shown in
+  the build log and on the console as a label only; they never select which files are built.
+- A rebuild without a new push builds the last pushed files.
 - An ordinary `apify push` of the same version replaces the context again.
 - `apify push` refuses such an Actor against the Apify platform, which does not accept a pushed Docker
   context yet.

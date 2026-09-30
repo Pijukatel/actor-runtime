@@ -4,11 +4,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 /**
- * Invokes the stock, unmodified `apify-cli` from npm (v1.8.0 or newer, per `cli.md`) via `npx`, so the
+ * Set to a built `apify-cli` entry script (`<apify-cli checkout>/dist/apify.js`) to drive the suite with
+ * that CLI instead of the published one - for runtime features whose CLI side is not released yet.
+ */
+const LOCAL_APIFY_CLI_ENV_VAR = 'ACTOR_RUNTIME_E2E_APIFY_CLI';
+
+/**
+ * By default the stock, unmodified `apify-cli` from npm (v1.8.0 or newer, per `cli.md`) via `npx`, so the
  * e2e suite does not require a global install. No fork/patch of the CLI - exactly `cli.md`'s contract.
  */
+function apifyCommand(args: string[]): [string, string[]] {
+	const localCli = process.env[LOCAL_APIFY_CLI_ENV_VAR];
+	if (localCli) return [process.execPath, [localCli, ...args]];
+	return ['npx', ['-y', '-p', 'apify-cli', 'apify', ...args]];
+}
+
 export function apify(args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }): string {
-	return execFileSync('npx', ['-y', '-p', 'apify-cli', 'apify', ...args], {
+	const [command, commandArgs] = apifyCommand(args);
+	return execFileSync(command, commandArgs, {
 		cwd: options.cwd,
 		env: options.env,
 		encoding: 'utf8',
@@ -21,7 +34,8 @@ interface ApifyOptions {
 }
 
 function spawnApify(args: string[], options: ApifyOptions): ReturnType<typeof spawnSync<string>> {
-	return spawnSync('npx', ['-y', '-p', 'apify-cli', 'apify', ...args], {
+	const [command, commandArgs] = apifyCommand(args);
+	return spawnSync(command, commandArgs, {
 		cwd: options.cwd,
 		env: options.env,
 		encoding: 'utf8',
