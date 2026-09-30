@@ -1,8 +1,4 @@
-/**
- * Monorepo build contexts (`actor-driver.md`'s "Monorepo Actors"): `apify push` of an Actor whose
- * `.actor/actor.json` sets `dockerContextDir` uploads the whole context as one tarball, and names the
- * Actor's folder inside it. The tarball goes to `__FILES__` as it was uploaded; the version only points at it.
- */
+/** A monorepo Actor's pushed repository (`actor-driver.md`'s "Monorepo Actors"), stored in `__FILES__`. */
 import { promisify } from 'node:util';
 import { gunzip } from 'node:zlib';
 
@@ -26,15 +22,12 @@ const TARBALL_CONTENT_TYPE = 'application/gzip';
 
 export interface SourceContextUpload {
 	actorPath: string;
-	/** The uploaded `.tar.gz` (or plain `.tar`), stored exactly as received. */
 	tarball: Buffer;
-	/** The archive's files, as `readTarballFiles` unpacked them while validating it. */
 	files: SourceFile[];
 	sizeBytes: number;
 	git?: LocalSourceContextGit;
 }
 
-/** What `PUT /actor-runtime/source-context/...` names in its query string, alongside the tarball body. */
 export interface SourceContextUploadParams {
 	actorPath?: string;
 	gitRemoteUrl?: string;
@@ -46,7 +39,6 @@ export interface SourceContextUploadParams {
 export type SourceContextUploadValidation =
 	{ kind: 'ok'; upload: SourceContextUpload } | { kind: 'invalid'; message: string };
 
-/** `null` for a relative path that stays inside the context, the rejection reason otherwise. */
 function describeContextPathDefect(normalized: string): string | null {
 	if (normalized.includes('\0')) return 'must not contain a NUL byte';
 	if (normalized.startsWith('/')) return 'must be relative to the Docker context';
@@ -58,8 +50,7 @@ function isGzip(buffer: Buffer): boolean {
 	return buffer.length >= 2 && buffer[0] === 0x1f && buffer[1] === 0x8b;
 }
 
-/** The tarball's regular files and symbolic links, in archive order. Directories are implied by the file
- * names; every other entry type is skipped. A link is kept as a link, never followed. */
+/** Regular files and symlinks only; a symlink stays a link, as in a Git clone. */
 export async function readTarballFiles(tarball: Buffer): Promise<SourceFile[]> {
 	const archive = isGzip(tarball) ? await promisify(gunzip)(tarball) : tarball;
 	const files: SourceFile[] = [];
@@ -146,11 +137,7 @@ export async function validateSourceContextUpload(
 	};
 }
 
-/**
- * Replaces the version's source with `upload`. The version must exist already - `apify push` creates or
- * updates it first, with its build tag and environment variables, the same way as for any other push.
- * `null` when the version does not exist.
- */
+/** `null` when the version does not exist: `apify push` creates it first, as for any push. */
 export async function setSourceContext(
 	actor: ActorRecord,
 	versionNumber: string,
@@ -173,12 +160,9 @@ export async function setSourceContext(
 	let written: (ActorVersionRecord & { localSourceContext: LocalSourceContext }) | undefined;
 	await updateActor(actor.id, (current) => {
 		const existing = findVersion(current, versionNumber);
-		// Deleted between the check above and here: nothing to attach the files to.
 		if (!existing) return current;
 		replaced = existing.localSourceContext;
 		written = { ...existing, sourceFiles: [], localSourceContext };
-		// As for pushed source files: `usesStandbyMode` in the Actor's `.actor/actor.json` turns standby on,
-		// never off.
 		const actorStandby = standbyEnabledBy(current.actorStandby, upload.files, upload.actorPath);
 		return { ...addOrReplaceVersion(current, written), ...(actorStandby ? { actorStandby } : {}) };
 	});
@@ -191,26 +175,21 @@ export async function setSourceContext(
 	return written;
 }
 
-/** The context's files, unpacked from its stored tarball; `null` when the tarball is gone. */
 export async function loadSourceContextFiles(context: LocalSourceContext): Promise<SourceFile[] | null> {
 	const tarball = await getRegistries().files.getValue<Buffer>(context.fileId);
 	return tarball ? readTarballFiles(Buffer.from(tarball)) : null;
 }
 
-/** Drops the stored tarball of a context no version points at any more. */
 export async function deleteSourceContextFiles(context: LocalSourceContext | undefined): Promise<void> {
 	if (!context) return;
 	await getRegistries().files.setValue(context.fileId, null);
 }
 
-/** What the API and console report about a context - everything except where its files are stored. */
 export function sourceContextSummary(context: LocalSourceContext): Omit<LocalSourceContext, 'fileId'> {
 	const { actorPath, fileCount, sizeBytes, uploadedAt, git } = context;
 	return { actorPath, fileCount, sizeBytes, uploadedAt, ...(git ? { git } : {}) };
 }
 
-/** `", from <remote>, branch <branch>, commit <commit>"` (plus a note on uncommitted changes), or `""` when
- * nothing is known - appended to a sentence about the context. */
 export function describeSourceContextOrigin(git: LocalSourceContextGit | undefined): string {
 	if (!git) return '';
 	const parts = [

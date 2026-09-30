@@ -11,8 +11,7 @@ const DEFAULT_RUN_BUILD_TAG = 'latest';
  * that predate `options.diskMbytes`; every real run always has it set already. */
 const DISK_MBYTES_PER_MEMORY_MBYTE = 2;
 
-/** Every version the API returns goes through here: a secret env var's value never leaves the runtime, and
- * `localSourceContext` - like every other `local*` field - stays off `/v2`. */
+/** Every version the API returns goes through here: secrets stay masked, `local*` fields stay off `/v2`. */
 export function versionDto(version: ActorVersionRecord) {
 	const publicVersion: Omit<ActorVersionRecord, 'localSourceContext'> & { localSourceContext?: unknown } = {
 		...version,

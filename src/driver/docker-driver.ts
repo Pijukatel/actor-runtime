@@ -510,8 +510,7 @@ function sourceFileToBuffer(file: SourceFile): Buffer {
 	return file.format === 'BASE64' ? Buffer.from(file.content, 'base64') : Buffer.from(file.content, 'utf8');
 }
 
-/** The platform's builder gives every file in the Docker context these permission bits, whatever the source
- * had, so a script is executable in a build there even without `+x`. */
+/** What the platform's builder gives every file, so a script without `+x` runs there too. */
 const DOCKER_FILE_MODE = 0o777;
 
 function buildTarball(sourceFiles: SourceFile[]): NodeJS.ReadableStream {

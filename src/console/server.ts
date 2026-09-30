@@ -81,7 +81,6 @@ function storageLink(prefix: '/datasets' | '/key-value-stores' | '/request-queue
 	return { text: id, href: `${prefix}/${encodeURIComponent(id)}` };
 }
 
-/** A monorepo version's source: the Actor's folder in its Docker context, and where the context came from. */
 function dockerContextCell(context: LocalSourceContext): string {
 	return `${context.actorPath} (pushed ${context.uploadedAt}${describeSourceContextOrigin(context.git)})`;
 }

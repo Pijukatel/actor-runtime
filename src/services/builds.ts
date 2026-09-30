@@ -10,6 +10,7 @@ import { sourceFileToText } from './actor-source-files.js';
 import { qualifyDockerfileImageReferences } from './dockerfile-image-refs.js';
 import { resolveDockerfileLocation } from './dockerfile-location.js';
 import { dockerContextFiles, nameInDockerContext, resolveDockerContext } from './docker-context.js';
+import { describeActorJsonDefect } from './actor-json-validation.js';
 import { DEFAULT_DOCKERFILE_NAME } from './default-dockerfile.js';
 import { resolveInputSchemaLocation } from './input-schema-location.js';
 import { resolveActorMemorySettings } from './actor-memory.js';
@@ -27,8 +28,7 @@ import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
  */
 const DEFAULT_BUILD_TIMEOUT_SECS = 1800;
 
-/** The build argument the platform's builder passes every build: the Actor's folder relative to the Docker
- * context, `''` when the context is the Actor's folder. */
+/** Passed to every build, as on the platform: the Actor's folder relative to the Docker context. */
 const ACTOR_PATH_IN_DOCKER_CONTEXT_BUILD_ARG = 'ACTOR_PATH_IN_DOCKER_CONTEXT';
 
 export async function listOwnedBuilds(userId: string, actorId?: string): Promise<BuildRecord[]> {
@@ -243,14 +243,19 @@ export async function runBuildInBackground(
 	}
 	const { contextPath, actorPathInContext } = dockerContext;
 
+	const actorJsonDefect = describeActorJsonDefect(versionSourceFiles, actorPath);
+	if (actorJsonDefect) {
+		await failBuild(record.id, actorJsonDefect);
+		return;
+	}
+
 	const dockerfileResolution = resolveDockerfileLocation(versionSourceFiles, actorPath);
 	if (dockerfileResolution.outcome === 'failure') {
 		await failBuild(record.id, dockerfileResolution.message);
 		return;
 	}
 	for (const line of dockerfileResolution.logLines) appendRuntimeLog(record.id, line);
-	// The platform's BuildKit reads the Dockerfile from the Docker context, so one outside it cannot be built;
-	// the default one goes to the context's root.
+	// The platform reads the Dockerfile from the Docker context, so one outside it cannot build there either.
 	const dockerfilePath =
 		dockerfileResolution.outcome === 'default'
 			? DEFAULT_DOCKERFILE_NAME
@@ -292,7 +297,7 @@ export async function runBuildInBackground(
 		(line) => appendRuntimeLog(record.id, line),
 	);
 
-	// As on the platform: always passed, and an environment variable of the same name overrides it.
+	// As on the platform, an environment variable of the same name overrides it.
 	const envBuildArgs = buildArgsOf(actor, version);
 	const buildArgs = { [ACTOR_PATH_IN_DOCKER_CONTEXT_BUILD_ARG]: actorPathInContext, ...envBuildArgs };
 	if (envBuildArgs) {

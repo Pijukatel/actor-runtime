@@ -63,35 +63,19 @@ reason in the build log. The engine emulates it (Rosetta on Apple Silicon), so i
 
 ## Monorepo Actors (`dockerContextDir`)
 
-An Actor in a monorepo, whose `.actor/actor.json` sets `dockerContextDir` (for example `"../../.."`) and
-points `dockerfile`/`input` at shared files outside its own folder, is pushed from its own folder as usual:
+Push from the Actor's own folder; it builds as the platform builds it from Git with that folder selected:
 
 ```sh
 cd monorepo/actors/my-actor
-apify push     # pushes the repository, builds the Actor from its Docker context, as the platform builds from Git
+apify push
 apify call
 ```
 
-Builds follow the platform's builder:
-
-- The push sends what the platform's clone of the repository would have - every file Git tracks, plus new
-  files Git does not ignore - with the Actor's folder inside it. `.actorignore` does not apply, as it does
-  not to the platform's Git builds: a git-ignored `dist/` is not pushed even if `.actorignore`
-  force-includes it. Symlinks stay links.
-- The Docker context is the folder `dockerContextDir` names, relative to `.actor/`; it may not leave the
-  repository. The build gets `ACTOR_PATH_IN_DOCKER_CONTEXT` (the Actor's folder relative to the context);
-  every build gets it, empty when there is no `dockerContextDir`.
-- `input` may point anywhere in the repository; the Dockerfile must be inside the context, or the build
-  fails, as it does on the platform. A named `input` file that does not exist fails the build too.
-- Every file in the build context has mode `0777`, as on the platform, so a script runs without `+x`.
-- The runtime never talks to Git or needs Git credentials: check out the branch you want locally, then
-  push. Uncommitted changes are pushed too, with a warning - the platform builds only what is committed
-  and pushed. The build log names the branch and commit, and says when there were uncommitted changes.
-- The dev folder registered by the push is the Docker context, not the Actor's folder.
-- Runs use the normal API: `apify call`, `POST /v2/actors/<actorId>/runs`, the console.
-- `apify push` of such an Actor to the Apify platform stops with an error: the platform cannot build a
-  pushed repository yet (https://github.com/apify/apify-core/issues/28685). There, build it from the Git
-  repository with the Actor's folder set.
+- The push sends your local working copy, uncommitted changes included, with a warning: the platform
+  builds only what is committed and pushed. `.actorignore` does not apply, as for Git builds.
+- No Git access or credentials are needed; check out the branch you want, then push.
+- `apify push` of such an Actor to the Apify platform stops with an error: it is not supported there yet
+  (https://github.com/apify/apify-core/issues/28685). Build it from the Git repository instead.
 
 ## Input schema: defaults and validation
 

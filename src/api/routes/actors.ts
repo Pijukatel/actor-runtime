@@ -64,7 +64,6 @@ function actorStandbyFromBody(body: { actorStandby?: unknown }, actor?: ActorRec
 	return result.actorStandby;
 }
 
-/** `standbyEnabledBy` for the first of `versions` whose pushed source files ask for standby. */
 function standbyEnabledByVersions(
 	current: ActorStandbyRecord | undefined,
 	versions: ActorVersionRecord[],
@@ -176,7 +175,7 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 			if (body.pricingInfos !== undefined) throw cannotSetPricingOnCreate();
 			// An explicit `actorStandby` wins over `usesStandbyMode`, even one that disables it.
 			const actorStandby = actorStandbyFromBody(body) ?? standbyEnabledByVersions(undefined, body.versions ?? []);
-			// A context is set only through its own endpoint, never smuggled in with the Actor.
+			// Settable only through its own endpoint.
 			const versions = body.versions?.map(({ localSourceContext: _ignored, ...version }) => ({
 				...version,
 				envVars: undefined,
@@ -287,11 +286,9 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 			const versionNumber = req.params.versionNumber as string;
 			const envFields = versionEnvFieldsFromBody(body, existing);
 			let dropped: ActorVersionRecord['localSourceContext'];
-			// The source is taken from the version as it is under the lock, so a context pushed meanwhile is
-			// neither lost nor brought back after its replacement.
+			// Read under the lock, so a repository pushed meanwhile is neither lost nor resurrected.
 			const updated = await updateActor(actor.id, (current) => {
 				const latest = findVersion(current, versionNumber) ?? existing;
-				// New `sourceFiles` replace the source, a monorepo context included; without them, it stays.
 				const keptContext = body.sourceFiles === undefined ? latest.localSourceContext : undefined;
 				dropped = keptContext ? undefined : latest.localSourceContext;
 				return addOrReplaceVersion(current, {

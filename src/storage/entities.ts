@@ -40,8 +40,7 @@ export interface SourceFile {
 	name: string;
 	format: 'TEXT' | 'BASE64';
 	content: string;
-	/** Set for a symbolic link unpacked from a pushed monorepo source, which the build context keeps as a
-	 * link, as the platform does for a Git clone; `content` is then empty. */
+	/** Only for a symlink in a pushed monorepo repository; `content` is then empty. */
 	linkTarget?: string;
 }
 
@@ -73,24 +72,18 @@ export interface ActorSecretKeys {
 	passphrase: string;
 }
 
-/** Where a monorepo build context pushed from a local Git working copy came from - reported, never used
- * to fetch anything. Every field is optional: the pushed folder need not be a Git repository at all. */
+/** Shown in the build log only, never used to fetch anything. */
 export interface LocalSourceContextGit {
 	remoteUrl?: string;
 	branch?: string;
 	commit?: string;
-	/** The working copy had uncommitted changes, so the pushed files are not exactly `commit`. */
 	dirty?: boolean;
 }
 
-/**
- * A monorepo build context (`dockerContextDir` in `.actor/actor.json`) pushed through
- * `PUT /actor-runtime/source-context/:actorId/:versionNumber`. The files live in `__FILES__` under
- * `fileId`, not on the Actor record, since a context carries every workspace package, not just the Actor.
- */
+/** A monorepo Actor's pushed repository; its files are in `__FILES__` under `fileId`. */
 export interface LocalSourceContext {
 	fileId: string;
-	/** The Actor's folder inside the context, as a normalized relative path; never `''`, never escaping. */
+	/** The Actor's folder in the repository. */
 	actorPath: string;
 	fileCount: number;
 	sizeBytes: number;
@@ -106,7 +99,7 @@ export interface ActorVersionRecord {
 	envVars?: ActorEnvVarRecord[];
 	/** Passes `envVars`, secrets included, to the image build as Docker build arguments. */
 	applyEnvVarsToBuild?: boolean;
-	/** When set, builds use this context instead of `sourceFiles`. Never exposed on `/v2`. */
+	/** When set, builds use it instead of `sourceFiles`. Never exposed on `/v2`. */
 	localSourceContext?: LocalSourceContext;
 }
 

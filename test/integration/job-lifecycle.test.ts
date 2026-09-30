@@ -382,7 +382,12 @@ describe('job lifecycle: TIMED-OUT mapping and abort/completion race guards', ()
 				{
 					name: '.actor/actor.json',
 					format: 'TEXT',
-					content: JSON.stringify({ dockerfile: '../../evil/Dockerfile' }),
+					content: JSON.stringify({
+						actorSpecification: 1,
+						name: 'dockerfile-failure-actor',
+						version: '0.0',
+						dockerfile: '../../evil/Dockerfile',
+					}),
 				},
 			];
 			const version: ActorVersionRecord = { ...VERSION, sourceFiles: escapingSourceFiles };

@@ -52,17 +52,8 @@ Test case must verify full Actor development flow:
 
 ## Monorepo Actors
 
-- Both Actors of `samples/actor_monorepo` share a Dockerfile, an input schema and a package outside their
-  own folders: `apify push` from each Actor's folder builds it from the monorepo's Docker context, the
-  build log names the shared Dockerfile and schema, and `apify call` runs it with the shared package and
-  its own `ACTOR_PATH_IN_DOCKER_CONTEXT`, asserted from the dataset items.
-- The shared input schema supplies the defaults and rejects an invalid input.
-- Builds follow a build from a Git clone on the platform: a Dockerfile that needs a git-ignored file fails,
-  even when `.actorignore` force-includes it, and succeeds once the file is committed; a `dockerContextDir`
-  above the repository is refused; a build script without `+x` still runs, as every file in the platform's
-  build context is `0777`.
-- Monorepo support is not in a published `apify-cli` yet, so this file runs only with the CLI named by
-  `ACTOR_RUNTIME_E2E_APIFY_CLI` (a built `dist/apify.js`), is skipped without it, and is not in CI until
-  that CLI is published.
-- `ACTOR_RUNTIME_E2E_IMAGE` names an already built runtime image to test instead of building one, for a
-  machine whose container builds cannot reach the registries the runtime's Dockerfile needs.
+- Both Actors of `samples/actor_monorepo` push, build and run with the shared Dockerfile, input schema and
+  package.
+- A build fails or succeeds as the platform's Git build of the same repository would.
+- Runs only with a locally built CLI (`ACTOR_RUNTIME_E2E_APIFY_CLI`) until monorepo support is published,
+  and is not in CI until then. `ACTOR_RUNTIME_E2E_IMAGE` tests an already built runtime image.

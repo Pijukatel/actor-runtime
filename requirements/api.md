@@ -231,22 +231,11 @@
     - **Body**: `{ "enabled": boolean, "interactive"?: boolean }`, `interactive` defaulting to `false`. A call
       fully replaces the prior state; `{"enabled": false}` clears it. Any other shape is `400 invalid-request`.
     - **Response**: `{ data: { localBrowserView: { interactive } | null } }` - the read-back; there is no `GET`.
-- **`PUT /actor-runtime/source-context/:actorId/:versionNumber`** - replaces an existing version's source
-  with a monorepo Actor's repository (`actor-driver.md`'s "Docker context and monorepo Actors"), from which
-  each build takes its Docker context. Authenticated and owner-scoped like every `/v2` route.
-    - **Body**: the pushed files as one `.tar.gz` archive (a plain `.tar` is accepted too), every entry named
-      relative to their root. Regular files and symlinks are kept; other entry types are ignored.
-    - **Query**: `actorPath` (required) - the Actor's folder inside the pushed files; optional `gitRemoteUrl`,
-      `gitBranch`, `gitCommit` and `gitDirty` (`true`/`false`) describe the working copy it came from.
-    - **Response**: `{ data: { versionNumber, localSourceContext } }`, where `localSourceContext` is
-      `{ actorPath, fileCount, sizeBytes, uploadedAt, git? }`.
-    - **Errors**: `400` `invalid-request` for a missing or unreadable archive, an `actorPath` or entry name
-      that is absolute or leaves the pushed files, an `actorPath` naming their root itself, no
-      `.actor/actor.json` under `actorPath`, or a `gitDirty` other than `true`/`false`; `404`
-      `record-not-found` for an unknown Actor or version.
-    - The context is never exposed on `/v2`: the version reads there as an ordinary `SOURCE_FILES`
-      version with no files. `sourceFiles` sent to `PUT /v2/actors/:actorId/versions/:versionNumber`,
-      or a version recreated with `POST`, replace the context.
+- **`PUT /actor-runtime/source-context/:actorId/:versionNumber`** - how `apify push` sends a monorepo
+  Actor (`actor-driver.md`): replaces an existing version's source with the repository as a `.tar.gz`
+  body, the Actor's folder in it given as `actorPath`, and optional Git details shown in the build log.
+  Owner-scoped; `400` for an invalid archive or `actorPath`, `404` for an unknown Actor or version. The
+  version reads on `/v2` as one with no source files; pushing `sourceFiles` to it replaces the repository.
 - **`GET /actor-runtime/events/:runId`** - a websocket upgrade, reachable at exactly this one path on
   the fixed API port (`system.md`). It carries the run's platform events: `systemInfo` once a second
   (`actor-driver.md`), a one-off `aborting`-plus-`persistState` pair under `?gracefully=` (below), and a

@@ -166,7 +166,11 @@ describe('monorepo source context', () => {
 
 		// ...an ordinary push replaces it, and its stored files go with it.
 		const plainFiles = [
-			{ name: '.actor/actor.json', format: 'TEXT', content: '{"actorSpecification":1,"name":"a"}' },
+			{
+				name: '.actor/actor.json',
+				format: 'TEXT',
+				content: '{"actorSpecification":1,"name":"a","version":"0.0"}',
+			},
 			{ name: 'Dockerfile', format: 'TEXT', content: 'FROM node:20\n' },
 		];
 		await server.client
@@ -287,6 +291,8 @@ describe('monorepo source context', () => {
 							...file,
 							content: JSON.stringify({
 								actorSpecification: 1,
+								name: 'example-monorepo-actor-typescript',
+								version: '0.0',
 								dockerContextDir: '../..',
 								dockerfile,
 								input: '../../../shared/input_schema.json',
@@ -345,7 +351,15 @@ describe('monorepo source context', () => {
 		const actorId = await createActor();
 		const escaping = MONOREPO_FILES.map((file) =>
 			file.name === `${ACTOR_PATH}/.actor/actor.json`
-				? { ...file, content: JSON.stringify({ actorSpecification: 1, dockerfile: '../../../../Dockerfile' }) }
+				? {
+						...file,
+						content: JSON.stringify({
+							actorSpecification: 1,
+							name: 'a',
+							version: '0.0',
+							dockerfile: '../../../../Dockerfile',
+						}),
+					}
 				: file,
 		);
 		await putContext(actorId, { actorPath: ACTOR_PATH, sourceFiles: escaping });

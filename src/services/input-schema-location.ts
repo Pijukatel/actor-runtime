@@ -99,7 +99,6 @@ function acceptSchemaFile(match: IndexedFile, source: string, logLines: string[]
 	return acceptSchema(parsed, source, logLines);
 }
 
-/** `actorPath`: see `actor-source-files.ts`. The default locations are relative to the Actor's folder. */
 export function resolveInputSchemaLocation(sourceFiles: SourceFile[], actorPath = ''): InputSchemaResolution {
 	const indexed = indexSourceFiles(sourceFiles);
 	const logLines: string[] = [];
@@ -126,7 +125,7 @@ export function resolveInputSchemaLocation(sourceFiles: SourceFile[], actorPath 
 			};
 		}
 
-		// Exact case, and no fallback when it is missing: the platform reads it as a path, and fails the build.
+		// Exact case and no fallback, as on the platform.
 		const resolved = resolveActorJsonPathField(indexed, field, actorPath, true);
 		if (resolved.outcome === 'escapes-actor-root') {
 			return {
@@ -139,7 +138,6 @@ export function resolveInputSchemaLocation(sourceFiles: SourceFile[], actorPath 
 			const source = `"${resolved.file.normalizedName}" (the "input" field in .actor/actor.json)`;
 			return acceptSchemaFile(resolved.file, source, logLines);
 		}
-		// An empty field names no file, and the platform goes on to the default locations.
 		if (field !== '') {
 			return {
 				outcome: 'failure',

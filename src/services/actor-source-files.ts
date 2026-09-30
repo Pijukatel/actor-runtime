@@ -6,9 +6,8 @@
  * Shared rather than written per field so the Actor-root containment check has one implementation:
  * a traversal hole patched in one copy would otherwise stay open in the other.
  *
- * `actorPath` is where the Actor sits inside the pushed files: `''` for an ordinary push, the Actor's folder
- * in the repository for a monorepo push. Path fields may leave the Actor's folder, never the pushed files -
- * the platform's "Actor root directory", which for a Git source is the whole clone.
+ * `actorPath` is the Actor's folder within the pushed files (`''` for an ordinary push); path fields may
+ * leave it, but not the pushed files.
  */
 import * as path from 'node:path';
 import JSON5 from 'json5';
@@ -48,7 +47,6 @@ export function findCaseInsensitive(indexed: IndexedFile[], candidate: string): 
 	return firstMatch;
 }
 
-/** `relativePath` inside the Actor at `actorPath`, as a normalized tar entry name. */
 export function actorFilePath(actorPath: string, relativePath: string): string {
 	return normalizeEntryName(actorPath === '' ? relativePath : path.posix.join(actorPath, relativePath));
 }
@@ -80,8 +78,7 @@ export type ActorJsonPathField =
 	| { outcome: 'not-found'; shownPath: string }
 	| { outcome: 'escapes-actor-root' };
 
-/** `field` is resolved relative to `.actor/`, and may not leave the pushed files - which, for an ordinary
- * push, are the Actor root. */
+/** `field` is resolved relative to `.actor/`, and may not leave the pushed files. */
 export function resolveActorJsonPathField(
 	indexed: IndexedFile[],
 	field: string,

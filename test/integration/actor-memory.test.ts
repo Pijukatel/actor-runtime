@@ -24,7 +24,16 @@ describe('run memory from .actor/actor.json (via real apify-client)', () => {
 		const { actors, builds } = getRegistries();
 		const sourceFiles: SourceFile[] = [
 			{ name: 'main.js', format: 'TEXT', content: 'console.log(1)' },
-			{ name: '.actor/actor.json', format: 'TEXT', content: JSON.stringify(actorJson) },
+			{
+				name: '.actor/actor.json',
+				format: 'TEXT',
+				content: JSON.stringify({
+					actorSpecification: 1,
+					name: 'memory-actor',
+					version: '0.0',
+					...(actorJson as object),
+				}),
+			},
 		];
 		await builds.set(buildId, {
 			id: buildId,

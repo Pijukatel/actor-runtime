@@ -23,8 +23,7 @@ export type DockerfileResolutionFailureReason =
 	'escapes-actor-root' | 'invalid-dockerfile-field' | 'unparseable-actor-json';
 
 /** `resolveDockerfileLocation`'s outcomes: `resolved` (a candidate matched), `default` (nothing matched
- * - `extraSourceFile`, named relative to the Docker context, must be added to this build's context only,
- * never persisted), or `failure`. */
+ * - `extraSourceFile` goes to this build's Docker context only, never persisted), or `failure`. */
 export type DockerfileResolution =
 	| { outcome: 'resolved'; dockerfilePath: string; logLines: string[] }
 	| { outcome: 'default'; dockerfilePath: string; logLines: string[]; extraSourceFile: SourceFile }
@@ -38,7 +37,6 @@ function escapesActorRootFailure(rawField: string): DockerfileResolution {
 	};
 }
 
-/** `actorPath`: see `actor-source-files.ts`. The default locations are relative to the Actor's folder. */
 export function resolveDockerfileLocation(sourceFiles: SourceFile[], actorPath = ''): DockerfileResolution {
 	const indexed = indexSourceFiles(sourceFiles);
 	const logLines: string[] = [];

@@ -20,6 +20,9 @@ importers:
       '@apify/input_secrets':
         specifier: ^1.2.60
         version: 1.2.60
+      '@apify/json_schemas':
+        specifier: ^1.0.1
+        version: 1.0.1
       '@apify/utilities':
         specifier: ^2.35.11
         version: 2.35.11
@@ -129,6 +132,10 @@ packages:
 
   '@apify/json_schemas@0.17.2':
     resolution: {integrity: sha512-nN1QiBX+FJJyOG2OTjE6X6mG1EPYz5Je5TA4JmQ8JyWmWilQ/6hBDB6mUyg1JmvS3QDd+swtZS0G3dJ7sP+6uQ==}
+
+  '@apify/json_schemas@1.0.1':
+    resolution: {integrity: sha512-jz3zZxEmgb+wv9eApgTO+3sRk6ckYXyoJERSSlMhWiN/DFwhGvlMgjoSpDix0Z0eWSXvjJMIxW8Lm9GjILRSzg==}
+    engines: {node: '>=22'}
 
   '@apify/log@2.5.50':
     resolution: {integrity: sha512-obSTa6SUP4Ywy9EqcCMoHZXL0kH4lGTgajqlqTVkkdchLKAGNv+hsNLRSXz15N5aHJXwykqdWxidWJrRNawuxA==}
@@ -2373,6 +2380,11 @@ snapshots:
   '@apify/json_schemas@0.17.2':
     dependencies:
       '@apify/consts': 2.58.1
+      ajv: 8.20.0
+
+  '@apify/json_schemas@1.0.1':
+    dependencies:
+      '@apify/consts': 3.0.1
       ajv: 8.20.0
 
   '@apify/log@2.5.50':

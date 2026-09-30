@@ -1,8 +1,4 @@
-/**
- * `PUT /actor-runtime/source-context/:actorId/:versionNumber` - replaces a version's source with a monorepo
- * build context, sent as one `.tar.gz` body (`services/source-context.ts`). Mounted on the shared `/actor-runtime/*` router, so it is
- * authenticated there and reachable at `/v2/actor-runtime/*` too; owner-scoped through `resolveActorParam`.
- */
+/** `PUT /actor-runtime/source-context/:actorId/:versionNumber` - a monorepo Actor's pushed repository. */
 import type { Router } from 'express';
 
 import { sendData } from '../envelope.js';

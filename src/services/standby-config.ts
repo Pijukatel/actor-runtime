@@ -97,8 +97,7 @@ export function declaresStandbyMode(sourceFiles: SourceFile[], actorPath = ''): 
 	return typeof specification === 'object' && specification !== null && specification.usesStandbyMode === true;
 }
 
-/** The platform enables standby, never disables it, for pushed source whose `.actor/actor.json` asks for it;
- * `undefined` when that changes nothing. */
+/** The platform enables standby, never disables it, when `.actor/actor.json` asks for it. */
 export function standbyEnabledBy(
 	current: ActorStandbyRecord | undefined,
 	sourceFiles: SourceFile[],

@@ -1,8 +1,4 @@
-/**
- * Which pushed files form the Docker context, as the platform's builder decides it for every source type:
- * the Actor's folder, unless `.actor/actor.json` sets `dockerContextDir` - a folder relative to `.actor/`,
- * which may leave the Actor's folder but not the pushed source root (for a Git source, the whole clone).
- */
+/** The Docker context, chosen as the platform's builder chooses it: the Actor's folder, or `dockerContextDir`. */
 import * as path from 'node:path';
 
 import { normalizeEntryName } from '../driver/tar-entry-name.js';
@@ -12,9 +8,8 @@ import { ACTOR_DIR, actorFilePath, parseActorJson } from './actor-source-files.j
 export type DockerContextResolution =
 	| {
 			outcome: 'resolved';
-			/** The context's folder within the pushed files; `''` is their root. */
+			/** `''` is the root of the pushed files. */
 			contextPath: string;
-			/** The Actor's folder relative to the context - the `ACTOR_PATH_IN_DOCKER_CONTEXT` build argument. */
 			actorPathInContext: string;
 	  }
 	| { outcome: 'failure'; message: string };
@@ -53,14 +48,13 @@ export function resolveDockerContext(sourceFiles: SourceFile[], actorPath = ''):
 	return { outcome: 'resolved', contextPath, actorPathInContext };
 }
 
-/** `name`, a path within the pushed files, relative to the context; `undefined` when outside it. */
+/** `undefined` when `name` is outside the context. */
 export function nameInDockerContext(name: string, contextPath: string): string | undefined {
 	const normalized = normalizeEntryName(name);
 	if (!isUnder(normalized, contextPath)) return undefined;
 	return contextPath === '' ? normalized : normalized.slice(contextPath.length + 1);
 }
 
-/** The pushed files inside the context, named relative to it. */
 export function dockerContextFiles(sourceFiles: SourceFile[], contextPath: string): SourceFile[] {
 	return sourceFiles.flatMap((file) => {
 		const name = nameInDockerContext(file.name, contextPath);
