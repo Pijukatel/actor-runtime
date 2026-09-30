@@ -1,3 +1,4 @@
+import { decryptInputSecrets, encryptInputSecrets } from '@apify/input_secrets';
 import { privateDecrypt, publicEncrypt } from '@apify/utilities';
 import { ApifyApiError } from 'apify-client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -9,7 +10,12 @@ import path from 'node:path';
 import { startTestServer, type TestServerHandle } from './helpers/test-server.js';
 import type { BuildContext, Driver } from '../../src/driver/types.js';
 import { getRegistries } from '../../src/storage/registries.js';
-import { decryptedEnvVars } from '../../src/services/secrets.js';
+import { decryptedEnvVars, ensureSecretKeys } from '../../src/services/secrets.js';
+
+async function ensureKeys(actorId: string) {
+	const actor = await getRegistries().actors.get(actorId);
+	return (await ensureSecretKeys(actor!)).secretKeys;
+}
 
 /** Records what the builds and runs were handed, so env vars can be checked end to end without Docker. */
 function capturingDriver() {
@@ -170,6 +176,50 @@ describe('secret and build-time environment variables', () => {
 		expect((await server.client.actor(actor.id).get())!.modifiedAt).toEqual(modifiedAt);
 		await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
 		expect(captured.runEnv!.APIFY_INPUT_SECRETS_PRIVATE_KEY_FILE).toBe(env.APIFY_INPUT_SECRETS_PRIVATE_KEY_FILE);
+	});
+
+	it('stores secret input fields encrypted, so only the SDK in the run can read them', async () => {
+		const inputSchema = {
+			title: 'Input',
+			type: 'object',
+			schemaVersion: 1,
+			properties: {
+				password: { title: 'Password', type: 'string', description: 'x', editor: 'textfield', isSecret: true },
+				token: { title: 'Token', type: 'string', description: 'x', editor: 'textfield', isSecret: true },
+				plain: { title: 'Plain', type: 'string', description: 'x', editor: 'textfield', default: 'dflt' },
+			},
+		};
+		const actor = await createActorWithVersion('input-secrets-encrypted', {
+			envVars: [],
+			sourceFiles: [{ name: 'INPUT_SCHEMA.json', format: 'TEXT', content: JSON.stringify(inputSchema) }],
+		});
+		await server.client.actor(actor.id).build('0.0', { waitForFinish: 5 });
+		const { publicKey } = (await ensureKeys(actor.id))!;
+		const preEncrypted = encryptInputSecrets({
+			input: { token: 'already-encrypted' },
+			inputSchema,
+			publicKey: createPublicKey(publicKey),
+		}).token as string;
+
+		const run = await server.client
+			.actor(actor.id)
+			.start({ password: 'hunter2', token: preEncrypted }, { waitForFinish: 5 });
+		const stored = (await server.client.keyValueStore(run.defaultKeyValueStoreId).getRecord('INPUT'))!
+			.value as Record<string, string>;
+
+		expect(stored.password).toMatch(/^ENCRYPTED_VALUE:/);
+		expect(stored.token).toBe(preEncrypted);
+		expect(stored.plain).toBe('dflt');
+		const env = captured.runEnv!;
+		const privateKey = createPrivateKey({
+			key: Buffer.from(env.APIFY_INPUT_SECRETS_PRIVATE_KEY_FILE!, 'base64'),
+			passphrase: env.APIFY_INPUT_SECRETS_PRIVATE_KEY_PASSPHRASE!,
+		});
+		expect(decryptInputSecrets({ input: stored, privateKey })).toEqual({
+			password: 'hunter2',
+			token: 'already-encrypted',
+			plain: 'dflt',
+		});
 	});
 
 	it('a version cannot override the input secrets key vars', async () => {

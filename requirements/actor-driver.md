@@ -42,9 +42,13 @@
   the reason in its log, and every run of a build is validated against that build's schema with its
   defaults applied, a rejected input starting nothing (`api.md`). A build with no input schema takes
   every input exactly as the caller sent it.
+- **Secret input fields** (`isSecret`) work as on the platform: after validation and defaults, their
+  values are stored in the run's `INPUT` encrypted with the Actor's public key, a value that already is
+  encrypted is kept as it is, and the Apify SDKs' `getInput()` decrypts them with the run's
+  `APIFY_INPUT_SECRETS_PRIVATE_KEY_FILE`/`_PASSPHRASE` ("Environment variables in every Actor container").
 - **Differences**: Apify Proxy group availability is not checked, so any `apifyProxyGroups` selection
-  is accepted, while the rest of a `proxy` field is still validated; encrypted secret input fields
-  stay unsupported (`unsupported.md`).
+  is accepted, while the rest of a `proxy` field is still validated. Each Actor has its own key pair,
+  with the simplification described under secret env vars.
 - An Actor running from a registered dev folder uses its last build's schema: unlike a source edit,
   an edited input schema takes effect only after `apify push`.
 

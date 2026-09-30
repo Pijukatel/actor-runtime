@@ -1,8 +1,10 @@
 import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes } from 'node:crypto';
 
+import { encryptInputSecrets, getInputSchemaSecretFieldKeys } from '@apify/input_secrets';
 import { privateDecrypt, publicEncrypt } from '@apify/utilities';
 
-import type { ActorEnvVarRecord, ActorRecord, ActorSecretKeys } from '../storage/entities.js';
+import type { ActorEnvVarRecord, ActorRecord, ActorSecretKeys, InputSchema } from '../storage/entities.js';
+import type { ActorInput } from './input-schema.js';
 import { getRegistries } from '../storage/registries.js';
 
 /**
@@ -62,6 +64,27 @@ export async function ensureSecretKeys(actor: ActorRecord): Promise<ActorRecord>
 		current && !current.secretKeys ? { ...current, secretKeys: generateSecretKeys() } : current,
 	);
 	return updated ?? actor;
+}
+
+/**
+ * The run's input with every `isSecret` field of `inputSchema` encrypted with the Actor's public key, as
+ * the platform stores it; the SDKs' `getInput()` decrypts it with `inputSecretsEnv`. A value that is
+ * already encrypted stays as it is. `input` is the validated input, so its body is JSON.
+ */
+export async function sealInputSecrets(
+	actor: ActorRecord,
+	inputSchema: InputSchema | undefined,
+	input: ActorInput | undefined,
+): Promise<ActorInput | undefined> {
+	if (!input || !inputSchema || getInputSchemaSecretFieldKeys(inputSchema).length === 0) return input;
+	const { secretKeys } = await ensureSecretKeys(actor);
+	if (!secretKeys) return input;
+	const encrypted = encryptInputSecrets({
+		input: JSON.parse(input.body.toString('utf8')) as Record<string, unknown>,
+		inputSchema,
+		publicKey: createPublicKey(secretKeys.publicKey),
+	});
+	return { ...input, body: Buffer.from(JSON.stringify(encrypted), 'utf8') };
 }
 
 /** The two env vars the Apify SDKs read to decrypt secret input fields. */

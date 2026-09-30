@@ -17,6 +17,9 @@ importers:
       '@apify/input_schema':
         specifier: ^3.29.2
         version: 3.29.2(ajv@8.20.0)
+      '@apify/input_secrets':
+        specifier: ^1.2.60
+        version: 1.2.60
       '@apify/utilities':
         specifier: ^2.35.11
         version: 2.35.11

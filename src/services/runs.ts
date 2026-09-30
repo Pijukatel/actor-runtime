@@ -11,7 +11,7 @@ import { markEventsTerminal, publishAborting, publishPersistState, publishSystem
 import { clearRunRestartState, consumeRunRestart } from './migrations.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
-import { decryptedEnvVars, ensureSecretKeys, inputSecretsEnv } from './secrets.js';
+import { decryptedEnvVars, ensureSecretKeys, inputSecretsEnv, sealInputSecrets } from './secrets.js';
 import {
 	describeDebugPortConflict,
 	describeDebugRefusal,
@@ -223,9 +223,10 @@ export async function startRun(
 		createStorage(actor.userId, 'requestQueue'),
 	]);
 
-	if (options.input) {
+	const input = await sealInputSecrets(actor, build.inputSchema, options.input);
+	if (input) {
 		const store = await openKeyValueStore(keyValueStore.id);
-		await store.setValue('INPUT', options.input.body, { contentType: options.input.contentType });
+		await store.setValue('INPUT', input.body, { contentType: input.contentType });
 	}
 
 	const buildTag = options.build ?? DEFAULT_BUILD_TAG;

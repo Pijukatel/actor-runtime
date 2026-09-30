@@ -80,8 +80,11 @@ valid: Field input.maxPages must be >= 1`); no run is created and no container s
   take effect - unlike a source edit under a registered dev folder.
 - A schema the Apify input-schema meta-schema rejects fails the **build**, with the defect in the build
   log, instead of being silently ignored.
-- Two local differences: Apify Proxy groups are not checked (any `apifyProxyGroups` selection is
-  accepted), and encrypted secret input fields are not supported.
+- Secret input fields (`isSecret`) are stored encrypted in the run's `INPUT`, as on the platform; the
+  SDK's `Actor.getInput()` returns them decrypted, while reading the `INPUT` record directly shows
+  `ENCRYPTED_VALUE:...`.
+- One local difference: Apify Proxy groups are not checked (any `apifyProxyGroups` selection is
+  accepted).
 - Apify Proxy is **real**: when a proxy password is known (the runtime's `APIFY_PROXY_PASSWORD`, or the
   real account behind the token), runs get it, so the Actor can use the real proxy, billed to that Apify
   account; the run log carries a warning saying so. Unchecking "Use Apify Proxy" on the console's
@@ -112,7 +115,7 @@ apify push
   a simplified scheme that stops accidental reads, not someone with access to that directory.
 - Every run gets its Actor's private key as `APIFY_INPUT_SECRETS_PRIVATE_KEY_FILE` and
   `APIFY_INPUT_SECRETS_PRIVATE_KEY_PASSPHRASE`, which the SDKs' `getInput()` uses to decrypt secret input
-  fields. The runtime itself does not encrypt secret input fields.
+  fields.
 - They reach the **build** only with `applyEnvVarsToBuild` on, as Docker build arguments, secrets
   included; the Dockerfile reads each with `ARG NAME`:
   `apify api PUT v2/actors/<actorId>/versions/0.0 --body '{"applyEnvVarsToBuild": true}'`. A later
