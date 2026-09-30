@@ -1,5 +1,5 @@
 import { generateId } from '../storage/ids.js';
-import { liveDevFolderWarningLines, unknownWorkingDirectoryLine } from './dev-folder.js';
+import { liveDevFolderDisabledLine, liveDevFolderWarningLines, unknownWorkingDirectoryLine } from './dev-folder.js';
 import type { ActorRecord, ActorVersionRecord, BuildRecord, JobStatus, RunRecord } from '../storage/entities.js';
 import { getRegistries } from '../storage/registries.js';
 import { createStorage } from './storages.js';
@@ -397,9 +397,10 @@ export async function runInBackground(
 	// directory, gets `devMount: undefined`, which `docker-driver.ts`'s `startRun` treats identically to
 	// "no `Mounts` key at all" - the regression guarantee that an unregistered/cleared Actor's run
 	// container is unaffected.
+	const localDevFolder = actor.localDevFolderEnabled ? actor.localDevFolder : undefined;
 	const devMountApplicable =
-		actor.localDevFolder && build.imageWorkingDirectory
-			? { localDevFolder: actor.localDevFolder, imageWorkingDirectory: build.imageWorkingDirectory }
+		localDevFolder && build.imageWorkingDirectory
+			? { localDevFolder, imageWorkingDirectory: build.imageWorkingDirectory }
 			: undefined;
 	const devMount = options.devFolder === false ? undefined : devMountApplicable;
 	if (devMountApplicable && !devMount) {
@@ -409,9 +410,12 @@ export async function runInBackground(
 				`(started with devFolder=false) - running from the built image alone.`,
 		);
 	}
+	if (actor.localDevFolder && !actor.localDevFolderEnabled && options.devFolder !== false) {
+		appendRuntimeLog(record.id, liveDevFolderDisabledLine(actor.id, actor.localDevFolder));
+	}
 	// Nothing to mount the registered folder over. Not reported for a run that opted out anyway.
-	if (actor.localDevFolder && !build.imageWorkingDirectory && options.devFolder !== false) {
-		appendRuntimeLog(record.id, unknownWorkingDirectoryLine(actor.localDevFolder));
+	if (localDevFolder && !build.imageWorkingDirectory && options.devFolder !== false) {
+		appendRuntimeLog(record.id, unknownWorkingDirectoryLine(localDevFolder));
 	}
 	const runtimeSection = devMount ? liveDevFolderWarningLines(devMount) : [];
 	if (runtimeSection.length > 0) appendLog(record.id, formatRuntimeLogLines(runtimeSection));

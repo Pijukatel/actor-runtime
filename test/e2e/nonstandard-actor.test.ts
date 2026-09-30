@@ -27,6 +27,7 @@ import {
 	apify,
 	apifyEnv,
 	createIsolatedApifyHome,
+	enableLiveDevFolder,
 	loginApifyCli,
 	removeIsolatedApifyHome,
 	type ApiEnvelope,
@@ -72,6 +73,7 @@ function callWith(input: object, env: NodeJS.ProcessEnv, cwd = SAMPLE_ACTOR_DIR)
 }
 
 function registerDevFolder(id: string, path: string, env: NodeJS.ProcessEnv): { localDevFolder: string | null } {
+	enableLiveDevFolder(id, REPO_ROOT, env);
 	const output = apify(['api', 'POST', `/actor-runtime/dev-folder/${id}`, '--body', JSON.stringify(path)], {
 		cwd: REPO_ROOT,
 		env,

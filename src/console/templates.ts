@@ -160,6 +160,15 @@ export function devFolderForm(actorId: string, currentValue: string, errorMessag
 	);
 }
 
+export function liveDevFolderForm(actorId: string, enabled: boolean): string {
+	return (
+		`<form method="post" action="/actors/${encodeURIComponent(actorId)}/live-dev-folder" data-autosave>` +
+		`<label><input type="checkbox" name="enabled"${enabled ? ' checked' : ''}> Use live dev folder ` +
+		'(runs mount the registered dev folder over the built image)</label>' +
+		'</form>'
+	);
+}
+
 function selectOptions(selected: string, options: Array<[string, string]>): string {
 	return options
 		.map(([value, label]) => `<option value="${value}"${selected === value ? ' selected' : ''}>${label}</option>`)

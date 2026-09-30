@@ -60,7 +60,7 @@
 
 ## Local dev-folder registration form (Actor detail view)
 
-- The Actor detail view shows the Actor's registered local dev folder, or that none is registered - the
+- The form's field shows the Actor's registered local dev folder, empty when none is registered - the
   same status the API endpoint reports (`api.md`). It never claims a mount "will apply" (that depends on
   which build a given run resolves - `actor-driver.md`).
 - A single-field form sets or clears the dev folder with exactly the API endpoint's behavior (`api.md`),

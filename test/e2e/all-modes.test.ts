@@ -28,6 +28,7 @@ import {
 	apify,
 	apifyEnv,
 	createIsolatedApifyHome,
+	enableLiveDevFolder,
 	loginApifyCli,
 	removeIsolatedApifyHome,
 	type ApiEnvelope,
@@ -219,6 +220,7 @@ describe('all advanced modes at once: debug + live dev folder + browser view on 
 				{ cwd: REPO_ROOT, env },
 			);
 			expect(JSON.parse(devFolder).data.localDevFolder).toBe(actorDir);
+			enableLiveDevFolder(actorId, REPO_ROOT, env);
 			const debug = apify(['api', 'POST', `/actor-runtime/debug/${actorId}`, '--body', '{"enabled": true}'], {
 				cwd: REPO_ROOT,
 				env,

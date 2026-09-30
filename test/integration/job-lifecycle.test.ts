@@ -1030,12 +1030,18 @@ describe('build log: the registered live dev folder', () => {
 		await server.close();
 	});
 
-	async function buildWith(localDevFolder: string | undefined, imageWorkingDirectory: string | undefined) {
+	async function buildWith(
+		localDevFolder: string | undefined,
+		imageWorkingDirectory: string | undefined,
+		liveDevFolderEnabled = true,
+	) {
 		server = await startTestServer(fixedBuildOutcomeDriver({ imageId: 'x', imageWorkingDirectory }));
 		const seeded = await seedActor(server, 'dev-folder-build-log-actor');
 		// Registered after the caller's snapshot, like `apify push` does right before starting the build.
 		await getRegistries().actors.update(seeded.id, (current) =>
-			current ? { ...current, localDevFolder } : current,
+			current
+				? { ...current, localDevFolder, localDevFolderEnabled: liveDevFolderEnabled || undefined }
+				: current,
 		);
 		const record: BuildRecord = {
 			id: generateId(),
@@ -1065,5 +1071,9 @@ describe('build log: the registered live dev folder', () => {
 		expect(await buildWith(undefined, '/usr/src/app')).not.toContain('Registered live dev folder');
 		await server.close();
 		expect(await buildWith('/home/me/actor', undefined)).not.toContain('Registered live dev folder');
+	});
+
+	it('says nothing while the live dev folder is off for the Actor', async () => {
+		expect(await buildWith('/home/me/actor', '/usr/src/app', false)).not.toContain('Registered live dev folder');
 	});
 });

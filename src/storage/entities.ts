@@ -159,6 +159,8 @@ export interface ActorRecord {
 	 * this field, *is* exposed on `/v2`). Never touched by any other Actor write. Optional and never
 	 * exposed on `/v2` itself either (`dto/actors.ts: actorDto` is explicit field-by-field). */
 	localDevFolder?: string;
+	/** Live dev folder toggle; absent means off. Same `modifiedAt`/`/v2` rules as `localDevFolder`. */
+	localDevFolderEnabled?: true;
 	/** The per-Actor debug-mode toggle (`actor-driver.md`'s "Debug mode" section). Absent means off.
 	 * Same `modifiedAt`-preserving, never-`/v2`-exposed pattern as `localDevFolder` above. */
 	localDebug?: ActorLocalDebug;

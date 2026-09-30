@@ -102,6 +102,11 @@ export function loginApifyCli(cwd: string, isolatedApifyHome: string): void {
 	apify(['login', '--token', APIFY_TOKEN], { cwd, env: apifyEnv(isolatedApifyHome) });
 }
 
+/** Off by default, so a suite relying on the dev-folder mount turns it on for its Actor. */
+export function enableLiveDevFolder(actorId: string, cwd: string, env: NodeJS.ProcessEnv): void {
+	apify(['api', 'POST', `/actor-runtime/live-dev-folder/${actorId}`, '--body', '{"enabled": true}'], { cwd, env });
+}
+
 /** The `{ data: ... }` envelope every Apify API response (and `apify api`'s printed output) uses. */
 export interface ApiEnvelope<T> {
 	data: T;

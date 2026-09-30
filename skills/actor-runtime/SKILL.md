@@ -98,11 +98,18 @@ build, so changing them needs an `apify push`.
 ## Iterate without rebuilding (dev folder)
 
 After that first `apify push`, the runtime registers the pushed directory as the Actor's **dev
-folder** (the build log's `Registered live dev folder` line confirms it) and bind-mounts it into every
-later run. Edit locally, recompile locally (`tsc`, or the
-language equivalent), and `apify call` again - no `apify push`, no rebuild:
+folder**. The live dev folder is **off by default**; once it is enabled for the Actor, the runtime
+bind-mounts that folder into every later run (the build log's `Registered live dev folder` line
+confirms it). Edit locally, recompile locally (`tsc`, or the language equivalent), and `apify call`
+again - no `apify push`, no rebuild.
+
+It pays off most for plain Python or JavaScript Actors whose source runs as-is, with no compile or
+other build step. For Actors that compile, generate files at build time, or use a non-standard image
+layout, the mounted folder has to match what the image expects at run time, which is easy to get
+wrong - there, `apify push` after each change is often the more reliable loop.
 
 ```sh
+apify api POST /actor-runtime/live-dev-folder/<actorId> --body '{"enabled": true}'   # once per Actor
 # edit src/main.ts
 npm run build
 apify call --input '{"maxPages":3}'   # picks up the new dist/
@@ -111,6 +118,8 @@ apify call --input '{"maxPages":3}'   # picks up the new dist/
 - A local recompile is picked up by the **next** run's container start, not by a run already going.
 - `node_modules` still comes from the built image, so a new dependency in `package.json` does need a
   real `apify push`. Only source edits skip the rebuild.
+- Disable it with `--body '{"enabled": false}'`; the Actor's console page has the same checkbox. While
+  it is off, each run's log says the registered folder is not mounted.
 - `apify call --no-dev-folder` runs once from the built image alone, leaving the registration alone.
 - Register a different folder by hand with
   `apify api POST /actor-runtime/dev-folder/<actorId> --body '"/abs/path/to/src"'`; clear it with

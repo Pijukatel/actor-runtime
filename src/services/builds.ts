@@ -258,8 +258,8 @@ export async function runBuildInBackground(
 		);
 		// Re-read: `apify push` registers the folder right before starting the build, and the console can
 		// change it mid-build. No working directory means no mount - the run log explains that instead.
-		const { localDevFolder } = (await getRegistries().actors.get(actor.id)) ?? actor;
-		if (localDevFolder && outcome.imageWorkingDirectory) {
+		const { localDevFolder, localDevFolderEnabled } = (await getRegistries().actors.get(actor.id)) ?? actor;
+		if (localDevFolderEnabled && localDevFolder && outcome.imageWorkingDirectory) {
 			appendRuntimeLog(record.id, registeredDevFolderBuildLine(localDevFolder, outcome.imageWorkingDirectory));
 		}
 		// Flush before writing the terminal status, not after (mirrors the same fix in
