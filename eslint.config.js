@@ -12,6 +12,7 @@ export default tseslint.config(
 			'samples/actor_standby_ts/**',
 			'samples/actor_py/**',
 			'samples/actor_playwright/**',
+			'samples/actor_env_vars/**',
 			'data/**',
 		],
 	},
