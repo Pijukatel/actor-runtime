@@ -231,6 +231,11 @@
     - **Body**: `{ "enabled": boolean, "interactive"?: boolean }`, `interactive` defaulting to `false`. A call
       fully replaces the prior state; `{"enabled": false}` clears it. Any other shape is `400 invalid-request`.
     - **Response**: `{ data: { localBrowserView: { interactive } | null } }` - the read-back; there is no `GET`.
+- **`PUT /actor-runtime/source-context/:actorId/:versionNumber`** - how `apify push` sends a monorepo
+  Actor (`actor-driver.md`): replaces an existing version's source with the repository as a `.tar.gz`
+  body, the Actor's folder in it given as `actorPath`, and optional Git details shown in the build log.
+  Owner-scoped; `400` for an invalid archive or `actorPath`, `404` for an unknown Actor or version. The
+  version reads on `/v2` as one with no source files; pushing `sourceFiles` to it replaces the repository.
 - **`GET /actor-runtime/events/:runId`** - a websocket upgrade, reachable at exactly this one path on
   the fixed API port (`system.md`). It carries the run's platform events: `systemInfo` once a second
   (`actor-driver.md`), a one-off `aborting`-plus-`persistState` pair under `?gracefully=` (below), and a

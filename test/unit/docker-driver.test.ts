@@ -618,6 +618,46 @@ describe('DockerDriver.startBuild - dockerfile option (the resolved path is hand
 		expect(stub.buildImage.mock.calls[1]![1]).not.toHaveProperty('buildargs');
 	});
 
+	it("gives every file mode 0o777, as the platform's builder does, and keeps a symlink a link", async () => {
+		const stub = stubDockerCapturingBuildImageOptions();
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+		const entries: Array<{ name: string; type?: string; mode?: number; linkname?: string | null }> = [];
+		stub.buildImage.mockImplementationOnce(async (context: NodeJS.ReadableStream) => {
+			const extract = tar.extract();
+			extract.on('entry', (header, stream, next) => {
+				entries.push({ name: header.name, type: header.type, mode: header.mode, linkname: header.linkname });
+				stream.resume();
+				stream.once('end', next);
+			});
+			await new Promise((resolve) => {
+				extract.once('finish', resolve);
+				context.pipe(extract);
+			});
+			return new PassThrough();
+		});
+
+		await driver.startBuild(
+			{
+				buildId: 'build-modes',
+				actorName: 'my-actor',
+				sourceFiles: [
+					{ name: 'run.sh', format: 'TEXT', content: 'echo hi\n' },
+					{ name: 'shared', format: 'TEXT', content: '', linkTarget: '../shared' },
+				],
+				useCache: true,
+				timeoutSecs: 60,
+				dockerfilePath: 'Dockerfile',
+			},
+			() => {},
+		);
+
+		expect(entries).toEqual([
+			{ name: 'run.sh', type: 'file', mode: 0o777, linkname: null },
+			expect.objectContaining({ name: 'shared', type: 'symlink', linkname: '../shared' }),
+		]);
+	});
+
 	it('always sets the "dockerfile" option, even for the plain root-"Dockerfile" case that coincides with Docker\'s own implicit default', async () => {
 		const stub = stubDockerCapturingBuildImageOptions();
 		const driver = new DockerDriver(stub.docker);

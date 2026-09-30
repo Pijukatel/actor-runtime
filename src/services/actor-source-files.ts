@@ -5,6 +5,9 @@
  *
  * Shared rather than written per field so the Actor-root containment check has one implementation:
  * a traversal hole patched in one copy would otherwise stay open in the other.
+ *
+ * `actorPath` is the Actor's folder within the pushed files (`''` for an ordinary push); path fields may
+ * leave it, but not the pushed files.
  */
 import * as path from 'node:path';
 import JSON5 from 'json5';
@@ -44,6 +47,10 @@ export function findCaseInsensitive(indexed: IndexedFile[], candidate: string): 
 	return firstMatch;
 }
 
+export function actorFilePath(actorPath: string, relativePath: string): string {
+	return normalizeEntryName(actorPath === '' ? relativePath : path.posix.join(actorPath, relativePath));
+}
+
 /** `.actor/actor.json`'s own path is not case-folded, unlike the files its fields name. */
 export function findExact(sourceFiles: SourceFile[], normalizedTarget: string): SourceFile | undefined {
 	return sourceFiles.find((file) => normalizeEntryName(file.name) === normalizedTarget);
@@ -53,8 +60,8 @@ export function findExact(sourceFiles: SourceFile[], normalizedTarget: string): 
 export type ActorJsonParse =
 	{ outcome: 'parsed'; specification: unknown } | { outcome: 'absent' } | { outcome: 'unparseable'; message: string };
 
-export function parseActorJson(sourceFiles: SourceFile[]): ActorJsonParse {
-	const file = findExact(sourceFiles, ACTOR_JSON_NAME);
+export function parseActorJson(sourceFiles: SourceFile[], actorPath = ''): ActorJsonParse {
+	const file = findExact(sourceFiles, actorFilePath(actorPath, ACTOR_JSON_NAME));
 	if (!file) return { outcome: 'absent' };
 	try {
 		return { outcome: 'parsed', specification: JSON5.parse(sourceFileToText(file)) as unknown };
@@ -71,15 +78,22 @@ export type ActorJsonPathField =
 	| { outcome: 'not-found'; shownPath: string }
 	| { outcome: 'escapes-actor-root' };
 
-/** `field` is resolved relative to `.actor/`, and may not leave the Actor root. */
-export function resolveActorJsonPathField(indexed: IndexedFile[], field: string): ActorJsonPathField {
+/** `field` is resolved relative to `.actor/`, and may not leave the pushed files. */
+export function resolveActorJsonPathField(
+	indexed: IndexedFile[],
+	field: string,
+	actorPath = '',
+	matchCase = false,
+): ActorJsonPathField {
 	if (field === '') return { outcome: 'not-found', shownPath: '' };
 	if (field.startsWith('/')) return { outcome: 'escapes-actor-root' };
 
-	const joined = normalizeEntryName(path.posix.join(ACTOR_DIR, field));
+	const joined = normalizeEntryName(path.posix.join(actorFilePath(actorPath, ACTOR_DIR), field));
 	if (joined === '..' || joined.startsWith('../')) return { outcome: 'escapes-actor-root' };
 
-	const match = findCaseInsensitive(indexed, joined);
+	const match = matchCase
+		? indexed.find((file) => file.normalizedName === joined)
+		: findCaseInsensitive(indexed, joined);
 	return match ? { outcome: 'match', file: match } : { outcome: 'not-found', shownPath: joined };
 }
 

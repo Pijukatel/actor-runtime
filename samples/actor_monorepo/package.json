@@ -1,0 +1,9 @@
+{
+	"name": "actor-monorepo-sample",
+	"private": true,
+	"type": "module",
+	"workspaces": [
+		"actors/*",
+		"packages/*"
+	]
+}

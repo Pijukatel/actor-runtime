@@ -40,6 +40,8 @@ export interface SourceFile {
 	name: string;
 	format: 'TEXT' | 'BASE64';
 	content: string;
+	/** Only for a symlink in a pushed monorepo repository; `content` is then empty. */
+	linkTarget?: string;
 }
 
 /**
@@ -70,6 +72,25 @@ export interface ActorSecretKeys {
 	passphrase: string;
 }
 
+/** Shown in the build log only, never used to fetch anything. */
+export interface LocalSourceContextGit {
+	remoteUrl?: string;
+	branch?: string;
+	commit?: string;
+	dirty?: boolean;
+}
+
+/** A monorepo Actor's pushed repository; its files are in `__FILES__` under `fileId`. */
+export interface LocalSourceContext {
+	fileId: string;
+	/** The Actor's folder in the repository. */
+	actorPath: string;
+	fileCount: number;
+	sizeBytes: number;
+	uploadedAt: string;
+	git?: LocalSourceContextGit;
+}
+
 export interface ActorVersionRecord {
 	versionNumber: string;
 	buildTag: string;
@@ -78,6 +99,8 @@ export interface ActorVersionRecord {
 	envVars?: ActorEnvVarRecord[];
 	/** Passes `envVars`, secrets included, to the image build as Docker build arguments. */
 	applyEnvVarsToBuild?: boolean;
+	/** When set, builds use it instead of `sourceFiles`. Never exposed on `/v2`. */
+	localSourceContext?: LocalSourceContext;
 }
 
 /** Caller-facing language selector for the debug toggle. `'auto'` resolves from the built image at run

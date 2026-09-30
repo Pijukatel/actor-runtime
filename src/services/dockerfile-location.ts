@@ -5,10 +5,10 @@
  * case-insensitive; the returned path is always the matched file's own name, never the candidate's
  * casing - Docker's tar lookup is case-sensitive. An exact-case match wins over a case-differing one.
  */
-import { normalizeEntryName } from '../driver/tar-entry-name.js';
 import type { SourceFile } from '../storage/entities.js';
 import {
 	ACTOR_DIR,
+	actorFilePath,
 	escapesActorRootMessage,
 	fallbackWarningLine,
 	findCaseInsensitive,
@@ -23,7 +23,7 @@ export type DockerfileResolutionFailureReason =
 	'escapes-actor-root' | 'invalid-dockerfile-field' | 'unparseable-actor-json';
 
 /** `resolveDockerfileLocation`'s outcomes: `resolved` (a candidate matched), `default` (nothing matched
- * - `extraSourceFile` must be appended to this build's context only, never persisted), or `failure`. */
+ * - `extraSourceFile` goes to this build's Docker context only, never persisted), or `failure`. */
 export type DockerfileResolution =
 	| { outcome: 'resolved'; dockerfilePath: string; logLines: string[] }
 	| { outcome: 'default'; dockerfilePath: string; logLines: string[]; extraSourceFile: SourceFile }
@@ -37,11 +37,11 @@ function escapesActorRootFailure(rawField: string): DockerfileResolution {
 	};
 }
 
-export function resolveDockerfileLocation(sourceFiles: SourceFile[]): DockerfileResolution {
+export function resolveDockerfileLocation(sourceFiles: SourceFile[], actorPath = ''): DockerfileResolution {
 	const indexed = indexSourceFiles(sourceFiles);
 	const logLines: string[] = [];
 
-	const actorJson = parseActorJson(sourceFiles);
+	const actorJson = parseActorJson(sourceFiles, actorPath);
 	if (actorJson.outcome === 'unparseable') {
 		return { outcome: 'failure', reason: 'unparseable-actor-json', message: actorJson.message };
 	}
@@ -57,7 +57,7 @@ export function resolveDockerfileLocation(sourceFiles: SourceFile[]): Dockerfile
 			};
 		}
 
-		const resolved = resolveActorJsonPathField(indexed, field);
+		const resolved = resolveActorJsonPathField(indexed, field, actorPath);
 		if (resolved.outcome === 'escapes-actor-root') return escapesActorRootFailure(field);
 		if (resolved.outcome === 'match') {
 			return {
@@ -72,7 +72,7 @@ export function resolveDockerfileLocation(sourceFiles: SourceFile[]): Dockerfile
 		logLines.push(fallbackWarningLine(resolved.shownPath, 'dockerfile'));
 	}
 
-	const actorDirCandidate = normalizeEntryName(`${ACTOR_DIR}/${DEFAULT_DOCKERFILE_NAME}`);
+	const actorDirCandidate = actorFilePath(actorPath, `${ACTOR_DIR}/${DEFAULT_DOCKERFILE_NAME}`);
 	const actorDirMatch = findCaseInsensitive(indexed, actorDirCandidate);
 	if (actorDirMatch) {
 		return {
@@ -85,7 +85,7 @@ export function resolveDockerfileLocation(sourceFiles: SourceFile[]): Dockerfile
 		};
 	}
 
-	const rootCandidate = normalizeEntryName(DEFAULT_DOCKERFILE_NAME);
+	const rootCandidate = actorFilePath(actorPath, DEFAULT_DOCKERFILE_NAME);
 	const rootMatch = findCaseInsensitive(indexed, rootCandidate);
 	if (rootMatch) {
 		return {

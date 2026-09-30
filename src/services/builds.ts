@@ -9,11 +9,15 @@ import { normalizeEntryName } from '../driver/tar-entry-name.js';
 import { sourceFileToText } from './actor-source-files.js';
 import { qualifyDockerfileImageReferences } from './dockerfile-image-refs.js';
 import { resolveDockerfileLocation } from './dockerfile-location.js';
+import { dockerContextFiles, nameInDockerContext, resolveDockerContext } from './docker-context.js';
+import { describeActorJsonDefect } from './actor-json-validation.js';
+import { DEFAULT_DOCKERFILE_NAME } from './default-dockerfile.js';
 import { resolveInputSchemaLocation } from './input-schema-location.js';
 import { resolveActorMemorySettings } from './actor-memory.js';
 import { buildArgsOf } from './env-vars.js';
 import { appendLog, appendRuntimeLog, flushLog, markLogTerminal } from './logs.js';
 import { registeredDevFolderBuildLine } from './dev-folder.js';
+import { describeSourceContextOrigin, loadSourceContextFiles } from './source-context.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 
 /**
@@ -23,6 +27,9 @@ import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
  * reasonable placeholder for this runtime, not a matched platform constant.
  */
 const DEFAULT_BUILD_TIMEOUT_SECS = 1800;
+
+/** Passed to every build, as on the platform: the Actor's folder relative to the Docker context. */
+const ACTOR_PATH_IN_DOCKER_CONTEXT_BUILD_ARG = 'ACTOR_PATH_IN_DOCKER_CONTEXT';
 
 export async function listOwnedBuilds(userId: string, actorId?: string): Promise<BuildRecord[]> {
 	const all = await getRegistries().builds.list();
@@ -213,16 +220,57 @@ export async function runBuildInBackground(
 		return;
 	}
 
-	const dockerfileResolution = resolveDockerfileLocation(version.sourceFiles);
+	const context = version.localSourceContext;
+	const actorPath = context?.actorPath ?? '';
+	let versionSourceFiles = version.sourceFiles;
+	if (context) {
+		const contextFiles = await loadSourceContextFiles(context);
+		if (!contextFiles) {
+			await failBuild(record.id, 'The pushed Docker context is missing. Run apify push again.');
+			return;
+		}
+		versionSourceFiles = contextFiles;
+		appendRuntimeLog(
+			record.id,
+			`Building "${actorPath}" from ${context.fileCount} pushed files${describeSourceContextOrigin(context.git)}.\n`,
+		);
+	}
+
+	const dockerContext = resolveDockerContext(versionSourceFiles, actorPath);
+	if (dockerContext.outcome === 'failure') {
+		await failBuild(record.id, dockerContext.message);
+		return;
+	}
+	const { contextPath, actorPathInContext } = dockerContext;
+
+	const actorJsonDefect = describeActorJsonDefect(versionSourceFiles, actorPath);
+	if (actorJsonDefect) {
+		await failBuild(record.id, actorJsonDefect);
+		return;
+	}
+
+	const dockerfileResolution = resolveDockerfileLocation(versionSourceFiles, actorPath);
 	if (dockerfileResolution.outcome === 'failure') {
 		await failBuild(record.id, dockerfileResolution.message);
 		return;
 	}
 	for (const line of dockerfileResolution.logLines) appendRuntimeLog(record.id, line);
+	// The platform reads the Dockerfile from the Docker context, so one outside it cannot build there either.
+	const dockerfilePath =
+		dockerfileResolution.outcome === 'default'
+			? DEFAULT_DOCKERFILE_NAME
+			: nameInDockerContext(dockerfileResolution.dockerfilePath, contextPath);
+	if (dockerfilePath === undefined) {
+		await failBuild(
+			record.id,
+			`Dockerfile "${dockerfileResolution.dockerfilePath}" is outside the Docker context "${contextPath}", so the build cannot read it.`,
+		);
+		return;
+	}
 
 	// Before the image is built, not after: an Actor whose declared input contract cannot be read fails
 	// the build, rather than producing an image whose every run would skip validation.
-	const inputSchemaResolution = resolveInputSchemaLocation(version.sourceFiles);
+	const inputSchemaResolution = resolveInputSchemaLocation(versionSourceFiles, actorPath);
 	if (inputSchemaResolution.outcome === 'failure') {
 		await failBuild(record.id, inputSchemaResolution.message);
 		return;
@@ -230,26 +278,32 @@ export async function runBuildInBackground(
 	for (const line of inputSchemaResolution.logLines) appendRuntimeLog(record.id, line);
 	const inputSchema = inputSchemaResolution.outcome === 'resolved' ? inputSchemaResolution.schema : undefined;
 
-	const memoryResolution = resolveActorMemorySettings(version.sourceFiles);
+	const memoryResolution = resolveActorMemorySettings(versionSourceFiles, actorPath);
 	if (memoryResolution.outcome === 'failure') {
 		await failBuild(record.id, memoryResolution.message);
 		return;
 	}
 	const memorySettings = memoryResolution.settings;
 
+	const contextFiles = dockerContextFiles(versionSourceFiles, contextPath);
 	const sourceFiles: SourceFile[] = qualifyDockerfileImages(
 		dockerfileResolution.outcome === 'default'
-			? [...version.sourceFiles, dockerfileResolution.extraSourceFile]
-			: version.sourceFiles,
-		dockerfileResolution.dockerfilePath,
+			? [
+					...contextFiles.filter((file) => normalizeEntryName(file.name) !== DEFAULT_DOCKERFILE_NAME),
+					dockerfileResolution.extraSourceFile,
+				]
+			: contextFiles,
+		dockerfilePath,
 		(line) => appendRuntimeLog(record.id, line),
 	);
 
-	const buildArgs = buildArgsOf(actor, version);
-	if (buildArgs) {
+	// As on the platform, an environment variable of the same name overrides it.
+	const envBuildArgs = buildArgsOf(actor, version);
+	const buildArgs = { [ACTOR_PATH_IN_DOCKER_CONTEXT_BUILD_ARG]: actorPathInContext, ...envBuildArgs };
+	if (envBuildArgs) {
 		appendRuntimeLog(
 			record.id,
-			`Passing the version's environment variables to the build as build arguments: ${Object.keys(buildArgs).join(', ')}`,
+			`Passing the version's environment variables to the build as build arguments: ${Object.keys(envBuildArgs).join(', ')}`,
 		);
 	}
 
@@ -261,8 +315,8 @@ export async function runBuildInBackground(
 				sourceFiles,
 				useCache: options.useCache,
 				timeoutSecs: DEFAULT_BUILD_TIMEOUT_SECS,
-				dockerfilePath: dockerfileResolution.dockerfilePath,
-				...(buildArgs ? { buildArgs } : {}),
+				dockerfilePath,
+				buildArgs,
 			},
 			(chunk) => appendLog(record.id, chunk),
 		);

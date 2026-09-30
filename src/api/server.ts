@@ -21,6 +21,7 @@ import { mountMigrate } from './routes/migrate.js';
 import { mountApiFallback } from './routes/api-fallback.js';
 import { mountLiveDevFolder } from './routes/live-dev-folder.js';
 import { mountSkill } from './routes/skill.js';
+import { mountSourceContext } from './routes/source-context.js';
 import { standbyProxy } from './standby-proxy.js';
 import { attemptFallback, type LocalError } from '../services/api-fallback.js';
 import type { Driver } from '../driver/types.js';
@@ -69,6 +70,7 @@ export function createApiServer(deps: ApiServerDeps): Express {
 	mountMigrate(actorRuntime, deps);
 	mountApiFallback(actorRuntime);
 	mountLiveDevFolder(actorRuntime);
+	mountSourceContext(actorRuntime);
 	app.use('/actor-runtime', actorRuntime);
 	// Also served at `/v2/actor-runtime/*` - the *same* router instance, no duplicated route logic - solely
 	// because `apify api`'s own URL-building hardcodes a `/v2`-suffixed base (`${baseUrl}/${endpoint}`,

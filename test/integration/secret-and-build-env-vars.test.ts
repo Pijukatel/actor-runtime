@@ -235,13 +235,17 @@ describe('secret and build-time environment variables', () => {
 	it('passes env vars, secrets included, to the build only when applyEnvVarsToBuild is on', async () => {
 		const actor = await createActorWithVersion('build-args-off');
 		await server.client.actor(actor.id).build('0.0', { waitForFinish: 5 });
-		expect(captured.build?.buildArgs).toBeUndefined();
+		expect(captured.build?.buildArgs).toEqual({ ACTOR_PATH_IN_DOCKER_CONTEXT: '' });
 
 		await server.client.actor(actor.id).version('0.0').update({ applyEnvVarsToBuild: true });
 		const build = await server.client.actor(actor.id).build('0.0', { waitForFinish: 5 });
 
 		expect(build.status).toBe('SUCCEEDED');
-		expect(captured.build?.buildArgs).toEqual({ PLAIN_VAR: 'plain-value', SECRET_VAR: 'secret-value' });
+		expect(captured.build?.buildArgs).toEqual({
+			ACTOR_PATH_IN_DOCKER_CONTEXT: '',
+			PLAIN_VAR: 'plain-value',
+			SECRET_VAR: 'secret-value',
+		});
 		const log = await server.client.build(build.id).log().get();
 		expect(log).toContain('PLAIN_VAR, SECRET_VAR');
 		expect(log).not.toContain('secret-value');

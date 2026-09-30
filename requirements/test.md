@@ -49,3 +49,11 @@ Test case must verify full Actor development flow:
 
 - Each standby sample, pushed: its requests share one `STANDBY` run, which ends `SUCCEEDED` once idle, and
   the next request starts a new one; `samples/actor_standby_web` is also reachable from another Actor's run.
+
+## Monorepo Actors
+
+- Both Actors of `samples/actor_monorepo` push, build and run with the shared Dockerfile, input schema and
+  package.
+- A build fails or succeeds as the platform's Git build of the same repository would.
+- Runs only with a locally built CLI (`ACTOR_RUNTIME_E2E_APIFY_CLI`) until monorepo support is published,
+  and is not in CI until then. `ACTOR_RUNTIME_E2E_IMAGE` tests an already built runtime image.

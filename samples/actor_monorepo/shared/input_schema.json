@@ -1,0 +1,15 @@
+{
+	"title": "Monorepo sample input",
+	"type": "object",
+	"schemaVersion": 1,
+	"properties": {
+		"count": {
+			"title": "Count",
+			"type": "integer",
+			"description": "How many greetings to push to the dataset.",
+			"default": 2,
+			"minimum": 1,
+			"maximum": 100
+		}
+	}
+}

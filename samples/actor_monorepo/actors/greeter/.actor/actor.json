@@ -1,0 +1,10 @@
+{
+	"actorSpecification": 1,
+	"name": "monorepo-sample-greeter",
+	"title": "Monorepo sample: greeter",
+	"version": "0.0",
+	"buildTag": "latest",
+	"dockerContextDir": "../../..",
+	"dockerfile": "../../../shared/Dockerfile",
+	"input": "../../../shared/input_schema.json"
+}

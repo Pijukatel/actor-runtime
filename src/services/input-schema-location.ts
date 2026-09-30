@@ -13,8 +13,8 @@ import { validateInputSchema } from '@apify/input_schema';
 import type { InputSchema, SourceFile } from '../storage/entities.js';
 import {
 	ACTOR_DIR,
+	actorFilePath,
 	escapesActorRootMessage,
-	fallbackWarningLine,
 	findCaseInsensitive,
 	indexSourceFiles,
 	parseActorJson,
@@ -35,6 +35,7 @@ const DEFAULT_SCHEMA_CANDIDATES = [`${ACTOR_DIR}/input_schema.json`, 'input_sche
  * read must not be built with that contract silently dropped. */
 export type InputSchemaResolutionFailureReason =
 	| 'escapes-actor-root'
+	| 'missing-input-schema'
 	| 'invalid-input-field'
 	| 'unparseable-actor-json'
 	| 'unparseable-input-schema'
@@ -98,11 +99,11 @@ function acceptSchemaFile(match: IndexedFile, source: string, logLines: string[]
 	return acceptSchema(parsed, source, logLines);
 }
 
-export function resolveInputSchemaLocation(sourceFiles: SourceFile[]): InputSchemaResolution {
+export function resolveInputSchemaLocation(sourceFiles: SourceFile[], actorPath = ''): InputSchemaResolution {
 	const indexed = indexSourceFiles(sourceFiles);
 	const logLines: string[] = [];
 
-	const actorJson = parseActorJson(sourceFiles);
+	const actorJson = parseActorJson(sourceFiles, actorPath);
 	if (actorJson.outcome === 'unparseable') {
 		return { outcome: 'failure', reason: 'unparseable-actor-json', message: actorJson.message };
 	}
@@ -124,7 +125,8 @@ export function resolveInputSchemaLocation(sourceFiles: SourceFile[]): InputSche
 			};
 		}
 
-		const resolved = resolveActorJsonPathField(indexed, field);
+		// Exact case and no fallback, as on the platform.
+		const resolved = resolveActorJsonPathField(indexed, field, actorPath, true);
 		if (resolved.outcome === 'escapes-actor-root') {
 			return {
 				outcome: 'failure',
@@ -136,13 +138,17 @@ export function resolveInputSchemaLocation(sourceFiles: SourceFile[]): InputSche
 			const source = `"${resolved.file.normalizedName}" (the "input" field in .actor/actor.json)`;
 			return acceptSchemaFile(resolved.file, source, logLines);
 		}
-		// Falls through instead of failing - the tolerance `apify-cli` shows locally, and the one the
-		// Dockerfile field already has here.
-		logLines.push(fallbackWarningLine(resolved.shownPath, 'input'));
+		if (field !== '') {
+			return {
+				outcome: 'failure',
+				reason: 'missing-input-schema',
+				message: `Schema property "input": File "${resolved.shownPath}" does not exist!`,
+			};
+		}
 	}
 
 	for (const candidate of DEFAULT_SCHEMA_CANDIDATES) {
-		const match = findCaseInsensitive(indexed, candidate);
+		const match = findCaseInsensitive(indexed, actorFilePath(actorPath, candidate));
 		if (match) return acceptSchemaFile(match, `"${match.normalizedName}"`, logLines);
 	}
 

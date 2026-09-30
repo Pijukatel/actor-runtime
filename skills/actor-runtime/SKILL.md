@@ -61,6 +61,22 @@ both `apify/actor-node-playwright*` and `apify/actor-python-playwright*` are - a
 those is retried for `linux/amd64`, the architecture the Apify platform builds and runs on, with the
 reason in the build log. The engine emulates it (Rosetta on Apple Silicon), so it works, just slower.
 
+## Monorepo Actors (`dockerContextDir`)
+
+Push from the Actor's own folder; it builds as the platform builds it from Git with that folder selected:
+
+```sh
+cd monorepo/actors/my-actor
+apify push
+apify call
+```
+
+- The push sends your local working copy, uncommitted changes included, with a warning: the platform
+  builds only what is committed and pushed. `.actorignore` does not apply, as for Git builds.
+- No Git access or credentials are needed; check out the branch you want, then push.
+- `apify push` of such an Actor to the Apify platform stops with an error: it is not supported there yet
+  (https://github.com/apify/apify-core/issues/28685). Build it from the Git repository instead.
+
 ## Input schema: defaults and validation
 
 If the Actor declares an input schema - the `input` field of `.actor/actor.json`, or

@@ -34,12 +34,22 @@
     4. the platform's bundled default Dockerfile, for that build only - the pushed source itself is unchanged.
     - Matching is case-insensitive, exact-case wins ties, and every outcome is stated in the build log.
 
+# Monorepo Actors
+
+- Actors that set `dockerContextDir` build as the platform builds them from a Git repository with the
+  Actor's folder selected.
+- `apify push` from the Actor's folder sends the repository as it is locally, uncommitted changes
+  included, with a warning that the platform builds only what is committed and pushed. `.actorignore`
+  does not apply, as for the platform's Git builds.
+- The runtime never fetches from Git. The build log and console show the pushed branch and commit.
+- `apify push` refuses such an Actor against the Apify platform, which does not support it yet.
+
 # Input schema, validation and defaults
 
 - **Input schemas work as on the Apify platform**: the schema is read from the pushed source when the
   Actor is built - the `input` field of `.actor/actor.json`, else `.actor/INPUT_SCHEMA.json`, else
-  `INPUT_SCHEMA.json` - a build whose schema cannot be read or is not a valid input schema fails with
-  the reason in its log, and every run of a build is validated against that build's schema with its
+  `INPUT_SCHEMA.json` - a build whose named schema file is missing, cannot be read or is not a valid input
+  schema fails with the reason in its log, and every run of a build is validated against that build's schema with its
   defaults applied, a rejected input starting nothing (`api.md`). A build with no input schema takes
   every input exactly as the caller sent it.
 - Secret input fields work as on the platform.

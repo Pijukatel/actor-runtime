@@ -59,18 +59,20 @@ describe('resolveInputSchemaLocation', () => {
 		expect(resolution.source).toContain('.actor/schemas/custom.json');
 	});
 
-	it('falls back to the default locations, with a warning, when the named file is not in the pushed source', () => {
-		const resolution = expectResolved(
-			resolveInputSchemaLocation([
-				json('.actor/actor.json', { actorSpecification: 1, input: './missing.json' }),
-				json('.actor/input_schema.json', validSchema({ title: 'The fallback' })),
-			]),
-		);
-		expect(resolution.schema.title).toBe('The fallback');
-		expect(resolution.logLines.join('')).toContain('is not in the pushed source');
+	it('fails when the named file is not in the pushed source, or only in another case, as on the platform', () => {
+		for (const input of ['./missing.json', './INPUT_SCHEMA.JSON']) {
+			const resolution = resolveInputSchemaLocation([
+				json('.actor/actor.json', { actorSpecification: 1, input }),
+				json('.actor/input_schema.json', validSchema({ title: 'Not a fallback' })),
+			]);
+			expect(resolution).toMatchObject({ outcome: 'failure', reason: 'missing-input-schema' });
+		}
+		expect(
+			resolveInputSchemaLocation([json('.actor/actor.json', { actorSpecification: 1, input: './missing.json' })]),
+		).toMatchObject({ message: 'Schema property "input": File ".actor/missing.json" does not exist!' });
 	});
 
-	it('treats an empty "input" field as "not found", falling through with a warning', () => {
+	it('treats an empty "input" field as naming no file, going on to the default locations', () => {
 		const resolution = expectResolved(
 			resolveInputSchemaLocation([
 				json('.actor/actor.json', { actorSpecification: 1, input: '' }),
@@ -78,7 +80,6 @@ describe('resolveInputSchemaLocation', () => {
 			]),
 		);
 		expect(resolution.schema.title).toBe('Root fallback');
-		expect(resolution.logLines.join('')).toContain('falling back to the default locations');
 	});
 
 	it('rejects an "input" path that escapes the Actor root, absolute or relative', () => {
@@ -186,5 +187,32 @@ describe('resolveInputSchemaLocation', () => {
 		]);
 
 		expect(resolution.outcome).toBe('resolved');
+	});
+});
+
+describe('resolveInputSchemaLocation in a monorepo build context', () => {
+	it('follows the "input" field outside the Actor\'s folder, and defaults to the Actor\'s own schema', () => {
+		const shared = expectResolved(
+			resolveInputSchemaLocation(
+				[
+					json('actors/a/.actor/actor.json', { input: '../../../shared/input_schema.json' }),
+					json('shared/input_schema.json', validSchema({ title: 'Shared' })),
+				],
+				'actors/a',
+			),
+		);
+		expect(shared.schema.title).toBe('Shared');
+
+		const own = expectResolved(
+			resolveInputSchemaLocation(
+				[
+					json('actors/a/.actor/actor.json', {}),
+					json('.actor/input_schema.json', validSchema({ title: 'Root' })),
+					json('actors/a/.actor/input_schema.json', validSchema({ title: 'Own' })),
+				],
+				'actors/a',
+			),
+		);
+		expect(own.schema.title).toBe('Own');
 	});
 });
