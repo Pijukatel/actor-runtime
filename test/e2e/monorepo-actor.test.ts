@@ -4,6 +4,7 @@
  * so each builds only from the whole Docker context `apify push` sends. Needs an `apify-cli` with monorepo
  * support - until it is published, point `ACTOR_RUNTIME_E2E_APIFY_CLI` at a built one (`helpers/apify-cli.ts`).
  */
+import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -40,7 +41,8 @@ interface GreetingItem {
 	actorPath: string;
 }
 
-describe('monorepo Actors via apify-cli (requires Docker)', () => {
+// Until a published apify-cli supports monorepo Actors, this file runs only against a locally built one.
+describe.skipIf(!process.env.ACTOR_RUNTIME_E2E_APIFY_CLI)('monorepo Actors via apify-cli (requires Docker)', () => {
 	let isolatedApifyHome: string;
 
 	beforeAll(

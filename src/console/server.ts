@@ -81,6 +81,11 @@ function storageLink(prefix: '/datasets' | '/key-value-stores' | '/request-queue
 	return { text: id, href: `${prefix}/${encodeURIComponent(id)}` };
 }
 
+/** A monorepo version's source: the Actor's folder in its Docker context, and where the context came from. */
+function dockerContextCell(context: LocalSourceContext): string {
+	return `${context.actorPath} (pushed ${context.uploadedAt}${describeSourceContextOrigin(context.git)})`;
+}
+
 /** Whether `req` carries positive evidence of being a cross-site form submission, for any of the
  * console's four mutating `POST` routes. The console is deliberately unauthenticated - anyone who can
  * reach it can already flip a toggle, register a dev folder, or migrate a run (`console.md`) - but all
@@ -96,11 +101,6 @@ function storageLink(prefix: '/datasets' | '/key-value-stores' | '/request-queue
  * behaviour for a legitimate same-origin submission. Written as a plain predicate (checked at the top of
  * each handler) rather than an Express middleware, so it needs no generic parameter shared across the
  * handler chain - `req.params` keeps the type each route's own path literal already gives it. */
-/** A monorepo version's source: the Actor's folder in its Docker context, and where the context came from. */
-function dockerContextCell(context: LocalSourceContext): string {
-	return `${context.actorPath} (pushed ${context.uploadedAt}${describeSourceContextOrigin(context.git)})`;
-}
-
 function isCrossSiteWrite(req: Request): boolean {
 	const site = req.header('sec-fetch-site');
 	return site !== undefined && site !== 'same-origin' && site !== 'none';

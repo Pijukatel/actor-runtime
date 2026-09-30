@@ -207,6 +207,7 @@ describe('monorepo source context', () => {
 			[{ actorPath: '.', sourceFiles: MONOREPO_FILES }, 'not the context itself'],
 			[{ actorPath: '../outside', sourceFiles: MONOREPO_FILES }, 'must not point outside the Docker context'],
 			[{ actorPath: '/abs', sourceFiles: MONOREPO_FILES }, 'must be relative to the Docker context'],
+			[{ actorPath: '/', sourceFiles: MONOREPO_FILES }, 'must be relative to the Docker context'],
 			[
 				{ actorPath: ACTOR_PATH, sourceFiles: Buffer.alloc(0) },
 				'must be the Docker context as a .tar.gz archive',
@@ -232,6 +233,45 @@ describe('monorepo source context', () => {
 		expect(missingVersion.status).toBe(404);
 		const missingActor = await putContext('no-such-actor', { actorPath: ACTOR_PATH, sourceFiles: MONOREPO_FILES });
 		expect(missingActor.status).toBe(404);
+	});
+
+	it("passes the version's env vars as build arguments too, with the Actor's path winning a name clash", async () => {
+		const actorId = await createActor();
+		await server.client
+			.actor(actorId)
+			.version('0.0')
+			.update({
+				applyEnvVarsToBuild: true,
+				envVars: [
+					{ name: 'PLAIN_VAR', value: 'plain-value' },
+					{ name: 'ACTOR_PATH_IN_DOCKER_CONTEXT', value: 'overridden' },
+				],
+			} as never);
+		await putContext(actorId, { actorPath: ACTOR_PATH, sourceFiles: MONOREPO_FILES });
+
+		const build = await server.client.actor(actorId).build('0.0', { waitForFinish: 10 });
+
+		expect(build.status).toBe('SUCCEEDED');
+		expect(driver.startBuildContexts[0].buildArgs).toEqual({
+			PLAIN_VAR: 'plain-value',
+			ACTOR_PATH_IN_DOCKER_CONTEXT: ACTOR_PATH,
+		});
+		const log = await server.client.log(build.id).get();
+		expect(log).toContain('as build arguments: PLAIN_VAR\n');
+	});
+
+	it("turns standby on when the Actor's .actor/actor.json in the context asks for it", async () => {
+		const actorId = await createActor();
+		const standbyFiles = MONOREPO_FILES.map((file) =>
+			file.name === `${ACTOR_PATH}/.actor/actor.json`
+				? { ...file, content: JSON.stringify({ ...JSON.parse(file.content), usesStandbyMode: true }) }
+				: file,
+		);
+		expect((await server.client.actor(actorId).get())?.actorStandby?.isEnabled).toBeFalsy();
+
+		await putContext(actorId, { actorPath: ACTOR_PATH, sourceFiles: standbyFiles });
+
+		expect((await server.client.actor(actorId).get())?.actorStandby?.isEnabled).toBe(true);
 	});
 
 	it('fails the build when a path field leaves the Docker context', async () => {

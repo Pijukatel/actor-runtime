@@ -90,11 +90,23 @@ export function mergeStandbyUpdate(raw: unknown, current: ActorStandbyRecord | u
 }
 
 /** `usesStandbyMode: true` in the pushed `.actor/actor.json`; an unparseable file says nothing. */
-export function declaresStandbyMode(sourceFiles: SourceFile[]): boolean {
-	const parsed = parseActorJson(sourceFiles);
+export function declaresStandbyMode(sourceFiles: SourceFile[], actorPath = ''): boolean {
+	const parsed = parseActorJson(sourceFiles, actorPath);
 	if (parsed.outcome !== 'parsed') return false;
 	const specification = parsed.specification as { usesStandbyMode?: unknown } | null;
 	return typeof specification === 'object' && specification !== null && specification.usesStandbyMode === true;
+}
+
+/** The platform enables standby, never disables it, for pushed source whose `.actor/actor.json` asks for it;
+ * `undefined` when that changes nothing. */
+export function standbyEnabledBy(
+	current: ActorStandbyRecord | undefined,
+	sourceFiles: SourceFile[],
+	actorPath = '',
+): ActorStandbyRecord | undefined {
+	if (current?.isEnabled || !declaresStandbyMode(sourceFiles, actorPath)) return undefined;
+	const result = mergeStandbyUpdate({ isEnabled: true }, current);
+	return result.kind === 'ok' ? result.actorStandby : undefined;
 }
 
 /** The platform's `dnsFriendlyUsername`: what a DNS label can carry. */

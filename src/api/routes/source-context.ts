@@ -32,7 +32,7 @@ export function mountSourceContext(router: Router): void {
 			if (validation.kind === 'invalid') throw invalidRequest(validation.message);
 
 			const version = await setSourceContext(actor, versionNumber, validation.upload);
-			if (!version?.localSourceContext) throw recordNotFound(`Version "${versionNumber}" was not found`);
+			if (!version) throw recordNotFound(`Version "${versionNumber}" was not found`);
 
 			sendData(res, { versionNumber, localSourceContext: sourceContextSummary(version.localSourceContext) });
 		}),

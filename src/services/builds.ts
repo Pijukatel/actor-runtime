@@ -266,18 +266,18 @@ export async function runBuildInBackground(
 		(line) => appendRuntimeLog(record.id, line),
 	);
 
+	// The Actor's path in the context wins over an environment variable of the same name.
 	const envBuildArgs = buildArgsOf(actor, version);
-	if (envBuildArgs) {
+	const buildArgs = context ? { ...envBuildArgs, [ACTOR_PATH_IN_DOCKER_CONTEXT_BUILD_ARG]: actorPath } : envBuildArgs;
+	const passedEnvVarNames = Object.keys(envBuildArgs ?? {}).filter(
+		(name) => !context || name !== ACTOR_PATH_IN_DOCKER_CONTEXT_BUILD_ARG,
+	);
+	if (passedEnvVarNames.length > 0) {
 		appendRuntimeLog(
 			record.id,
-			`Passing the version's environment variables to the build as build arguments: ${Object.keys(envBuildArgs).join(', ')}`,
+			`Passing the version's environment variables to the build as build arguments: ${passedEnvVarNames.join(', ')}`,
 		);
 	}
-	// The builder's own argument wins over an environment variable of the same name, as on the platform.
-	const buildArgs =
-		envBuildArgs || context
-			? { ...envBuildArgs, ...(context ? { [ACTOR_PATH_IN_DOCKER_CONTEXT_BUILD_ARG]: actorPath } : {}) }
-			: undefined;
 
 	try {
 		const outcome = await driver.startBuild(

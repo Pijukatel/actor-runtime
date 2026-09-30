@@ -57,7 +57,8 @@ Test case must verify full Actor development flow:
   build log names the shared Dockerfile and schema, and `apify call` runs it with the shared package and
   its own `ACTOR_PATH_IN_DOCKER_CONTEXT`, asserted from the dataset items.
 - The shared input schema supplies the defaults and rejects an invalid input.
-- Monorepo support is not in a published `apify-cli` yet, so this file runs with the CLI named by
-  `ACTOR_RUNTIME_E2E_APIFY_CLI` (a built `dist/apify.js`) and is not in CI until it is.
+- Monorepo support is not in a published `apify-cli` yet, so this file runs only with the CLI named by
+  `ACTOR_RUNTIME_E2E_APIFY_CLI` (a built `dist/apify.js`), is skipped without it, and is not in CI until
+  that CLI is published.
 - `ACTOR_RUNTIME_E2E_IMAGE` names an already built runtime image to test instead of building one, for a
   machine whose container builds cannot reach the registries the runtime's Dockerfile needs.

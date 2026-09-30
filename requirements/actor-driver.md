@@ -51,6 +51,7 @@
 - The working copy's Git remote, branch and commit, and whether it had uncommitted changes, are shown in
   the build log and on the console as a label only; they never select which files are built.
 - A rebuild without a new push builds the last pushed files.
+- `usesStandbyMode` in the Actor's `.actor/actor.json` turns standby on, as for an ordinary push.
 - An ordinary `apify push` of the same version replaces the context again.
 - `apify push` refuses such an Actor against the Apify platform, which does not accept a pushed Docker
   context yet.

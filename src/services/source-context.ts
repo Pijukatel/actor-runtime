@@ -3,7 +3,8 @@
  * `.actor/actor.json` sets `dockerContextDir` uploads the whole context as one tarball, and names the
  * Actor's folder inside it. The tarball goes to `__FILES__` as it was uploaded; the version only points at it.
  */
-import { gunzipSync } from 'node:zlib';
+import { promisify } from 'node:util';
+import { gunzip } from 'node:zlib';
 
 import * as tar from 'tar-stream';
 
@@ -19,6 +20,7 @@ import { getRegistries } from '../storage/registries.js';
 import { normalizeEntryName } from '../driver/tar-entry-name.js';
 import { ACTOR_JSON_NAME, actorFilePath, findExact } from './actor-source-files.js';
 import { addOrReplaceVersion, findVersion, updateActor } from './actors.js';
+import { standbyEnabledBy } from './standby-config.js';
 
 const TARBALL_CONTENT_TYPE = 'application/gzip';
 
@@ -26,7 +28,8 @@ export interface SourceContextUpload {
 	actorPath: string;
 	/** The uploaded `.tar.gz` (or plain `.tar`), stored exactly as received. */
 	tarball: Buffer;
-	fileCount: number;
+	/** The archive's files, as `readTarballFiles` unpacked them while validating it. */
+	files: SourceFile[];
 	sizeBytes: number;
 	git?: LocalSourceContextGit;
 }
@@ -58,7 +61,7 @@ function isGzip(buffer: Buffer): boolean {
 /** The tarball's regular files, in archive order. Directories are implied by the file names; links and
  * every other entry type are skipped, so nothing in the context can point outside it. */
 export async function readTarballFiles(tarball: Buffer): Promise<SourceFile[]> {
-	const archive = isGzip(tarball) ? gunzipSync(tarball) : tarball;
+	const archive = isGzip(tarball) ? await promisify(gunzip)(tarball) : tarball;
 	const files: SourceFile[] = [];
 	const extract = tar.extract();
 	await new Promise<void>((resolve, reject) => {
@@ -103,12 +106,13 @@ export async function validateSourceContextUpload(
 	const invalid = (message: string): SourceContextUploadValidation => ({ kind: 'invalid', message });
 
 	if (typeof params.actorPath !== 'string') return invalid('"actorPath" query parameter is required');
-	const actorPath = normalizeEntryName(params.actorPath).replace(/\/+$/, '');
+	const normalizedActorPath = normalizeEntryName(params.actorPath);
+	const actorPathDefect = describeContextPathDefect(normalizedActorPath);
+	if (actorPathDefect) return invalid(`"actorPath" ${actorPathDefect}`);
+	const actorPath = normalizedActorPath.replace(/\/+$/, '');
 	if (actorPath === '.' || actorPath === '') {
 		return invalid('"actorPath" must name the Actor\'s folder inside the Docker context, not the context itself');
 	}
-	const actorPathDefect = describeContextPathDefect(actorPath);
-	if (actorPathDefect) return invalid(`"actorPath" ${actorPathDefect}`);
 
 	const git = gitFromParams(params);
 	if (typeof git === 'string') return invalid(git);
@@ -133,7 +137,7 @@ export async function validateSourceContextUpload(
 		upload: {
 			actorPath,
 			tarball,
-			fileCount: files.length,
+			files,
 			sizeBytes: files.reduce((sum, file) => sum + Buffer.from(file.content, 'base64').length, 0),
 			...(git ? { git } : {}),
 		},
@@ -149,14 +153,14 @@ export async function setSourceContext(
 	actor: ActorRecord,
 	versionNumber: string,
 	upload: SourceContextUpload,
-): Promise<ActorVersionRecord | null> {
+): Promise<(ActorVersionRecord & { localSourceContext: LocalSourceContext }) | null> {
 	if (!findVersion(actor, versionNumber)) return null;
 
 	const { files } = getRegistries();
 	const localSourceContext: LocalSourceContext = {
 		fileId: generateId(),
 		actorPath: upload.actorPath,
-		fileCount: upload.fileCount,
+		fileCount: upload.files.length,
 		sizeBytes: upload.sizeBytes,
 		uploadedAt: new Date().toISOString(),
 		...(upload.git ? { git: upload.git } : {}),
@@ -164,14 +168,17 @@ export async function setSourceContext(
 	await files.setValue(localSourceContext.fileId, upload.tarball, { contentType: TARBALL_CONTENT_TYPE });
 
 	let replaced: LocalSourceContext | undefined;
-	let written: ActorVersionRecord | undefined;
+	let written: (ActorVersionRecord & { localSourceContext: LocalSourceContext }) | undefined;
 	await updateActor(actor.id, (current) => {
 		const existing = findVersion(current, versionNumber);
 		// Deleted between the check above and here: nothing to attach the files to.
 		if (!existing) return current;
 		replaced = existing.localSourceContext;
 		written = { ...existing, sourceFiles: [], localSourceContext };
-		return addOrReplaceVersion(current, written);
+		// As for pushed source files: `usesStandbyMode` in the Actor's `.actor/actor.json` turns standby on,
+		// never off.
+		const actorStandby = standbyEnabledBy(current.actorStandby, upload.files, upload.actorPath);
+		return { ...addOrReplaceVersion(current, written), ...(actorStandby ? { actorStandby } : {}) };
 	});
 
 	if (!written) {
