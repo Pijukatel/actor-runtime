@@ -1,8 +1,12 @@
 /**
  * Monorepo build contexts (`actor-driver.md`'s "Monorepo Actors"): `apify push` of an Actor whose
- * `.actor/actor.json` sets `dockerContextDir` uploads the whole context, and names the Actor's folder
- * inside it. The files go to `__FILES__`; the version only points at them.
+ * `.actor/actor.json` sets `dockerContextDir` uploads the whole context as one tarball, and names the
+ * Actor's folder inside it. The tarball goes to `__FILES__` as it was uploaded; the version only points at it.
  */
+import { gunzipSync } from 'node:zlib';
+
+import * as tar from 'tar-stream';
+
 import { generateId } from '../storage/ids.js';
 import type {
 	ActorRecord,
@@ -16,10 +20,24 @@ import { normalizeEntryName } from '../driver/tar-entry-name.js';
 import { ACTOR_JSON_NAME, actorFilePath, findExact } from './actor-source-files.js';
 import { addOrReplaceVersion, findVersion, updateActor } from './actors.js';
 
+const TARBALL_CONTENT_TYPE = 'application/gzip';
+
 export interface SourceContextUpload {
 	actorPath: string;
-	sourceFiles: SourceFile[];
+	/** The uploaded `.tar.gz` (or plain `.tar`), stored exactly as received. */
+	tarball: Buffer;
+	fileCount: number;
+	sizeBytes: number;
 	git?: LocalSourceContextGit;
+}
+
+/** What `PUT /actor-runtime/source-context/...` names in its query string, alongside the tarball body. */
+export interface SourceContextUploadParams {
+	actorPath?: string;
+	gitRemoteUrl?: string;
+	gitBranch?: string;
+	gitCommit?: string;
+	gitDirty?: string;
 }
 
 export type SourceContextUploadValidation =
@@ -33,69 +51,93 @@ function describeContextPathDefect(normalized: string): string | null {
 	return null;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === 'object' && !Array.isArray(value);
+function isGzip(buffer: Buffer): boolean {
+	return buffer.length >= 2 && buffer[0] === 0x1f && buffer[1] === 0x8b;
 }
 
-function validateGit(raw: unknown): LocalSourceContextGit | string {
-	if (!isRecord(raw)) return '"git" must be an object';
+/** The tarball's regular files, in archive order. Directories are implied by the file names; links and
+ * every other entry type are skipped, so nothing in the context can point outside it. */
+export async function readTarballFiles(tarball: Buffer): Promise<SourceFile[]> {
+	const archive = isGzip(tarball) ? gunzipSync(tarball) : tarball;
+	const files: SourceFile[] = [];
+	const extract = tar.extract();
+	await new Promise<void>((resolve, reject) => {
+		extract.on('entry', (header, content, next) => {
+			const chunks: Buffer[] = [];
+			content.on('data', (chunk: Buffer) => chunks.push(chunk));
+			content.once('error', reject);
+			content.once('end', () => {
+				if (header.type === 'file') {
+					files.push({
+						name: header.name,
+						format: 'BASE64',
+						content: Buffer.concat(chunks).toString('base64'),
+					});
+				}
+				next();
+			});
+		});
+		extract.once('error', reject);
+		extract.once('finish', resolve);
+		extract.end(archive);
+	});
+	return files;
+}
+
+function gitFromParams(params: SourceContextUploadParams): LocalSourceContextGit | string | undefined {
 	const git: LocalSourceContextGit = {};
-	for (const field of ['remoteUrl', 'branch', 'commit'] as const) {
-		const value = raw[field];
-		if (value === undefined) continue;
-		if (typeof value !== 'string') return `"git.${field}" must be a string`;
-		git[field] = value;
+	if (params.gitRemoteUrl) git.remoteUrl = params.gitRemoteUrl;
+	if (params.gitBranch) git.branch = params.gitBranch;
+	if (params.gitCommit) git.commit = params.gitCommit;
+	if (params.gitDirty !== undefined) {
+		if (params.gitDirty !== 'true' && params.gitDirty !== 'false') return '"gitDirty" must be "true" or "false"';
+		git.dirty = params.gitDirty === 'true';
 	}
-	if (raw.dirty !== undefined) {
-		if (typeof raw.dirty !== 'boolean') return '"git.dirty" must be a boolean';
-		git.dirty = raw.dirty;
-	}
-	return git;
+	return Object.keys(git).length > 0 ? git : undefined;
 }
 
-export function validateSourceContextUpload(body: unknown): SourceContextUploadValidation {
+export async function validateSourceContextUpload(
+	params: SourceContextUploadParams,
+	tarball: Buffer,
+): Promise<SourceContextUploadValidation> {
 	const invalid = (message: string): SourceContextUploadValidation => ({ kind: 'invalid', message });
-	if (!isRecord(body)) return invalid('Request body must be a JSON object');
 
-	if (typeof body.actorPath !== 'string') return invalid('"actorPath" must be a string');
-	const actorPath = normalizeEntryName(body.actorPath).replace(/\/+$/, '');
+	if (typeof params.actorPath !== 'string') return invalid('"actorPath" query parameter is required');
+	const actorPath = normalizeEntryName(params.actorPath).replace(/\/+$/, '');
 	if (actorPath === '.' || actorPath === '') {
 		return invalid('"actorPath" must name the Actor\'s folder inside the Docker context, not the context itself');
 	}
 	const actorPathDefect = describeContextPathDefect(actorPath);
 	if (actorPathDefect) return invalid(`"actorPath" ${actorPathDefect}`);
 
-	if (!Array.isArray(body.sourceFiles)) return invalid('"sourceFiles" must be an array');
-	const sourceFiles: SourceFile[] = [];
-	for (const file of body.sourceFiles as unknown[]) {
-		if (
-			!isRecord(file) ||
-			typeof file.name !== 'string' ||
-			typeof file.content !== 'string' ||
-			(file.format !== 'TEXT' && file.format !== 'BASE64')
-		) {
-			return invalid('Every item of "sourceFiles" must be { name, format: "TEXT" | "BASE64", content }');
-		}
+	const git = gitFromParams(params);
+	if (typeof git === 'string') return invalid(git);
+
+	if (tarball.length === 0) return invalid('Request body must be the Docker context as a .tar.gz archive');
+	let files: SourceFile[];
+	try {
+		files = await readTarballFiles(tarball);
+	} catch (error) {
+		return invalid(`Request body is not a readable .tar.gz archive: ${(error as Error).message}`);
+	}
+	for (const file of files) {
 		const nameDefect = describeContextPathDefect(normalizeEntryName(file.name));
-		if (nameDefect) return invalid(`Source file "${file.name}" ${nameDefect}`);
-		sourceFiles.push({ name: file.name, format: file.format, content: file.content });
+		if (nameDefect) return invalid(`Archive entry "${file.name}" ${nameDefect}`);
 	}
-	if (!findExact(sourceFiles, actorFilePath(actorPath, ACTOR_JSON_NAME))) {
-		return invalid(`"sourceFiles" has no "${actorFilePath(actorPath, ACTOR_JSON_NAME)}"`);
-	}
-
-	let git: LocalSourceContextGit | undefined;
-	if (body.git !== undefined && body.git !== null) {
-		const result = validateGit(body.git);
-		if (typeof result === 'string') return invalid(result);
-		git = result;
+	if (!findExact(files, actorFilePath(actorPath, ACTOR_JSON_NAME))) {
+		return invalid(`The archive has no "${actorFilePath(actorPath, ACTOR_JSON_NAME)}"`);
 	}
 
-	return { kind: 'ok', upload: { actorPath, sourceFiles, ...(git ? { git } : {}) } };
-}
-
-function sourceFileSizeBytes(file: SourceFile): number {
-	return file.format === 'BASE64' ? Buffer.from(file.content, 'base64').length : Buffer.byteLength(file.content);
+	return {
+		kind: 'ok',
+		upload: {
+			actorPath,
+			tarball,
+			fileCount: files.length,
+			sizeBytes: files.reduce((sum, file) => sum + Buffer.from(file.content, 'base64').length, 0),
+			...(git ? { git } : {}),
+		},
+	};
 }
 
 /**
@@ -114,12 +156,12 @@ export async function setSourceContext(
 	const localSourceContext: LocalSourceContext = {
 		fileId: generateId(),
 		actorPath: upload.actorPath,
-		fileCount: upload.sourceFiles.length,
-		sizeBytes: upload.sourceFiles.reduce((sum, file) => sum + sourceFileSizeBytes(file), 0),
+		fileCount: upload.fileCount,
+		sizeBytes: upload.sizeBytes,
 		uploadedAt: new Date().toISOString(),
 		...(upload.git ? { git: upload.git } : {}),
 	};
-	await files.setValue(localSourceContext.fileId, upload.sourceFiles);
+	await files.setValue(localSourceContext.fileId, upload.tarball, { contentType: TARBALL_CONTENT_TYPE });
 
 	let replaced: LocalSourceContext | undefined;
 	let written: ActorVersionRecord | undefined;
@@ -140,11 +182,13 @@ export async function setSourceContext(
 	return written;
 }
 
+/** The context's files, unpacked from its stored tarball; `null` when the tarball is gone. */
 export async function loadSourceContextFiles(context: LocalSourceContext): Promise<SourceFile[] | null> {
-	return getRegistries().files.getValue<SourceFile[]>(context.fileId);
+	const tarball = await getRegistries().files.getValue<Buffer>(context.fileId);
+	return tarball ? readTarballFiles(Buffer.from(tarball)) : null;
 }
 
-/** Drops the stored files of a context no version points at any more. */
+/** Drops the stored tarball of a context no version points at any more. */
 export async function deleteSourceContextFiles(context: LocalSourceContext | undefined): Promise<void> {
 	if (!context) return;
 	await getRegistries().files.setValue(context.fileId, null);

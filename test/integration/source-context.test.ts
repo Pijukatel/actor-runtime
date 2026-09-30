@@ -5,10 +5,24 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import axios from 'axios';
+import { gzipSync } from 'node:zlib';
+import * as tar from 'tar-stream';
 
 import { fixedBuildOutcomeDriver, startTestServer, type TestServerHandle } from './helpers/test-server.js';
 import { getRegistries } from '../../src/storage/registries.js';
 import type { SourceFile } from '../../src/storage/entities.js';
+
+/** The `.tar.gz` `apify push` sends: every file of the context, named relative to the context root. */
+async function tarball(files: SourceFile[]): Promise<Buffer> {
+	const pack = tar.pack();
+	const chunks: Buffer[] = [];
+	pack.on('data', (chunk: Buffer) => chunks.push(chunk));
+	const done = new Promise<void>((resolve) => pack.once('end', resolve));
+	for (const file of files) pack.entry({ name: file.name }, Buffer.from(file.content, 'utf8'));
+	pack.finalize();
+	await done;
+	return gzipSync(Buffer.concat(chunks));
+}
 
 const ACTOR_PATH = 'actors/typescript-actor';
 
@@ -64,12 +78,26 @@ describe('monorepo source context', () => {
 		return actor.id;
 	}
 
-	function putContext(actorId: string, body: unknown, versionNumber = '0.0') {
+	interface ContextUpload {
+		actorPath?: string;
+		/** Packed into the `.tar.gz` body; a `Buffer` is sent as the body as it is. */
+		sourceFiles: SourceFile[] | Buffer;
+		git?: { remoteUrl?: string; branch?: string; commit?: string; dirty?: string };
+	}
+
+	async function putContext(actorId: string, upload: ContextUpload, versionNumber = '0.0') {
+		const params = new URLSearchParams();
+		if (upload.actorPath !== undefined) params.set('actorPath', upload.actorPath);
+		if (upload.git?.remoteUrl) params.set('gitRemoteUrl', upload.git.remoteUrl);
+		if (upload.git?.branch) params.set('gitBranch', upload.git.branch);
+		if (upload.git?.commit) params.set('gitCommit', upload.git.commit);
+		if (upload.git?.dirty !== undefined) params.set('gitDirty', upload.git.dirty);
+		const body = Buffer.isBuffer(upload.sourceFiles) ? upload.sourceFiles : await tarball(upload.sourceFiles);
 		return axios.put(
-			`${server.baseUrl}/v2/actor-runtime/source-context/${actorId}/${versionNumber}`,
-			typeof body === 'string' ? body : JSON.stringify(body),
+			`${server.baseUrl}/v2/actor-runtime/source-context/${actorId}/${versionNumber}?${params.toString()}`,
+			body,
 			{
-				headers: { Authorization: `Bearer ${server.token}`, 'Content-Type': 'application/json' },
+				headers: { Authorization: `Bearer ${server.token}`, 'Content-Type': 'application/gzip' },
 				validateStatus: () => true,
 			},
 		);
@@ -78,12 +106,20 @@ describe('monorepo source context', () => {
 	it('builds the Actor from the context, with the Dockerfile and schema it names outside its folder', async () => {
 		const actorId = await createActor();
 		const git = { remoteUrl: 'git@github.com:acme/monorepo.git', branch: 'main', commit: 'abcdef1234567890' };
-		const res = await putContext(actorId, { actorPath: `./${ACTOR_PATH}/`, sourceFiles: MONOREPO_FILES, git });
+		const res = await putContext(actorId, {
+			actorPath: `./${ACTOR_PATH}/`,
+			sourceFiles: MONOREPO_FILES,
+			git: { ...git, dirty: 'false' },
+		});
 
 		expect(res.status).toBe(200);
 		expect(res.data.data).toMatchObject({
 			versionNumber: '0.0',
-			localSourceContext: { actorPath: ACTOR_PATH, fileCount: MONOREPO_FILES.length, git },
+			localSourceContext: {
+				actorPath: ACTOR_PATH,
+				fileCount: MONOREPO_FILES.length,
+				git: { ...git, dirty: false },
+			},
 		});
 		expect(res.data.data.localSourceContext.fileId).toBeUndefined();
 
@@ -166,13 +202,16 @@ describe('monorepo source context', () => {
 	it('rejects a context the Actor cannot be built from, and an unknown version', async () => {
 		const actorId = await createActor();
 
-		const cases: Array<[unknown, string]> = [
-			[42, 'Request body must be a JSON object'],
-			[{ sourceFiles: MONOREPO_FILES }, '"actorPath" must be a string'],
+		const cases: Array<[ContextUpload, string]> = [
+			[{ sourceFiles: MONOREPO_FILES }, '"actorPath" query parameter is required'],
 			[{ actorPath: '.', sourceFiles: MONOREPO_FILES }, 'not the context itself'],
 			[{ actorPath: '../outside', sourceFiles: MONOREPO_FILES }, 'must not point outside the Docker context'],
 			[{ actorPath: '/abs', sourceFiles: MONOREPO_FILES }, 'must be relative to the Docker context'],
-			[{ actorPath: ACTOR_PATH, sourceFiles: 'x' }, '"sourceFiles" must be an array'],
+			[
+				{ actorPath: ACTOR_PATH, sourceFiles: Buffer.alloc(0) },
+				'must be the Docker context as a .tar.gz archive',
+			],
+			[{ actorPath: ACTOR_PATH, sourceFiles: Buffer.from('not a tarball') }, 'is not a readable .tar.gz archive'],
 			[
 				{
 					actorPath: ACTOR_PATH,
@@ -181,13 +220,10 @@ describe('monorepo source context', () => {
 				'must not point outside the Docker context',
 			],
 			[{ actorPath: 'actors/missing', sourceFiles: MONOREPO_FILES }, 'has no "actors/missing/.actor/actor.json"'],
-			[
-				{ actorPath: ACTOR_PATH, sourceFiles: MONOREPO_FILES, git: { dirty: 'yes' } },
-				'"git.dirty" must be a boolean',
-			],
+			[{ actorPath: ACTOR_PATH, sourceFiles: MONOREPO_FILES, git: { dirty: 'yes' } }, '"gitDirty" must be'],
 		];
-		for (const [body, message] of cases) {
-			const res = await putContext(actorId, body);
+		for (const [upload, message] of cases) {
+			const res = await putContext(actorId, upload);
 			expect(res.status, message).toBe(400);
 			expect(res.data.error.message).toContain(message);
 		}
