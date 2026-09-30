@@ -40,6 +40,9 @@ export interface SourceFile {
 	name: string;
 	format: 'TEXT' | 'BASE64';
 	content: string;
+	/** Permission bits, known only for files unpacked from a pushed Docker context - so an executable
+	 * script stays executable, as in a Git clone. */
+	mode?: number;
 }
 
 /**

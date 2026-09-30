@@ -4,6 +4,9 @@
  * so each builds only from the whole Docker context `apify push` sends. Needs an `apify-cli` with monorepo
  * support - until it is published, point `ACTOR_RUNTIME_E2E_APIFY_CLI` at a built one (`helpers/apify-cli.ts`).
  */
+import { execFileSync } from 'node:child_process';
+import { appendFileSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -89,6 +92,8 @@ describe.skipIf(!process.env.ACTOR_RUNTIME_E2E_APIFY_CLI)('monorepo Actors via a
 				expect(buildLog).toContain(`Building "${actorPath}" from a Docker context of`);
 				expect(buildLog).toContain('Using Dockerfile "shared/Dockerfile"');
 				expect(buildLog).toContain('Using the input schema from "shared/input_schema.json"');
+				// The build ran the shared script, which a lost executable bit would have failed.
+				expect(buildLog).toContain('RUN ./shared/check-context.sh');
 
 				const call = JSON.parse(
 					apify(['call', '--input', JSON.stringify({ count: 3 }), '--json'], { cwd: actorDir, env }),
@@ -126,5 +131,71 @@ describe.skipIf(!process.env.ACTOR_RUNTIME_E2E_APIFY_CLI)('monorepo Actors via a
 			env,
 		});
 		expect(rejected).toMatch(/count/);
+	});
+
+	describe('builds exactly what a build from a Git clone on the platform would', () => {
+		let repo: string;
+		const git = (...args: string[]) =>
+			execFileSync('git', ['-c', 'user.name=e2e', '-c', 'user.email=e2e@example.com', ...args], {
+				cwd: repo,
+				stdio: 'ignore',
+			});
+
+		beforeAll(() => {
+			// A monorepo of its own, so what Git tracks is under the test's control.
+			repo = mkdtempSync(join(tmpdir(), 'actor-runtime-e2e-monorepo-'));
+			cpSync(MONOREPO_ROOT, repo, { recursive: true });
+			appendFileSync(join(repo, 'shared', 'Dockerfile'), 'COPY actors/greeter/dist/extra.txt ./extra.txt\n');
+			writeFileSync(join(repo, 'actors', 'greeter', '.gitignore'), 'dist\n');
+			writeFileSync(join(repo, 'actors', 'greeter', '.actorignore'), '!dist/\n');
+			mkdirSync(join(repo, 'actors', 'greeter', 'dist'));
+			writeFileSync(join(repo, 'actors', 'greeter', 'dist', 'extra.txt'), 'built locally\n');
+			git('init', '--quiet');
+			git('add', '.');
+			git('commit', '--quiet', '-m', 'init');
+		});
+
+		afterAll(() => {
+			if (repo) rmSync(repo, { recursive: true, force: true });
+		});
+
+		it(
+			'fails on a git-ignored file the Dockerfile needs, even if .actorignore force-includes it, and succeeds once it is committed',
+			() => {
+				const env = apifyEnv(isolatedApifyHome);
+				const actorDir = join(repo, 'actors', 'greeter');
+
+				// The platform's clone has no `dist/`, so its build fails at that COPY - and so does this one.
+				// `--force`: the Actor may exist from an earlier test, with a newer modification time than these files.
+				const failed = apifyExpectingFailure(['push', '--json', '--force'], { cwd: actorDir, env });
+				expect(failed).toMatch(/"status":\s*"FAILED"/);
+				expect(failed).toContain('extra.txt');
+
+				rmSync(join(actorDir, '.gitignore'));
+				git('add', '.');
+				git('commit', '--quiet', '-m', 'commit dist');
+				const push = JSON.parse(apify(['push', '--json', '--force'], { cwd: actorDir, env })) as PushResult;
+				expect(push.build.status).toBe('SUCCEEDED');
+			},
+			5 * 60 * 1000,
+		);
+
+		it('refuses a dockerContextDir above the repository, which the platform could not clone', () => {
+			const env = apifyEnv(isolatedApifyHome);
+			const actorDir = join(repo, 'actors', 'shouter');
+			const actorJsonPath = join(actorDir, '.actor', 'actor.json');
+			writeFileSync(
+				actorJsonPath,
+				JSON.stringify({
+					actorSpecification: 1,
+					name: 'monorepo-sample-shouter',
+					version: '0.0',
+					dockerContextDir: '../../../..',
+				}),
+			);
+
+			const refused = apifyExpectingFailure(['push', '--json'], { cwd: actorDir, env });
+			expect(refused).toContain('outside the Git repository');
+		});
 	});
 });

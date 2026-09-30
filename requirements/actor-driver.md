@@ -45,9 +45,14 @@
   Actor's own folder.
 - The build gets the build argument `ACTOR_PATH_IN_DOCKER_CONTEXT`, the Actor's folder relative to the
   context, which the platform's builder also passes.
-- The build uses the context's files exactly as they are on disk at push time - uncommitted edits and
-  new, untracked files included; only files the context's `.gitignore` or `.actorignore` excludes are
-  left out. The runtime never fetches from Git itself.
+- **The files built are those the platform's clone of the repository has**, as they are on disk at push
+  time: every file Git tracks, plus new files Git does not ignore (untracked `node_modules` and storage
+  folders excepted). A file the context's `.gitignore` excludes is left out even if `.actorignore`
+  force-includes it, and `.actorignore` never drops a tracked file - the platform's Git builds do not use
+  it. Files keep their permission bits, so executable scripts stay executable. Outside a Git repository,
+  the files an ordinary push of the context root would send are used. The runtime never fetches from Git.
+- `apify push` rejects a `dockerContextDir` outside the Git repository, which a clone would not contain,
+  and warns that uncommitted changes are built here but not on the platform.
 - The working copy's Git remote, branch and commit, and whether it had uncommitted changes, are shown in
   the build log and on the console as a label only; they never select which files are built.
 - A rebuild without a new push builds the last pushed files.

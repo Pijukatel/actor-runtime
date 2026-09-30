@@ -75,6 +75,7 @@ export async function readTarballFiles(tarball: Buffer): Promise<SourceFile[]> {
 						name: header.name,
 						format: 'BASE64',
 						content: Buffer.concat(chunks).toString('base64'),
+						...(header.mode !== undefined ? { mode: header.mode } : {}),
 					});
 				}
 				next();

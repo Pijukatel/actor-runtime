@@ -57,6 +57,9 @@ Test case must verify full Actor development flow:
   build log names the shared Dockerfile and schema, and `apify call` runs it with the shared package and
   its own `ACTOR_PATH_IN_DOCKER_CONTEXT`, asserted from the dataset items.
 - The shared input schema supplies the defaults and rejects an invalid input.
+- Builds follow a build from a Git clone on the platform: a Dockerfile that needs a git-ignored file fails,
+  even when `.actorignore` force-includes it, and succeeds once the file is committed; a `dockerContextDir`
+  above the repository is refused; the shared build script stays executable.
 - Monorepo support is not in a published `apify-cli` yet, so this file runs only with the CLI named by
   `ACTOR_RUNTIME_E2E_APIFY_CLI` (a built `dist/apify.js`), is skipped without it, and is not in CI until
   that CLI is published.

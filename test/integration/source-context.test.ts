@@ -15,10 +15,13 @@ import type { SourceFile } from '../../src/storage/entities.js';
 /** The `.tar.gz` `apify push` sends: every file of the context, named relative to the context root. */
 async function tarball(files: SourceFile[]): Promise<Buffer> {
 	const pack = tar.pack();
+	// Each file's permission bits as given, `0o644` when absent.
 	const chunks: Buffer[] = [];
 	pack.on('data', (chunk: Buffer) => chunks.push(chunk));
 	const done = new Promise<void>((resolve) => pack.once('end', resolve));
-	for (const file of files) pack.entry({ name: file.name }, Buffer.from(file.content, 'utf8'));
+	for (const file of files) {
+		pack.entry({ name: file.name, mode: file.mode ?? 0o644 }, Buffer.from(file.content, 'utf8'));
+	}
 	pack.finalize();
 	await done;
 	return gzipSync(Buffer.concat(chunks));
@@ -258,6 +261,21 @@ describe('monorepo source context', () => {
 		});
 		const log = await server.client.log(build.id).get();
 		expect(log).toContain('as build arguments: PLAIN_VAR\n');
+	});
+
+	it("keeps each file's permission bits, so an executable script stays executable, as in a Git clone", async () => {
+		const actorId = await createActor();
+		const withScript: SourceFile[] = [
+			...MONOREPO_FILES,
+			{ name: 'shared/start.sh', format: 'TEXT', content: '#!/bin/sh\necho hi\n', mode: 0o755 },
+		];
+		await putContext(actorId, { actorPath: ACTOR_PATH, sourceFiles: withScript });
+
+		await server.client.actor(actorId).build('0.0', { waitForFinish: 10 });
+
+		const files = driver.startBuildContexts[0].sourceFiles;
+		expect(files.find((file) => file.name === 'shared/start.sh')?.mode).toBe(0o755);
+		expect(files.find((file) => file.name === 'package.json')?.mode).toBe(0o644);
 	});
 
 	it("turns standby on when the Actor's .actor/actor.json in the context asks for it", async () => {

@@ -72,12 +72,15 @@ apify push     # pushes the whole Docker context, builds it, as the platform bui
 apify call
 ```
 
-- The push uploads every file of the Docker context (filtered by its `.gitignore` and `.actorignore`),
-  not just the Actor's folder, and the build gets `ACTOR_PATH_IN_DOCKER_CONTEXT` - the Actor's folder
-  relative to the context - as the platform's builder passes it.
+- The push uploads the Docker context as the platform's clone of the repository has it - every file Git
+  tracks, plus new files Git does not ignore - not just the Actor's folder, and the build gets
+  `ACTOR_PATH_IN_DOCKER_CONTEXT` (the Actor's folder relative to the context), as the platform's builder
+  passes it. `.actorignore` does not apply, as it does not to the platform's Git builds: a git-ignored
+  `dist/` is not pushed even if `.actorignore` force-includes it. Executable files stay executable.
 - The runtime never talks to Git or needs Git credentials: check out the branch you want locally, then
-  push. Uncommitted changes are pushed too; the build log names the branch and commit, and says when the
-  working copy had uncommitted changes.
+  push. Uncommitted changes are pushed too, with a warning - the platform builds only what is committed
+  and pushed. The build log names the branch and commit, and says when there were uncommitted changes.
+- A `dockerContextDir` outside the Git repository is rejected, since the platform could not build it.
 - `dockerfile` and `input` may point outside the Actor's folder, but not outside the context.
 - The dev folder registered by the push is the context root, not the Actor's folder.
 - Runs use the normal API: `apify call`, `POST /v2/actors/<actorId>/runs`, the console.

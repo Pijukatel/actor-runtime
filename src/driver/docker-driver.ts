@@ -514,7 +514,10 @@ function buildTarball(sourceFiles: SourceFile[]): NodeJS.ReadableStream {
 	const pack = tar.pack();
 	for (const file of sourceFiles) {
 		const buffer = sourceFileToBuffer(file);
-		pack.entry({ name: normalizeEntryName(file.name) }, buffer);
+		pack.entry(
+			{ name: normalizeEntryName(file.name), ...(file.mode !== undefined ? { mode: file.mode } : {}) },
+			buffer,
+		);
 	}
 	pack.finalize();
 	return pack;
