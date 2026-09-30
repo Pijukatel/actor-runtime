@@ -5,9 +5,10 @@ input field:
 
 - `BUILD_GREETING` - read by the Dockerfile during the build. The build fails without it.
 - `RUN_GREETING` - a plain variable read by the run.
-- `API_KEY` - a secret read by the run. It is never logged, only whether it is set.
+- `API_KEY` - a secret read by the run. The run prints it, and the run log masks it as `*********`.
 - `password` input field - a secret input (`isSecret` in `.actor/input_schema.json`), stored encrypted
-  and decrypted by `Actor.getInput()` in the run. Also never logged.
+  and decrypted by `Actor.getInput()` in the run. The run prints it too, and the log does **not** mask
+  it: only secret env vars (and `APIFY_TOKEN`) are masked, as on the platform.
 
 Environment variables reach the build only with the version's "Apply environment variables also to the
 build process" setting (`applyEnvVarsToBuild`) on. It is off by default, and `apify push` cannot turn
@@ -20,8 +21,7 @@ apify api PUT v2/actors/<actorId>/versions/0.0 --body '{"applyEnvVarsToBuild": t
 apify push --force    # nothing changed locally, so the CLI needs --force; the build logs
                       # "Build: BUILD_GREETING=hello-from-the-build"
 apify call --input '{"password": "hunter2"}'
-# the run logs RUN_GREETING, "API_KEY is set (13 characters)", the input message,
-# and "input password is set (7 characters)"
+# the run logs "API_KEY=*********" and "input password=hunter2"
 ```
 
 On the Apify platform, turn the setting on in the Actor's **Code** > **Environment variables** section
