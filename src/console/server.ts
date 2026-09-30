@@ -23,7 +23,7 @@ import express, { type Express, type Request } from 'express';
 import { getActorById, listAllActors, setActorPricingInfos } from '../services/actors.js';
 import { getRunTelemetry } from '../services/events-channel.js';
 import { computeRunUsage } from '../services/run-usage.js';
-import type { ActorRecord } from '../storage/entities.js';
+import type { ActorRecord, LocalSourceContext } from '../storage/entities.js';
 import {
 	describeDevFolderFailure,
 	devFolderStatus,
@@ -36,6 +36,7 @@ import { liveDevFolderStatus, setLiveDevFolder } from '../services/live-dev-fold
 import { getBuildById, listAllBuilds } from '../services/builds.js';
 import { getRunById, listAllRuns } from '../services/runs.js';
 import { standbyUrl } from '../services/standby-config.js';
+import { describeSourceContextOrigin } from '../services/source-context.js';
 import { standbyPoolSnapshot } from '../services/standby.js';
 import { getUserById } from '../services/users.js';
 import { migrateRun } from '../services/migrations.js';
@@ -95,6 +96,11 @@ function storageLink(prefix: '/datasets' | '/key-value-stores' | '/request-queue
  * behaviour for a legitimate same-origin submission. Written as a plain predicate (checked at the top of
  * each handler) rather than an Express middleware, so it needs no generic parameter shared across the
  * handler chain - `req.params` keeps the type each route's own path literal already gives it. */
+/** A monorepo version's source: the Actor's folder in its Docker context, and where the context came from. */
+function dockerContextCell(context: LocalSourceContext): string {
+	return `${context.actorPath} (pushed ${context.uploadedAt}${describeSourceContextOrigin(context.git)})`;
+}
+
 function isCrossSiteWrite(req: Request): boolean {
 	const site = req.header('sec-fetch-site');
 	return site !== undefined && site !== 'same-origin' && site !== 'none';
@@ -268,8 +274,13 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			]) +
 			'<h2>Versions</h2>' +
 			table(
-				['versionNumber', 'buildTag', 'files'],
-				actor.versions.map((v) => [v.versionNumber, v.buildTag, String(v.sourceFiles.length)]),
+				['versionNumber', 'buildTag', 'files', 'dockerContext'],
+				actor.versions.map((v) => [
+					v.versionNumber,
+					v.buildTag,
+					String(v.localSourceContext?.fileCount ?? v.sourceFiles.length),
+					v.localSourceContext ? dockerContextCell(v.localSourceContext) : '',
+				]),
 			) +
 			'<h2>Tagged builds</h2>' +
 			table(

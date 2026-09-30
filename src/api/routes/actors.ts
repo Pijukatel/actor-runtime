@@ -31,7 +31,7 @@ import {
 } from '../../services/builds.js';
 import { listOwnedRuns, startRun, waitForRunFinish } from '../../services/runs.js';
 import { getRegistries } from '../../storage/registries.js';
-import { actorDto, buildDto, runDto } from '../dto/actors.js';
+import { actorDto, buildDto, runDto, versionDto } from '../dto/actors.js';
 import type {
 	ActorPricingInfoRecord,
 	ActorRecord,
@@ -49,6 +49,7 @@ import {
 	standbyUrl,
 	standbyUrlAudienceOf,
 } from '../../services/standby-config.js';
+import { deleteSourceContextFiles } from '../../services/source-context.js';
 
 /** `undefined` when the body does not mention the field; an invalid one throws. */
 function actorStandbyFromBody(body: { actorStandby?: unknown }, actor?: ActorRecord): ActorStandbyRecord | undefined {
@@ -114,9 +115,11 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 			}>(req);
 			if (!body.name) throw invalidRequest('Actor "name" is required');
 			if (body.pricingInfos !== undefined) throw cannotSetPricingOnCreate();
+			// A context is set only through its own endpoint, never smuggled in with the Actor.
+			const versions = body.versions?.map(({ localSourceContext: _ignored, ...version }) => version);
 			// An explicit `actorStandby` wins over `usesStandbyMode`, even one that disables it.
-			const actorStandby = actorStandbyFromBody(body) ?? standbyEnabledByVersions(undefined, body.versions ?? []);
-			const actor = await createActor(requireUser(req).id, { ...body, actorStandby });
+			const actorStandby = actorStandbyFromBody(body) ?? standbyEnabledByVersions(undefined, versions ?? []);
+			const actor = await createActor(requireUser(req).id, { ...body, versions, actorStandby });
 			sendData(res, actorDto(actor, requireUser(req).username, standbyUrlAudienceOf(req.headers.host)), 201);
 		}),
 	);
@@ -162,6 +165,7 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 			// "applies uniformly to every DELETE").
 			if (!actor) throw recordNotFound();
 			await deleteActor(actor.id);
+			for (const version of actor.versions) await deleteSourceContextFiles(version.localSourceContext);
 			res.status(204).end();
 		}),
 	);
@@ -171,7 +175,7 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 		h(async (req, res) => {
 			const actor = await resolveActorParam(req);
 			if (!actor) throw recordNotFound();
-			sendPaginated(res, actor.versions, paginationParams(req));
+			sendPaginated(res, actor.versions.map(versionDto), paginationParams(req));
 		}),
 	);
 
@@ -189,11 +193,14 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 				sourceFiles: body.sourceFiles ?? [],
 				envVars: body.envVars,
 			};
+			let replaced: ActorVersionRecord | undefined;
 			await updateActor(actor.id, (current) => {
+				replaced = findVersion(current, version.versionNumber);
 				const actorStandby = standbyEnabledByVersions(current.actorStandby, [version]);
 				return { ...addOrReplaceVersion(current, version), ...(actorStandby ? { actorStandby } : {}) };
 			});
-			sendData(res, version, 201);
+			await deleteSourceContextFiles(replaced?.localSourceContext);
+			sendData(res, versionDto(version), 201);
 		}),
 	);
 
@@ -204,7 +211,7 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 			if (!actor) throw recordNotFound();
 			const version = findVersion(actor, req.params.versionNumber as string);
 			if (!version) throw recordNotFound();
-			sendData(res, version);
+			sendData(res, versionDto(version));
 		}),
 	);
 
@@ -216,15 +223,19 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 			const existing = findVersion(actor, req.params.versionNumber as string);
 			if (!existing) throw recordNotFound();
 			const body = jsonBody<Partial<ActorVersionRecord>>(req);
+			// New `sourceFiles` replace the source, a monorepo context included; without them, it stays.
+			const keptContext = body.sourceFiles === undefined ? existing.localSourceContext : undefined;
 			const version: ActorVersionRecord = {
 				versionNumber: req.params.versionNumber as string,
 				buildTag: body.buildTag ?? existing.buildTag,
 				sourceType: 'SOURCE_FILES',
 				sourceFiles: body.sourceFiles ?? existing.sourceFiles,
 				envVars: body.envVars ?? existing.envVars,
+				...(keptContext ? { localSourceContext: keptContext } : {}),
 			};
 			await updateActor(actor.id, (current) => addOrReplaceVersion(current, version));
-			sendData(res, version);
+			if (!keptContext) await deleteSourceContextFiles(existing.localSourceContext);
+			sendData(res, versionDto(version));
 		}),
 	);
 
@@ -234,11 +245,13 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 			const actor = await resolveActorParam(req);
 			// Matches the real platform: a missing Actor and a missing version both 404, never a silent 204.
 			if (!actor) throw recordNotFound();
-			if (!findVersion(actor, req.params.versionNumber as string)) throw recordNotFound();
+			const existing = findVersion(actor, req.params.versionNumber as string);
+			if (!existing) throw recordNotFound();
 			await updateActor(actor.id, (current) => ({
 				...current,
 				versions: current.versions.filter((v) => v.versionNumber !== req.params.versionNumber),
 			}));
+			await deleteSourceContextFiles(existing.localSourceContext);
 			res.status(204).end();
 		}),
 	);

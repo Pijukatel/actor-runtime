@@ -23,8 +23,8 @@ function invalidField(field: string, expected: string): ActorMemoryResolution {
 	return { outcome: 'failure', message: `.actor/actor.json has invalid format: "${field}" must be ${expected}.` };
 }
 
-export function resolveActorMemorySettings(sourceFiles: SourceFile[]): ActorMemoryResolution {
-	const actorJson = parseActorJson(sourceFiles);
+export function resolveActorMemorySettings(sourceFiles: SourceFile[], actorPath = ''): ActorMemoryResolution {
+	const actorJson = parseActorJson(sourceFiles, actorPath);
 	if (actorJson.outcome === 'unparseable') return { outcome: 'failure', message: actorJson.message };
 	if (actorJson.outcome === 'absent') return { outcome: 'resolved', settings: undefined };
 	const specification = actorJson.specification;

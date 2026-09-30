@@ -61,6 +61,30 @@ both `apify/actor-node-playwright*` and `apify/actor-python-playwright*` are - a
 those is retried for `linux/amd64`, the architecture the Apify platform builds and runs on, with the
 reason in the build log. The engine emulates it (Rosetta on Apple Silicon), so it works, just slower.
 
+## Monorepo Actors (`dockerContextDir`)
+
+An Actor in a monorepo, whose `.actor/actor.json` sets `dockerContextDir` (for example `"../../.."`) and
+points `dockerfile`/`input` at shared files outside its own folder, is pushed from its own folder as usual:
+
+```sh
+cd monorepo/actors/my-actor
+apify push     # pushes the whole Docker context, builds it, as the platform builds from Git
+apify call
+```
+
+- The push uploads every file of the Docker context (filtered by its `.gitignore` and `.actorignore`),
+  not just the Actor's folder, and the build gets `ACTOR_PATH_IN_DOCKER_CONTEXT` - the Actor's folder
+  relative to the context - as the platform's builder passes it.
+- The runtime never talks to Git or needs Git credentials: check out the branch you want locally, then
+  push. Uncommitted changes are pushed too; the build log names the branch and commit, and says when the
+  working copy had uncommitted changes.
+- `dockerfile` and `input` may point outside the Actor's folder, but not outside the context.
+- The dev folder registered by the push is the context root, not the Actor's folder.
+- Runs use the normal API: `apify call`, `POST /v2/actors/<actorId>/runs`, the console.
+- `apify push` of such an Actor to the Apify platform stops with an error: the platform cannot build a
+  pushed Docker context yet (https://github.com/apify/apify-core/issues/28685). There, build it from the
+  Git repository with the Actor's folder set.
+
 ## Input schema: defaults and validation
 
 If the Actor declares an input schema - the `input` field of `.actor/actor.json`, or

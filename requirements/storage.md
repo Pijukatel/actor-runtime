@@ -62,6 +62,10 @@
         - Neither `localDevFolder`, `localDebug`, `localBrowserView`, nor any build's
           `imageWorkingDirectory` is ever exposed on the public `/v2` API.
         - `pricingInfos` - **optional**, the Actor's pricing (`actor-driver.md`); exposed on `/v2`.
+        - Each version may carry `localSourceContext` - **optional**, a monorepo Docker context pushed through
+          `PUT /actor-runtime/source-context/...` (`api.md`), with the fields of that endpoint's response
+          plus `fileId`. Its files are stored in `__FILES__` under `fileId`, and are deleted with the
+          version, the Actor, or the push that replaces them. Never exposed on `/v2`.
 - The system stores Actor runs in dedicated key-value store called `__RUNS__`:
     - `key` is the id of the Actor run `runId`
     - `value` is the metadata of the Actor

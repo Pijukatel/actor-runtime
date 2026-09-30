@@ -1,4 +1,4 @@
-import type { ActorRecord, BuildRecord, RunRecord } from '../../storage/entities.js';
+import type { ActorRecord, ActorVersionRecord, BuildRecord, RunRecord } from '../../storage/entities.js';
 import { getRunTelemetry } from '../../services/events-channel.js';
 import { computeRunUsage } from '../../services/run-usage.js';
 import { standbyUrl, type StandbyUrlAudience } from '../../services/standby-config.js';
@@ -9,6 +9,12 @@ const DEFAULT_RUN_BUILD_TAG = 'latest';
 /** Matches `services/runs.ts`'s `DISK_MBYTES_PER_MEMORY_MBYTE` - backfilled here only for run records
  * that predate `options.diskMbytes`; every real run always has it set already. */
 const DISK_MBYTES_PER_MEMORY_MBYTE = 2;
+
+/** The version without `localSourceContext`, which - like every other `local*` field - stays off `/v2`. */
+export function versionDto(version: ActorVersionRecord): Omit<ActorVersionRecord, 'localSourceContext'> {
+	const { versionNumber, buildTag, sourceType, sourceFiles, envVars } = version;
+	return { versionNumber, buildTag, sourceType, sourceFiles, ...(envVars !== undefined ? { envVars } : {}) };
+}
 
 export function actorDto(actor: ActorRecord, username: string, audience: StandbyUrlAudience = 'host') {
 	return {
@@ -21,7 +27,7 @@ export function actorDto(actor: ActorRecord, username: string, audience: Standby
 		createdAt: actor.createdAt,
 		modifiedAt: actor.modifiedAt,
 		stats: { totalRuns: 0, totalUsers: 1 },
-		versions: actor.versions,
+		versions: actor.versions.map(versionDto),
 		defaultRunOptions: { build: 'latest', timeoutSecs: 300, memoryMbytes: 1024 },
 		deploymentKey: actor.id,
 		pricingInfos: actor.pricingInfos ?? [],

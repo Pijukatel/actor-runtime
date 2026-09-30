@@ -34,6 +34,24 @@
     4. the platform's bundled default Dockerfile, for that build only - the pushed source itself is unchanged.
     - Matching is case-insensitive, exact-case wins ties, and every outcome is stated in the build log.
 
+# Monorepo Actors
+
+- **An Actor whose `.actor/actor.json` sets `dockerContextDir` builds from that whole Docker context**, as
+  on the platform: `apify push` from the Actor's folder pushes every file of the context (the monorepo's
+  shared packages, Dockerfiles and schemas), and names the Actor's folder inside it.
+- `.actor/actor.json` is read from the Actor's folder, and its `dockerfile` and `input` paths stay relative
+  to that `.actor/`; they may leave the Actor's folder, but a path escaping the context fails the build with
+  "points outside the Docker context directory". The default Dockerfile and input schema locations are the
+  Actor's own folder.
+- The build gets the build argument `ACTOR_PATH_IN_DOCKER_CONTEXT`, the Actor's folder relative to the
+  context, which the platform's builder also passes.
+- The runtime never fetches from Git: the pushed files are the developer's working copy. Its Git remote,
+  branch, commit and whether it had uncommitted changes are only reported, in the build log and on the
+  console. Rebuilding without a new push builds the last pushed context.
+- An ordinary `apify push` of the same version replaces the context again.
+- `apify push` refuses such an Actor against the Apify platform, which does not accept a pushed Docker
+  context yet.
+
 # Input schema, validation and defaults
 
 - **Input schemas work as on the Apify platform**: the schema is read from the pushed source when the

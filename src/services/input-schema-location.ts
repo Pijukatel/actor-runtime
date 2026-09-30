@@ -13,6 +13,7 @@ import { validateInputSchema } from '@apify/input_schema';
 import type { InputSchema, SourceFile } from '../storage/entities.js';
 import {
 	ACTOR_DIR,
+	actorFilePath,
 	escapesActorRootMessage,
 	fallbackWarningLine,
 	findCaseInsensitive,
@@ -98,11 +99,12 @@ function acceptSchemaFile(match: IndexedFile, source: string, logLines: string[]
 	return acceptSchema(parsed, source, logLines);
 }
 
-export function resolveInputSchemaLocation(sourceFiles: SourceFile[]): InputSchemaResolution {
+/** `actorPath`: see `actor-source-files.ts`. The default locations are relative to the Actor's folder. */
+export function resolveInputSchemaLocation(sourceFiles: SourceFile[], actorPath = ''): InputSchemaResolution {
 	const indexed = indexSourceFiles(sourceFiles);
 	const logLines: string[] = [];
 
-	const actorJson = parseActorJson(sourceFiles);
+	const actorJson = parseActorJson(sourceFiles, actorPath);
 	if (actorJson.outcome === 'unparseable') {
 		return { outcome: 'failure', reason: 'unparseable-actor-json', message: actorJson.message };
 	}
@@ -124,12 +126,12 @@ export function resolveInputSchemaLocation(sourceFiles: SourceFile[]): InputSche
 			};
 		}
 
-		const resolved = resolveActorJsonPathField(indexed, field);
+		const resolved = resolveActorJsonPathField(indexed, field, actorPath);
 		if (resolved.outcome === 'escapes-actor-root') {
 			return {
 				outcome: 'failure',
 				reason: 'escapes-actor-root',
-				message: escapesActorRootMessage(field, 'Input schema'),
+				message: escapesActorRootMessage(field, 'Input schema', actorPath),
 			};
 		}
 		if (resolved.outcome === 'match') {
@@ -142,7 +144,7 @@ export function resolveInputSchemaLocation(sourceFiles: SourceFile[]): InputSche
 	}
 
 	for (const candidate of DEFAULT_SCHEMA_CANDIDATES) {
-		const match = findCaseInsensitive(indexed, candidate);
+		const match = findCaseInsensitive(indexed, actorFilePath(actorPath, candidate));
 		if (match) return acceptSchemaFile(match, `"${match.normalizedName}"`, logLines);
 	}
 

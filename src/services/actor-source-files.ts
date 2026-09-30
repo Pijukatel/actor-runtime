@@ -5,6 +5,9 @@
  *
  * Shared rather than written per field so the Actor-root containment check has one implementation:
  * a traversal hole patched in one copy would otherwise stay open in the other.
+ *
+ * `actorPath` is where the Actor sits inside the pushed files: `''` for an ordinary push, the Actor's
+ * folder for a monorepo build context. Path fields may then leave the Actor's folder, never the context.
  */
 import * as path from 'node:path';
 import JSON5 from 'json5';
@@ -44,6 +47,11 @@ export function findCaseInsensitive(indexed: IndexedFile[], candidate: string): 
 	return firstMatch;
 }
 
+/** `relativePath` inside the Actor at `actorPath`, as a normalized tar entry name. */
+export function actorFilePath(actorPath: string, relativePath: string): string {
+	return normalizeEntryName(actorPath === '' ? relativePath : path.posix.join(actorPath, relativePath));
+}
+
 /** `.actor/actor.json`'s own path is not case-folded, unlike the files its fields name. */
 export function findExact(sourceFiles: SourceFile[], normalizedTarget: string): SourceFile | undefined {
 	return sourceFiles.find((file) => normalizeEntryName(file.name) === normalizedTarget);
@@ -53,8 +61,8 @@ export function findExact(sourceFiles: SourceFile[], normalizedTarget: string): 
 export type ActorJsonParse =
 	{ outcome: 'parsed'; specification: unknown } | { outcome: 'absent' } | { outcome: 'unparseable'; message: string };
 
-export function parseActorJson(sourceFiles: SourceFile[]): ActorJsonParse {
-	const file = findExact(sourceFiles, ACTOR_JSON_NAME);
+export function parseActorJson(sourceFiles: SourceFile[], actorPath = ''): ActorJsonParse {
+	const file = findExact(sourceFiles, actorFilePath(actorPath, ACTOR_JSON_NAME));
 	if (!file) return { outcome: 'absent' };
 	try {
 		return { outcome: 'parsed', specification: JSON5.parse(sourceFileToText(file)) as unknown };
@@ -71,12 +79,13 @@ export type ActorJsonPathField =
 	| { outcome: 'not-found'; shownPath: string }
 	| { outcome: 'escapes-actor-root' };
 
-/** `field` is resolved relative to `.actor/`, and may not leave the Actor root. */
-export function resolveActorJsonPathField(indexed: IndexedFile[], field: string): ActorJsonPathField {
+/** `field` is resolved relative to `.actor/`, and may not leave the pushed files - which, for an ordinary
+ * push, are the Actor root. */
+export function resolveActorJsonPathField(indexed: IndexedFile[], field: string, actorPath = ''): ActorJsonPathField {
 	if (field === '') return { outcome: 'not-found', shownPath: '' };
 	if (field.startsWith('/')) return { outcome: 'escapes-actor-root' };
 
-	const joined = normalizeEntryName(path.posix.join(ACTOR_DIR, field));
+	const joined = normalizeEntryName(path.posix.join(actorFilePath(actorPath, ACTOR_DIR), field));
 	if (joined === '..' || joined.startsWith('../')) return { outcome: 'escapes-actor-root' };
 
 	const match = findCaseInsensitive(indexed, joined);
@@ -87,6 +96,7 @@ export function fallbackWarningLine(shownPath: string, fieldName: string): strin
 	return `Warning: "${shownPath}" (from the "${fieldName}" field in .actor/actor.json) is not in the pushed source; falling back to the default locations.\n`;
 }
 
-export function escapesActorRootMessage(rawField: string, subject: string): string {
-	return `${subject} path "${rawField}" in .actor/actor.json points outside the Actor root directory.`;
+export function escapesActorRootMessage(rawField: string, subject: string, actorPath = ''): string {
+	const boundary = actorPath === '' ? 'the Actor root directory' : 'the Docker context directory';
+	return `${subject} path "${rawField}" in .actor/actor.json points outside ${boundary}.`;
 }

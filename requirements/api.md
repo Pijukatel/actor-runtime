@@ -229,6 +229,20 @@
     - **Body**: `{ "enabled": boolean, "interactive"?: boolean }`, `interactive` defaulting to `false`. A call
       fully replaces the prior state; `{"enabled": false}` clears it. Any other shape is `400 invalid-request`.
     - **Response**: `{ data: { localBrowserView: { interactive } | null } }` - the read-back; there is no `GET`.
+- **`PUT /actor-runtime/source-context/:actorId/:versionNumber`** - replaces an existing version's source
+  with a monorepo Docker context (`actor-driver.md`'s "Monorepo Actors"). Authenticated and owner-scoped
+  like every `/v2` route.
+    - **Body**: a JSON object with `actorPath` (the Actor's folder inside the context), `sourceFiles`
+      (`[{ name, format, content }]`, as on `/v2` versions, every name relative to the context) and an
+      optional `git` (`{ remoteUrl?, branch?, commit?, dirty? }`).
+    - **Response**: `{ data: { versionNumber, localSourceContext } }`, where `localSourceContext` is
+      `{ actorPath, fileCount, sizeBytes, uploadedAt, git? }`.
+    - **Errors**: `400` `invalid-request` for a malformed body, an `actorPath` or file name that is absolute
+      or leaves the context, an `actorPath` naming the context itself, or no `.actor/actor.json` under
+      `actorPath`; `404` `record-not-found` for an unknown Actor or version.
+    - The context is never exposed on `/v2`: the version reads there as an ordinary `SOURCE_FILES`
+      version with no files. `sourceFiles` sent to `PUT /v2/actors/:actorId/versions/:versionNumber`,
+      or a version recreated with `POST`, replace the context.
 - **`GET /actor-runtime/events/:runId`** - a websocket upgrade, reachable at exactly this one path on
   the fixed API port (`system.md`). It carries the run's platform events: `systemInfo` once a second
   (`actor-driver.md`), a one-off `aborting`-plus-`persistState` pair under `?gracefully=` (below), and a

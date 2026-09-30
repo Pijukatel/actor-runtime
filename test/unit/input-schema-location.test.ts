@@ -188,3 +188,30 @@ describe('resolveInputSchemaLocation', () => {
 		expect(resolution.outcome).toBe('resolved');
 	});
 });
+
+describe('resolveInputSchemaLocation in a monorepo build context', () => {
+	it('follows the "input" field outside the Actor\'s folder, and defaults to the Actor\'s own schema', () => {
+		const shared = expectResolved(
+			resolveInputSchemaLocation(
+				[
+					json('actors/a/.actor/actor.json', { input: '../../../shared/input_schema.json' }),
+					json('shared/input_schema.json', validSchema({ title: 'Shared' })),
+				],
+				'actors/a',
+			),
+		);
+		expect(shared.schema.title).toBe('Shared');
+
+		const own = expectResolved(
+			resolveInputSchemaLocation(
+				[
+					json('actors/a/.actor/actor.json', {}),
+					json('.actor/input_schema.json', validSchema({ title: 'Root' })),
+					json('actors/a/.actor/input_schema.json', validSchema({ title: 'Own' })),
+				],
+				'actors/a',
+			),
+		);
+		expect(own.schema.title).toBe('Own');
+	});
+});

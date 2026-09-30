@@ -295,3 +295,55 @@ describe('resolveDockerfileLocation', () => {
 		});
 	});
 });
+
+describe('resolveDockerfileLocation in a monorepo build context', () => {
+	const ACTOR_PATH = 'actors/a';
+
+	it('resolves the "dockerfile" field relative to the Actor\'s .actor/, even outside the Actor\'s folder', () => {
+		const result = resolveDockerfileLocation(
+			[
+				text(`${ACTOR_PATH}/.actor/actor.json`, JSON.stringify({ dockerfile: '../../../shared/Dockerfile' })),
+				text('shared/Dockerfile', 'FROM node:20\n'),
+			],
+			ACTOR_PATH,
+		);
+
+		expect(result).toMatchObject({ outcome: 'resolved', dockerfilePath: 'shared/Dockerfile' });
+	});
+
+	it("looks for the default locations in the Actor's folder, not at the context root", () => {
+		const result = resolveDockerfileLocation(
+			[
+				text(`${ACTOR_PATH}/.actor/actor.json`, '{}'),
+				text('Dockerfile', 'FROM root\n'),
+				text(`${ACTOR_PATH}/Dockerfile`, 'FROM actor\n'),
+			],
+			ACTOR_PATH,
+		);
+
+		expect(result).toMatchObject({ outcome: 'resolved', dockerfilePath: `${ACTOR_PATH}/Dockerfile` });
+	});
+
+	it("puts the default Dockerfile in the Actor's folder", () => {
+		const result = resolveDockerfileLocation([text(`${ACTOR_PATH}/.actor/actor.json`, '{}')], ACTOR_PATH);
+
+		expect(result.outcome).toBe('default');
+		if (result.outcome !== 'default') return;
+		expect(result.dockerfilePath).toBe(`${ACTOR_PATH}/${DEFAULT_DOCKERFILE_NAME}`);
+		expect(result.extraSourceFile.name).toBe(`${ACTOR_PATH}/${DEFAULT_DOCKERFILE_NAME}`);
+	});
+
+	it('fails a "dockerfile" field that leaves the context, naming the context as the boundary', () => {
+		const result = resolveDockerfileLocation(
+			[text(`${ACTOR_PATH}/.actor/actor.json`, JSON.stringify({ dockerfile: '../../../../Dockerfile' }))],
+			ACTOR_PATH,
+		);
+
+		expect(result).toEqual({
+			outcome: 'failure',
+			reason: 'escapes-actor-root',
+			message:
+				'Dockerfile path "../../../../Dockerfile" in .actor/actor.json points outside the Docker context directory.',
+		});
+	});
+});

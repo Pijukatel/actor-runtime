@@ -53,12 +53,39 @@ export interface InputSchema {
 	required?: string[];
 }
 
+/** Where a monorepo build context pushed from a local Git working copy came from - reported, never used
+ * to fetch anything. Every field is optional: the pushed folder need not be a Git repository at all. */
+export interface LocalSourceContextGit {
+	remoteUrl?: string;
+	branch?: string;
+	commit?: string;
+	/** The working copy had uncommitted changes, so the pushed files are not exactly `commit`. */
+	dirty?: boolean;
+}
+
+/**
+ * A monorepo build context (`dockerContextDir` in `.actor/actor.json`) pushed through
+ * `PUT /actor-runtime/source-context/:actorId/:versionNumber`. The files live in `__FILES__` under
+ * `fileId`, not on the Actor record, since a context carries every workspace package, not just the Actor.
+ */
+export interface LocalSourceContext {
+	fileId: string;
+	/** The Actor's folder inside the context, as a normalized relative path; never `''`, never escaping. */
+	actorPath: string;
+	fileCount: number;
+	sizeBytes: number;
+	uploadedAt: string;
+	git?: LocalSourceContextGit;
+}
+
 export interface ActorVersionRecord {
 	versionNumber: string;
 	buildTag: string;
 	sourceType: SourceType;
 	sourceFiles: SourceFile[];
 	envVars?: Array<{ name: string; value: string }>;
+	/** When set, builds use this context instead of `sourceFiles`. Never exposed on `/v2`. */
+	localSourceContext?: LocalSourceContext;
 }
 
 /** Caller-facing language selector for the debug toggle. `'auto'` resolves from the built image at run
