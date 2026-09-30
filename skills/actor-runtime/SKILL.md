@@ -68,25 +68,30 @@ points `dockerfile`/`input` at shared files outside its own folder, is pushed fr
 
 ```sh
 cd monorepo/actors/my-actor
-apify push     # pushes the whole Docker context, builds it, as the platform builds from Git
+apify push     # pushes the repository, builds the Actor from its Docker context, as the platform builds from Git
 apify call
 ```
 
-- The push uploads the Docker context as the platform's clone of the repository has it - every file Git
-  tracks, plus new files Git does not ignore - not just the Actor's folder, and the build gets
-  `ACTOR_PATH_IN_DOCKER_CONTEXT` (the Actor's folder relative to the context), as the platform's builder
-  passes it. `.actorignore` does not apply, as it does not to the platform's Git builds: a git-ignored
-  `dist/` is not pushed even if `.actorignore` force-includes it. Executable files stay executable.
+Builds follow the platform's builder:
+
+- The push sends what the platform's clone of the repository would have - every file Git tracks, plus new
+  files Git does not ignore - with the Actor's folder inside it. `.actorignore` does not apply, as it does
+  not to the platform's Git builds: a git-ignored `dist/` is not pushed even if `.actorignore`
+  force-includes it. Symlinks stay links.
+- The Docker context is the folder `dockerContextDir` names, relative to `.actor/`; it may not leave the
+  repository. The build gets `ACTOR_PATH_IN_DOCKER_CONTEXT` (the Actor's folder relative to the context);
+  every build gets it, empty when there is no `dockerContextDir`.
+- `input` may point anywhere in the repository; the Dockerfile must be inside the context, or the build
+  fails, as it does on the platform. A named `input` file that does not exist fails the build too.
+- Every file in the build context has mode `0777`, as on the platform, so a script runs without `+x`.
 - The runtime never talks to Git or needs Git credentials: check out the branch you want locally, then
   push. Uncommitted changes are pushed too, with a warning - the platform builds only what is committed
   and pushed. The build log names the branch and commit, and says when there were uncommitted changes.
-- A `dockerContextDir` outside the Git repository is rejected, since the platform could not build it.
-- `dockerfile` and `input` may point outside the Actor's folder, but not outside the context.
-- The dev folder registered by the push is the context root, not the Actor's folder.
+- The dev folder registered by the push is the Docker context, not the Actor's folder.
 - Runs use the normal API: `apify call`, `POST /v2/actors/<actorId>/runs`, the console.
 - `apify push` of such an Actor to the Apify platform stops with an error: the platform cannot build a
-  pushed Docker context yet (https://github.com/apify/apify-core/issues/28685). There, build it from the
-  Git repository with the Actor's folder set.
+  pushed repository yet (https://github.com/apify/apify-core/issues/28685). There, build it from the Git
+  repository with the Actor's folder set.
 
 ## Input schema: defaults and validation
 

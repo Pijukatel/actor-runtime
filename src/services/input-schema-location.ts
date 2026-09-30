@@ -15,7 +15,6 @@ import {
 	ACTOR_DIR,
 	actorFilePath,
 	escapesActorRootMessage,
-	fallbackWarningLine,
 	findCaseInsensitive,
 	indexSourceFiles,
 	parseActorJson,
@@ -36,6 +35,7 @@ const DEFAULT_SCHEMA_CANDIDATES = [`${ACTOR_DIR}/input_schema.json`, 'input_sche
  * read must not be built with that contract silently dropped. */
 export type InputSchemaResolutionFailureReason =
 	| 'escapes-actor-root'
+	| 'missing-input-schema'
 	| 'invalid-input-field'
 	| 'unparseable-actor-json'
 	| 'unparseable-input-schema'
@@ -126,21 +126,27 @@ export function resolveInputSchemaLocation(sourceFiles: SourceFile[], actorPath 
 			};
 		}
 
-		const resolved = resolveActorJsonPathField(indexed, field, actorPath);
+		// Exact case, and no fallback when it is missing: the platform reads it as a path, and fails the build.
+		const resolved = resolveActorJsonPathField(indexed, field, actorPath, true);
 		if (resolved.outcome === 'escapes-actor-root') {
 			return {
 				outcome: 'failure',
 				reason: 'escapes-actor-root',
-				message: escapesActorRootMessage(field, 'Input schema', actorPath),
+				message: escapesActorRootMessage(field, 'Input schema'),
 			};
 		}
 		if (resolved.outcome === 'match') {
 			const source = `"${resolved.file.normalizedName}" (the "input" field in .actor/actor.json)`;
 			return acceptSchemaFile(resolved.file, source, logLines);
 		}
-		// Falls through instead of failing - the tolerance `apify-cli` shows locally, and the one the
-		// Dockerfile field already has here.
-		logLines.push(fallbackWarningLine(resolved.shownPath, 'input'));
+		// An empty field names no file, and the platform goes on to the default locations.
+		if (field !== '') {
+			return {
+				outcome: 'failure',
+				reason: 'missing-input-schema',
+				message: `Schema property "input": File "${resolved.shownPath}" does not exist!`,
+			};
+		}
 	}
 
 	for (const candidate of DEFAULT_SCHEMA_CANDIDATES) {

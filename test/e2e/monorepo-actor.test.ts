@@ -5,7 +5,7 @@
  * support - until it is published, point `ACTOR_RUNTIME_E2E_APIFY_CLI` at a built one (`helpers/apify-cli.ts`).
  */
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -89,10 +89,10 @@ describe.skipIf(!process.env.ACTOR_RUNTIME_E2E_APIFY_CLI)('monorepo Actors via a
 
 				// The Dockerfile and the input schema are the shared ones, outside the Actor's own folder.
 				const buildLog = apifyAllOutput(['builds', 'log', push.build.id], { cwd: actorDir, env });
-				expect(buildLog).toContain(`Building "${actorPath}" from a Docker context of`);
-				expect(buildLog).toContain('Using Dockerfile "shared/Dockerfile"');
-				expect(buildLog).toContain('Using the input schema from "shared/input_schema.json"');
-				// The build ran the shared script, which a lost executable bit would have failed.
+				expect(buildLog).toContain(`/${actorPath}" from `);
+				// Paths are relative to the repository, which is what the push sends.
+				expect(buildLog).toMatch(/Using Dockerfile "(.+\/)?shared\/Dockerfile"/);
+				expect(buildLog).toMatch(/Using the input schema from "(.+\/)?shared\/input_schema\.json"/);
 				expect(buildLog).toContain('RUN ./shared/check-context.sh');
 
 				const call = JSON.parse(
@@ -146,6 +146,8 @@ describe.skipIf(!process.env.ACTOR_RUNTIME_E2E_APIFY_CLI)('monorepo Actors via a
 			repo = mkdtempSync(join(tmpdir(), 'actor-runtime-e2e-monorepo-'));
 			cpSync(MONOREPO_ROOT, repo, { recursive: true });
 			appendFileSync(join(repo, 'shared', 'Dockerfile'), 'COPY actors/greeter/dist/extra.txt ./extra.txt\n');
+			// Not executable: the platform's builder makes every file in the context 0777, so the build still runs it.
+			chmodSync(join(repo, 'shared', 'check-context.sh'), 0o644);
 			writeFileSync(join(repo, 'actors', 'greeter', '.gitignore'), 'dist\n');
 			writeFileSync(join(repo, 'actors', 'greeter', '.actorignore'), '!dist/\n');
 			mkdirSync(join(repo, 'actors', 'greeter', 'dist'));
@@ -160,7 +162,7 @@ describe.skipIf(!process.env.ACTOR_RUNTIME_E2E_APIFY_CLI)('monorepo Actors via a
 		});
 
 		it(
-			'fails on a git-ignored file the Dockerfile needs, even if .actorignore force-includes it, and succeeds once it is committed',
+			'fails on a git-ignored file the Dockerfile needs, even if .actorignore force-includes it, and succeeds once it is committed, running a script without +x',
 			() => {
 				const env = apifyEnv(isolatedApifyHome);
 				const actorDir = join(repo, 'actors', 'greeter');

@@ -296,7 +296,7 @@ describe('resolveDockerfileLocation', () => {
 	});
 });
 
-describe('resolveDockerfileLocation in a monorepo build context', () => {
+describe('resolveDockerfileLocation for an Actor in a subfolder of the pushed files', () => {
 	const ACTOR_PATH = 'actors/a';
 
 	it('resolves the "dockerfile" field relative to the Actor\'s .actor/, even outside the Actor\'s folder', () => {
@@ -324,16 +324,7 @@ describe('resolveDockerfileLocation in a monorepo build context', () => {
 		expect(result).toMatchObject({ outcome: 'resolved', dockerfilePath: `${ACTOR_PATH}/Dockerfile` });
 	});
 
-	it("puts the default Dockerfile in the Actor's folder", () => {
-		const result = resolveDockerfileLocation([text(`${ACTOR_PATH}/.actor/actor.json`, '{}')], ACTOR_PATH);
-
-		expect(result.outcome).toBe('default');
-		if (result.outcome !== 'default') return;
-		expect(result.dockerfilePath).toBe(`${ACTOR_PATH}/${DEFAULT_DOCKERFILE_NAME}`);
-		expect(result.extraSourceFile.name).toBe(`${ACTOR_PATH}/${DEFAULT_DOCKERFILE_NAME}`);
-	});
-
-	it('fails a "dockerfile" field that leaves the context, naming the context as the boundary', () => {
+	it('fails a "dockerfile" field that leaves the pushed files, the platform\'s Actor root directory', () => {
 		const result = resolveDockerfileLocation(
 			[text(`${ACTOR_PATH}/.actor/actor.json`, JSON.stringify({ dockerfile: '../../../../Dockerfile' }))],
 			ACTOR_PATH,
@@ -343,7 +334,7 @@ describe('resolveDockerfileLocation in a monorepo build context', () => {
 			outcome: 'failure',
 			reason: 'escapes-actor-root',
 			message:
-				'Dockerfile path "../../../../Dockerfile" in .actor/actor.json points outside the Docker context directory.',
+				'Dockerfile path "../../../../Dockerfile" in .actor/actor.json points outside the Actor root directory.',
 		});
 	});
 });

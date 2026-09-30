@@ -58,8 +58,8 @@ function isGzip(buffer: Buffer): boolean {
 	return buffer.length >= 2 && buffer[0] === 0x1f && buffer[1] === 0x8b;
 }
 
-/** The tarball's regular files, in archive order. Directories are implied by the file names; links and
- * every other entry type are skipped, so nothing in the context can point outside it. */
+/** The tarball's regular files and symbolic links, in archive order. Directories are implied by the file
+ * names; every other entry type is skipped. A link is kept as a link, never followed. */
 export async function readTarballFiles(tarball: Buffer): Promise<SourceFile[]> {
 	const archive = isGzip(tarball) ? await promisify(gunzip)(tarball) : tarball;
 	const files: SourceFile[] = [];
@@ -75,8 +75,9 @@ export async function readTarballFiles(tarball: Buffer): Promise<SourceFile[]> {
 						name: header.name,
 						format: 'BASE64',
 						content: Buffer.concat(chunks).toString('base64'),
-						...(header.mode !== undefined ? { mode: header.mode } : {}),
 					});
+				} else if (header.type === 'symlink' && header.linkname) {
+					files.push({ name: header.name, format: 'TEXT', content: '', linkTarget: header.linkname });
 				}
 				next();
 			});

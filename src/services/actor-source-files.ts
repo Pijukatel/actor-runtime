@@ -6,8 +6,9 @@
  * Shared rather than written per field so the Actor-root containment check has one implementation:
  * a traversal hole patched in one copy would otherwise stay open in the other.
  *
- * `actorPath` is where the Actor sits inside the pushed files: `''` for an ordinary push, the Actor's
- * folder for a monorepo build context. Path fields may then leave the Actor's folder, never the context.
+ * `actorPath` is where the Actor sits inside the pushed files: `''` for an ordinary push, the Actor's folder
+ * in the repository for a monorepo push. Path fields may leave the Actor's folder, never the pushed files -
+ * the platform's "Actor root directory", which for a Git source is the whole clone.
  */
 import * as path from 'node:path';
 import JSON5 from 'json5';
@@ -81,14 +82,21 @@ export type ActorJsonPathField =
 
 /** `field` is resolved relative to `.actor/`, and may not leave the pushed files - which, for an ordinary
  * push, are the Actor root. */
-export function resolveActorJsonPathField(indexed: IndexedFile[], field: string, actorPath = ''): ActorJsonPathField {
+export function resolveActorJsonPathField(
+	indexed: IndexedFile[],
+	field: string,
+	actorPath = '',
+	matchCase = false,
+): ActorJsonPathField {
 	if (field === '') return { outcome: 'not-found', shownPath: '' };
 	if (field.startsWith('/')) return { outcome: 'escapes-actor-root' };
 
 	const joined = normalizeEntryName(path.posix.join(actorFilePath(actorPath, ACTOR_DIR), field));
 	if (joined === '..' || joined.startsWith('../')) return { outcome: 'escapes-actor-root' };
 
-	const match = findCaseInsensitive(indexed, joined);
+	const match = matchCase
+		? indexed.find((file) => file.normalizedName === joined)
+		: findCaseInsensitive(indexed, joined);
 	return match ? { outcome: 'match', file: match } : { outcome: 'not-found', shownPath: joined };
 }
 
@@ -96,7 +104,6 @@ export function fallbackWarningLine(shownPath: string, fieldName: string): strin
 	return `Warning: "${shownPath}" (from the "${fieldName}" field in .actor/actor.json) is not in the pushed source; falling back to the default locations.\n`;
 }
 
-export function escapesActorRootMessage(rawField: string, subject: string, actorPath = ''): string {
-	const boundary = actorPath === '' ? 'the Actor root directory' : 'the Docker context directory';
-	return `${subject} path "${rawField}" in .actor/actor.json points outside ${boundary}.`;
+export function escapesActorRootMessage(rawField: string, subject: string): string {
+	return `${subject} path "${rawField}" in .actor/actor.json points outside the Actor root directory.`;
 }

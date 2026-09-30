@@ -23,17 +23,18 @@ export type DockerfileResolutionFailureReason =
 	'escapes-actor-root' | 'invalid-dockerfile-field' | 'unparseable-actor-json';
 
 /** `resolveDockerfileLocation`'s outcomes: `resolved` (a candidate matched), `default` (nothing matched
- * - `extraSourceFile` must be appended to this build's context only, never persisted), or `failure`. */
+ * - `extraSourceFile`, named relative to the Docker context, must be added to this build's context only,
+ * never persisted), or `failure`. */
 export type DockerfileResolution =
 	| { outcome: 'resolved'; dockerfilePath: string; logLines: string[] }
 	| { outcome: 'default'; dockerfilePath: string; logLines: string[]; extraSourceFile: SourceFile }
 	| { outcome: 'failure'; reason: DockerfileResolutionFailureReason; message: string };
 
-function escapesActorRootFailure(rawField: string, actorPath: string): DockerfileResolution {
+function escapesActorRootFailure(rawField: string): DockerfileResolution {
 	return {
 		outcome: 'failure',
 		reason: 'escapes-actor-root',
-		message: escapesActorRootMessage(rawField, 'Dockerfile', actorPath),
+		message: escapesActorRootMessage(rawField, 'Dockerfile'),
 	};
 }
 
@@ -59,7 +60,7 @@ export function resolveDockerfileLocation(sourceFiles: SourceFile[], actorPath =
 		}
 
 		const resolved = resolveActorJsonPathField(indexed, field, actorPath);
-		if (resolved.outcome === 'escapes-actor-root') return escapesActorRootFailure(field, actorPath);
+		if (resolved.outcome === 'escapes-actor-root') return escapesActorRootFailure(field);
 		if (resolved.outcome === 'match') {
 			return {
 				outcome: 'resolved',
@@ -99,8 +100,8 @@ export function resolveDockerfileLocation(sourceFiles: SourceFile[], actorPath =
 	logLines.push(`${DEFAULT_DOCKERFILE_NAME} not found, using the default one.\n`);
 	return {
 		outcome: 'default',
-		dockerfilePath: rootCandidate,
+		dockerfilePath: DEFAULT_DOCKERFILE_NAME,
 		logLines,
-		extraSourceFile: { name: rootCandidate, format: 'TEXT', content: DEFAULT_DOCKERFILE_CONTENT },
+		extraSourceFile: { name: DEFAULT_DOCKERFILE_NAME, format: 'TEXT', content: DEFAULT_DOCKERFILE_CONTENT },
 	};
 }

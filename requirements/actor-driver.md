@@ -34,38 +34,44 @@
     4. the platform's bundled default Dockerfile, for that build only - the pushed source itself is unchanged.
     - Matching is case-insensitive, exact-case wins ties, and every outcome is stated in the build log.
 
-# Monorepo Actors
+# Docker context and monorepo Actors
 
-- **An Actor whose `.actor/actor.json` sets `dockerContextDir` builds from that whole Docker context**, as
-  on the platform: `apify push` from the Actor's folder pushes every file of the context (the monorepo's
-  shared packages, Dockerfiles and schemas), and names the Actor's folder inside it.
-- `.actor/actor.json` is read from the Actor's folder, and its `dockerfile` and `input` paths stay relative
-  to that `.actor/`; they may leave the Actor's folder, but a path escaping the context fails the build with
-  "points outside the Docker context directory". The default Dockerfile and input schema locations are the
-  Actor's own folder.
-- The build gets the build argument `ACTOR_PATH_IN_DOCKER_CONTEXT`, the Actor's folder relative to the
-  context, which the platform's builder also passes.
-- **The files built are those the platform's clone of the repository has**, as they are on disk at push
-  time: every file Git tracks, plus new files Git does not ignore (untracked `node_modules` and storage
-  folders excepted). A file the context's `.gitignore` excludes is left out even if `.actorignore`
-  force-includes it, and `.actorignore` never drops a tracked file - the platform's Git builds do not use
-  it. Files keep their permission bits, so executable scripts stay executable. Outside a Git repository,
-  the files an ordinary push of the context root would send are used. The runtime never fetches from Git.
-- `apify push` rejects a `dockerContextDir` outside the Git repository, which a clone would not contain,
-  and warns that uncommitted changes are built here but not on the platform.
+- **Every build takes its Docker context as the platform's builder does**: the Actor's folder, unless
+  `.actor/actor.json` sets `dockerContextDir` - a folder relative to `.actor/`, which may leave the Actor's
+  folder but not the pushed files (the platform's "Actor root directory"; for a Git source, the clone). A
+  context outside them fails with "Actor context path "…" is outside of Actor root directory!", a missing
+  one with "Actor context path "…" does not exist!".
+- `dockerfile`, `input` and the default locations are resolved from the Actor's `.actor/` and may point
+  anywhere in the pushed files. The Dockerfile must be inside the context, since the build reads it from
+  there; one outside it fails the build. The default Dockerfile goes to the context's root.
+- Every build gets the build argument `ACTOR_PATH_IN_DOCKER_CONTEXT`, the Actor's folder relative to the
+  context (empty when they are the same); an environment variable of the same name passed to the build
+  overrides it. Every file in the context has mode `0777`, whatever its mode in the source, and symlinks
+  stay links.
+- **A monorepo Actor** (one whose context is above its folder) is pushed by `apify push` from its folder:
+  the push sends what the platform's clone of the repository would have - the repository's root, with the
+  Actor's folder inside it - as it is on disk at push time: every file Git tracks, plus new files Git does
+  not ignore (untracked `node_modules` and storage folders excepted). A file `.gitignore` excludes is left
+  out even if `.actorignore` force-includes it, and `.actorignore` never drops a tracked file - the
+  platform's Git builds do not use it. Outside a Git repository, the context root is pushed instead, as an
+  ordinary push of it would send it. The runtime never fetches from Git.
+- `apify push` rejects a `dockerContextDir` outside the Git repository, and warns that uncommitted changes
+  are built here but not on the platform.
 - The working copy's Git remote, branch and commit, and whether it had uncommitted changes, are shown in
   the build log and on the console as a label only; they never select which files are built.
-- A rebuild without a new push builds the last pushed files.
-- `usesStandbyMode` in the Actor's `.actor/actor.json` turns standby on, as for an ordinary push.
-- An ordinary `apify push` of the same version replaces the context again.
-- `apify push` refuses such an Actor against the Apify platform, which does not accept a pushed Docker
-  context yet.
+- A rebuild without a new push builds the last pushed files. `usesStandbyMode` in the Actor's
+  `.actor/actor.json` turns standby on, as for an ordinary push. An ordinary `apify push` of the same
+  version replaces the pushed repository again.
+- `apify push` refuses such an Actor against the Apify platform, which does not accept a pushed repository
+  yet.
 
 # Input schema, validation and defaults
 
 - **Input schemas work as on the Apify platform**: the schema is read from the pushed source when the
   Actor is built - the `input` field of `.actor/actor.json`, else `.actor/INPUT_SCHEMA.json`, else
-  `INPUT_SCHEMA.json` - a build whose schema cannot be read or is not a valid input schema fails with
+  `INPUT_SCHEMA.json` - a build whose `input` field names a file that does not exist (matched with exact
+  case, as the platform reads it as a path), whose schema cannot be read, or whose schema is not a valid
+  input schema fails with
   the reason in its log, and every run of a build is validated against that build's schema with its
   defaults applied, a rejected input starting nothing (`api.md`). A build with no input schema takes
   every input exactly as the caller sent it.

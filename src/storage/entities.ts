@@ -40,9 +40,9 @@ export interface SourceFile {
 	name: string;
 	format: 'TEXT' | 'BASE64';
 	content: string;
-	/** Permission bits, known only for files unpacked from a pushed Docker context - so an executable
-	 * script stays executable, as in a Git clone. */
-	mode?: number;
+	/** Set for a symbolic link unpacked from a pushed monorepo source, which the build context keeps as a
+	 * link, as the platform does for a Git clone; `content` is then empty. */
+	linkTarget?: string;
 }
 
 /**

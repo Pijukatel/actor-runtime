@@ -232,16 +232,16 @@
       fully replaces the prior state; `{"enabled": false}` clears it. Any other shape is `400 invalid-request`.
     - **Response**: `{ data: { localBrowserView: { interactive } | null } }` - the read-back; there is no `GET`.
 - **`PUT /actor-runtime/source-context/:actorId/:versionNumber`** - replaces an existing version's source
-  with a monorepo Docker context (`actor-driver.md`'s "Monorepo Actors"). Authenticated and owner-scoped
-  like every `/v2` route.
-    - **Body**: the whole Docker context as one `.tar.gz` archive (a plain `.tar` is accepted too), every
-      entry named relative to the context root. Only regular files are kept; links are ignored.
-    - **Query**: `actorPath` (required) - the Actor's folder inside the context; optional `gitRemoteUrl`,
+  with a monorepo Actor's repository (`actor-driver.md`'s "Docker context and monorepo Actors"), from which
+  each build takes its Docker context. Authenticated and owner-scoped like every `/v2` route.
+    - **Body**: the pushed files as one `.tar.gz` archive (a plain `.tar` is accepted too), every entry named
+      relative to their root. Regular files and symlinks are kept; other entry types are ignored.
+    - **Query**: `actorPath` (required) - the Actor's folder inside the pushed files; optional `gitRemoteUrl`,
       `gitBranch`, `gitCommit` and `gitDirty` (`true`/`false`) describe the working copy it came from.
     - **Response**: `{ data: { versionNumber, localSourceContext } }`, where `localSourceContext` is
       `{ actorPath, fileCount, sizeBytes, uploadedAt, git? }`.
     - **Errors**: `400` `invalid-request` for a missing or unreadable archive, an `actorPath` or entry name
-      that is absolute or leaves the context, an `actorPath` naming the context itself, no
+      that is absolute or leaves the pushed files, an `actorPath` naming their root itself, no
       `.actor/actor.json` under `actorPath`, or a `gitDirty` other than `true`/`false`; `404`
       `record-not-found` for an unknown Actor or version.
     - The context is never exposed on `/v2`: the version reads there as an ordinary `SOURCE_FILES`

@@ -510,14 +510,16 @@ function sourceFileToBuffer(file: SourceFile): Buffer {
 	return file.format === 'BASE64' ? Buffer.from(file.content, 'base64') : Buffer.from(file.content, 'utf8');
 }
 
+/** The platform's builder gives every file in the Docker context these permission bits, whatever the source
+ * had, so a script is executable in a build there even without `+x`. */
+const DOCKER_FILE_MODE = 0o777;
+
 function buildTarball(sourceFiles: SourceFile[]): NodeJS.ReadableStream {
 	const pack = tar.pack();
 	for (const file of sourceFiles) {
-		const buffer = sourceFileToBuffer(file);
-		pack.entry(
-			{ name: normalizeEntryName(file.name), ...(file.mode !== undefined ? { mode: file.mode } : {}) },
-			buffer,
-		);
+		const name = normalizeEntryName(file.name);
+		if (file.linkTarget !== undefined) pack.entry({ name, type: 'symlink', linkname: file.linkTarget });
+		else pack.entry({ name, mode: DOCKER_FILE_MODE }, sourceFileToBuffer(file));
 	}
 	pack.finalize();
 	return pack;

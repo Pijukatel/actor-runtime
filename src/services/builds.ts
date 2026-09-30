@@ -9,6 +9,8 @@ import { normalizeEntryName } from '../driver/tar-entry-name.js';
 import { sourceFileToText } from './actor-source-files.js';
 import { qualifyDockerfileImageReferences } from './dockerfile-image-refs.js';
 import { resolveDockerfileLocation } from './dockerfile-location.js';
+import { dockerContextFiles, nameInDockerContext, resolveDockerContext } from './docker-context.js';
+import { DEFAULT_DOCKERFILE_NAME } from './default-dockerfile.js';
 import { resolveInputSchemaLocation } from './input-schema-location.js';
 import { resolveActorMemorySettings } from './actor-memory.js';
 import { buildArgsOf } from './env-vars.js';
@@ -25,8 +27,8 @@ import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
  */
 const DEFAULT_BUILD_TIMEOUT_SECS = 1800;
 
-/** The build argument the platform's builder passes a monorepo Actor's Dockerfile: the Actor's folder,
- * relative to the Docker context. */
+/** The build argument the platform's builder passes every build: the Actor's folder relative to the Docker
+ * context, `''` when the context is the Actor's folder. */
 const ACTOR_PATH_IN_DOCKER_CONTEXT_BUILD_ARG = 'ACTOR_PATH_IN_DOCKER_CONTEXT';
 
 export async function listOwnedBuilds(userId: string, actorId?: string): Promise<BuildRecord[]> {
@@ -230,9 +232,16 @@ export async function runBuildInBackground(
 		versionSourceFiles = contextFiles;
 		appendRuntimeLog(
 			record.id,
-			`Building "${actorPath}" from a Docker context of ${context.fileCount} files${describeSourceContextOrigin(context.git)}.\n`,
+			`Building "${actorPath}" from ${context.fileCount} pushed files${describeSourceContextOrigin(context.git)}.\n`,
 		);
 	}
+
+	const dockerContext = resolveDockerContext(versionSourceFiles, actorPath);
+	if (dockerContext.outcome === 'failure') {
+		await failBuild(record.id, dockerContext.message);
+		return;
+	}
+	const { contextPath, actorPathInContext } = dockerContext;
 
 	const dockerfileResolution = resolveDockerfileLocation(versionSourceFiles, actorPath);
 	if (dockerfileResolution.outcome === 'failure') {
@@ -240,6 +249,19 @@ export async function runBuildInBackground(
 		return;
 	}
 	for (const line of dockerfileResolution.logLines) appendRuntimeLog(record.id, line);
+	// The platform's BuildKit reads the Dockerfile from the Docker context, so one outside it cannot be built;
+	// the default one goes to the context's root.
+	const dockerfilePath =
+		dockerfileResolution.outcome === 'default'
+			? DEFAULT_DOCKERFILE_NAME
+			: nameInDockerContext(dockerfileResolution.dockerfilePath, contextPath);
+	if (dockerfilePath === undefined) {
+		await failBuild(
+			record.id,
+			`Dockerfile "${dockerfileResolution.dockerfilePath}" is outside the Docker context "${contextPath}", so the build cannot read it.`,
+		);
+		return;
+	}
 
 	// Before the image is built, not after: an Actor whose declared input contract cannot be read fails
 	// the build, rather than producing an image whose every run would skip validation.
@@ -258,24 +280,25 @@ export async function runBuildInBackground(
 	}
 	const memorySettings = memoryResolution.settings;
 
+	const contextFiles = dockerContextFiles(versionSourceFiles, contextPath);
 	const sourceFiles: SourceFile[] = qualifyDockerfileImages(
 		dockerfileResolution.outcome === 'default'
-			? [...versionSourceFiles, dockerfileResolution.extraSourceFile]
-			: versionSourceFiles,
-		dockerfileResolution.dockerfilePath,
+			? [
+					...contextFiles.filter((file) => normalizeEntryName(file.name) !== DEFAULT_DOCKERFILE_NAME),
+					dockerfileResolution.extraSourceFile,
+				]
+			: contextFiles,
+		dockerfilePath,
 		(line) => appendRuntimeLog(record.id, line),
 	);
 
-	// The Actor's path in the context wins over an environment variable of the same name.
+	// As on the platform: always passed, and an environment variable of the same name overrides it.
 	const envBuildArgs = buildArgsOf(actor, version);
-	const buildArgs = context ? { ...envBuildArgs, [ACTOR_PATH_IN_DOCKER_CONTEXT_BUILD_ARG]: actorPath } : envBuildArgs;
-	const passedEnvVarNames = Object.keys(envBuildArgs ?? {}).filter(
-		(name) => !context || name !== ACTOR_PATH_IN_DOCKER_CONTEXT_BUILD_ARG,
-	);
-	if (passedEnvVarNames.length > 0) {
+	const buildArgs = { [ACTOR_PATH_IN_DOCKER_CONTEXT_BUILD_ARG]: actorPathInContext, ...envBuildArgs };
+	if (envBuildArgs) {
 		appendRuntimeLog(
 			record.id,
-			`Passing the version's environment variables to the build as build arguments: ${passedEnvVarNames.join(', ')}`,
+			`Passing the version's environment variables to the build as build arguments: ${Object.keys(envBuildArgs).join(', ')}`,
 		);
 	}
 
@@ -287,8 +310,8 @@ export async function runBuildInBackground(
 				sourceFiles,
 				useCache: options.useCache,
 				timeoutSecs: DEFAULT_BUILD_TIMEOUT_SECS,
-				dockerfilePath: dockerfileResolution.dockerfilePath,
-				...(buildArgs ? { buildArgs } : {}),
+				dockerfilePath,
+				buildArgs,
 			},
 			(chunk) => appendLog(record.id, chunk),
 		);

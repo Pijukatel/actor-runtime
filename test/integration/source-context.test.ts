@@ -12,15 +12,15 @@ import { fixedBuildOutcomeDriver, startTestServer, type TestServerHandle } from 
 import { getRegistries } from '../../src/storage/registries.js';
 import type { SourceFile } from '../../src/storage/entities.js';
 
-/** The `.tar.gz` `apify push` sends: every file of the context, named relative to the context root. */
+/** The `.tar.gz` `apify push` sends: every file of the pushed source, named relative to its root. */
 async function tarball(files: SourceFile[]): Promise<Buffer> {
 	const pack = tar.pack();
-	// Each file's permission bits as given, `0o644` when absent.
 	const chunks: Buffer[] = [];
 	pack.on('data', (chunk: Buffer) => chunks.push(chunk));
 	const done = new Promise<void>((resolve) => pack.once('end', resolve));
 	for (const file of files) {
-		pack.entry({ name: file.name, mode: file.mode ?? 0o644 }, Buffer.from(file.content, 'utf8'));
+		if (file.linkTarget !== undefined) pack.entry({ name: file.name, type: 'symlink', linkname: file.linkTarget });
+		else pack.entry({ name: file.name }, Buffer.from(file.content, 'utf8'));
 	}
 	pack.finalize();
 	await done;
@@ -142,7 +142,7 @@ describe('monorepo source context', () => {
 
 		expect((await getRegistries().builds.get(build.id))?.inputSchema).toMatchObject({ title: 'Input' });
 		const log = await server.client.log(build.id).get();
-		expect(log).toContain(`Building "${ACTOR_PATH}" from a Docker context of ${MONOREPO_FILES.length} files`);
+		expect(log).toContain(`Building "${ACTOR_PATH}" from ${MONOREPO_FILES.length} pushed files`);
 		expect(log).toContain('branch main, commit abcdef123456');
 	});
 
@@ -179,7 +179,7 @@ describe('monorepo source context', () => {
 		await server.client.actor(actorId).build('0.0', { waitForFinish: 10 });
 		const [ctx] = driver.startBuildContexts;
 		expect(ctx.dockerfilePath).toBe('Dockerfile');
-		expect(ctx.buildArgs).toBeUndefined();
+		expect(ctx.buildArgs).toEqual({ ACTOR_PATH_IN_DOCKER_CONTEXT: '' });
 	});
 
 	it('deletes the stored files with the version and with the Actor', async () => {
@@ -238,7 +238,7 @@ describe('monorepo source context', () => {
 		expect(missingActor.status).toBe(404);
 	});
 
-	it("passes the version's env vars as build arguments too, with the Actor's path winning a name clash", async () => {
+	it("passes the version's env vars as build arguments too, overriding the Actor's path, as on the platform", async () => {
 		const actorId = await createActor();
 		await server.client
 			.actor(actorId)
@@ -257,25 +257,74 @@ describe('monorepo source context', () => {
 		expect(build.status).toBe('SUCCEEDED');
 		expect(driver.startBuildContexts[0].buildArgs).toEqual({
 			PLAIN_VAR: 'plain-value',
-			ACTOR_PATH_IN_DOCKER_CONTEXT: ACTOR_PATH,
+			ACTOR_PATH_IN_DOCKER_CONTEXT: 'overridden',
 		});
 		const log = await server.client.log(build.id).get();
-		expect(log).toContain('as build arguments: PLAIN_VAR\n');
+		expect(log).toContain('as build arguments: PLAIN_VAR, ACTOR_PATH_IN_DOCKER_CONTEXT');
 	});
 
-	it("keeps each file's permission bits, so an executable script stays executable, as in a Git clone", async () => {
+	it('keeps a symlink a link in the build context, as in a Git clone', async () => {
 		const actorId = await createActor();
-		const withScript: SourceFile[] = [
+		const withLink: SourceFile[] = [
 			...MONOREPO_FILES,
-			{ name: 'shared/start.sh', format: 'TEXT', content: '#!/bin/sh\necho hi\n', mode: 0o755 },
+			{ name: `${ACTOR_PATH}/shared`, format: 'TEXT', content: '', linkTarget: '../../shared' },
 		];
-		await putContext(actorId, { actorPath: ACTOR_PATH, sourceFiles: withScript });
+		await putContext(actorId, { actorPath: ACTOR_PATH, sourceFiles: withLink });
 
 		await server.client.actor(actorId).build('0.0', { waitForFinish: 10 });
 
-		const files = driver.startBuildContexts[0].sourceFiles;
-		expect(files.find((file) => file.name === 'shared/start.sh')?.mode).toBe(0o755);
-		expect(files.find((file) => file.name === 'package.json')?.mode).toBe(0o644);
+		const link = driver.startBuildContexts[0].sourceFiles.find((file) => file.name === `${ACTOR_PATH}/shared`);
+		expect(link).toMatchObject({ linkTarget: '../../shared', content: '' });
+	});
+
+	it('builds from a context narrower than the pushed files: schema from anywhere in them, Dockerfile only from the context', async () => {
+		const actorId = await createActor();
+		// The context is `actors/`, but the input schema stays in `shared/` - inside the clone, which is enough.
+		const narrow = (dockerfile: string) =>
+			MONOREPO_FILES.map((file) =>
+				file.name === `${ACTOR_PATH}/.actor/actor.json`
+					? {
+							...file,
+							content: JSON.stringify({
+								actorSpecification: 1,
+								dockerContextDir: '../..',
+								dockerfile,
+								input: '../../../shared/input_schema.json',
+							}),
+						}
+					: file,
+			);
+		await putContext(actorId, {
+			actorPath: ACTOR_PATH,
+			sourceFiles: [
+				...narrow('./Dockerfile'),
+				{ name: `${ACTOR_PATH}/.actor/Dockerfile`, format: 'TEXT', content: 'FROM node:20\n' },
+			],
+		});
+
+		const build = await server.client.actor(actorId).build('0.0', { waitForFinish: 10 });
+
+		expect(build.status).toBe('SUCCEEDED');
+		const [ctx] = driver.startBuildContexts;
+		expect(ctx.dockerfilePath).toBe('typescript-actor/.actor/Dockerfile');
+		expect(ctx.buildArgs).toEqual({ ACTOR_PATH_IN_DOCKER_CONTEXT: 'typescript-actor' });
+		expect(ctx.sourceFiles.map((file) => file.name).sort()).toEqual([
+			'typescript-actor/.actor/Dockerfile',
+			'typescript-actor/.actor/actor.json',
+			'typescript-actor/src/index.ts',
+		]);
+		expect((await getRegistries().builds.get(build.id))?.inputSchema).toMatchObject({ title: 'Input' });
+
+		// The platform's BuildKit reads the Dockerfile from the context, so one outside it cannot be built.
+		await putContext(actorId, {
+			actorPath: ACTOR_PATH,
+			sourceFiles: narrow('../../../shared/TypeScript_Dockerfile'),
+		});
+		const outside = await server.client.actor(actorId).build('0.0', { waitForFinish: 10 });
+		expect(outside.status).toBe('FAILED');
+		expect(outside.statusMessage).toBe(
+			'Dockerfile "shared/TypeScript_Dockerfile" is outside the Docker context "actors", so the build cannot read it.',
+		);
 	});
 
 	it("turns standby on when the Actor's .actor/actor.json in the context asks for it", async () => {
@@ -292,7 +341,7 @@ describe('monorepo source context', () => {
 		expect((await server.client.actor(actorId).get())?.actorStandby?.isEnabled).toBe(true);
 	});
 
-	it('fails the build when a path field leaves the Docker context', async () => {
+	it("fails the build when a path field leaves the pushed files, the platform's Actor root directory", async () => {
 		const actorId = await createActor();
 		const escaping = MONOREPO_FILES.map((file) =>
 			file.name === `${ACTOR_PATH}/.actor/actor.json`
@@ -304,7 +353,7 @@ describe('monorepo source context', () => {
 		const build = await server.client.actor(actorId).build('0.0', { waitForFinish: 10 });
 		expect(build.status).toBe('FAILED');
 		expect(build.statusMessage).toBe(
-			'Dockerfile path "../../../../Dockerfile" in .actor/actor.json points outside the Docker context directory.',
+			'Dockerfile path "../../../../Dockerfile" in .actor/actor.json points outside the Actor root directory.',
 		);
 	});
 });
