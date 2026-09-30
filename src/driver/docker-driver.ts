@@ -982,6 +982,7 @@ export class DockerDriver implements Driver {
 				t: imageTag,
 				nocache: !ctx.useCache,
 				dockerfile: ctx.dockerfilePath,
+				...(ctx.buildArgs ? { buildargs: ctx.buildArgs } : {}),
 				abortSignal,
 				...(platform ? { platform } : {}),
 			});

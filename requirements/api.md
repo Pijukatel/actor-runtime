@@ -68,6 +68,8 @@
         - v2/actors/:actorId/runs/last, and its sub-paths (see "Last-run shortcuts")
         - v2/actors/:actorId/versions
         - v2/actors/:actorId/versions/:versionNumber
+        - v2/actors/:actorId/versions/:versionNumber/env-vars
+        - v2/actors/:actorId/versions/:versionNumber/env-vars/:envVarName
     - Builds
         - v2/actor-builds
         - v2/actor-builds/:buildId

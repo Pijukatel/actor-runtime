@@ -1,60 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { startTestServer, type TestServerHandle } from './helpers/test-server.js';
+import { capturingDriver, startTestServer, type TestServerHandle } from './helpers/test-server.js';
 import { CONTAINER_EVENTS_WS_BASE_URL } from '../../src/config.js';
 import { REAL_APIFY_PROXY_WARNING, setApifyProxyEnabled } from '../../src/services/apify-proxy.js';
-import type { Driver } from '../../src/driver/types.js';
-
-/**
- * A driver that is "available" (unlike the default `unavailableDriver()`) and records the env it was
- * asked to run a container with, so `services/runs.ts: buildEnv()` can be exercised end to end without
- * a real Docker socket.
- */
-function envCapturingDriver(): { driver: Driver; getCapturedEnv: () => Record<string, string> | undefined } {
-	let capturedEnv: Record<string, string> | undefined;
-	const driver: Driver = {
-		available: true,
-		unavailableReason: undefined,
-		async init() {},
-		async startBuild(_ctx, onLog) {
-			onLog('build ok\n');
-			return { imageId: 'fake-image:test' };
-		},
-		async abortBuild() {},
-		async startRun(ctx, onLog) {
-			capturedEnv = ctx.env;
-			onLog('done\n');
-			return { exitCode: 0 };
-		},
-		async abortRun() {},
-		async reconcileOrphans() {},
-		async probeDevFolder() {
-			throw new Error('not used by this stub');
-		},
-		async ensureProbeImage() {
-			throw new Error('not used by this stub');
-		},
-		async startBrowserViewer() {
-			throw new Error('not used by this stub');
-		},
-		async stopBrowserViewer() {},
-		async containerServerAddress() {
-			return undefined;
-		},
-		async inspectDebugTarget() {
-			throw new Error('not used by this stub');
-		},
-	};
-	return { driver, getCapturedEnv: () => capturedEnv };
-}
 
 describe('actor version envVars are applied to the run container env', () => {
 	let server: TestServerHandle;
 	let getCapturedEnv: () => Record<string, string> | undefined;
 
 	beforeEach(async () => {
-		const capturing = envCapturingDriver();
-		getCapturedEnv = capturing.getCapturedEnv;
+		const capturing = capturingDriver();
+		getCapturedEnv = () => capturing.captured.runEnv;
 		server = await startTestServer(capturing.driver);
 	});
 
