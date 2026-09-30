@@ -112,7 +112,7 @@ apify push
 - They reach the **build** only with `applyEnvVarsToBuild` on, as Docker build arguments, secrets
   included; the Dockerfile reads each with `ARG NAME`:
   `apify api PUT v2/actors/<actorId>/versions/0.0 --body '{"applyEnvVarsToBuild": true}'`. A later
-  `apify push` keeps the setting.
+  `apify push` keeps the setting; with no local edits since, it needs `--force`.
 - `v2/actors/<actorId>/versions/<version>/env-vars` manages them one at a time. A change applies to the
   next run, or to the next build for build arguments.
 

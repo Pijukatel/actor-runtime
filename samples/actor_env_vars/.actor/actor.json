@@ -1,0 +1,13 @@
+{
+	"actorSpecification": 1,
+	"name": "env-vars-sample-actor",
+	"title": "Environment variables sample actor for actor-runtime",
+	"description": "Logs one environment variable read during the build, and one plain environment variable and one secret read during the run.",
+	"version": "0.0",
+	"buildTag": "latest",
+	"environmentVariables": {
+		"BUILD_GREETING": "hello-from-the-build",
+		"RUN_GREETING": "hello-from-the-run",
+		"API_KEY": "@envVarsSampleApiKey"
+	}
+}
