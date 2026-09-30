@@ -22,6 +22,9 @@
  * so `abortBuild` can call `.abort()` on the live one. Runs have no HTTP request to abort and are
  * cancelled at the container instead (`abortRun`).
  *
+ * Builder: on Docker an Actor build goes through BuildKit, as on the platform, rather than the classic
+ * builder the Engine API still defaults to; Podman builds with Buildah either way (`supportsBuildKit`).
+ *
  * Host architecture: a build runs for the host's own, except that one whose base image has no manifest
  * for it is retried once for `linux/amd64` under the engine's emulation (`build-platform.ts`).
  *
@@ -62,6 +65,7 @@ import {
 	compatibilityBuildNotice,
 	isMissingManifestForBuildPlatform,
 } from './build-platform.js';
+import { BUILDKIT_TRACE_ID, BuildKitProgressPrinter } from './buildkit-progress.js';
 import { formatRuntimeLog } from '../runtime-log.js';
 import type { SourceFile } from '../storage/entities.js';
 import {
@@ -204,6 +208,19 @@ export async function podmanMajorVersion(docker: Docker): Promise<number | undef
 		return Number.isNaN(major) ? undefined : major;
 	} catch {
 		return undefined;
+	}
+}
+
+/** Whether Actor builds can go through BuildKit, the builder the Apify platform builds with - the
+ * classic one skips no unused stage, and is deprecated. Docker has it built in; Podman builds with
+ * Buildah whatever the request asks for and serves no `/session`. An engine that does not say what it is
+ * keeps the classic builder, which every engine serves. */
+export async function supportsBuildKit(docker: Docker): Promise<boolean> {
+	try {
+		const version = (await docker.version()) as { Components?: Array<{ Name: string }> };
+		return !version.Components?.some((component) => component.Name === 'Podman Engine');
+	} catch {
+		return false;
 	}
 }
 
@@ -704,6 +721,8 @@ export class DockerDriver implements Driver {
 	private actorsOnDefaultNetwork = false;
 	/** `chooseDefaultNetworkRoute`'s answer, computed once on first use. */
 	private defaultNetworkRoute: Promise<DefaultNetworkRoute> | undefined;
+	/** `supportsBuildKit`'s answer from `init`. */
+	private useBuildKit = false;
 	/** `detectResourceLimitSupport`'s answer from `init`. */
 	private resourceLimits: ResourceLimitSupport = ALL_LIMITS_SUPPORTED;
 	private readonly hostsFile: string;
@@ -749,6 +768,7 @@ export class DockerDriver implements Driver {
 		// A `docker.info()` failure must not make an otherwise-reachable daemon look unavailable.
 		await this.captureHostCapacity();
 		this.resourceLimits = await detectResourceLimitSupport(this.docker);
+		this.useBuildKit = await supportsBuildKit(this.docker);
 		const unenforced = (['cpu', 'memory'] as const).filter((limit) => !this.resourceLimits[limit]);
 		if (unenforced.length > 0) {
 			console.warn(
@@ -978,7 +998,7 @@ export class DockerDriver implements Driver {
 	): Promise<BuildOutcome> {
 		let stream: NodeJS.ReadableStream;
 		try {
-			stream = await this.docker.buildImage(buildTarball(ctx.sourceFiles), {
+			stream = await this.openBuildStream(buildTarball(ctx.sourceFiles), {
 				t: imageTag,
 				nocache: !ctx.useCache,
 				dockerfile: ctx.dockerfilePath,
@@ -990,6 +1010,7 @@ export class DockerDriver implements Driver {
 			throw this.asTimedOutOrOriginal(ctx, error as Error);
 		}
 
+		const progress = new BuildKitProgressPrinter();
 		return new Promise<BuildOutcome>((resolve, reject) => {
 			this.docker.modem.followProgress(
 				stream,
@@ -1014,11 +1035,44 @@ export class DockerDriver implements Driver {
 					const imageWorkingDirectory = await this.inspectWorkingDirectory(imageTag);
 					resolve({ imageId: imageTag, imageWorkingDirectory });
 				},
-				(event: { stream?: string; status?: string; error?: string }) => {
-					if (event.stream) onLog(event.stream);
+				(event: { id?: string; aux?: unknown; stream?: string; status?: string; error?: string }) => {
+					if (event.id === BUILDKIT_TRACE_ID && typeof event.aux === 'string') {
+						const text = progress.write(event.aux);
+						if (text) onLog(text);
+					} else if (event.stream) onLog(event.stream);
 					else if (event.status) onLog(`${event.status}\n`);
 					else if (event.error) onLog(`${event.error}\n`);
 				},
+			);
+		});
+	}
+
+	/**
+	 * `POST /build`, through BuildKit where `init` found it. Not through `buildImage` with `version: '2'`:
+	 * dockerode then also opens a gRPC session over a hijacked connection, which it closes only when the
+	 * build's response ends - never when a build is aborted or times out, or when the daemon refuses the
+	 * request - and the leaked connection keeps its socket open. The daemon needs no session for a context
+	 * uploaded as the request body; it serves only registry credentials, and a build is sent none.
+	 */
+	private openBuildStream(
+		tarball: NodeJS.ReadableStream,
+		options: Docker.ImageBuildOptions,
+	): Promise<NodeJS.ReadableStream> {
+		if (!this.useBuildKit) return this.docker.buildImage(tarball, options);
+		const { abortSignal, ...query } = options;
+		return new Promise((resolve, reject) => {
+			this.docker.modem.dial(
+				{
+					path: '/build?',
+					method: 'POST',
+					file: tarball,
+					options: { ...query, version: '2' },
+					abortSignal,
+					isStream: true,
+					statusCodes: { 200: true, 500: 'server error' },
+				},
+				(error: Error | null, stream: unknown) =>
+					error ? reject(error) : resolve(stream as NodeJS.ReadableStream),
 			);
 		});
 	}

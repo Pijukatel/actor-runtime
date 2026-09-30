@@ -1,4 +1,5 @@
 import { mkdtemp, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -6,6 +7,7 @@ import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type Docker from 'dockerode';
 import * as tar from 'tar-stream';
+import protobuf from 'protobufjs';
 
 import {
 	chooseDefaultNetworkRoute,
@@ -14,6 +16,7 @@ import {
 	DockerDriver,
 	hostAddressSeenFromContainers,
 	podmanMajorVersion,
+	supportsBuildKit,
 } from '../../src/driver/docker-driver.js';
 import { stubDockerForRun } from './helpers/docker-stubs.js';
 import { RUNTIME_LOG_PREFIX } from '../../src/runtime-log.js';
@@ -1985,6 +1988,101 @@ describe('Podman 3.x: no user-defined network at all', () => {
 				},
 			} as unknown as Docker),
 		).resolves.toBeUndefined();
+	});
+});
+
+describe('DockerDriver.startBuild - BuildKit on Docker, as on the platform', () => {
+	it('supportsBuildKit is true for Docker, false for Podman (Buildah, no /session) and for an engine that does not answer', async () => {
+		const engine = (components: Array<{ Name: string }>) =>
+			({ version: async () => ({ Components: components }) }) as unknown as Docker;
+		await expect(supportsBuildKit(engine([{ Name: 'Engine' }]))).resolves.toBe(true);
+		await expect(supportsBuildKit(engine([{ Name: 'Podman Engine' }]))).resolves.toBe(false);
+		await expect(
+			supportsBuildKit({
+				version: async () => {
+					throw new Error('down');
+				},
+			} as unknown as Docker),
+		).resolves.toBe(false);
+	});
+
+	function stubDockerForBuildKitBuild(events: object[]) {
+		const dial = vi.fn((_options: unknown, callback: (error: Error | null, stream: unknown) => void) =>
+			callback(null, new PassThrough()),
+		);
+		const followProgress = vi.fn(
+			(
+				_stream: NodeJS.ReadableStream,
+				onFinished: (err: Error | null, res: object[]) => void,
+				onProgress: (event: object) => void,
+			) => {
+				for (const event of events) onProgress(event);
+				onFinished(null, events);
+			},
+		);
+		const buildImage = vi.fn();
+		const getImage = vi.fn(() => ({ inspect: async () => ({ Config: { WorkingDir: '/app' } }) }));
+		const docker = { buildImage, modem: { dial, followProgress }, getImage } as unknown as Docker;
+		return { docker, dial, buildImage };
+	}
+
+	const ctx = {
+		buildId: 'build-buildkit',
+		actorName: 'my-actor',
+		sourceFiles: [],
+		useCache: false,
+		timeoutSecs: 60,
+		dockerfilePath: 'Dockerfile',
+		buildArgs: { MY_ARG: 'value' },
+	};
+
+	it("posts /build with version 2 itself, never through buildImage's gRPC session, and keeps every other option", async () => {
+		const stub = stubDockerForBuildKitBuild([]);
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+		(driver as unknown as { useBuildKit: boolean }).useBuildKit = true;
+
+		await expect(driver.startBuild(ctx, () => {})).resolves.toMatchObject({ imageWorkingDirectory: '/app' });
+
+		expect(stub.buildImage).not.toHaveBeenCalled();
+		const [request] = stub.dial.mock.calls[0]! as unknown as [
+			{ path: string; options: Record<string, unknown>; abortSignal: unknown },
+		];
+		expect(request.path).toBe('/build?');
+		expect(request.abortSignal).toBeInstanceOf(AbortSignal);
+		expect(request.options).toEqual({
+			t: 'actor-runtime/my-actor:build-buildkit',
+			nocache: true,
+			dockerfile: 'Dockerfile',
+			buildargs: { MY_ARG: 'value' },
+			version: '2',
+		});
+	});
+
+	it('writes BuildKit trace events to the build log as plain progress', async () => {
+		const trace = (status: object) => ({
+			id: 'moby.buildkit.trace',
+			aux: Buffer.from(
+				protobuf
+					.loadSync(createRequire(import.meta.url).resolve('dockerode/lib/proto/buildkit_status.proto'))
+					.lookupType('moby.buildkit.v1.StatusResponse')
+					.encode(status)
+					.finish(),
+			).toString('base64'),
+		});
+		const stub = stubDockerForBuildKitBuild([
+			trace({ vertexes: [{ digest: 'sha256:a', name: '[1/1] RUN echo hi', started: { seconds: 1 } }] }),
+			trace({ logs: [{ vertex: 'sha256:a', timestamp: { seconds: 2 }, msg: Buffer.from('hi\n') }] }),
+			{ id: 'moby.image.id', aux: { ID: 'sha256:image' } },
+		]);
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+		(driver as unknown as { useBuildKit: boolean }).useBuildKit = true;
+		const log: string[] = [];
+
+		await driver.startBuild(ctx, (chunk) => log.push(chunk));
+
+		expect(log.join('')).toBe('#1 [1/1] RUN echo hi\n#1 1.000 hi\n');
 	});
 });
 

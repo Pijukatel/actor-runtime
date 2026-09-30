@@ -3,6 +3,9 @@
 - The system builds an Actor's docker image over the **host Docker socket** rather than
   Docker-in-Docker, keeping the host's image layer cache available.
 - A build is produced by building a docker image from the Actor source that was pushed to the system.
+- On Docker, a build goes through **BuildKit**, the builder the platform uses: stages the final image
+  does not need are skipped, and the build log is BuildKit's plain progress (`#N` steps), as on the
+  platform. Podman builds with its own builder (Buildah), which has no BuildKit API.
 - Build and run output is persisted as the job's log and fanned out live to any open
   `GET /v2/logs/:id?stream=true` response.
 - Every log line originating in the runtime itself (not in the Actor) opens with a blue
