@@ -63,9 +63,9 @@
   the reason in its log, and every run of a build is validated against that build's schema with its
   defaults applied, a rejected input starting nothing (`api.md`). A build with no input schema takes
   every input exactly as the caller sent it.
+- Secret input fields work as on the platform.
 - **Differences**: Apify Proxy group availability is not checked, so any `apifyProxyGroups` selection
-  is accepted, while the rest of a `proxy` field is still validated; encrypted secret input fields
-  stay unsupported (`unsupported.md`).
+  is accepted, while the rest of a `proxy` field is still validated.
 - An Actor running from a registered dev folder uses its last build's schema: unlike a source edit,
   an edited input schema takes effect only after `apify push`.
 
@@ -281,6 +281,9 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 .../actors/:actorId/versions`) are applied to the run's container environment, but every
   platform-owned var listed below takes precedence: a version cannot override `APIFY_TOKEN`, the
   default storage ids, or any other contract var the runtime itself sets.
+- Secret env vars, build-time env vars and masking secrets in run logs work as on the platform.
+- Difference: secrets are protected only against being read by accident, since the key that decrypts
+  them is kept in the runtime's data directory too.
 - `APIFY_IS_AT_HOME=1` (mirrors the real platform; an SDK/client instantiated
   in the container reports `isAtHome`/`is_at_home = true`).
 - `APIFY_META_ORIGIN` — `STANDBY` for a standby run, `API` for every other run
@@ -305,6 +308,8 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 - `ACTOR_MEMORY_MBYTES` / `APIFY_MEMORY_MBYTES` — the run's requested `memoryMbytes`.
 - `APIFY_DEDICATED_CPUS` — the run's granted CPU cores. No `ACTOR_`-prefixed counterpart; only the
   Python SDK reads it.
+- `APIFY_INPUT_SECRETS_PRIVATE_KEY_FILE` / `APIFY_INPUT_SECRETS_PRIVATE_KEY_PASSPHRASE` — as on the
+  platform.
 - `ACTOR_MAX_TOTAL_CHARGE_USD` — the run's maximum total charge; absent when it was started without one.
 - Every `ACTOR_*`/`APIFY_*` pair above is set to an identical value (the two SDKs disagree on which name
   wins).

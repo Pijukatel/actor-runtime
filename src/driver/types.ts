@@ -8,7 +8,7 @@ export interface BuildContext {
 	timeoutSecs: number;
 	/** Tar-relative path to the Dockerfile to build, passed as dockerode's `dockerfile` build option. */
 	dockerfilePath: string;
-	/** Docker build arguments; absent for an ordinary push, so its build logs no unused-argument warning. */
+	/** Docker build arguments (`ARG` in the Dockerfile); absent means none. */
 	buildArgs?: Record<string, string>;
 }
 

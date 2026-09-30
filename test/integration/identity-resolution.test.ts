@@ -15,9 +15,8 @@ import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApifyClient } from 'apify-client';
 
-import { startTestServer, type TestServerHandle } from './helpers/test-server.js';
+import { capturingDriver, startTestServer, type TestServerHandle } from './helpers/test-server.js';
 import { getRegistries } from '../../src/storage/registries.js';
-import type { Driver } from '../../src/driver/types.js';
 
 interface StubUpstream {
 	baseUrl: string;
@@ -178,47 +177,6 @@ describe('identity resolution against the real platform (stubbed upstream)', () 
 	});
 });
 
-/** A driver that is "available" and records the env it was asked to run a container with (same idea as
- * `run-env-vars.test.ts`'s `envCapturingDriver`, duplicated here so this file's proxy-password-precedence
- * tests do not depend on that file's internals). */
-function envCapturingDriver(): { driver: Driver; getCapturedEnv: () => Record<string, string> | undefined } {
-	let capturedEnv: Record<string, string> | undefined;
-	const driver: Driver = {
-		available: true,
-		unavailableReason: undefined,
-		async init() {},
-		async startBuild(_ctx, onLog) {
-			onLog('build ok\n');
-			return { imageId: 'fake-image:test' };
-		},
-		async abortBuild() {},
-		async startRun(ctx, onLog) {
-			capturedEnv = ctx.env;
-			onLog('done\n');
-			return { exitCode: 0 };
-		},
-		async abortRun() {},
-		async reconcileOrphans() {},
-		async probeDevFolder() {
-			throw new Error('not used by this stub');
-		},
-		async ensureProbeImage() {
-			throw new Error('not used by this stub');
-		},
-		async startBrowserViewer() {
-			throw new Error('not used by this stub');
-		},
-		async stopBrowserViewer() {},
-		async containerServerAddress() {
-			return undefined;
-		},
-		async inspectDebugTarget() {
-			throw new Error('not used by this stub');
-		},
-	};
-	return { driver, getCapturedEnv: () => capturedEnv };
-}
-
 describe('harvested proxy password flows into Actor run containers, per user', () => {
 	let server: TestServerHandle;
 	let getCapturedEnv: () => Record<string, string> | undefined;
@@ -226,8 +184,8 @@ describe('harvested proxy password flows into Actor run containers, per user', (
 	let previousProxyPasswordEnv: string | undefined;
 
 	beforeEach(async () => {
-		const capturing = envCapturingDriver();
-		getCapturedEnv = capturing.getCapturedEnv;
+		const capturing = capturingDriver();
+		getCapturedEnv = () => capturing.captured.runEnv;
 		server = await startTestServer(capturing.driver);
 		previousUpstreamUrl = process.env.APIFY_UPSTREAM_API_BASE_URL;
 		previousProxyPasswordEnv = process.env.APIFY_PROXY_PASSWORD;

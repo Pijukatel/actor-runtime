@@ -1,4 +1,5 @@
 import type { ActorRecord, ActorVersionRecord, BuildRecord, RunRecord } from '../../storage/entities.js';
+import { publicEnvVar } from '../../services/env-vars.js';
 import { getRunTelemetry } from '../../services/events-channel.js';
 import { computeRunUsage } from '../../services/run-usage.js';
 import { standbyUrl, type StandbyUrlAudience } from '../../services/standby-config.js';
@@ -10,10 +11,16 @@ const DEFAULT_RUN_BUILD_TAG = 'latest';
  * that predate `options.diskMbytes`; every real run always has it set already. */
 const DISK_MBYTES_PER_MEMORY_MBYTE = 2;
 
-/** The version without `localSourceContext`, which - like every other `local*` field - stays off `/v2`. */
-export function versionDto(version: ActorVersionRecord): Omit<ActorVersionRecord, 'localSourceContext'> {
-	const { versionNumber, buildTag, sourceType, sourceFiles, envVars } = version;
-	return { versionNumber, buildTag, sourceType, sourceFiles, ...(envVars !== undefined ? { envVars } : {}) };
+/** Every version the API returns goes through here: a secret env var's value never leaves the runtime, and
+ * `localSourceContext` - like every other `local*` field - stays off `/v2`. */
+export function versionDto(version: ActorVersionRecord) {
+	const publicVersion: Omit<ActorVersionRecord, 'localSourceContext'> & { localSourceContext?: unknown } = {
+		...version,
+	};
+	delete publicVersion.localSourceContext;
+	return publicVersion.envVars
+		? { ...publicVersion, envVars: publicVersion.envVars.map((envVar) => publicEnvVar(envVar, true)) }
+		: publicVersion;
 }
 
 export function actorDto(actor: ActorRecord, username: string, audience: StandbyUrlAudience = 'host') {

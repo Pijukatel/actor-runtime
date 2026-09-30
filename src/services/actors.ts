@@ -3,6 +3,7 @@ import type { ActorRecord, ActorStandbyRecord, ActorVersionRecord, UserRecord } 
 import { getRegistries } from '../storage/registries.js';
 import { validatePricingInfosUpdate, type InvalidPricingInfos } from './pricing.js';
 import { isCallerOwner, normalizeName, type ResolvableReference } from './resource-reference.js';
+import { ensureSecretKeys, generateSecretKeys, sealActorSecrets } from './secrets.js';
 
 /** The tag a build/run resolves to when the caller names none. `api/routes/actors.ts` and
  * `services/runs.ts` both import this instead of declaring their own `'latest'` literal. */
@@ -17,7 +18,7 @@ export interface CreateActorInput {
 
 export async function createActor(userId: string, input: CreateActorInput): Promise<ActorRecord> {
 	const now = new Date().toISOString();
-	const record: ActorRecord = {
+	const record: ActorRecord = sealActorSecrets({
 		id: generateId(),
 		userId,
 		name: input.name,
@@ -27,7 +28,8 @@ export async function createActor(userId: string, input: CreateActorInput): Prom
 		versions: input.versions ?? [],
 		taggedBuilds: {},
 		...(input.actorStandby ? { actorStandby: input.actorStandby } : {}),
-	};
+		secretKeys: await generateSecretKeys(),
+	});
 	await getRegistries().actors.set(record.id, record);
 	return record;
 }
@@ -84,9 +86,12 @@ export async function updateActor(
 	id: string,
 	mutator: (current: ActorRecord) => ActorRecord,
 ): Promise<ActorRecord | null> {
+	// Outside the update's lock: generating a key pair is asynchronous, the update itself is not.
+	const existing = await getRegistries().actors.get(id);
+	if (existing && !existing.secretKeys) await ensureSecretKeys(existing);
 	return getRegistries().actors.update(id, (current) => {
 		if (!current) return null;
-		return { ...mutator(current), modifiedAt: new Date().toISOString() };
+		return sealActorSecrets({ ...mutator(current), modifiedAt: new Date().toISOString() });
 	});
 }
 

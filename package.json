@@ -28,6 +28,8 @@
 	"dependencies": {
 		"@apify/actor-memory-expression": "^1.0.1",
 		"@apify/input_schema": "^3.29.2",
+		"@apify/input_secrets": "^1.2.60",
+		"@apify/utilities": "^2.35.11",
 		"@crawlee/core": "4.0.0-beta.145",
 		"@crawlee/fs-storage": "4.0.0-beta.145",
 		"@novnc/novnc": "1.7.0",

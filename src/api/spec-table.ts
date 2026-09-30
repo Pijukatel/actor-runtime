@@ -78,6 +78,11 @@ export const SPEC_TABLE: SpecTableEntry[] = [
 	pathTemplate('GET', 'v2/actors/:actorId/versions/:versionNumber', true),
 	pathTemplate('PUT', 'v2/actors/:actorId/versions/:versionNumber', true),
 	pathTemplate('DELETE', 'v2/actors/:actorId/versions/:versionNumber', true),
+	pathTemplate('GET', 'v2/actors/:actorId/versions/:versionNumber/env-vars', true),
+	pathTemplate('POST', 'v2/actors/:actorId/versions/:versionNumber/env-vars', true),
+	pathTemplate('GET', 'v2/actors/:actorId/versions/:versionNumber/env-vars/:envVarName', true),
+	pathTemplate('PUT', 'v2/actors/:actorId/versions/:versionNumber/env-vars/:envVarName', true),
+	pathTemplate('DELETE', 'v2/actors/:actorId/versions/:versionNumber/env-vars/:envVarName', true),
 
 	// --- Builds ---
 	pathTemplate('GET', 'v2/actor-builds', true),

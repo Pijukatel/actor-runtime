@@ -53,6 +53,23 @@ export interface InputSchema {
 	required?: string[];
 }
 
+export interface ActorEnvVarRecord {
+	name: string;
+	/** For a secret, the sealed value (`services/secrets.ts`); plain text otherwise. */
+	value: string;
+	isSecret?: boolean;
+	/** A secret's AES key, encrypted with the Actor's public key. Never returned by the API. */
+	encryptedAes256Password?: string;
+}
+
+/** PEM-encoded, the private key protected by `passphrase`; created with the Actor and never returned by
+ * the API. */
+export interface ActorSecretKeys {
+	publicKey: string;
+	privateKey: string;
+	passphrase: string;
+}
+
 /** Where a monorepo build context pushed from a local Git working copy came from - reported, never used
  * to fetch anything. Every field is optional: the pushed folder need not be a Git repository at all. */
 export interface LocalSourceContextGit {
@@ -83,7 +100,9 @@ export interface ActorVersionRecord {
 	buildTag: string;
 	sourceType: SourceType;
 	sourceFiles: SourceFile[];
-	envVars?: Array<{ name: string; value: string }>;
+	envVars?: ActorEnvVarRecord[];
+	/** Passes `envVars`, secrets included, to the image build as Docker build arguments. */
+	applyEnvVarsToBuild?: boolean;
 	/** When set, builds use this context instead of `sourceFiles`. Never exposed on `/v2`. */
 	localSourceContext?: LocalSourceContext;
 }
@@ -193,6 +212,9 @@ export interface ActorRecord {
 	localDebug?: ActorLocalDebug;
 	/** Browser-view toggle; absent means off. Same `modifiedAt`/`/v2` rules as `localDevFolder`. */
 	localBrowserView?: ActorLocalBrowserView;
+	/** Encrypts and decrypts this Actor's secrets (`services/secrets.ts`). Absent only on an Actor stored
+	 * before Actors got one on creation, until its next write or run - which never bumps `modifiedAt`. */
+	secretKeys?: ActorSecretKeys;
 }
 
 export type JobStatus = 'READY' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'ABORTING' | 'ABORTED' | 'TIMED-OUT';

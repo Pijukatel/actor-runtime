@@ -104,8 +104,11 @@ valid: Field input.maxPages must be >= 1`); no run is created and no container s
   take effect - unlike a source edit under a registered dev folder.
 - A schema the Apify input-schema meta-schema rejects fails the **build**, with the defect in the build
   log, instead of being silently ignored.
-- Two local differences: Apify Proxy groups are not checked (any `apifyProxyGroups` selection is
-  accepted), and encrypted secret input fields are not supported.
+- Secret input fields (`isSecret`) are stored encrypted in the run's `INPUT`, as on the platform; the
+  SDK's `Actor.getInput()` returns them decrypted, while reading the `INPUT` record directly shows
+  `ENCRYPTED_VALUE:...`.
+- One local difference: Apify Proxy groups are not checked (any `apifyProxyGroups` selection is
+  accepted).
 - Apify Proxy is **real**: when a proxy password is known (the runtime's `APIFY_PROXY_PASSWORD`, or the
   real account behind the token), runs get it, so the Actor can use the real proxy, billed to that Apify
   account; the run log carries a warning saying so. Unchecking "Use Apify Proxy" on the console's
@@ -118,6 +121,34 @@ memory expression over the input, evaluated as the platform does - or 1024 MB. A
 or not, is then clamped to the Actor's `minMemoryMbytes` / `maxMemoryMbytes`, and the run log says so.
 An expression that fails falls back to 1024 MB with a warning in the run log. The fields come from the
 build, so changing them needs an `apify push`.
+
+## Environment variables and secrets
+
+Declared in `.actor/actor.json` and sent by `apify push`, as on the platform:
+
+```sh
+apify secrets add myApiKey 'sk-...'   # stored by the CLI on your machine
+# .actor/actor.json: "environmentVariables": { "MODE": "dev", "API_KEY": "@myApiKey" }
+apify push
+```
+
+- Every run gets the version's env vars; the runtime's own `APIFY_*`/`ACTOR_*` vars always win over one
+  with the same name.
+- A secret's value is never returned by the API (a short `valueHash` changes when it is set again). It is
+  stored encrypted with a key pair of its own Actor, but that key pair sits in the same data directory:
+  a simplified scheme that stops accidental reads, not someone with access to that directory.
+- As on the platform, the run log shows `*********` for the exact value of a secret env var or of the
+  run's `APIFY_TOKEN`. Anything else is printed as is, secret input fields included, so do not log
+  secrets in any other form either.
+- Every run gets its Actor's private key as `APIFY_INPUT_SECRETS_PRIVATE_KEY_FILE` and
+  `APIFY_INPUT_SECRETS_PRIVATE_KEY_PASSPHRASE`, which the SDKs' `getInput()` uses to decrypt secret input
+  fields.
+- They reach the **build** only with `applyEnvVarsToBuild` on, as Docker build arguments, secrets
+  included; the Dockerfile reads each with `ARG NAME`:
+  `apify api PUT v2/actors/<actorId>/versions/0.0 --body '{"applyEnvVarsToBuild": true}'`. A later
+  `apify push` keeps the setting; with no local edits since, it needs `--force`.
+- `v2/actors/<actorId>/versions/<version>/env-vars` manages them one at a time. A change applies to the
+  next run, or to the next build for build arguments.
 
 ## Iterate without rebuilding (dev folder)
 

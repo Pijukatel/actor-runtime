@@ -11,6 +11,7 @@ import { qualifyDockerfileImageReferences } from './dockerfile-image-refs.js';
 import { resolveDockerfileLocation } from './dockerfile-location.js';
 import { resolveInputSchemaLocation } from './input-schema-location.js';
 import { resolveActorMemorySettings } from './actor-memory.js';
+import { buildArgsOf } from './env-vars.js';
 import { appendLog, appendRuntimeLog, flushLog, markLogTerminal } from './logs.js';
 import { registeredDevFolderBuildLine } from './dev-folder.js';
 import { describeSourceContextOrigin, loadSourceContextFiles } from './source-context.js';
@@ -265,6 +266,19 @@ export async function runBuildInBackground(
 		(line) => appendRuntimeLog(record.id, line),
 	);
 
+	const envBuildArgs = buildArgsOf(actor, version);
+	if (envBuildArgs) {
+		appendRuntimeLog(
+			record.id,
+			`Passing the version's environment variables to the build as build arguments: ${Object.keys(envBuildArgs).join(', ')}`,
+		);
+	}
+	// The builder's own argument wins over an environment variable of the same name, as on the platform.
+	const buildArgs =
+		envBuildArgs || context
+			? { ...envBuildArgs, ...(context ? { [ACTOR_PATH_IN_DOCKER_CONTEXT_BUILD_ARG]: actorPath } : {}) }
+			: undefined;
+
 	try {
 		const outcome = await driver.startBuild(
 			{
@@ -274,7 +288,7 @@ export async function runBuildInBackground(
 				useCache: options.useCache,
 				timeoutSecs: DEFAULT_BUILD_TIMEOUT_SECS,
 				dockerfilePath: dockerfileResolution.dockerfilePath,
-				...(context ? { buildArgs: { [ACTOR_PATH_IN_DOCKER_CONTEXT_BUILD_ARG]: actorPath } } : {}),
+				...(buildArgs ? { buildArgs } : {}),
 			},
 			(chunk) => appendLog(record.id, chunk),
 		);

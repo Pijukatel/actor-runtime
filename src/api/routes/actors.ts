@@ -5,11 +5,14 @@ import { requireUser } from '../auth.js';
 import { paginate, sendData, sendPaginated, sortByTimestamp } from '../envelope.js';
 import {
 	ApiError,
+	cannotRenameEnvVar,
 	cannotSetPricingOnCreate,
+	envVarAlreadyExists,
 	invalidInput,
 	invalidInputSchema,
 	invalidRequest,
 	recordNotFound,
+	schemaValidation,
 } from '../errors.js';
 import { h, jsonBody, paginationParams, queryBoolean, queryNumber, queryString, rawBody } from '../handler.js';
 import {
@@ -33,6 +36,7 @@ import { listOwnedRuns, startRun, waitForRunFinish } from '../../services/runs.j
 import { getRegistries } from '../../storage/registries.js';
 import { actorDto, buildDto, runDto, versionDto } from '../dto/actors.js';
 import type {
+	ActorEnvVarRecord,
 	ActorPricingInfoRecord,
 	ActorRecord,
 	ActorStandbyRecord,
@@ -43,6 +47,7 @@ import { CONTAINER_API_BASE_URL } from '../../config.js';
 import { resolveProxyPassword } from '../../services/users.js';
 import { validatePricingInfosUpdate } from '../../services/pricing.js';
 import { resolveBuildInput } from '../../services/input-schema.js';
+import { publicEnvVar, validateEnvVar, validateEnvVars } from '../../services/env-vars.js';
 import {
 	declaresStandbyMode,
 	mergeStandbyUpdate,
@@ -87,6 +92,60 @@ function pricingInfosFromBody(
 	return result.pricingInfos;
 }
 
+/** `undefined` when the body does not mention the field; an invalid list throws. */
+function envVarsFromBody(raw: unknown): ActorEnvVarRecord[] | undefined {
+	const result = validateEnvVars(raw);
+	if (result.kind === 'invalid') throw schemaValidation(result.message);
+	return result.value;
+}
+
+function envVarFromBody(raw: unknown): ActorEnvVarRecord {
+	const result = validateEnvVar(raw);
+	if (result.kind === 'invalid') throw schemaValidation(result.message);
+	return result.value;
+}
+
+function applyEnvVarsToBuildFromBody(raw: unknown): boolean | undefined {
+	if (raw === undefined || raw === null) return undefined;
+	if (typeof raw !== 'boolean') throw schemaValidation('"applyEnvVarsToBuild" must be a boolean');
+	return raw;
+}
+
+/** A version body's env-var fields, falling back to `existing`'s for a field the body leaves out. */
+function versionEnvFieldsFromBody(
+	body: { envVars?: unknown; applyEnvVarsToBuild?: unknown },
+	existing?: ActorVersionRecord,
+): Pick<ActorVersionRecord, 'envVars' | 'applyEnvVarsToBuild'> {
+	const envVars = envVarsFromBody(body.envVars) ?? existing?.envVars;
+	const applyEnvVarsToBuild = applyEnvVarsToBuildFromBody(body.applyEnvVarsToBuild) ?? existing?.applyEnvVarsToBuild;
+	return {
+		...(envVars !== undefined ? { envVars } : {}),
+		...(applyEnvVarsToBuild !== undefined ? { applyEnvVarsToBuild } : {}),
+	};
+}
+
+async function resolveVersionParam(req: Parameters<typeof resolveActorParam>[0]) {
+	const actor = await resolveActorParam(req);
+	if (!actor) throw recordNotFound();
+	const version = findVersion(actor, req.params.versionNumber as string);
+	if (!version) throw recordNotFound();
+	return { actor, version };
+}
+
+/** The version as stored, so a response shows its secrets exactly as a later read will - encrypted, as
+ * the platform answers from the stored version too. */
+function storedVersion(actor: ActorRecord | null, versionNumber: string): ActorVersionRecord {
+	const version = actor && findVersion(actor, versionNumber);
+	if (!version) throw recordNotFound();
+	return version;
+}
+
+function findEnvVarOrThrow(version: ActorVersionRecord, name: string): ActorEnvVarRecord {
+	const envVar = version.envVars?.find((entry) => entry.name === name);
+	if (!envVar) throw recordNotFound('Environment variable was not found');
+	return envVar;
+}
+
 export function mountActors(router: Router, deps: ApiServerDeps): void {
 	router.get(
 		'/actors',
@@ -115,10 +174,15 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 			}>(req);
 			if (!body.name) throw invalidRequest('Actor "name" is required');
 			if (body.pricingInfos !== undefined) throw cannotSetPricingOnCreate();
-			// A context is set only through its own endpoint, never smuggled in with the Actor.
-			const versions = body.versions?.map(({ localSourceContext: _ignored, ...version }) => version);
 			// An explicit `actorStandby` wins over `usesStandbyMode`, even one that disables it.
-			const actorStandby = actorStandbyFromBody(body) ?? standbyEnabledByVersions(undefined, versions ?? []);
+			const actorStandby = actorStandbyFromBody(body) ?? standbyEnabledByVersions(undefined, body.versions ?? []);
+			// A context is set only through its own endpoint, never smuggled in with the Actor.
+			const versions = body.versions?.map(({ localSourceContext: _ignored, ...version }) => ({
+				...version,
+				envVars: undefined,
+				applyEnvVarsToBuild: undefined,
+				...versionEnvFieldsFromBody(version),
+			}));
 			const actor = await createActor(requireUser(req).id, { ...body, versions, actorStandby });
 			sendData(res, actorDto(actor, requireUser(req).username, standbyUrlAudienceOf(req.headers.host)), 201);
 		}),
@@ -191,26 +255,23 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 				buildTag: body.buildTag ?? DEFAULT_TAG,
 				sourceType: 'SOURCE_FILES',
 				sourceFiles: body.sourceFiles ?? [],
-				envVars: body.envVars,
+				...versionEnvFieldsFromBody(body),
 			};
 			let replaced: ActorVersionRecord | undefined;
-			await updateActor(actor.id, (current) => {
+			const updated = await updateActor(actor.id, (current) => {
 				replaced = findVersion(current, version.versionNumber);
 				const actorStandby = standbyEnabledByVersions(current.actorStandby, [version]);
 				return { ...addOrReplaceVersion(current, version), ...(actorStandby ? { actorStandby } : {}) };
 			});
 			await deleteSourceContextFiles(replaced?.localSourceContext);
-			sendData(res, versionDto(version), 201);
+			sendData(res, versionDto(storedVersion(updated, version.versionNumber)), 201);
 		}),
 	);
 
 	router.get(
 		'/actors/:actorId/versions/:versionNumber',
 		h(async (req, res) => {
-			const actor = await resolveActorParam(req);
-			if (!actor) throw recordNotFound();
-			const version = findVersion(actor, req.params.versionNumber as string);
-			if (!version) throw recordNotFound();
+			const { version } = await resolveVersionParam(req);
 			sendData(res, versionDto(version));
 		}),
 	);
@@ -230,12 +291,89 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 				buildTag: body.buildTag ?? existing.buildTag,
 				sourceType: 'SOURCE_FILES',
 				sourceFiles: body.sourceFiles ?? existing.sourceFiles,
-				envVars: body.envVars ?? existing.envVars,
+				...versionEnvFieldsFromBody(body, existing),
 				...(keptContext ? { localSourceContext: keptContext } : {}),
 			};
-			await updateActor(actor.id, (current) => addOrReplaceVersion(current, version));
+			const updated = await updateActor(actor.id, (current) => addOrReplaceVersion(current, version));
 			if (!keptContext) await deleteSourceContextFiles(existing.localSourceContext);
-			sendData(res, versionDto(version));
+			sendData(res, versionDto(storedVersion(updated, version.versionNumber)));
+		}),
+	);
+
+	router.get(
+		'/actors/:actorId/versions/:versionNumber/env-vars',
+		h(async (req, res) => {
+			const { version } = await resolveVersionParam(req);
+			const items = (version.envVars ?? []).map((envVar) => publicEnvVar(envVar, false));
+			sendData(res, { total: items.length, items });
+		}),
+	);
+
+	router.post(
+		'/actors/:actorId/versions/:versionNumber/env-vars',
+		h(async (req, res) => {
+			const { actor, version } = await resolveVersionParam(req);
+			const envVar = envVarFromBody(jsonBody(req));
+			await updateActor(actor.id, (current) => {
+				const currentVersion = findVersion(current, version.versionNumber);
+				if (!currentVersion) throw recordNotFound();
+				if (currentVersion.envVars?.some((entry) => entry.name === envVar.name)) throw envVarAlreadyExists();
+				return addOrReplaceVersion(current, {
+					...currentVersion,
+					envVars: [...(currentVersion.envVars ?? []), envVar],
+				});
+			});
+			sendData(res, publicEnvVar(envVar, false), 201);
+		}),
+	);
+
+	router.get(
+		'/actors/:actorId/versions/:versionNumber/env-vars/:envVarName',
+		h(async (req, res) => {
+			const { version } = await resolveVersionParam(req);
+			sendData(res, publicEnvVar(findEnvVarOrThrow(version, req.params.envVarName as string), false));
+		}),
+	);
+
+	router.put(
+		'/actors/:actorId/versions/:versionNumber/env-vars/:envVarName',
+		h(async (req, res) => {
+			const { actor, version } = await resolveVersionParam(req);
+			const oldName = req.params.envVarName as string;
+			findEnvVarOrThrow(version, oldName);
+			const envVar = envVarFromBody(jsonBody(req));
+			await updateActor(actor.id, (current) => {
+				const currentVersion = findVersion(current, version.versionNumber);
+				if (!currentVersion) throw recordNotFound();
+				const envVars = currentVersion.envVars ?? [];
+				findEnvVarOrThrow(currentVersion, oldName);
+				if (oldName !== envVar.name && envVars.some((entry) => entry.name === envVar.name)) {
+					throw cannotRenameEnvVar();
+				}
+				return addOrReplaceVersion(current, {
+					...currentVersion,
+					envVars: envVars.map((entry) => (entry.name === oldName ? envVar : entry)),
+				});
+			});
+			sendData(res, publicEnvVar(envVar, false));
+		}),
+	);
+
+	router.delete(
+		'/actors/:actorId/versions/:versionNumber/env-vars/:envVarName',
+		h(async (req, res) => {
+			const { actor, version } = await resolveVersionParam(req);
+			const name = req.params.envVarName as string;
+			findEnvVarOrThrow(version, name);
+			await updateActor(actor.id, (current) => {
+				const currentVersion = findVersion(current, version.versionNumber);
+				if (!currentVersion) throw recordNotFound();
+				return addOrReplaceVersion(current, {
+					...currentVersion,
+					envVars: (currentVersion.envVars ?? []).filter((entry) => entry.name !== name),
+				});
+			});
+			res.status(204).end();
 		}),
 	);
 

@@ -1,0 +1,21 @@
+{
+	"title": "Environment variables sample input",
+	"type": "object",
+	"schemaVersion": 1,
+	"properties": {
+		"message": {
+			"title": "Message",
+			"type": "string",
+			"description": "A plain input field, logged as it is.",
+			"editor": "textfield",
+			"default": "hello-from-the-input"
+		},
+		"password": {
+			"title": "Password",
+			"type": "string",
+			"description": "A secret input field: stored encrypted and decrypted in the run by Actor.getInput(). Never logged.",
+			"editor": "textfield",
+			"isSecret": true
+		}
+	}
+}

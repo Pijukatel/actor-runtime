@@ -11,6 +11,8 @@ import { markEventsTerminal, publishAborting, publishPersistState, publishSystem
 import { clearRunRestartState, consumeRunRestart } from './migrations.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
+import { decryptedEnvVars, ensureSecretKeys, inputSecretsEnv, sealInputSecrets } from './secrets.js';
+import { createLogRedactor } from './log-redaction.js';
 import {
 	describeDebugPortConflict,
 	describeDebugRefusal,
@@ -116,9 +118,9 @@ export interface StartRunOptions {
 	token: string;
 }
 
-function versionEnvOf(version: ActorVersionRecord | undefined): Record<string, string> {
+function versionEnvOf(actor: ActorRecord, version: ActorVersionRecord | undefined): Record<string, string> {
 	const versionEnv: Record<string, string> = {};
-	for (const entry of version?.envVars ?? []) {
+	for (const entry of decryptedEnvVars(actor, version?.envVars)) {
 		versionEnv[entry.name] = entry.value;
 	}
 	return versionEnv;
@@ -126,10 +128,13 @@ function versionEnvOf(version: ActorVersionRecord | undefined): Record<string, s
 
 /**
  * The port the Actor's HTTP server listens on: the platform reads a version-level
- * `ACTOR_WEB_SERVER_PORT`, then `ACTOR_STANDBY_PORT`, then defaults to 4321.
+ * `ACTOR_WEB_SERVER_PORT`, then `ACTOR_STANDBY_PORT`, then defaults to 4321. A port set as a secret is
+ * not read, so this never needs the Actor's private key.
  */
 export function containerServerPortFor(version: ActorVersionRecord | undefined): number {
-	const versionEnv = versionEnvOf(version);
+	const versionEnv = Object.fromEntries(
+		(version?.envVars ?? []).filter((entry) => !entry.isSecret).map((entry) => [entry.name, entry.value]),
+	);
 	for (const name of ['ACTOR_WEB_SERVER_PORT', 'ACTOR_STANDBY_PORT']) {
 		const port = Number(versionEnv[name]);
 		if (Number.isInteger(port) && port > 0 && port < 65536) return port;
@@ -150,7 +155,7 @@ function buildEnv(
 	options: StartRunOptions,
 	debugPlan: DebugPlan | undefined,
 ): Record<string, string> {
-	const versionEnv = versionEnvOf(version);
+	const versionEnv = versionEnvOf(actor, version);
 
 	// Both names in each pair are byte-identical, deliberately: apify-sdk-js's `ENV_MAP` and pydantic's
 	// `AliasChoices` resolve `ACTOR_*`-vs-`APIFY_*` in OPPOSITE precedence order, so letting the two ever
@@ -175,6 +180,7 @@ function buildEnv(
 		APIFY_META_ORIGIN: run.meta.origin,
 		APIFY_API_BASE_URL: options.apiBaseUrl,
 		APIFY_TOKEN: options.token,
+		...(actor.secretKeys ? inputSecretsEnv(actor.secretKeys) : {}),
 		APIFY_DEFAULT_KEY_VALUE_STORE_ID: run.defaultKeyValueStoreId,
 		APIFY_DEFAULT_DATASET_ID: run.defaultDatasetId,
 		APIFY_DEFAULT_REQUEST_QUEUE_ID: run.defaultRequestQueueId,
@@ -218,9 +224,10 @@ export async function startRun(
 		createStorage(actor.userId, 'requestQueue'),
 	]);
 
-	if (options.input) {
+	const input = await sealInputSecrets(actor, build.inputSchema, options.input);
+	if (input) {
 		const store = await openKeyValueStore(keyValueStore.id);
-		await store.setValue('INPUT', options.input.body, { contentType: options.input.contentType });
+		await store.setValue('INPUT', input.body, { contentType: input.contentType });
 	}
 
 	const buildTag = options.build ?? DEFAULT_BUILD_TAG;
@@ -383,8 +390,17 @@ export async function runInBackground(
 		);
 	}
 
-	const version = findVersion(actor, build.versionNumber);
-	const env = buildEnv(record, actor, version, options, debugPlan);
+	const keyedActor = await ensureSecretKeys(actor);
+	const version = findVersion(keyedActor, build.versionNumber);
+	const env = buildEnv(record, keyedActor, version, options, debugPlan);
+	// As on the platform: the run's token and its secret env vars, never its secret input fields.
+	const logRedactor = createLogRedactor([
+		options.token,
+		...decryptedEnvVars(keyedActor, version?.envVars)
+			.filter((envVar) => envVar.isSecret)
+			.map((envVar) => envVar.value),
+	]);
+	const flushRedactedLog = () => appendLog(record.id, logRedactor.flush());
 	// Both-or-neither, enforced by `DevFolderMount`'s type (`driver/types.ts`) - a mount is only ever
 	// added when the Actor actually has a non-empty registered dev folder AND this *run's own resolved
 	// build* has a known, non-empty image working directory (`actor-driver.md`: "The mount is applied
@@ -474,9 +490,10 @@ export async function runInBackground(
 					// The sidecar outlives a migration/reboot restart; the new container mounts the same volume.
 					x11SocketVolume: browserViewer?.x11SocketVolume,
 				},
-				(chunk) => appendLog(record.id, chunk),
+				(chunk) => appendLog(record.id, logRedactor.redact(chunk)),
 				(sample) => publishSystemInfo(record.id, sample, record.options),
 			);
+			flushRedactedLog();
 
 			// An abort that raced the restart wins.
 			const restart = consumeRunRestart(record.id);
@@ -531,6 +548,7 @@ export async function runInBackground(
 				: (error as Error).message;
 		// Into the run's own log too: the engine refusing the container (a network it cannot set up, an
 		// unusable mount) is what `apify call` streams, and the status message alone leaves it empty.
+		flushRedactedLog();
 		appendRuntimeLog(record.id, `Cannot start run: ${statusMessage}`);
 		await flushLog(record.id);
 		await persistRunTelemetry(record.id);

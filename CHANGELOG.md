@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 - **console:** Save options in the background, dropdowns for debug and browser view ([#84](https://github.com/apify/actor-runtime/pull/84)) ([8130961](https://github.com/apify/actor-runtime/commit/813096184d578f5ae32433f6dbc2ebb08b08394c)) by [@Pijukatel](https://github.com/Pijukatel)
 - Warn when a run gets a real Apify Proxy password, add setting to disable it ([#85](https://github.com/apify/actor-runtime/pull/85)) ([b033648](https://github.com/apify/actor-runtime/commit/b0336480170c797e7e00f32191f5dcd2099d5419)) by [@Pijukatel](https://github.com/Pijukatel)
 - Add per-Actor live dev folder toggle, off by default ([#88](https://github.com/apify/actor-runtime/pull/88)) ([1540594](https://github.com/apify/actor-runtime/commit/1540594c37417769b5199e1630329420c007c86c)) by [@Pijukatel](https://github.com/Pijukatel)
+- Support secret and build-time environment variables ([#87](https://github.com/apify/actor-runtime/pull/87)) ([015fef2](https://github.com/apify/actor-runtime/commit/015fef23b1fc291b0a21a5fc71565ac1aa09223e)) by [@Pijukatel](https://github.com/Pijukatel)
 
 
 <!-- git-cliff-unreleased-end -->
