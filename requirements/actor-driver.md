@@ -268,6 +268,9 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 - A secret env var (`isSecret`) is stored encrypted and never returned by the API: version responses carry
   a short `valueHash` instead of its `value`, which changes whenever the secret is set again, and env-var
   responses omit the value. It is decrypted only for the builds and runs of its own Actor.
+- As on the platform, a run's log shows `*********` in place of every exact occurrence of its secret env
+  vars' values and of its `APIFY_TOKEN`. A value printed in another form (reversed, encoded) is not
+  caught, and neither are secret input fields.
 - Differences: encryption is simplified. Each Actor gets its own key pair when it is created, kept in
   the runtime's data directory next to the encrypted values rather than in a separately managed key
   store, so it protects against a secret being read by accident, not against anyone who can read the

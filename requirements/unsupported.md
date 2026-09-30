@@ -91,7 +91,6 @@ real account, not in the runtime.
 - Run metadata env vars (input key, build, task, user, timestamps)
 - Web server URL (`ACTOR_WEB_SERVER_URL`) and proxy env vars
 - Log rate limiting, line truncation and size cap
-- Secret redaction in logs
 - Legacy `cpuInfo` events
 
 ## Platform limits not enforced

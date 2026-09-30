@@ -334,3 +334,41 @@ describe('secret and build-time environment variables', () => {
 		});
 	});
 });
+
+describe('secret redaction in run logs', () => {
+	let server: TestServerHandle;
+
+	beforeEach(async () => {
+		const { driver } = capturingDriver();
+		server = await startTestServer({
+			...driver,
+			// Prints what the platform redacts and what it does not, splitting a secret across chunks.
+			async startRun(ctx, onLog) {
+				const secret = ctx.env.SECRET_VAR!;
+				onLog(`plain=${ctx.env.PLAIN_VAR} secret=${secret.slice(0, 4)}`);
+				onLog(`${secret.slice(4)} token=${ctx.env.APIFY_TOKEN}\n`);
+				onLog(`reversed=${[...secret].reverse().join('')} ends with ${secret.slice(0, 3)}`);
+				return { exitCode: 0 };
+			},
+		});
+	});
+
+	afterEach(async () => {
+		await server.close();
+	});
+
+	it('masks secret env vars and the token, as on the platform, but no other value', async () => {
+		const actor = await server.client.actors().create({
+			name: 'redacted-run-log',
+			versions: [{ versionNumber: '0.0', sourceType: 'SOURCE_FILES', sourceFiles: [], envVars: ENV_VARS }],
+		} as never);
+		await server.client.actor(actor.id).build('0.0', { waitForFinish: 5 });
+		const run = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		const log = (await server.client.run(run.id).log().get())!;
+
+		expect(log).toContain('plain=plain-value secret=********* token=*********\n');
+		expect(log).toContain('reversed=eulav-terces ends with sec');
+		expect(log).not.toContain('secret-value');
+		expect(log).not.toContain(server.token);
+	});
+});

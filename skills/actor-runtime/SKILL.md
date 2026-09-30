@@ -113,6 +113,9 @@ apify push
 - A secret's value is never returned by the API (a short `valueHash` changes when it is set again). It is
   stored encrypted with a key pair of its own Actor, but that key pair sits in the same data directory:
   a simplified scheme that stops accidental reads, not someone with access to that directory.
+- As on the platform, the run log shows `*********` for the exact value of a secret env var or of the
+  run's `APIFY_TOKEN`. Anything else is printed as is, secret input fields included, so do not log
+  secrets in any other form either.
 - Every run gets its Actor's private key as `APIFY_INPUT_SECRETS_PRIVATE_KEY_FILE` and
   `APIFY_INPUT_SECRETS_PRIVATE_KEY_PASSPHRASE`, which the SDKs' `getInput()` uses to decrypt secret input
   fields.

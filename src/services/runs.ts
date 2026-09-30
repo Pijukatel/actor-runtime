@@ -12,6 +12,7 @@ import { clearRunRestartState, consumeRunRestart } from './migrations.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
 import { decryptedEnvVars, ensureSecretKeys, inputSecretsEnv, sealInputSecrets } from './secrets.js';
+import { createLogRedactor } from './log-redaction.js';
 import {
 	describeDebugPortConflict,
 	describeDebugRefusal,
@@ -392,6 +393,14 @@ export async function runInBackground(
 	const keyedActor = await ensureSecretKeys(actor);
 	const version = findVersion(keyedActor, build.versionNumber);
 	const env = buildEnv(record, keyedActor, version, options, debugPlan);
+	// As on the platform: the run's token and its secret env vars, never its secret input fields.
+	const logRedactor = createLogRedactor([
+		options.token,
+		...decryptedEnvVars(keyedActor, version?.envVars)
+			.filter((envVar) => envVar.isSecret)
+			.map((envVar) => envVar.value),
+	]);
+	const flushRedactedLog = () => appendLog(record.id, logRedactor.flush());
 	// Both-or-neither, enforced by `DevFolderMount`'s type (`driver/types.ts`) - a mount is only ever
 	// added when the Actor actually has a non-empty registered dev folder AND this *run's own resolved
 	// build* has a known, non-empty image working directory (`actor-driver.md`: "The mount is applied
@@ -481,9 +490,10 @@ export async function runInBackground(
 					// The sidecar outlives a migration/reboot restart; the new container mounts the same volume.
 					x11SocketVolume: browserViewer?.x11SocketVolume,
 				},
-				(chunk) => appendLog(record.id, chunk),
+				(chunk) => appendLog(record.id, logRedactor.redact(chunk)),
 				(sample) => publishSystemInfo(record.id, sample, record.options),
 			);
+			flushRedactedLog();
 
 			// An abort that raced the restart wins.
 			const restart = consumeRunRestart(record.id);
@@ -538,6 +548,7 @@ export async function runInBackground(
 				: (error as Error).message;
 		// Into the run's own log too: the engine refusing the container (a network it cannot set up, an
 		// unusable mount) is what `apify call` streams, and the status message alone leaves it empty.
+		flushRedactedLog();
 		appendRuntimeLog(record.id, `Cannot start run: ${statusMessage}`);
 		await flushLog(record.id);
 		await persistRunTelemetry(record.id);
