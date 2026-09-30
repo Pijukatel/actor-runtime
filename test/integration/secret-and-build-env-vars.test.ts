@@ -1,8 +1,15 @@
+import { privateDecrypt, publicEncrypt } from '@apify/utilities';
 import { ApifyApiError } from 'apify-client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { createPrivateKey, createPublicKey } from 'node:crypto';
+import { readdir, readFile } from 'node:fs/promises';
+import path from 'node:path';
+
 import { startTestServer, type TestServerHandle } from './helpers/test-server.js';
 import type { BuildContext, Driver } from '../../src/driver/types.js';
+import { getRegistries } from '../../src/storage/registries.js';
+import { decryptedEnvVars } from '../../src/services/secrets.js';
 
 /** Records what the builds and runs were handed, so env vars can be checked end to end without Docker. */
 function capturingDriver() {
@@ -83,7 +90,7 @@ describe('secret and build-time environment variables', () => {
 		expect(fromGet?.envVars?.[1]).toEqual({
 			name: 'SECRET_VAR',
 			isSecret: true,
-			valueHash: expect.stringMatching(/^[0-9a-f]{6}$/),
+			valueHash: expect.stringMatching(/^.{6}$/),
 		});
 
 		const fromActor = await server.client.actor(actor.id).get();
@@ -98,6 +105,81 @@ describe('secret and build-time environment variables', () => {
 			envVars: [{ name: 'SECRET_VAR', value: 'another-secret', isSecret: true }],
 		});
 		expect(changed.envVars?.[0]?.valueHash).not.toBe(fromGet?.envVars?.[1]?.valueHash);
+	});
+
+	it("stores a secret encrypted with its own Actor's key pair, never in plain text", async () => {
+		const first = await createActorWithVersion('secret-encrypted-first');
+		const second = await createActorWithVersion('secret-encrypted-second');
+		const plainOnly = await server.client.actors().create({
+			name: 'no-secrets',
+			versions: [{ versionNumber: '0.0', sourceType: 'SOURCE_FILES', envVars: [ENV_VARS[0]] }],
+		} as never);
+
+		const { actors } = getRegistries();
+		const [firstRecord, secondRecord, plainRecord] = await Promise.all(
+			[first.id, second.id, plainOnly.id].map((id) => actors.get(id)),
+		);
+		const stored = firstRecord!.versions[0]!.envVars!;
+		expect(stored[0]).toEqual(ENV_VARS[0]);
+		expect(stored[1]!.value).not.toBe('secret-value');
+		expect(stored[1]!.encryptedAes256Password).toEqual(expect.any(String));
+		expect(firstRecord!.secretKeys!.publicKey).toContain('BEGIN PUBLIC KEY');
+		expect(secondRecord!.secretKeys!.privateKey).not.toBe(firstRecord!.secretKeys!.privateKey);
+		expect(plainRecord!.secretKeys).toBeUndefined();
+
+		expect(decryptedEnvVars(firstRecord!, stored)[1]!.value).toBe('secret-value');
+		// Another Actor's key, or a sealed value moved to another Actor, does not decrypt it.
+		expect(() => decryptedEnvVars({ ...firstRecord!, secretKeys: secondRecord!.secretKeys }, stored)).toThrow();
+		expect(() => decryptedEnvVars({ ...secondRecord!, id: second.id }, stored)).toThrow();
+
+		const files = await readdir(server.dataDir, { recursive: true, withFileTypes: true });
+		const contents = await Promise.all(
+			files
+				.filter((entry) => entry.isFile())
+				.map((entry) => readFile(path.join(entry.parentPath, entry.name), 'utf8')),
+		);
+		// The plain var is found where the secret is not, so the scan does read the stored Actors.
+		expect(contents.some((content) => content.includes('plain-value'))).toBe(true);
+		expect(contents.some((content) => content.includes('secret-value'))).toBe(false);
+
+		const fromApi = JSON.stringify(await server.client.actor(first.id).get());
+		expect(fromApi).not.toContain(stored[1]!.encryptedAes256Password!);
+		expect(fromApi).not.toContain('PRIVATE KEY');
+	});
+
+	it("gives every run its own Actor's private key, the way the Apify SDKs read it for input secrets", async () => {
+		const actor = await server.client.actors().create({
+			name: 'input-secrets-key',
+			versions: [{ versionNumber: '0.0', sourceType: 'SOURCE_FILES', sourceFiles: [] }],
+		} as never);
+		await server.client.actor(actor.id).build('0.0', { waitForFinish: 5 });
+		const modifiedAt = (await server.client.actor(actor.id).get())!.modifiedAt;
+		await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+
+		const secretKeys = (await getRegistries().actors.get(actor.id))!.secretKeys!;
+		const env = captured.runEnv!;
+		// What `Actor.getInput()` does with the two vars (apify-sdk-js `actor.ts`).
+		const privateKey = createPrivateKey({
+			key: Buffer.from(env.APIFY_INPUT_SECRETS_PRIVATE_KEY_FILE!, 'base64'),
+			passphrase: env.APIFY_INPUT_SECRETS_PRIVATE_KEY_PASSPHRASE!,
+		});
+		const sealed = publicEncrypt({ publicKey: createPublicKey(secretKeys.publicKey), value: 'input-secret' });
+		expect(privateDecrypt({ privateKey, ...sealed })).toBe('input-secret');
+
+		// Created for the run without counting as a change to the Actor, so `apify push` is unaffected.
+		expect((await server.client.actor(actor.id).get())!.modifiedAt).toEqual(modifiedAt);
+		await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(captured.runEnv!.APIFY_INPUT_SECRETS_PRIVATE_KEY_FILE).toBe(env.APIFY_INPUT_SECRETS_PRIVATE_KEY_FILE);
+	});
+
+	it('a version cannot override the input secrets key vars', async () => {
+		const actor = await createActorWithVersion('input-secrets-key-override', {
+			envVars: [{ name: 'APIFY_INPUT_SECRETS_PRIVATE_KEY_PASSPHRASE', value: 'mine' }],
+		});
+		await server.client.actor(actor.id).build('0.0', { waitForFinish: 5 });
+		await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		const { passphrase } = (await getRegistries().actors.get(actor.id))!.secretKeys!;
+		expect(captured.runEnv!.APIFY_INPUT_SECRETS_PRIVATE_KEY_PASSPHRASE).toBe(passphrase);
 	});
 
 	it('passes secret values into the run container', async () => {

@@ -1,6 +1,5 @@
-import { createHash } from 'node:crypto';
-
-import type { ActorEnvVarRecord, ActorVersionRecord } from '../storage/entities.js';
+import type { ActorEnvVarRecord, ActorRecord, ActorVersionRecord } from '../storage/entities.js';
+import { decryptedEnvVars } from './secrets.js';
 
 /** The platform's own limits (`@apify-packages/actor`'s `EnvVarSchema`). */
 const MAX_NAME_LENGTH = 100;
@@ -49,20 +48,19 @@ export function validateEnvVars(raw: unknown): EnvVarValidation<ActorEnvVarRecor
 
 /**
  * What the API shows for an env var. A secret loses its value, as on the platform; `withValueHash` adds
- * the platform's short `valueHash` (the version endpoints do, the env-var endpoints do not) so a client
- * can tell a changed secret from an unchanged one.
+ * the platform's short `valueHash` - the start of the sealed value, so it changes whenever the secret is
+ * set again (the version endpoints show it, the env-var endpoints do not).
  */
-export function publicEnvVar(
-	envVar: ActorEnvVarRecord,
-	withValueHash: boolean,
-): Omit<ActorEnvVarRecord, 'value'> & { value?: string; valueHash?: string } {
-	if (!envVar.isSecret) return envVar;
-	const { value, ...rest } = envVar;
-	return withValueHash ? { ...rest, valueHash: createHash('sha256').update(value).digest('hex').slice(0, 6) } : rest;
+export function publicEnvVar(envVar: ActorEnvVarRecord, withValueHash: boolean) {
+	if (!envVar.isSecret) {
+		return { name: envVar.name, value: envVar.value, ...(envVar.isSecret === false ? { isSecret: false } : {}) };
+	}
+	return { name: envVar.name, isSecret: true, ...(withValueHash ? { valueHash: envVar.value.slice(0, 6) } : {}) };
 }
 
-/** The Docker build arguments for a version's build; `undefined` unless `applyEnvVarsToBuild` is on. */
-export function buildArgsOf(version: ActorVersionRecord): Record<string, string> | undefined {
+/** The Docker build arguments for a version's build, secrets decrypted; `undefined` unless
+ * `applyEnvVarsToBuild` is on. */
+export function buildArgsOf(actor: ActorRecord, version: ActorVersionRecord): Record<string, string> | undefined {
 	if (!version.applyEnvVarsToBuild || !version.envVars?.length) return undefined;
-	return Object.fromEntries(version.envVars.map((envVar) => [envVar.name, envVar.value]));
+	return Object.fromEntries(decryptedEnvVars(actor, version.envVars).map((envVar) => [envVar.name, envVar.value]));
 }

@@ -245,7 +245,7 @@ export async function runBuildInBackground(
 		(line) => appendRuntimeLog(record.id, line),
 	);
 
-	const buildArgs = buildArgsOf(version);
+	const buildArgs = buildArgsOf(actor, version);
 	if (buildArgs) {
 		appendRuntimeLog(
 			record.id,

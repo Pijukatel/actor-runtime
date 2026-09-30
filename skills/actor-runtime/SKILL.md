@@ -107,8 +107,12 @@ apify push
 
 - Every run gets the version's env vars; the runtime's own `APIFY_*`/`ACTOR_*` vars always win over one
   with the same name.
-- A secret's value is never returned by the API (a short `valueHash` changes when it does), but the
-  runtime keeps it unencrypted in its data directory.
+- A secret's value is never returned by the API (a short `valueHash` changes when it is set again). It is
+  stored encrypted with a key pair of its own Actor, but that key pair sits in the same data directory:
+  a simplified scheme that stops accidental reads, not someone with access to that directory.
+- Every run gets its Actor's private key as `APIFY_INPUT_SECRETS_PRIVATE_KEY_FILE` and
+  `APIFY_INPUT_SECRETS_PRIVATE_KEY_PASSPHRASE`, which the SDKs' `getInput()` uses to decrypt secret input
+  fields. The runtime itself does not encrypt secret input fields.
 - They reach the **build** only with `applyEnvVarsToBuild` on, as Docker build arguments, secrets
   included; the Dockerfile reads each with `ARG NAME`:
   `apify api PUT v2/actors/<actorId>/versions/0.0 --body '{"applyEnvVarsToBuild": true}'`. A later

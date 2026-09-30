@@ -53,12 +53,21 @@ export interface InputSchema {
 	required?: string[];
 }
 
-/** Stored in plain text: the runtime is a single-tenant dev tool, and a secret is only ever hidden from
- * API responses (`api/dto/actors.ts: versionDto`), never from the Actor it belongs to. */
 export interface ActorEnvVarRecord {
 	name: string;
+	/** For a secret, the sealed value (`services/secrets.ts`); plain text otherwise. */
 	value: string;
 	isSecret?: boolean;
+	/** A secret's AES key, encrypted with the Actor's public key. Never returned by the API. */
+	encryptedAes256Password?: string;
+}
+
+/** PEM-encoded, the private key protected by `passphrase`; created with the Actor's first secret or run,
+ * and never returned by the API. */
+export interface ActorSecretKeys {
+	publicKey: string;
+	privateKey: string;
+	passphrase: string;
 }
 
 export interface ActorVersionRecord {
@@ -176,6 +185,9 @@ export interface ActorRecord {
 	localDebug?: ActorLocalDebug;
 	/** Browser-view toggle; absent means off. Same `modifiedAt`/`/v2` rules as `localDevFolder`. */
 	localBrowserView?: ActorLocalBrowserView;
+	/** Encrypts and decrypts this Actor's secrets (`services/secrets.ts`). Same `modifiedAt`/`/v2` rules as
+	 * `localDevFolder` when created for a run. */
+	secretKeys?: ActorSecretKeys;
 }
 
 export type JobStatus = 'READY' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'ABORTING' | 'ABORTED' | 'TIMED-OUT';

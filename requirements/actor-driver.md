@@ -261,8 +261,13 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
   included, are applied to the run's container environment, but every
   platform-owned var listed below takes precedence: a version cannot override `APIFY_TOKEN`, the
   default storage ids, or any other contract var the runtime itself sets.
-- A secret env var (`isSecret`) is never returned by the API: version responses carry a short `valueHash`
-  instead of its `value`, which changes when the value does, and env-var responses omit the value.
+- A secret env var (`isSecret`) is stored encrypted and never returned by the API: version responses carry
+  a short `valueHash` instead of its `value`, which changes whenever the secret is set again, and env-var
+  responses omit the value. It is decrypted only for the builds and runs of its own Actor.
+- Differences: encryption is simplified. Each Actor gets its own key pair, with its first secret or run,
+  kept in the runtime's data directory next to the encrypted values rather than in a separately managed
+  key store, so it protects against a secret being read by accident, not against anyone who can read the
+  data directory.
 - With the version's `applyEnvVarsToBuild` on, its `envVars`, secrets included, are passed to the image
   build as Docker build arguments, as on the platform. The build log names them, never their values.
 - `APIFY_IS_AT_HOME=1` (mirrors the real platform; an SDK/client instantiated
@@ -289,6 +294,9 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 - `ACTOR_MEMORY_MBYTES` / `APIFY_MEMORY_MBYTES` — the run's requested `memoryMbytes`.
 - `APIFY_DEDICATED_CPUS` — the run's granted CPU cores. No `ACTOR_`-prefixed counterpart; only the
   Python SDK reads it.
+- `APIFY_INPUT_SECRETS_PRIVATE_KEY_FILE` / `APIFY_INPUT_SECRETS_PRIVATE_KEY_PASSPHRASE` — the run's own
+  Actor's private key (base64 of its passphrase-protected PEM) and passphrase, which the Apify SDKs use
+  to decrypt secret input fields. Each Actor has its own key pair (see "Differences" above).
 - `ACTOR_MAX_TOTAL_CHARGE_USD` — the run's maximum total charge; absent when it was started without one.
 - Every `ACTOR_*`/`APIFY_*` pair above is set to an identical value (the two SDKs disagree on which name
   wins).

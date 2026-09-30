@@ -35,7 +35,6 @@ real account, not in the runtime.
 
 - Building from Git repository, archive or Gist
 - Build on push (Git integration)
-- Encrypted storage of secret environment variables
 - Generated per-build OpenAPI definition
 - Output, key-value store and web server schemas
 - Publishing to Apify Store
@@ -92,7 +91,6 @@ real account, not in the runtime.
 
 - Run metadata env vars (input key, build, task, user, timestamps)
 - Web server URL (`ACTOR_WEB_SERVER_URL`) and proxy env vars
-- Input secrets private key
 - Log rate limiting, line truncation and size cap
 - Secret redaction in logs
 - Legacy `cpuInfo` events
