@@ -1,9 +1,11 @@
-FROM docker.io/library/alpine:3.21
+# Ships with the Apify SDK preinstalled, so the build needs no `npm install`.
+FROM apify/actor-node:24
 
-# Build arguments carry the version's environment variables only with `applyEnvVarsToBuild` on.
+# The version's environment variables reach the build as build arguments only with "Apply environment
+# variables also to the build process" (`applyEnvVarsToBuild`) turned on in Code > Environment variables.
 ARG BUILD_GREETING
-RUN test -n "$BUILD_GREETING" || { echo "BUILD_GREETING is not set - turn on applyEnvVarsToBuild"; exit 1; }
+RUN test -n "$BUILD_GREETING" || { echo 'BUILD_GREETING is not set: turn on "Apply environment variables also to the build process" in Code > Environment variables (applyEnvVarsToBuild)'; exit 1; }
 RUN echo "Build: BUILD_GREETING=$BUILD_GREETING"
 
-# The secret's value is never logged, only whether it arrived.
-CMD ["sh", "-c", "echo \"Run: RUN_GREETING=$RUN_GREETING\"; if [ -n \"$API_KEY\" ]; then echo \"Run: API_KEY is set (${#API_KEY} characters)\"; else echo 'Run: API_KEY is not set'; fi"]
+COPY src ./src
+CMD ["node", "src/main.mjs"]
