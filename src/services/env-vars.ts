@@ -1,9 +1,10 @@
 import type { ActorEnvVarRecord, ActorRecord, ActorVersionRecord } from '../storage/entities.js';
 import { decryptedEnvVars } from './secrets.js';
 
-/** The platform's own limits (`@apify-packages/actor`'s `EnvVarSchema`). */
+/** The platform's own limits (`@apify-packages/actor`'s `EnvVarSchema` and the version's `envVars`). */
 const MAX_NAME_LENGTH = 100;
 const MAX_VALUE_LENGTH = 50_000;
+const MAX_ENV_VARS = 100;
 
 export type EnvVarValidation<T> = { kind: 'ok'; value: T } | { kind: 'invalid'; message: string };
 
@@ -37,6 +38,9 @@ export function validateEnvVar(raw: unknown): EnvVarValidation<ActorEnvVarRecord
 export function validateEnvVars(raw: unknown): EnvVarValidation<ActorEnvVarRecord[] | undefined> {
 	if (raw === undefined || raw === null) return { kind: 'ok', value: undefined };
 	if (!Array.isArray(raw)) return { kind: 'invalid', message: '"envVars" must be an array' };
+	if (raw.length > MAX_ENV_VARS) {
+		return { kind: 'invalid', message: `A version can have at most ${MAX_ENV_VARS} environment variables` };
+	}
 	const envVars: ActorEnvVarRecord[] = [];
 	for (const entry of raw) {
 		const result = validateEnvVar(entry);

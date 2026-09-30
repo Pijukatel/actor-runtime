@@ -110,7 +110,7 @@ function applyEnvVarsToBuildFromBody(raw: unknown): boolean | undefined {
 	return raw;
 }
 
-/** Only the fields a version body can carry for itself; the rest of a stored version is never taken from a client. */
+/** A version body's env-var fields, falling back to `existing`'s for a field the body leaves out. */
 function versionEnvFieldsFromBody(
 	body: { envVars?: unknown; applyEnvVarsToBuild?: unknown },
 	existing?: ActorVersionRecord,
@@ -129,6 +129,14 @@ async function resolveVersionParam(req: Parameters<typeof resolveActorParam>[0])
 	const version = findVersion(actor, req.params.versionNumber as string);
 	if (!version) throw recordNotFound();
 	return { actor, version };
+}
+
+/** The version as stored, so a response shows its secrets exactly as a later read will - encrypted, as
+ * the platform answers from the stored version too. */
+function storedVersion(actor: ActorRecord | null, versionNumber: string): ActorVersionRecord {
+	const version = actor && findVersion(actor, versionNumber);
+	if (!version) throw recordNotFound();
+	return version;
 }
 
 function findEnvVarOrThrow(version: ActorVersionRecord, name: string): ActorEnvVarRecord {
@@ -246,11 +254,11 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 				sourceFiles: body.sourceFiles ?? [],
 				...versionEnvFieldsFromBody(body),
 			};
-			await updateActor(actor.id, (current) => {
+			const updated = await updateActor(actor.id, (current) => {
 				const actorStandby = standbyEnabledByVersions(current.actorStandby, [version]);
 				return { ...addOrReplaceVersion(current, version), ...(actorStandby ? { actorStandby } : {}) };
 			});
-			sendData(res, versionDto(version), 201);
+			sendData(res, versionDto(storedVersion(updated, version.versionNumber)), 201);
 		}),
 	);
 
@@ -277,8 +285,8 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 				sourceFiles: body.sourceFiles ?? existing.sourceFiles,
 				...versionEnvFieldsFromBody(body, existing),
 			};
-			await updateActor(actor.id, (current) => addOrReplaceVersion(current, version));
-			sendData(res, versionDto(version));
+			const updated = await updateActor(actor.id, (current) => addOrReplaceVersion(current, version));
+			sendData(res, versionDto(storedVersion(updated, version.versionNumber)));
 		}),
 	);
 

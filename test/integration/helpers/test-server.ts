@@ -64,6 +64,31 @@ export function unavailableDriver(): Driver {
 	};
 }
 
+/** A driver whose builds and runs succeed at once, recording the last build's context and run's env, so
+ * env vars can be checked end to end without Docker. */
+export function capturingDriver(): {
+	driver: Driver;
+	captured: { build?: BuildContext; runEnv?: Record<string, string> };
+} {
+	const captured: { build?: BuildContext; runEnv?: Record<string, string> } = {};
+	const driver: Driver = {
+		...unavailableDriver(),
+		available: true,
+		unavailableReason: undefined,
+		async startBuild(ctx, onLog) {
+			captured.build = ctx;
+			onLog('build ok\n');
+			return { imageId: 'fake-image:test' };
+		},
+		async startRun(ctx, onLog) {
+			captured.runEnv = ctx.env;
+			onLog('done\n');
+			return { exitCode: 0 };
+		},
+	};
+	return { driver, captured };
+}
+
 /**
  * A driver whose `startRun` resolves immediately with a caller-supplied outcome - for asserting how
  * `runInBackground` maps a given `RunOutcome` (in particular `timedOut: true`) to a final status,

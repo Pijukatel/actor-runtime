@@ -1,4 +1,5 @@
-import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes } from 'node:crypto';
+import { createPrivateKey, createPublicKey, generateKeyPair, randomBytes } from 'node:crypto';
+import { promisify } from 'node:util';
 
 import { encryptInputSecrets, getInputSchemaSecretFieldKeys } from '@apify/input_secrets';
 import { privateDecrypt, publicEncrypt } from '@apify/utilities';
@@ -15,9 +16,12 @@ import { getRegistries } from '../storage/registries.js';
  * Actor id and name, so it does not decrypt under another Actor or name.
  */
 
-function generateSecretKeys(): ActorSecretKeys {
+const generateKeyPairAsync = promisify(generateKeyPair);
+
+/** Asynchronous: an RSA key takes tens of milliseconds to generate, which would otherwise stall the API. */
+export async function generateSecretKeys(): Promise<ActorSecretKeys> {
 	const passphrase = randomBytes(32).toString('hex');
-	const { publicKey, privateKey } = generateKeyPairSync('rsa', {
+	const { publicKey, privateKey } = await generateKeyPairAsync('rsa', {
 		modulusLength: 2048,
 		publicKeyEncoding: { type: 'spki', format: 'pem' },
 		privateKeyEncoding: { type: 'pkcs8', format: 'pem', cipher: 'aes-256-cbc', passphrase },
@@ -30,12 +34,14 @@ function needsSealing(envVar: ActorEnvVarRecord): boolean {
 }
 
 /**
- * Encrypts every secret env var not encrypted yet, creating the Actor's key pair if it has none. Every
- * Actor write goes through this, so a secret is never stored in plain text, whichever route set it.
+ * Encrypts every secret env var not encrypted yet. Every Actor write goes through this, so a secret is
+ * never stored in plain text, whichever route set it; the Actor already has its key pair by then
+ * (`services/actors.ts`).
  */
 export function sealActorSecrets(actor: ActorRecord): ActorRecord {
 	if (!actor.versions.some((version) => version.envVars?.some(needsSealing))) return actor;
-	const secretKeys = actor.secretKeys ?? generateSecretKeys();
+	const { secretKeys } = actor;
+	if (!secretKeys) throw new Error(`Actor ${actor.id} has no key pair to encrypt its secrets with`);
 	const seal = (envVar: ActorEnvVarRecord): ActorEnvVarRecord => {
 		if (!needsSealing(envVar)) return envVar;
 		const { encryptedValue, encryptedPassword } = publicEncrypt({
@@ -46,7 +52,6 @@ export function sealActorSecrets(actor: ActorRecord): ActorRecord {
 	};
 	return {
 		...actor,
-		secretKeys,
 		versions: actor.versions.map((version) =>
 			version.envVars?.some(needsSealing) ? { ...version, envVars: version.envVars.map(seal) } : version,
 		),
@@ -54,14 +59,15 @@ export function sealActorSecrets(actor: ActorRecord): ActorRecord {
 }
 
 /**
- * The Actor with its key pair, creating one for an Actor that has none yet. Written straight to the
- * registry, not through `updateActor`: a key pair is not a change to the Actor, so it must not bump
- * `modifiedAt` (which would make the next `apify push` ask for `--force`).
+ * The Actor with its key pair, creating one for an Actor stored before Actors got one on creation.
+ * Written straight to the registry, not through `updateActor`: a key pair is not a change to the Actor,
+ * so it must not bump `modifiedAt` (which would make the next `apify push` ask for `--force`).
  */
 export async function ensureSecretKeys(actor: ActorRecord): Promise<ActorRecord> {
 	if (actor.secretKeys) return actor;
+	const secretKeys = await generateSecretKeys();
 	const updated = await getRegistries().actors.update(actor.id, (current) =>
-		current && !current.secretKeys ? { ...current, secretKeys: generateSecretKeys() } : current,
+		current && !current.secretKeys ? { ...current, secretKeys } : current,
 	);
 	return updated ?? actor;
 }
@@ -78,7 +84,8 @@ export async function sealInputSecrets(
 ): Promise<ActorInput | undefined> {
 	if (!input || !inputSchema || getInputSchemaSecretFieldKeys(inputSchema).length === 0) return input;
 	const { secretKeys } = await ensureSecretKeys(actor);
-	if (!secretKeys) return input;
+	// Failing the run is better than writing the secret out in plain text.
+	if (!secretKeys) throw new Error(`Actor ${actor.id} has no key pair to encrypt its secret input with`);
 	const encrypted = encryptInputSecrets({
 		input: JSON.parse(input.body.toString('utf8')) as Record<string, unknown>,
 		inputSchema,

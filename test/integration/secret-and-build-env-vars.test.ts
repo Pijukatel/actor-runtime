@@ -7,49 +7,13 @@ import { createPrivateKey, createPublicKey } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { startTestServer, type TestServerHandle } from './helpers/test-server.js';
-import type { BuildContext, Driver } from '../../src/driver/types.js';
+import { capturingDriver, startTestServer, type TestServerHandle } from './helpers/test-server.js';
 import { getRegistries } from '../../src/storage/registries.js';
 import { decryptedEnvVars, ensureSecretKeys } from '../../src/services/secrets.js';
 
 async function ensureKeys(actorId: string) {
 	const actor = await getRegistries().actors.get(actorId);
 	return (await ensureSecretKeys(actor!)).secretKeys;
-}
-
-/** Records what the builds and runs were handed, so env vars can be checked end to end without Docker. */
-function capturingDriver() {
-	const captured: { build?: BuildContext; runEnv?: Record<string, string> } = {};
-	const notUsed = async (): Promise<never> => {
-		throw new Error('not used by this stub');
-	};
-	const driver: Driver = {
-		available: true,
-		unavailableReason: undefined,
-		async init() {},
-		async startBuild(ctx, onLog) {
-			captured.build = ctx;
-			onLog('build ok\n');
-			return { imageId: 'fake-image:test' };
-		},
-		async abortBuild() {},
-		async startRun(ctx, onLog) {
-			captured.runEnv = ctx.env;
-			onLog('done\n');
-			return { exitCode: 0 };
-		},
-		async abortRun() {},
-		async reconcileOrphans() {},
-		probeDevFolder: notUsed,
-		ensureProbeImage: notUsed,
-		startBrowserViewer: notUsed,
-		async stopBrowserViewer() {},
-		async containerServerAddress() {
-			return undefined;
-		},
-		inspectDebugTarget: notUsed,
-	};
-	return { driver, captured };
 }
 
 const ENV_VARS = [
@@ -113,6 +77,31 @@ describe('secret and build-time environment variables', () => {
 		expect(changed.envVars?.[0]?.valueHash).not.toBe(fromGet?.envVars?.[1]?.valueHash);
 	});
 
+	it('answers a version write with the stored, encrypted secret, as a later read does', async () => {
+		const actor = await server.client.actors().create({ name: 'secret-write-responses' });
+		const secret = { name: 'SECRET_VAR', value: 'hunter2-secret', isSecret: true };
+		const created = await server.client
+			.actor(actor.id)
+			.versions()
+			.create({ versionNumber: '0.0', sourceType: 'SOURCE_FILES', sourceFiles: [], envVars: [secret] } as never);
+		const afterCreate = await server.client.actor(actor.id).version('0.0').get();
+		expect(created.envVars).toEqual(afterCreate?.envVars);
+
+		const updated = await server.client
+			.actor(actor.id)
+			.version('0.0')
+			.update({ envVars: [{ ...secret, value: 'topsecret-2' }] });
+		const afterUpdate = await server.client.actor(actor.id).version('0.0').get();
+		expect(updated.envVars).toEqual(afterUpdate?.envVars);
+
+		for (const [response, value] of [
+			[created, secret.value],
+			[updated, 'topsecret-2'],
+		] as const) {
+			expect(value.startsWith(response.envVars![0]!.valueHash!)).toBe(false);
+		}
+	});
+
 	it("stores a secret encrypted with its own Actor's key pair, never in plain text", async () => {
 		const first = await createActorWithVersion('secret-encrypted-first');
 		const second = await createActorWithVersion('secret-encrypted-second');
@@ -131,7 +120,8 @@ describe('secret and build-time environment variables', () => {
 		expect(stored[1]!.encryptedAes256Password).toEqual(expect.any(String));
 		expect(firstRecord!.secretKeys!.publicKey).toContain('BEGIN PUBLIC KEY');
 		expect(secondRecord!.secretKeys!.privateKey).not.toBe(firstRecord!.secretKeys!.privateKey);
-		expect(plainRecord!.secretKeys).toBeUndefined();
+		// As on the platform, an Actor has its key pair whether or not it has secrets.
+		expect(plainRecord!.secretKeys!.publicKey).toContain('BEGIN PUBLIC KEY');
 
 		expect(decryptedEnvVars(firstRecord!, stored)[1]!.value).toBe('secret-value');
 		// Another Actor's key, or a sealed value moved to another Actor, does not decrypt it.

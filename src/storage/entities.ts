@@ -62,8 +62,8 @@ export interface ActorEnvVarRecord {
 	encryptedAes256Password?: string;
 }
 
-/** PEM-encoded, the private key protected by `passphrase`; created with the Actor's first secret or run,
- * and never returned by the API. */
+/** PEM-encoded, the private key protected by `passphrase`; created with the Actor and never returned by
+ * the API. */
 export interface ActorSecretKeys {
 	publicKey: string;
 	privateKey: string;
@@ -185,8 +185,8 @@ export interface ActorRecord {
 	localDebug?: ActorLocalDebug;
 	/** Browser-view toggle; absent means off. Same `modifiedAt`/`/v2` rules as `localDevFolder`. */
 	localBrowserView?: ActorLocalBrowserView;
-	/** Encrypts and decrypts this Actor's secrets (`services/secrets.ts`). Same `modifiedAt`/`/v2` rules as
-	 * `localDevFolder` when created for a run. */
+	/** Encrypts and decrypts this Actor's secrets (`services/secrets.ts`). Absent only on an Actor stored
+	 * before Actors got one on creation, until its next write or run - which never bumps `modifiedAt`. */
 	secretKeys?: ActorSecretKeys;
 }
 
