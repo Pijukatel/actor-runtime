@@ -42,13 +42,9 @@
   the reason in its log, and every run of a build is validated against that build's schema with its
   defaults applied, a rejected input starting nothing (`api.md`). A build with no input schema takes
   every input exactly as the caller sent it.
-- **Secret input fields** (`isSecret`) work as on the platform: after validation and defaults, their
-  values are stored in the run's `INPUT` encrypted with the Actor's public key, a value that already is
-  encrypted is kept as it is, and the Apify SDKs' `getInput()` decrypts them with the run's
-  `APIFY_INPUT_SECRETS_PRIVATE_KEY_FILE`/`_PASSPHRASE` ("Environment variables in every Actor container").
+- Secret input fields work as on the platform.
 - **Differences**: Apify Proxy group availability is not checked, so any `apifyProxyGroups` selection
-  is accepted, while the rest of a `proxy` field is still validated. Each Actor has its own key pair,
-  with the simplification described under secret env vars.
+  is accepted, while the rest of a `proxy` field is still validated.
 - An Actor running from a registered dev folder uses its last build's schema: unlike a source edit,
   an edited input schema takes effect only after `apify push`.
 
@@ -261,22 +257,12 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 # Environment variables in every Actor container
 
 - The Actor version's own `envVars` (accepted and stored on `POST`/`PUT
-.../actors/:actorId/versions` and managed one by one under `.../versions/:versionNumber/env-vars`), secrets
-  included, are applied to the run's container environment, but every
+.../actors/:actorId/versions`) are applied to the run's container environment, but every
   platform-owned var listed below takes precedence: a version cannot override `APIFY_TOKEN`, the
   default storage ids, or any other contract var the runtime itself sets.
-- A secret env var (`isSecret`) is stored encrypted and never returned by the API: version responses carry
-  a short `valueHash` instead of its `value`, which changes whenever the secret is set again, and env-var
-  responses omit the value. It is decrypted only for the builds and runs of its own Actor.
-- As on the platform, a run's log shows `*********` in place of every exact occurrence of its secret env
-  vars' values and of its `APIFY_TOKEN`. A value printed in another form (reversed, encoded) is not
-  caught, and neither are secret input fields.
-- Differences: encryption is simplified. Each Actor gets its own key pair when it is created, kept in
-  the runtime's data directory next to the encrypted values rather than in a separately managed key
-  store, so it protects against a secret being read by accident, not against anyone who can read the
-  data directory.
-- With the version's `applyEnvVarsToBuild` on, its `envVars`, secrets included, are passed to the image
-  build as Docker build arguments, as on the platform. The build log names them, never their values.
+- Secret env vars, build-time env vars and masking secrets in run logs work as on the platform.
+- Difference: secrets are protected only against being read by accident, since the key that decrypts
+  them is kept in the runtime's data directory too.
 - `APIFY_IS_AT_HOME=1` (mirrors the real platform; an SDK/client instantiated
   in the container reports `isAtHome`/`is_at_home = true`).
 - `APIFY_META_ORIGIN` — `STANDBY` for a standby run, `API` for every other run
@@ -301,9 +287,8 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 - `ACTOR_MEMORY_MBYTES` / `APIFY_MEMORY_MBYTES` — the run's requested `memoryMbytes`.
 - `APIFY_DEDICATED_CPUS` — the run's granted CPU cores. No `ACTOR_`-prefixed counterpart; only the
   Python SDK reads it.
-- `APIFY_INPUT_SECRETS_PRIVATE_KEY_FILE` / `APIFY_INPUT_SECRETS_PRIVATE_KEY_PASSPHRASE` — the run's own
-  Actor's private key (base64 of its passphrase-protected PEM) and passphrase, which the Apify SDKs use
-  to decrypt secret input fields. Each Actor has its own key pair (see "Differences" above).
+- `APIFY_INPUT_SECRETS_PRIVATE_KEY_FILE` / `APIFY_INPUT_SECRETS_PRIVATE_KEY_PASSPHRASE` — as on the
+  platform.
 - `ACTOR_MAX_TOTAL_CHARGE_USD` — the run's maximum total charge; absent when it was started without one.
 - Every `ACTOR_*`/`APIFY_*` pair above is set to an identical value (the two SDKs disagree on which name
   wins).
