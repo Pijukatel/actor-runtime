@@ -1,6 +1,6 @@
 {
 	"name": "actor-runtime",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "A minimal, self-contained local Apify platform in a single Docker image.",
 	"type": "module",
 	"private": true,

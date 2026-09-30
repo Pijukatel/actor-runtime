@@ -2,8 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-<!-- git-cliff-unreleased-start -->
-## 0.1.1 - **not yet released**
+## [0.1.1](https://github.com/apify/actor-runtime/releases/tag/v0.1.1) (2026-09-30)
 
 ### 🚀 Features
 
@@ -15,7 +14,6 @@ All notable changes to this project will be documented in this file.
 - Add support for monorepo Actors with shared Docker contexts ([#89](https://github.com/apify/actor-runtime/pull/89)) ([da25bd2](https://github.com/apify/actor-runtime/commit/da25bd2bf94bfd4ba434678b2c738096639f2d9d)) by [@Pijukatel](https://github.com/Pijukatel)
 
 
-<!-- git-cliff-unreleased-end -->
 ## [0.1.0](https://github.com/apify/actor-runtime/releases/tag/v0.1.0) (2026-09-29)
 
 ### 🚀 Features
