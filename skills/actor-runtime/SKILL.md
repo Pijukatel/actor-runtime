@@ -54,6 +54,12 @@ apify runs log <runId>
 apify datasets get-items <datasetId> --format json
 ```
 
+To run an Actor and get its result in one call, as a script or integration would:
+`apify api POST 'v2/actors/<actorId>/run-sync-get-dataset-items' --body '{"maxPages":3}'` answers with
+the run's dataset items, and `.../run-sync` with its `OUTPUT` record (`?outputRecordKey=` for another).
+The call waits at most 300 seconds; a run still going then answers `408` and keeps running, and a run
+that does not succeed answers `400` `run-failed`.
+
 ### Apple Silicon and other arm64 hosts
 
 Builds run for the host's architecture. Some Apify base images are published for `linux/amd64` only -

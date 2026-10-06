@@ -65,6 +65,8 @@
         - v2/actors/:actorId/builds
         - v2/actors/:actorId/builds/default
         - v2/actors/:actorId/runs
+        - v2/actors/:actorId/run-sync (see "Synchronous runs")
+        - v2/actors/:actorId/run-sync-get-dataset-items
         - v2/actors/:actorId/runs/last, and its sub-paths (see "Last-run shortcuts")
         - v2/actors/:actorId/versions
         - v2/actors/:actorId/versions/:versionNumber
@@ -151,6 +153,19 @@
 - **One source per request**: an Actor that resolves locally is answered locally, including every later
   miss; only a request naming an Actor unknown here is eligible for the upstream fallback (below), and
   then as the caller's original request, which the platform resolves end to end.
+
+# Synchronous runs
+
+- `v2/actors/:actorId/run-sync` and `v2/actors/:actorId/run-sync-get-dataset-items` start a run exactly as
+  `POST v2/actors/:actorId/runs` does (same query parameters, input and errors) and answer once it ends,
+  matching the platform. Both accept `GET` and `POST`.
+- On success, `201` with the run's output: `run-sync` answers with the default key-value store's `OUTPUT`
+  record (or `?outputRecordKey=`) as stored, content type included, or an empty body when there is no
+  such record; `run-sync-get-dataset-items` answers with the default dataset's items, exactly as its
+  items endpoint does, its query parameters included.
+- A run that ends other than `SUCCEEDED` is `400` `run-failed`. A run still going after 300 seconds is
+  `408` `run-timeout-exceeded`; the run itself carries on.
+- The `v2/actor-tasks/:taskId/run-sync*` variants are not implemented (`unsupported.md`).
 
 # Actor Standby
 
