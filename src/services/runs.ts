@@ -57,6 +57,24 @@ export async function getOwnedRun(userId: string, id: string): Promise<RunRecord
 }
 
 /**
+ * `PUT /v2/actor-runs/:runId`, as on the platform: replaces the message (an absent one clears it) and
+ * accepts it whatever the run's status, finished runs included.
+ */
+export async function setRunStatusMessage(
+	id: string,
+	statusMessage: string | undefined,
+	isStatusMessageTerminal: boolean,
+): Promise<RunRecord | null> {
+	return getRegistries().runs.update(id, (current) => {
+		if (!current) return current;
+		const next: RunRecord = { ...current, statusMessage, isStatusMessageTerminal };
+		if (statusMessage === undefined) delete next.statusMessage;
+		if (!isStatusMessageTerminal) delete next.isStatusMessageTerminal;
+		return next;
+	});
+}
+
+/**
  * The `runs/last` pick: apify-core's `getUserActorLastRun`, the same filters under `sort: { startedAt: -1 }`.
  * `startedAt` is set at creation, `READY` runs included, so the most recently created run wins - and two
  * runs of the same millisecond tie, which neither sort resolves.
@@ -651,7 +669,8 @@ export async function abortRun(
 	let alreadyAborting = false;
 	// Only a runtime-initiated abort (the cost cap) carries a reason; a caller's abort has none, as on
 	// the platform.
-	const patch: Partial<RunRecord> = statusMessage === undefined ? {} : { statusMessage };
+	const patch: Partial<RunRecord> =
+		statusMessage === undefined ? {} : { statusMessage, isStatusMessageTerminal: true };
 	const aborting = await transitionJobStatus(runs, run.id, 'ABORTING', patch, (current) => {
 		wasRunning = current?.status === 'RUNNING';
 		alreadyAborting = current?.status === 'ABORTING';

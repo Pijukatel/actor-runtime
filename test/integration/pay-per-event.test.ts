@@ -393,6 +393,7 @@ describe('pay-per-event: runs and charging', () => {
 		expect(run.status).toBe('ABORTING');
 		expect(new Date(run.chargingStoppedAt as string).getTime()).not.toBeNaN();
 		expect(run.statusMessage).toMatch(/maximum total charge of \$0\.05 was reached/);
+		expect(run.isStatusMessageTerminal).toBe(true);
 		expect(frames.map((f) => JSON.parse(f).name)).toEqual(['aborting', 'persistState']);
 		// Graceful: the container is given its window, not killed on the spot.
 		expect(driver.abortRunCalls).toEqual([]);

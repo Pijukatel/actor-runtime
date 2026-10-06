@@ -54,6 +54,15 @@ export function cannotRemoveRunningRun(): ApiError {
 	);
 }
 
+/** Matches the real platform's `runs.cannotSetIsStatusMessageTerminal`. */
+export function cannotSetIsStatusMessageTerminal(): ApiError {
+	return new ApiError(
+		400,
+		'cannot-set-is-status-message-terminal',
+		'You must specify a valid status message together with information on whether it is terminal.',
+	);
+}
+
 /** Matches the real platform's rejection of reboot/migrate on a finished run (the public API answers
  * 403 `job-finished`). */
 export function jobAlreadyFinished(): ApiError {
