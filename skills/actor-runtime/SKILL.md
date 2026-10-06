@@ -106,6 +106,12 @@ valid: Field input.maxPages must be >= 1`); no run is created and no container s
   account; the run log carries a warning saying so. Unchecking "Use Apify Proxy" on the console's
   Settings page (on by default) sets `APIFY_PROXY_PASSWORD` to an empty string instead.
 
+## Extra datasets
+
+An Actor that declares more datasets in `.actor/actor.json`'s `storages.datasets` gets each of them,
+created fresh for every run, as on the platform. The run object lists them by alias under `storageIds`,
+and SDKs that support storage aliases open one by alias through the run's `ACTOR_STORAGES_JSON`. The aliases come from the build, so changing them needs an `apify push`.
+
 ## Run memory
 
 With no `-m`/`--memory`, a run gets `defaultMemoryMbytes` from `.actor/actor.json` - a number or a

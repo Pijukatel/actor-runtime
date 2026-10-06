@@ -196,6 +196,13 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 - Run details and the run log are kept in internal records that persist across runtime restarts
   (`storage.md`).
 
+## Run storages
+
+- Besides its default dataset, key-value store and request queue, every run gets one more dataset per
+  alias declared in `.actor/actor.json`'s `storages.datasets`, as on the platform. The run object reports
+  all of them by alias under `storageIds`. The aliases come from the build, so changing them needs a
+  rebuild. Dataset schemas are not enforced (`unsupported.md`).
+
 ## Run memory
 
 - Run memory follows the platform's `.actor/actor.json` rules (`defaultMemoryMbytes`, `minMemoryMbytes`,
@@ -282,6 +289,7 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 - `APIFY_DEFAULT_KEY_VALUE_STORE_ID` / `APIFY_DEFAULT_DATASET_ID` /
   `APIFY_DEFAULT_REQUEST_QUEUE_ID` — the run's real storage ids (as returned by
   the API)
+- `ACTOR_STORAGES_JSON` — the run's `storageIds` as JSON, which the SDKs use to open a storage by alias
 - `APIFY_ACTOR_ID` / `ACTOR_ID` and `APIFY_ACTOR_RUN_ID` / `ACTOR_RUN_ID` —
   both the legacy `APIFY_`-prefixed and the modern unprefixed spellings, equal
   in value.

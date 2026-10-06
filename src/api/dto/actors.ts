@@ -1,6 +1,7 @@
 import type { ActorRecord, ActorVersionRecord, BuildRecord, RunRecord } from '../../storage/entities.js';
 import { publicEnvVar } from '../../services/env-vars.js';
 import { getRunTelemetry } from '../../services/events-channel.js';
+import { runStorageIds } from '../../services/actor-storages.js';
 import { computeRunUsage } from '../../services/run-usage.js';
 import { standbyUrl, type StandbyUrlAudience } from '../../services/standby-config.js';
 
@@ -87,6 +88,7 @@ export function runDto(run: RunRecord) {
 		defaultDatasetId: run.defaultDatasetId,
 		defaultKeyValueStoreId: run.defaultKeyValueStoreId,
 		defaultRequestQueueId: run.defaultRequestQueueId,
+		storageIds: runStorageIds(run),
 		// `build`/`diskMbytes` and top-level `generalAccess` are required by the real Apify API contract
 		// (`apify-client`'s `RunOptions`/`Run` pydantic models have no default for any of the three) -
 		// every real run already has them (`services/runs.ts`'s `startRun`); the fallbacks here only cover

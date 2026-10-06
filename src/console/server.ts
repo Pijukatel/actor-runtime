@@ -44,6 +44,7 @@ import { isTerminalJobStatus } from '../services/job-status.js';
 import { isBrowserViewPending } from './browser-view-ws.js';
 import { getFullLog } from '../services/logs.js';
 import { getStorageById, listAllStorages } from '../services/storages.js';
+import { DEFAULT_STORAGE_ALIAS, runStorageIds } from '../services/actor-storages.js';
 import { listRequests } from '../services/request-queues.js';
 import { openDataset, openKeyValueStore, openRequestQueue } from '../storage/open.js';
 import { pageKeys } from '../services/kv-key-listing.js';
@@ -557,6 +558,9 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			['defaultKeyValueStoreId', storageLink('/key-value-stores', run.defaultKeyValueStoreId)],
 			['defaultRequestQueueId', storageLink('/request-queues', run.defaultRequestQueueId)],
 		];
+		for (const [alias, datasetId] of Object.entries(runStorageIds(run).datasets)) {
+			if (alias !== DEFAULT_STORAGE_ALIAS) rows.push([`dataset "${alias}"`, storageLink('/datasets', datasetId)]);
+		}
 		// Only present for a run that resolved a debug plan; never on the emulated `/v2` run object.
 		if (run.localDebug) {
 			rows.push(['debug', `${run.localDebug.language}, attach at 127.0.0.1:${run.localDebug.port}`]);
