@@ -15,7 +15,6 @@ real account, not in the runtime.
 - Multi-tenant Actor Standby, Standby for tasks, and Standby's Console-auth and tokenless options
 - Run web server and live view (`containerUrl`)
 - Metamorph
-- Resurrecting finished runs
 - Restart on error
 - Infinite runs (timeout `0`), other than standby runs
 - Synchronous runs returning output (`run-sync`)
