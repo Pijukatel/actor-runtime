@@ -286,7 +286,7 @@ This runtime emulates that observable experience on demand:
     - Errors: unknown/foreign run `404` `record-not-found`; finished run `403` `job-finished`;
       `READY`/`ABORTING` `400` `invalid-request`.
     - The timeout budget is per run, not per container: a restarted container gets only the remaining
-      `timeoutSecs`.
+      `timeoutSecs`. A run with no timeout keeps having none.
     - An abort (graceful or hard) landing during the window or restart wins: the run ends `ABORTED`,
       never restarted.
 - **`POST /v2/actor-runs/:runId/reboot`** - the real platform endpoint the SDKs call from their default

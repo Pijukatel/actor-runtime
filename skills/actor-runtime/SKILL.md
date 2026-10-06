@@ -114,6 +114,18 @@ or not, is then clamped to the Actor's `minMemoryMbytes` / `maxMemoryMbytes`, an
 An expression that fails falls back to 1024 MB with a warning in the run log. The fields come from the
 build, so changing them needs an `apify push`.
 
+## Run timeout
+
+A run gets 300 s unless `apify call --timeout <secs>` says otherwise, and ends `TIMED-OUT` when that
+elapses. A timeout of `0` means none: the run goes on until the Actor exits or you abort it (a runtime
+restart aborts it too). The stock CLI does not forward `--timeout 0`, so start such a run through the
+API:
+
+```sh
+apify api POST '/v2/actors/<actorId>/runs?timeout=0' --body '{"maxPages":3}'
+apify runs abort <runId>
+```
+
 ## Environment variables and secrets
 
 Declared in `.actor/actor.json` and sent by `apify push`, as on the platform:
@@ -193,7 +205,8 @@ Two things that bite:
   `CMD ["npm", "start", "--silent"]`, which debug mode refuses, because it would attach to npm rather
   than the Actor. Give the Actor a `Dockerfile` whose `CMD` invokes the interpreter directly, e.g.
   `CMD ["node", "dist/main.js"]`.
-- The run's `--timeout` is not extended while you attach. Pass a larger one for a slow attach.
+- The run's `--timeout` is not extended while you attach. Pass a larger one for a slow attach, or start
+  the run with no timeout ("Run timeout" above).
 
 ## Watch a Playwright/Puppeteer browser
 
