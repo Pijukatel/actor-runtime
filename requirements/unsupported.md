@@ -17,7 +17,6 @@ real account, not in the runtime.
 - Metamorph
 - Resurrecting finished runs
 - Restart on error
-- Infinite runs (timeout `0`), other than standby runs
 - Actor-set run status messages
 - Result cap (`maxItems`)
 - Ad-hoc webhooks on run start

@@ -418,4 +418,47 @@ describe('migration emulation and reboot', () => {
 		driver.startCalls[1]!.resolve({ exitCode: 0, timedOut: false });
 		await bg;
 	});
+
+	it('a run with no timeout keeps none across a migration: both containers get timeoutSecs 0, never the 1s floor', async () => {
+		const driver = restartTrackingDriver();
+		server = await startTestServer(driver);
+		const actor = await seedActor(server, 'migrate-no-timeout-actor');
+		const build = await seedTaggedBuild(actor);
+
+		// Planted a day in the past: a budget-based figure would have been clamped to the 1s floor long ago.
+		const record: RunRecord = {
+			id: generateId(),
+			userId: actor.userId,
+			actorId: actor.id,
+			buildId: build.id,
+			buildNumber: build.buildNumber,
+			status: 'READY',
+			startedAt: new Date(Date.now() - 24 * 3600 * 1000).toISOString(),
+			defaultDatasetId: 'd',
+			defaultKeyValueStoreId: 'k',
+			defaultRequestQueueId: 'r',
+			options: { memoryMbytes: 1024, timeoutSecs: 0 },
+			meta: { origin: 'API' },
+		};
+		await getRegistries().runs.set(record.id, record);
+
+		const bg = runInBackground(driver, actor, record, { apiBaseUrl: server.baseUrl, token: server.token });
+		await driver.waitForStartCalls(1);
+		expect(driver.startCalls[0]!.ctx.timeoutSecs).toBe(0);
+
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		expect(await migrateRun(driver, (await getRegistries().runs.get(record.id))!)).toBe('migrating');
+		await waitForPendingTimer();
+		await vi.advanceTimersByTimeAsync(MIGRATING_STOP_WINDOW_MS);
+		await pollUntil(() => driver.abortRunCalls.length === 1, 'the migration stop');
+		vi.useRealTimers();
+
+		driver.startCalls[0]!.resolve({ exitCode: 137, timedOut: false });
+		await driver.waitForStartCalls(2);
+		expect(driver.startCalls[1]!.ctx.timeoutSecs).toBe(0);
+		expect((await getRegistries().runs.get(record.id))!.status).toBe('RUNNING');
+
+		driver.startCalls[1]!.resolve({ exitCode: 0, timedOut: false });
+		await bg;
+	});
 });
