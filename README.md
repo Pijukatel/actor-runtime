@@ -182,8 +182,7 @@ apify call --input '{"maxPages":5}'
 
 The URL has the platform's shape, one `*.runs.localhost` hostname per run, so the Actor's page owns `/`.
 Clients that do not resolve `*.localhost` use `http://localhost:3333/actor-runtime/container/<runId>`, and
-other Actors `http://apify-api:3333/actor-runtime/container/<runId>`. An Actor that starts no server is
-unaffected; its URL answers that nothing is listening.
+other Actors `http://apify-api:3333/actor-runtime/container/<runId>`.
 
 ## Apify Proxy
 

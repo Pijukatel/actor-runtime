@@ -178,19 +178,10 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 
 # Web server and live view
 
-- Every run has a `containerUrl`, as on the platform: requests to it reach the HTTP server the Actor may
-  start on `ACTOR_WEB_SERVER_PORT` (4321, or the version's own `ACTOR_WEB_SERVER_PORT`/`ACTOR_STANDBY_PORT`
-  env var) inside the run's container - path, query, headers, body and websockets, unchanged and
-  unauthenticated, for the life of the run, across a migration or reboot of it. The URL is on the API port
-  (`api.md`).
-- The run log names the live view and the container URL. The console's run detail view links both, and
-  its live view page shows the Actor's page (`console.md`).
-- A request while nothing listens on the port, or before the container is up, is answered with an error
-  saying so; a browser gets a page that retries on its own until the Actor's server answers. A request to
-  a finished run says the run has ended; an unknown run is not found.
-- An Actor that starts no server is unaffected: the URL exists, nothing listens behind it.
-- Difference: on Podman 3.x only a standby run's server is reachable; an ordinary run's log says its web
-  server is not.
+- Implemented as on the platform: every run has a `containerUrl` reaching the server the Actor starts on
+  `ACTOR_WEB_SERVER_PORT`, shown as the run's live view in the console (`console.md`).
+- Differences: the URL is local (`api.md`) and the run log names it; on Podman 3.x only a standby run's
+  server is reachable, which the run log says.
 
 # Networking
 
@@ -310,11 +301,8 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
   Apify Proxy, billed to the Apify account, and that the Settings page can disable it.
 - `ACTOR_EVENTS_WEBSOCKET_URL` / `APIFY_ACTOR_EVENTS_WS_URL` — the run's own events channel
   (`api.md`), carrying no credential.
-- `ACTOR_WEB_SERVER_PORT` / `APIFY_CONTAINER_PORT`, and `ACTOR_STANDBY_PORT` — the port the Actor's HTTP
-  server is expected on ("Web server and live view" above).
-- `ACTOR_WEB_SERVER_URL` / `APIFY_CONTAINER_URL` — the run's `containerUrl`, in the form a developer opens
-  (`api.md`).
-- `ACTOR_STANDBY_URL` — the Actor's standby URL (`api.md`).
+- `ACTOR_WEB_SERVER_PORT` / `APIFY_CONTAINER_PORT`, `ACTOR_WEB_SERVER_URL` / `APIFY_CONTAINER_URL`,
+  `ACTOR_STANDBY_PORT` and `ACTOR_STANDBY_URL` — as on the platform, with the local URLs (`api.md`).
 - `ACTOR_MEMORY_MBYTES` / `APIFY_MEMORY_MBYTES` — the run's requested `memoryMbytes`.
 - `APIFY_DEDICATED_CPUS` — the run's granted CPU cores. No `ACTOR_`-prefixed counterpart; only the
   Python SDK reads it.

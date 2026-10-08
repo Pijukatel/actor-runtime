@@ -161,14 +161,10 @@
 
 # Run web server
 
-- Every run's `containerUrl` is `http://<runId>.runs.localhost:3333` (the run id lowercased, as hostnames
-  are), or `http://localhost:3333/actor-runtime/container/<runId>` for clients without `*.localhost`
-  (`http://apify-api:3333/...` from Actors), on every run object. Everything after it reaches the Actor's web
-  server (`actor-driver.md`'s "Web server and live view"); no token is needed, as on the platform.
-- A request that cannot be served answers `404` `record-not-found` (unknown run), `410` `run-finished`,
-  `503` `web-server-not-ready` (the Actor's server is not listening, or the container is not up yet;
-  `Retry-After: 3`), or `502` `web-server-bad-gateway`. A client that accepts HTML gets the same as a page,
-  reloading itself on `503`. These errors are never relayed by the upstream fallback.
+- Implemented as on the platform. Difference: `containerUrl` is `http://<runId>.runs.localhost:3333`, or
+  `http://localhost:3333/actor-runtime/container/<runId>` for clients without `*.localhost`
+  (`http://apify-api:3333/...` from Actors). A request the Actor's server cannot answer (not listening yet,
+  run finished, unknown run) gets an error saying why, never relayed by the upstream fallback.
 
 # Actor runtime API
 

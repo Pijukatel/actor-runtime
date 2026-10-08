@@ -208,24 +208,15 @@ which shows as a black display. Disable with `{"enabled": false}`.
 
 ## See the web page an Actor serves (live view)
 
-Every run has a `containerUrl`, as on the platform: an HTTP server the Actor starts on
-`ACTOR_WEB_SERVER_PORT` (4321) is reachable there for the life of the run, no token needed. The run log
-names both the URL and the console's live view page, which frames it:
+A run's web server (`ACTOR_WEB_SERVER_PORT`) and `containerUrl` work as on the platform; the run log names
+the URL and the console's live view page (`http://localhost:3000/runs/<runId>/live-view`). Local
+differences:
 
-```sh
-apify call                              # the log: Live view: http://localhost:3000/runs/<runId>/live-view ...
-curl http://<runid>.runs.localhost:3333/            # the run owns / of this origin, as on *.runs.apify.net
-curl http://localhost:3333/actor-runtime/container/<runId>/   # for clients that do not resolve *.localhost
-```
-
-- `apify api GET actor-runs/<runId>` shows the `containerUrl`; the Actor reads it as `ACTOR_WEB_SERVER_URL`
-  (`Actor.config.get('containerUrl')`). From another Actor's container the run object carries
-  `http://apify-api:3333/actor-runtime/container/<runId>` instead.
-- While the Actor has started no server, the URL answers `503 web-server-not-ready` (a browser gets a page
-  that retries by itself); after the run ends, `410 run-finished`. Nothing changes for an Actor that never
-  listens.
-- `samples/actor_ts` serves a progress page this way; `samples/actor_standby_*` are full servers.
+- The URL is `http://<runid>.runs.localhost:3333` (the run owns `/`), or
+  `http://localhost:3333/actor-runtime/container/<runId>` for clients that do not resolve `*.localhost`;
+  from another Actor's container, `http://apify-api:3333/actor-runtime/container/<runId>`.
 - On Podman 3.x only a standby run's server is reachable; an ordinary run's log says so.
+- `samples/actor_ts` serves a progress page to try it with.
 
 ## Test pay-per-event pricing and see what a run costs
 
