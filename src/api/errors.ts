@@ -115,3 +115,22 @@ export function cannotRenameEnvVar(): ApiError {
 		'Environment variable cannot be renamed. An environment variable with the given new name already exists.',
 	);
 }
+
+/** Matches the real platform's `api.runTimeoutExceeded`; the run itself keeps going. */
+export function runTimeoutExceeded(timeoutSecs: number): ApiError {
+	return new ApiError(
+		408,
+		'run-timeout-exceeded',
+		`Actor run exceeded the timeout of ${timeoutSecs} seconds for this API endpoint`,
+	);
+}
+
+/** Matches the real platform's `api.runFailed`. */
+export function runFailed(runId: string, status: string): ApiError {
+	return new ApiError(400, 'run-failed', `Actor run did not succeed (run ID: ${runId}, status: ${status}).`);
+}
+
+/** Matches the real platform's `api.defaultDatasetNotFound`. */
+export function defaultDatasetNotFound(): ApiError {
+	return new ApiError(400, 'default-dataset-not-found', 'The run does not have a default dataset.');
+}
