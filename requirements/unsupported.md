@@ -18,7 +18,6 @@ real account, not in the runtime.
 - Resurrecting finished runs
 - Restart on error
 - Infinite runs (timeout `0`), other than standby runs
-- Synchronous runs returning output (`run-sync`)
 - Actor-set run status messages
 - Result cap (`maxItems`)
 - Ad-hoc webhooks on run start
