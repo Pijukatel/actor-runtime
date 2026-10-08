@@ -306,21 +306,7 @@ apify api POST /actor-runtime/migrate/<runId>
 The run gets the real migration experience: a `migrating` event, its container stopped a few seconds
 later, then a fresh container for the same run - same run id, env vars and storages, in-memory state
 gone. The Migrate button on the run's console page does the same.
-`POST /v2/actor-runs/<runId>/reboot` is also implemented.
-
-## Resurrect a finished run
-
-A finished run - whatever it ended as - can be started again as the same run, keeping its id, input,
-storages and log, like on the platform:
-
-```sh
-apify api POST /v2/actor-runs/<runId>/resurrect
-apify api POST "/v2/actor-runs/<runId>/resurrect?memory=2048&timeout=600"   # new options for this start
-```
-
-The request queue and key-value store are where they were left, so a crawler picks up where it stopped.
-The timeout counts from the resurrection; `build`, `memory`, `timeout` and `maxTotalChargeUsd` can each
-be changed, the cap never lowered.
+`POST /v2/actor-runs/<runId>/reboot` and `POST /v2/actor-runs/<runId>/resurrect` are also implemented.
 
 ## When this runtime does not implement something
 
