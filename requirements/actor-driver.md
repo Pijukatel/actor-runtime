@@ -11,9 +11,7 @@
   `RUNNING -> ABORTING -> ABORTED` while a stop is in flight (`ABORTING`/`ABORTED` are also reachable
   directly from `READY` - an abort issued before the build/run ever started).
 - Both builds and runs can end `TIMED-OUT` (timeout deadline reached) or `ABORTED`.
-- a **run's** timeout is caller-configurable (`timeoutSecs` on `POST .../runs`, default **300s** if omitted);
-  `0` means no timeout, as on the platform: the run goes on until the Actor exits or it is aborted (a
-  runtime restart aborts it like any other run left running)
+- a **run's** timeout is caller-configurable (`timeoutSecs` on `POST .../runs`, default **300s** if omitted, `0` for none)
 - a **build's** timeout is a fixed internal default **1800s**
 - **Abort and timeout are race-proof.** A build/run never moves out of a terminal status; only the
   transitions drawn above ever occur. `POST /actor-builds/:id/abort` and `POST /actor-runs/:id/abort`
@@ -144,7 +142,7 @@
   300s) is measured from container start regardless of whether a debugger ever attaches - a
   paused-waiting session gets no extra grace period, and the run still finalises `TIMED-OUT` (with its
   container removed) exactly like any other run whose timeout elapses. Passing a larger
-  `apify call --timeout`, or starting the run with no timeout at all, is the way to get more time.
+  `apify call --timeout` is the way to get more time.
 - **Non-debuggable images fail the run, loudly, before any container is created**, the same way every
   other pre-container failure does. A package-manager launcher (`npm start`, `yarn start`, `pnpm
 start`, ...) is refused by name, naming both the `CMD` fix and how to clear debug mode. An
