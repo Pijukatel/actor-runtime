@@ -308,6 +308,20 @@ later, then a fresh container for the same run - same run id, env vars and stora
 gone. The Migrate button on the run's console page does the same.
 `POST /v2/actor-runs/<runId>/reboot` is also implemented.
 
+## Resurrect a finished run
+
+A finished run - whatever it ended as - can be started again as the same run, keeping its id, input,
+storages and log, like on the platform:
+
+```sh
+apify api POST /v2/actor-runs/<runId>/resurrect
+apify api POST "/v2/actor-runs/<runId>/resurrect?memory=2048&timeout=600"   # new options for this start
+```
+
+The request queue and key-value store are where they were left, so a crawler picks up where it stopped.
+The timeout counts from the resurrection; `build`, `memory`, `timeout` and `maxTotalChargeUsd` can each
+be changed, the cap never lowered.
+
 ## When this runtime does not implement something
 
 A call can fail because this runtime does not know the id, or does not implement the endpoint at

@@ -6,11 +6,18 @@ import { createStorage } from './storages.js';
 import { openKeyValueStore } from '../storage/open.js';
 import { DebugPortInUseError, type BrowserViewerHandle, type Driver } from '../driver/types.js';
 import { REAL_APIFY_PROXY_WARNING } from './apify-proxy.js';
-import { appendLog, appendRuntimeLog, flushLog, markLogTerminal } from './logs.js';
-import { markEventsTerminal, publishAborting, publishPersistState, publishSystemInfo } from './events-channel.js';
+import { appendLog, appendRuntimeLog, flushLog, markLogTerminal, reopenLog } from './logs.js';
+import {
+	markEventsTerminal,
+	publishAborting,
+	publishPersistState,
+	publishSystemInfo,
+	reopenEvents,
+} from './events-channel.js';
 import { clearRunRestartState, consumeRunRestart } from './migrations.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
+import { resolveTaggedBuild } from './builds.js';
 import { decryptedEnvVars, ensureSecretKeys, inputSecretsEnv, sealInputSecrets } from './secrets.js';
 import { createLogRedactor } from './log-redaction.js';
 import {
@@ -26,7 +33,14 @@ import { CONTAINER_EVENTS_WS_BASE_URL } from '../config.js';
 import { formatRuntimeLogLines } from '../runtime-log.js';
 import { getRunTelemetry } from './events-channel.js';
 import { resolveRunMemory } from './actor-memory.js';
-import { initialChargedEventCounts, resolveRunPricingInfo } from './pricing.js';
+import {
+	ACTOR_START_EVENT_NAME,
+	actorStartEventCount,
+	initialChargedEventCounts,
+	isPayPerEvent,
+	resolveRunPricingInfo,
+} from './pricing.js';
+import { runDurationMillis } from './run-usage.js';
 import { consumeStandbyRunFinishing } from './standby-finish.js';
 import {
 	actorStartChargeMessage,
@@ -44,6 +58,10 @@ const DEFAULT_CONTAINER_SERVER_PORT = 4321;
 const DISK_MBYTES_PER_MEMORY_MBYTE = 2;
 /** `?gracefully=true`'s wait between the `aborting` frame and the stop, matching the platform's 30s. */
 const GRACEFUL_ABORT_WINDOW_MS = 30_000;
+
+function memoryMbytesToDisk(memoryMbytes: number): number {
+	return memoryMbytes * DISK_MBYTES_PER_MEMORY_MBYTE;
+}
 
 export async function listOwnedRuns(userId: string, actorId?: string): Promise<RunRecord[]> {
 	const all = await getRegistries().runs.list();
@@ -238,7 +256,7 @@ export async function startRun(
 		runOptions: {
 			build: buildTag,
 			timeoutSecs,
-			diskMbytes: DEFAULT_MEMORY_MBYTES * DISK_MBYTES_PER_MEMORY_MBYTE,
+			diskMbytes: memoryMbytesToDisk(DEFAULT_MEMORY_MBYTES),
 			...(options.maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd: options.maxTotalChargeUsd } : {}),
 		},
 		input: options.input,
@@ -261,7 +279,7 @@ export async function startRun(
 			build: buildTag,
 			memoryMbytes,
 			timeoutSecs,
-			diskMbytes: memoryMbytes * DISK_MBYTES_PER_MEMORY_MBYTE,
+			diskMbytes: memoryMbytesToDisk(memoryMbytes),
 			...(options.maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd: options.maxTotalChargeUsd } : {}),
 		},
 		meta: { origin: options.origin ?? 'API' },
@@ -291,7 +309,18 @@ export async function startRun(
 	if (startCharge) appendRuntimeLog(record.id, startCharge);
 	if (options.proxyPassword) appendRuntimeLog(record.id, REAL_APIFY_PROXY_WARNING);
 
-	void runInBackground(driver, actor, record, options).catch(async (error: unknown) => {
+	launchInBackground(driver, actor, record, options);
+	return record;
+}
+
+/** Each run's live incarnation, so a resurrection waits for the previous one to wind down: its
+ * cleanup runs after the terminal status is written, and must not close the channels the next one reopens. */
+const incarnations = new Map<string, Promise<void>>();
+
+/** Hands a `READY` record to `runInBackground` without awaiting it. */
+function launchInBackground(driver: Driver, actor: ActorRecord, record: RunRecord, options: StartRunOptions): void {
+	const { runs } = getRegistries();
+	const settled = runInBackground(driver, actor, record, options).catch(async (error: unknown) => {
 		// Every *expected* failure mode inside `runInBackground` is already caught internally and mapped
 		// to a terminal status - this is only reached by a genuinely unexpected exception (e.g. a
 		// registry/storage failure from the pre-start re-check or a version lookup). Without a
@@ -308,8 +337,175 @@ export async function startRun(
 			console.error(`run ${record.id}: failed to mark FAILED after unexpected error`, innerError);
 		}
 	});
+	incarnations.set(record.id, settled);
+	void settled.then(() => {
+		if (incarnations.get(record.id) === settled) incarnations.delete(record.id);
+	});
+}
 
-	return record;
+export interface ResurrectRunOptions {
+	/** Each absent one keeps the run's own value. */
+	build?: string;
+	memoryMbytes?: number;
+	timeoutSecs?: number;
+	maxTotalChargeUsd?: number;
+	devFolder?: boolean;
+	standbyUrl?: string;
+	proxyPassword?: string;
+	apiBaseUrl: string;
+	token: string;
+}
+
+/** The route maps each of these to its HTTP status and error type. */
+export type ResurrectRunResult =
+	| { kind: 'resurrected'; run: RunRecord }
+	/** Not finished, or finished differently than the caller's copy says - a concurrent resurrection won. */
+	| { kind: 'not-finished'; status: JobStatus }
+	/** The run was deleted meanwhile. */
+	| { kind: 'gone' }
+	| { kind: 'no-such-build'; message: string }
+	| { kind: 'cost-limit-decreased' };
+
+/**
+ * The platform's `POST /v2/actor-runs/:runId/resurrect`: the same run, with its id, input and default
+ * storages, starts over from `READY` as if it had just been created. `startedAt` stays; the timeout
+ * budget restarts in full. The run's pricing is the one it was created with - a later pricing change
+ * does not reprice it, as `startRun` promises.
+ */
+export async function resurrectRun(
+	driver: Driver,
+	actor: ActorRecord,
+	run: RunRecord,
+	options: ResurrectRunOptions,
+): Promise<ResurrectRunResult> {
+	const { runs, builds } = getRegistries();
+	if (!isTerminalJobStatus(run.status)) return { kind: 'not-finished', status: run.status };
+
+	// The platform refuses to lower a cap the run already has; `0` lifts it instead.
+	const currentCap = run.options.maxTotalChargeUsd;
+	const requestedCap = options.maxTotalChargeUsd;
+	if (requestedCap !== undefined && currentCap !== undefined && requestedCap !== 0 && requestedCap < currentCap) {
+		return { kind: 'cost-limit-decreased' };
+	}
+
+	let build: BuildRecord | null;
+	if (options.build !== undefined) {
+		const lookup = await resolveTaggedBuild(actor, options.build);
+		if (!lookup.found) {
+			// Same two messages as `POST /actors/:actorId/runs` (`api/routes/actors.ts`).
+			return {
+				kind: 'no-such-build',
+				message:
+					lookup.reason === 'no-such-tag'
+						? `Actor has no build tagged "${options.build}"`
+						: 'Record was not found',
+			};
+		}
+		build = lookup.build;
+	} else {
+		build = await builds.get(run.buildId);
+		if (!build) return { kind: 'no-such-build', message: 'Actor build associated with the given run' };
+	}
+
+	const buildTag = options.build ?? run.options.build ?? DEFAULT_BUILD_TAG;
+	const timeoutSecs = options.timeoutSecs ?? run.options.timeoutSecs;
+	const maxTotalChargeUsd = requestedCap ?? currentCap;
+	// Always a requested figure, so only the build's bounds apply - never its default expression, which
+	// the run's own memory already came from.
+	const { memoryMbytes, logLines: memoryLogLines } = await resolveRunMemory(build.memorySettings, {
+		requestedMemoryMbytes: options.memoryMbytes ?? run.options.memoryMbytes,
+		fallbackMemoryMbytes: run.options.memoryMbytes,
+		runOptions: {
+			build: buildTag,
+			timeoutSecs,
+			diskMbytes: memoryMbytesToDisk(run.options.memoryMbytes),
+			...(maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd } : {}),
+		},
+		input: undefined,
+	});
+	// Charged again at every start, as on the platform.
+	const startEventCount =
+		isPayPerEvent(run.pricingInfo) && ACTOR_START_EVENT_NAME in run.pricingInfo.pricingPerEvent.actorChargeEvents
+			? actorStartEventCount(memoryMbytes)
+			: 0;
+
+	await incarnations.get(run.id);
+
+	const resurrectedAt = new Date().toISOString();
+	const resolvedBuild = build;
+	let raced: JobStatus | 'gone' | undefined;
+	// Guarded on the status the caller saw, like the platform's conditional update: two concurrent
+	// resurrections start one container, not two. Not `transitionJobStatus`, whose gate (rightly) lets
+	// nothing out of a terminal status.
+	const updated = await runs.update(run.id, (current) => {
+		if (!current) {
+			raced = 'gone';
+			return null;
+		}
+		if (current.status !== run.status) {
+			raced = current.status;
+			return current;
+		}
+		const chargedEventCounts =
+			startEventCount > 0
+				? {
+						...current.chargedEventCounts,
+						[ACTOR_START_EVENT_NAME]:
+							(current.chargedEventCounts?.[ACTOR_START_EVENT_NAME] ?? 0) + startEventCount,
+					}
+				: current.chargedEventCounts;
+		return {
+			...current,
+			status: 'READY',
+			finishedAt: undefined,
+			exitCode: undefined,
+			statusMessage: `The Actor has been resurrected from ${current.status} status.`,
+			chargingStoppedAt: undefined,
+			resurrectedAt,
+			buildId: resolvedBuild.id,
+			buildNumber: resolvedBuild.buildNumber,
+			options: {
+				...current.options,
+				build: buildTag,
+				memoryMbytes,
+				timeoutSecs,
+				diskMbytes: memoryMbytesToDisk(memoryMbytes),
+				maxTotalChargeUsd,
+			},
+			stats: {
+				...current.stats,
+				resurrectCount: (current.stats?.resurrectCount ?? 0) + 1,
+				durationMillisBeforeResurrect: runDurationMillis(current, new Date(resurrectedAt)),
+			},
+			...(chargedEventCounts ? { chargedEventCounts } : {}),
+			// Resolved afresh by `runInBackground` from the Actor's current toggles.
+			localDebug: undefined,
+			localBrowserView: undefined,
+		};
+	});
+	if (raced === 'gone' || !updated) return { kind: 'gone' };
+	if (raced !== undefined) return { kind: 'not-finished', status: raced };
+
+	reopenLog(run.id);
+	reopenEvents(run.id);
+	registerDefaultDatasetForCharging(updated);
+
+	appendRuntimeLog(run.id, `Resurrecting Actor run from ${run.status} status.`);
+	for (const line of memoryLogLines) appendRuntimeLog(run.id, line);
+	const memoryWarning = platformIncompatibleMemoryWarning(memoryMbytes);
+	if (memoryWarning) appendRuntimeLog(run.id, memoryWarning);
+	if (startEventCount > 0) {
+		// Only this start's charge, not the run's cumulative count.
+		const startCharge = actorStartChargeMessage({
+			...updated,
+			chargedEventCounts: { [ACTOR_START_EVENT_NAME]: startEventCount },
+		});
+		if (startCharge) appendRuntimeLog(run.id, startCharge);
+	}
+	if (options.proxyPassword) appendRuntimeLog(run.id, REAL_APIFY_PROXY_WARNING);
+
+	launchInBackground(driver, actor, updated, { ...options, memoryMbytes, timeoutSecs, build: buildTag });
+	return { kind: 'resurrected', run: updated };
 }
 
 /** Fails a run before any container exists: logs `logMessage`, flushes and terminates the log/events
@@ -588,10 +784,10 @@ async function persistRunTelemetry(runId: string): Promise<void> {
 }
 
 /** Clamped to at least 1s so a run migrated at the edge of its budget still starts and times out. A
- * run with no timeout (`0`) keeps having none. */
+ * run with no timeout (`0`) keeps having none. A resurrection restarts the budget, as on the platform. */
 function remainingTimeoutSecs(record: RunRecord): number {
 	if (record.options.timeoutSecs === 0) return 0;
-	const elapsedSecs = (Date.now() - Date.parse(record.startedAt)) / 1000;
+	const elapsedSecs = (Date.now() - Date.parse(record.resurrectedAt ?? record.startedAt)) / 1000;
 	return Math.max(1, Math.ceil(record.options.timeoutSecs - elapsedSecs));
 }
 

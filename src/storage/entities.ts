@@ -292,14 +292,22 @@ export interface RunRecord {
 	exitCode?: number;
 	statusMessage?: string;
 	meta: { origin: string };
-	/** The platform's restart-bookkeeping subset of `Run.stats`; locally only `migrationCount` and
-	 * `rebootCount` ever move. Optional for pre-existing test fixtures; `runDto` backfills zeros. */
+	/** When the run was last resurrected (`services/runs.ts: resurrectRun`); absent until then. The
+	 * timeout budget and the current incarnation's duration count from here, `startedAt` staying the
+	 * original as on the platform. Never on `/v2`. */
+	resurrectedAt?: string;
+	/** The platform's restart-bookkeeping subset of `Run.stats`; locally only `migrationCount`,
+	 * `rebootCount` and `resurrectCount` ever move. Optional for pre-existing test fixtures; `runDto`
+	 * backfills zeros. */
 	stats?: {
 		migrationCount?: number;
 		rebootCount?: number;
 		restartCount?: number;
 		resurrectCount?: number;
 		inputBodyLen?: number;
+		/** What the run had consumed before its last resurrection, so the time it spent finished is not
+		 * billed as run time. Never on `/v2`; `durationMillis` there already includes it. */
+		durationMillisBeforeResurrect?: number;
 		/** The run's final resource figures, written when it ends. While it is live the equivalent figures
 		 * are the events channel's live accumulators, which is what `runDto` reads instead. */
 		memAvgBytes?: number;

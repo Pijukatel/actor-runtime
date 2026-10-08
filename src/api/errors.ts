@@ -54,6 +54,16 @@ export function cannotRemoveRunningRun(): ApiError {
 	);
 }
 
+/** Matches the real platform's `actor.statusNotTerminal`: only a finished run can be resurrected. */
+export function cannotResurrectUnfinishedRun(status: string): ApiError {
+	return new ApiError(400, 'invalid-input', `Cannot resurrect an Actor run with the ${status} status`);
+}
+
+/** Matches the real platform's `common.paramsMismatched`. */
+export function parametersMismatched(message: string): ApiError {
+	return new ApiError(400, 'parameters-mismatched', `Parameters mismatched: ${message}`);
+}
+
 /** Matches the real platform's rejection of reboot/migrate on a finished run (the public API answers
  * 403 `job-finished`). */
 export function jobAlreadyFinished(): ApiError {

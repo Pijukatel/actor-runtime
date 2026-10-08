@@ -80,6 +80,7 @@
         - v2/actor-runs/:runId
         - v2/actor-runs/:runId/abort
         - v2/actor-runs/:runId/reboot
+        - v2/actor-runs/:runId/resurrect
         - v2/actor-runs/:runId/charge
         - v2/actor-runs/:runId/log
     - Datasets
@@ -293,9 +294,30 @@ This runtime emulates that observable experience on demand:
   `migrating` handler. Stops and restarts the run's container immediately (no warning frame), cancels an
   open migration window, and increments `stats.rebootCount`. A finished run is `403` `job-finished`; a
   non-terminal run with no container (`READY`, `ABORTING`) gets the count bump but no restart.
-- The run object's `stats` carries `migrationCount`, `rebootCount`, `restartCount`, and `resurrectCount`
-  (the latter two always `0` here), initialized to `0` at run creation like the platform.
+- The run object's `stats` carries `migrationCount`, `rebootCount`, `restartCount` (always `0` here), and
+  `resurrectCount`, initialized to `0` at run creation like the platform.
 - The run's log is cumulative across restarts, with a one-line marker between the incarnations' output.
+
+## Resurrecting a finished run (`POST /v2/actor-runs/:runId/resurrect`)
+
+- As on the platform: a finished run (`SUCCEEDED`, `FAILED`, `TIMED-OUT`, `ABORTED`) starts again as the
+  same run - same id, input, default storages and env - from `READY`, and responds `200` with the run
+  object. `startedAt` stays; `finishedAt` and `exitCode` are cleared, `statusMessage` says which status
+  the run was resurrected from, `stats.resurrectCount` increments, and the cost cap starts enforcing
+  again (`actor-driver.md`). The timeout budget restarts in full. The log and the events channel continue
+  across the resurrection, with a marker line like a migration's.
+- `?build=`, `?memory=`, `?timeout=` and `?maxTotalChargeUsd=` replace the run's own options for the new
+  incarnation, each keeping the run's value when omitted; `?devFolder=false` works as on run start.
+  `maxItems` and `restartOnError` are not supported (`unsupported.md`).
+- Errors: an unfinished run `400` `invalid-input` ("Cannot resurrect an Actor run with the `<status>`
+  status"), a `maxTotalChargeUsd` below the run's current cap `400` `parameters-mismatched` (`0` lifts
+  the cap instead), an unknown build tag `404` `record-not-found`, a negative `timeout`/`maxTotalChargeUsd`
+  or a non-positive `memory` `400` `invalid-request`.
+- A pay-per-event run is charged `apify-actor-start` again, for the memory it is resurrected with. Its
+  pricing stays the one it was created with.
+- Run usage counts only the time the run was actually running: the time it spent finished in between is
+  not in `durationMillis` or the compute units.
+- There is no `runs/last/resurrect` shortcut, on the platform or here ("Last-run shortcuts" above).
 
 ## Upstream fallback (opt-in, off by default, all HTTP methods)
 

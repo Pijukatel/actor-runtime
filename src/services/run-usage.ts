@@ -58,11 +58,17 @@ export interface RunUsage {
 	eventsUsd: number;
 }
 
-/** A `READY` run has no container yet, so it has consumed nothing. */
-export function runDurationMillis(run: Pick<RunRecord, 'status' | 'startedAt' | 'finishedAt'>, now: Date): number {
-	if (run.status === 'READY') return 0;
+/** A `READY` run has no container yet, so it has consumed nothing. A resurrected run's current
+ * incarnation counts from `resurrectedAt`, on top of what the run consumed before - the time it spent
+ * finished in between is not run time. */
+export function runDurationMillis(
+	run: Pick<RunRecord, 'status' | 'startedAt' | 'finishedAt' | 'resurrectedAt' | 'stats'>,
+	now: Date,
+): number {
+	const before = run.stats?.durationMillisBeforeResurrect ?? 0;
+	if (run.status === 'READY') return before;
 	const endMillis = run.finishedAt ? Date.parse(run.finishedAt) : now.getTime();
-	return Math.max(0, endMillis - Date.parse(run.startedAt));
+	return before + Math.max(0, endMillis - Date.parse(run.resurrectedAt ?? run.startedAt));
 }
 
 export function computeUnitsFor(memoryMbytes: number, durationMillis: number): number {
