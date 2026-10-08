@@ -161,8 +161,12 @@ describe('Run web server and live view via apify-cli (requires Docker)', () => {
 			);
 			expect(finished.status, finished.statusMessage).toBe('SUCCEEDED');
 			expect(finished.containerUrl).toBe(started.containerUrl);
-			// The run log named both URLs.
-			const log = apify(['api', 'GET', `actor-runs/${runId}/log`], { cwd: REPO_ROOT, env });
+			// The run log named both URLs; the runtime colors them, so the ANSI codes are stripped first.
+			const log = apify(['api', 'GET', `actor-runs/${runId}/log`], { cwd: REPO_ROOT, env }).replace(
+				// eslint-disable-next-line no-control-regex
+				/\x1b\[[0-9;]*m/g,
+				'',
+			);
 			expect(log).toContain(`Live view: http://localhost:3000/runs/${runId}/live-view`);
 			expect(log).toContain(`Progress page served at ${started.containerUrl}`);
 			if (!serverReachable) expect(log).toContain('is not reachable by this runtime on this container engine');
