@@ -36,4 +36,13 @@ describe('matchSpecPath', () => {
 		expect(matchSpecPath('GET', 'v2/actors/abc/runs/last/key-value-store/records')?.implemented).toBe(false);
 		expect(matchSpecPath('POST', 'v2/actors/abc/runs/last/metamorph')?.implemented).toBe(false);
 	});
+
+	it('serves the Actor run-sync endpoints but not their task variants', () => {
+		for (const method of ['GET', 'POST']) {
+			expect(matchSpecPath(method, 'v2/actors/abc/run-sync')?.implemented).toBe(true);
+			expect(matchSpecPath(method, 'v2/actors/abc/run-sync-get-dataset-items')?.implemented).toBe(true);
+			expect(matchSpecPath(method, 'v2/actor-tasks/abc/run-sync')?.implemented).toBe(false);
+			expect(matchSpecPath(method, 'v2/actor-tasks/abc/run-sync-get-dataset-items')?.implemented).toBe(false);
+		}
+	});
 });

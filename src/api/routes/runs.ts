@@ -7,12 +7,13 @@ import {
 	cannotChargeApifyEvent,
 	cannotChargeNonPayPerEventActor,
 	cannotRemoveRunningRun,
+	cannotSetIsStatusMessageTerminal,
 	invalidRequest,
 	jobAlreadyFinished,
 	recordNotFound,
 } from '../errors.js';
 import { h, jsonBody, paginationParams, queryBoolean } from '../handler.js';
-import { abortRun, deleteRun, getOwnedRun, listOwnedRuns } from '../../services/runs.js';
+import { abortRun, deleteRun, getOwnedRun, listOwnedRuns, setRunStatusMessage } from '../../services/runs.js';
 import { rebootRun } from '../../services/migrations.js';
 import { chargeEvent, MAX_CHARGE_COUNT } from '../../services/charging.js';
 import { isTerminalJobStatus } from '../../services/job-status.js';
@@ -39,6 +40,34 @@ export function mountRuns(router: Router, deps: ApiServerDeps): void {
 			const run = await getOwnedRun(requireUser(req).id, req.params.runId as string);
 			if (!run) throw recordNotFound();
 			sendData(res, runDto(run, standbyUrlAudienceOf(req.headers.host)));
+		}),
+	);
+
+	// What the SDKs' `Actor.setStatusMessage()` and `Actor.exit()`/`fail()` with a message call.
+	router.put(
+		'/actor-runs/:runId',
+		h(async (req, res) => {
+			const run = await getOwnedRun(requireUser(req).id, req.params.runId as string);
+			if (!run) throw recordNotFound();
+
+			const body = jsonBody<{ statusMessage?: unknown; isStatusMessageTerminal?: unknown }>(req);
+			const { statusMessage, isStatusMessageTerminal } = body;
+			if (statusMessage !== undefined && statusMessage !== null && typeof statusMessage !== 'string') {
+				throw invalidRequest('"statusMessage" must be a string');
+			}
+			if (
+				isStatusMessageTerminal !== undefined &&
+				isStatusMessageTerminal !== null &&
+				typeof isStatusMessageTerminal !== 'boolean'
+			) {
+				throw invalidRequest('"isStatusMessageTerminal" must be a boolean');
+			}
+			const message = typeof statusMessage === 'string' ? truncateStatusMessage(statusMessage) : undefined;
+			if (isStatusMessageTerminal === true && !message) throw cannotSetIsStatusMessageTerminal();
+
+			const updated = await setRunStatusMessage(run.id, message, isStatusMessageTerminal === true);
+			if (!updated) throw recordNotFound();
+			sendData(res, runDto(updated));
 		}),
 	);
 
@@ -124,4 +153,13 @@ export function mountRuns(router: Router, deps: ApiServerDeps): void {
 			}
 		}),
 	);
+}
+
+/** The platform's cap. A longer message is truncated rather than rejected, so it never fails the run. */
+const STATUS_MESSAGE_MAX_LENGTH = 500;
+
+function truncateStatusMessage(message: string): string {
+	return message.length > STATUS_MESSAGE_MAX_LENGTH
+		? `${message.slice(0, STATUS_MESSAGE_MAX_LENGTH - 3)}...`
+		: message;
 }

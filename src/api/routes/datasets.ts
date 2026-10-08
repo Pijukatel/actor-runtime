@@ -1,4 +1,4 @@
-import type { Request, Router } from 'express';
+import type { Request, Response, Router } from 'express';
 
 import { requireUser } from '../auth.js';
 
@@ -24,6 +24,44 @@ import { recordDefaultDatasetItems } from '../../services/charging.js';
 import type { ApiServerDeps } from '../server.js';
 
 type ResolveDataset = (req: Request) => Promise<StorageRecord | null>;
+
+/** Answers with a page of the dataset's items, honouring the items endpoint's query parameters. */
+export async function sendDatasetItems(
+	req: Request,
+	res: Response,
+	record: StorageRecord,
+	status: number,
+): Promise<void> {
+	await touchStorage(record.id);
+	const dataset = await openDataset(record.id);
+
+	const offset = queryNumber(req, 'offset') ?? 0;
+	const limit = queryNumber(req, 'limit');
+	const desc = queryBoolean(req, 'desc') ?? false;
+
+	const page = await dataset.getData({ offset, limit, desc });
+	const items = applyDatasetProjection(page.items as DatasetItem[], {
+		fields: queryList(req, 'fields'),
+		omit: queryList(req, 'omit'),
+		unwind: queryList(req, 'unwind')?.[0],
+		clean: queryBoolean(req, 'clean'),
+		skipHidden: queryBoolean(req, 'skipHidden'),
+		skipEmpty: queryBoolean(req, 'skipEmpty'),
+	});
+
+	// Unlike every other list endpoint, the real Apify API returns dataset items as a bare JSON
+	// array with pagination metadata in `x-apify-pagination-*` headers, not a `{data:{...}}`
+	// envelope - confirmed against apify-client-js's `_createPaginationList` (`dataset.ts`),
+	// which reads `response.data` directly as the items array and every count from headers.
+	res.set({
+		'x-apify-pagination-total': String(page.total),
+		'x-apify-pagination-offset': String(page.offset),
+		'x-apify-pagination-count': String(items.length),
+		'x-apify-pagination-limit': String(page.limit ?? items.length),
+		'x-apify-pagination-desc': String(desc),
+	});
+	res.status(status).json(items);
+}
 
 /**
  * The dataset operation surface, parameterised over how the dataset's storage record is resolved -
@@ -69,35 +107,7 @@ export function mountDatasetOperations(
 		`${basePath}/items`,
 		h(async (req, res) => {
 			const record = await requireDataset(req);
-			await touchStorage(record.id);
-			const dataset = await openDataset(record.id);
-
-			const offset = queryNumber(req, 'offset') ?? 0;
-			const limit = queryNumber(req, 'limit');
-			const desc = queryBoolean(req, 'desc') ?? false;
-
-			const page = await dataset.getData({ offset, limit, desc });
-			const items = applyDatasetProjection(page.items as DatasetItem[], {
-				fields: queryList(req, 'fields'),
-				omit: queryList(req, 'omit'),
-				unwind: queryList(req, 'unwind')?.[0],
-				clean: queryBoolean(req, 'clean'),
-				skipHidden: queryBoolean(req, 'skipHidden'),
-				skipEmpty: queryBoolean(req, 'skipEmpty'),
-			});
-
-			// Unlike every other list endpoint, the real Apify API returns dataset items as a bare JSON
-			// array with pagination metadata in `x-apify-pagination-*` headers, not a `{data:{...}}`
-			// envelope - confirmed against apify-client-js's `_createPaginationList` (`dataset.ts`),
-			// which reads `response.data` directly as the items array and every count from headers.
-			res.set({
-				'x-apify-pagination-total': String(page.total),
-				'x-apify-pagination-offset': String(page.offset),
-				'x-apify-pagination-count': String(items.length),
-				'x-apify-pagination-limit': String(page.limit ?? items.length),
-				'x-apify-pagination-desc': String(desc),
-			});
-			res.status(200).json(items);
+			await sendDatasetItems(req, res, record, 200);
 		}),
 	);
 

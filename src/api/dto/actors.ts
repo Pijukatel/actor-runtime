@@ -115,6 +115,7 @@ export function runDto(run: RunRecord, audience: StandbyUrlAudience = 'host') {
 		...(run.chargedEventCounts ? { chargedEventCounts: run.chargedEventCounts } : {}),
 		...(run.chargingStoppedAt ? { chargingStoppedAt: run.chargingStoppedAt } : {}),
 		statusMessage: run.statusMessage,
+		...(run.isStatusMessageTerminal ? { isStatusMessageTerminal: true } : {}),
 		containerUrl: containerUrl(run.id, audience),
 	};
 }

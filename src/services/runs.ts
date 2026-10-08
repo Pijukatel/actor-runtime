@@ -58,6 +58,25 @@ export async function getOwnedRun(userId: string, id: string): Promise<RunRecord
 }
 
 /**
+ * `PUT /v2/actor-runs/:runId`, as on the platform: replaces the message (an absent one clears it) and
+ * accepts it whatever the run's status, finished runs included. A reason the runtime itself ended the run
+ * with is kept: an Actor's wind-down (Crawlee's final "Finished!") would otherwise replace it.
+ */
+export async function setRunStatusMessage(
+	id: string,
+	statusMessage: string | undefined,
+	isStatusMessageTerminal: boolean,
+): Promise<RunRecord | null> {
+	return getRegistries().runs.update(id, (current) => {
+		if (!current || current.isStatusMessageFromRuntime) return current;
+		const next: RunRecord = { ...current, statusMessage, isStatusMessageTerminal };
+		if (statusMessage === undefined) delete next.statusMessage;
+		if (!isStatusMessageTerminal) delete next.isStatusMessageTerminal;
+		return next;
+	});
+}
+
+/**
  * The `runs/last` pick: apify-core's `getUserActorLastRun`, the same filters under `sort: { startedAt: -1 }`.
  * `startedAt` is set at creation, `READY` runs included, so the most recently created run wins - and two
  * runs of the same millisecond tie, which neither sort resolves.
@@ -245,6 +264,7 @@ export async function startRun(
 	}
 
 	const buildTag = options.build ?? DEFAULT_BUILD_TAG;
+	// `0` is a deliberate "no timeout" (as on the platform), distinct from an omitted option.
 	const timeoutSecs = options.timeoutSecs ?? DEFAULT_TIMEOUT_SECS;
 	const { memoryMbytes, logLines: memoryLogLines } = await resolveRunMemory(build.memorySettings, {
 		requestedMemoryMbytes: options.memoryMbytes,
@@ -606,9 +626,9 @@ async function persistRunTelemetry(runId: string): Promise<void> {
 }
 
 /** Clamped to at least 1s so a run migrated at the edge of its budget still starts and times out. A
- * run with no timeout (`0`) keeps having none. */
+ * run with no timeout (`0`, or anything else the driver arms no timer for) keeps having none. */
 function remainingTimeoutSecs(record: RunRecord): number {
-	if (record.options.timeoutSecs === 0) return 0;
+	if (record.options.timeoutSecs <= 0) return 0;
 	const elapsedSecs = (Date.now() - Date.parse(record.startedAt)) / 1000;
 	return Math.max(1, Math.ceil(record.options.timeoutSecs - elapsedSecs));
 }
@@ -669,7 +689,10 @@ export async function abortRun(
 	let alreadyAborting = false;
 	// Only a runtime-initiated abort (the cost cap) carries a reason; a caller's abort has none, as on
 	// the platform.
-	const patch: Partial<RunRecord> = statusMessage === undefined ? {} : { statusMessage };
+	const patch: Partial<RunRecord> =
+		statusMessage === undefined
+			? {}
+			: { statusMessage, isStatusMessageTerminal: true, isStatusMessageFromRuntime: true };
 	const aborting = await transitionJobStatus(runs, run.id, 'ABORTING', patch, (current) => {
 		wasRunning = current?.status === 'RUNNING';
 		alreadyAborting = current?.status === 'ABORTING';
