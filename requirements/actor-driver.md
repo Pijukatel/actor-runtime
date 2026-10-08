@@ -11,7 +11,7 @@
   `RUNNING -> ABORTING -> ABORTED` while a stop is in flight (`ABORTING`/`ABORTED` are also reachable
   directly from `READY` - an abort issued before the build/run ever started).
 - Both builds and runs can end `TIMED-OUT` (timeout deadline reached) or `ABORTED`.
-- a **run's** timeout is caller-configurable (`timeoutSecs` on `POST .../runs`, default **300s** if omitted)
+- a **run's** timeout is caller-configurable (`timeoutSecs` on `POST .../runs`, default **300s** if omitted, `0` for none)
 - a **build's** timeout is a fixed internal default **1800s**
 - **Abort and timeout are race-proof.** A build/run never moves out of a terminal status; only the
   transitions drawn above ever occur. `POST /actor-builds/:id/abort` and `POST /actor-runs/:id/abort`
@@ -249,6 +249,8 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 - It differs in four ways: only the free and pay-per-event pricing models are accepted; an event priced
   per subscription tier is charged at the lowest paid tier; nothing is ever billed or paid out; and the
   rules tying a price change to payout details, notice periods and subscription tiers do not apply.
+- A run ended by its maximum total charge keeps that reason as its status message; status messages the
+  Actor sets afterwards do not replace it.
 - An Actor's own charging code therefore runs here unchanged, with no local-testing switch.
 - A run's log states what it was pre-charged for starting, so the count is visible where the platform
   leaves it to be discovered on the bill.

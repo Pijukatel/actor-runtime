@@ -91,11 +91,15 @@ describe('run resurrection', () => {
 		const driver = restartTrackingDriver();
 		server = await startTestServer(driver);
 		const { runId } = await startFinishedRun(server, driver, 'resurrect-flow-actor');
+		// An Actor's final word before it finished; the resurrection message replaces it.
+		await server.client.run(runId).update({ statusMessage: 'All done', isStatusMessageTerminal: true });
 		const finished = (await getRegistries().runs.get(runId))!;
 		expect(finished.finishedAt).toBeDefined();
+		expect(finished.isStatusMessageTerminal).toBe(true);
 		expect(isLogTerminal(runId)).toBe(true);
 
 		const resurrected = await server.client.run(runId).resurrect();
+		expect((resurrected as { isStatusMessageTerminal?: boolean }).isStatusMessageTerminal).toBeUndefined();
 		expect(resurrected.id).toBe(runId);
 		expect(['READY', 'RUNNING']).toContain(resurrected.status);
 		expect(resurrected.startedAt).toEqual(new Date(finished.startedAt));

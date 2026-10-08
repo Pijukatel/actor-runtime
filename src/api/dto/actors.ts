@@ -114,6 +114,7 @@ export function runDto(run: RunRecord) {
 		...(run.chargedEventCounts ? { chargedEventCounts: run.chargedEventCounts } : {}),
 		...(run.chargingStoppedAt ? { chargingStoppedAt: run.chargingStoppedAt } : {}),
 		statusMessage: run.statusMessage,
+		...(run.isStatusMessageTerminal ? { isStatusMessageTerminal: true } : {}),
 		containerUrl: undefined,
 	};
 }

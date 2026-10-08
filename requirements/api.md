@@ -65,6 +65,8 @@
         - v2/actors/:actorId/builds
         - v2/actors/:actorId/builds/default
         - v2/actors/:actorId/runs
+        - v2/actors/:actorId/run-sync
+        - v2/actors/:actorId/run-sync-get-dataset-items
         - v2/actors/:actorId/runs/last, and its sub-paths (see "Last-run shortcuts")
         - v2/actors/:actorId/versions
         - v2/actors/:actorId/versions/:versionNumber

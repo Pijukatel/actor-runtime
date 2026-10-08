@@ -291,6 +291,10 @@ export interface RunRecord {
 	};
 	exitCode?: number;
 	statusMessage?: string;
+	/** Set by the Actor (or the runtime) to say `statusMessage` is the run's final word. */
+	isStatusMessageTerminal?: boolean;
+	/** The runtime's own reason for ending the run, which the Actor's later messages must not hide. */
+	isStatusMessageFromRuntime?: boolean;
 	meta: { origin: string };
 	/** When the run was last resurrected (`services/runs.ts: resurrectRun`); absent until then. The
 	 * timeout budget and the current incarnation's duration count from here, `startedAt` staying the
