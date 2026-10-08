@@ -93,6 +93,23 @@ describe('run status messages', () => {
 		expect((await put(run.id, { statusMessage: 'ok', isStatusMessageTerminal: 'yes' })).status).toBe(400);
 	});
 
+	it("keeps the runtime's own reason for ending the run", async () => {
+		const run = await seedRun('ABORTING');
+		await getRegistries().runs.update(run.id, (current) =>
+			current
+				? {
+						...current,
+						statusMessage: 'Cap reached',
+						isStatusMessageTerminal: true,
+						isStatusMessageFromRuntime: true,
+					}
+				: current,
+		);
+		const response = await put(run.id, { statusMessage: 'Finished!', isStatusMessageTerminal: true });
+		expect(response.status).toBe(200);
+		expect(response.data.data.statusMessage).toBe('Cap reached');
+	});
+
 	it('accepts an update on a finished run, and 404s an unknown one', async () => {
 		const run = await seedRun('SUCCEEDED');
 		const response = await put(run.id, { statusMessage: 'Finished', isStatusMessageTerminal: true });

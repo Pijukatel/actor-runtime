@@ -293,6 +293,8 @@ export interface RunRecord {
 	statusMessage?: string;
 	/** Set by the Actor (or the runtime) to say `statusMessage` is the run's final word. */
 	isStatusMessageTerminal?: boolean;
+	/** The runtime's own reason for ending the run, which the Actor's later messages must not hide. */
+	isStatusMessageFromRuntime?: boolean;
 	meta: { origin: string };
 	/** The platform's restart-bookkeeping subset of `Run.stats`; locally only `migrationCount` and
 	 * `rebootCount` ever move. Optional for pre-existing test fixtures; `runDto` backfills zeros. */
