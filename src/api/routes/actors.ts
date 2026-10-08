@@ -455,7 +455,8 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 			const runs = await listOwnedRuns(requireUser(req).id, actor.id);
 			const sorted = sortByTimestamp(runs, (run) => run.startedAt);
 			const envelope = paginate(sorted, paginationParams(req));
-			sendData(res, { ...envelope, items: envelope.items.map(runDto) });
+			const audience = standbyUrlAudienceOf(req.headers.host);
+			sendData(res, { ...envelope, items: envelope.items.map((run) => runDto(run, audience)) });
 		}),
 	);
 
@@ -516,7 +517,7 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 
 			const waitSecs = queryNumber(req, 'waitForFinish');
 			const finalRun = waitSecs ? ((await waitForRunFinish(run.id, waitSecs)) ?? run) : run;
-			sendData(res, runDto(finalRun), 201);
+			sendData(res, runDto(finalRun, standbyUrlAudienceOf(req.headers.host)), 201);
 		}),
 	);
 }

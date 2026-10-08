@@ -37,6 +37,19 @@ export function isDockerAvailable(): boolean {
 	}
 }
 
+/** The major version of the Podman the suite drives, or `undefined` for Docker or an unreadable version.
+ * Podman 3.x cannot reach an ordinary run's web server (`actor-driver.md`'s "Web server and live view"). */
+export function podmanMajorVersion(): number | undefined {
+	if (CONTAINER_CLI !== 'podman') return undefined;
+	try {
+		const output = execFileSync(CONTAINER_CLI, ['--version'], { encoding: 'utf8' });
+		const major = Number(output.match(/(\d+)\.\d+/)?.[1]);
+		return Number.isInteger(major) ? major : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Set to an already built runtime image to test that instead of building one from this checkout - for
  * a machine whose container builds cannot reach the package registries the runtime's Dockerfile needs. */
 const PREBUILT_RUNTIME_IMAGE_ENV_VAR = 'ACTOR_RUNTIME_E2E_IMAGE';

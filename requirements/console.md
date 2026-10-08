@@ -44,6 +44,8 @@
   This field is local-only and never appears in the emulated `/v2` run object (`api.md`).
 - A run with browser view (`actor-driver.md`) gets one extra row on its detail view: `browser view` - a
   link to its viewer page (below). Absent for other runs; never in the emulated `/v2` run object.
+- Every run's detail view has a `containerUrl` row linking to the URL itself, and a `live view` row
+  linking to its live view page (below).
 - Log views render ANSI colors from actor output as HTML, while the `/v2/logs/:id` API keeps serving logs raw (unconverted) for the CLI to render itself.
 - The console accepts the real Apify Console's URL shapes (as printed by stock apify-cli, e.g. `/actors/:actorId/runs/:runId`, `/storage/datasets/:id`) via redirects to its own pages.
 
@@ -93,6 +95,13 @@
 - Shows the run's live display, view-only or interactive per the run's toggle, and says which. It reconnects
   on its own while the run's browser is still starting.
 - For a run that has ended, or never had browser view, the page says so instead.
+
+## Live view page (`/runs/:runId/live-view`)
+
+- Frames the web page the Actor serves at the run's `containerUrl` (`actor-driver.md`), with the URL as a
+  link to open on its own. While the Actor has not started a server, the frame shows the API's own notice,
+  which checks again on its own.
+- For a run that has ended, the page says the run finished and shows no frame.
 
 ## Migrate button (run detail view)
 

@@ -483,6 +483,7 @@ export function sharedNetnsEnv(env: Record<string, string>, port: number): Recor
 	}
 	shared.ACTOR_STANDBY_PORT = String(port);
 	shared.ACTOR_WEB_SERVER_PORT = String(port);
+	shared.APIFY_CONTAINER_PORT = String(port);
 	return shared;
 }
 
@@ -717,7 +718,7 @@ export class DockerDriver implements Driver {
 	/** Shared by concurrent callers; cleared on failure so a later call retries (like `probeImageBuild`). */
 	private browserViewerImport: Promise<string> | undefined;
 	private readonly browserViewers = new Map<string, { container: Docker.Container; volumeName: string }>();
-	/** A started standby container's server address, keyed by run id; gone with the container. */
+	/** A started container's server address, keyed by run id; gone with the container. */
 	private readonly containerServers = new Map<string, ContainerServerAddress>();
 
 	available = false;
@@ -1100,7 +1101,17 @@ export class DockerDriver implements Driver {
 
 		const serverRoute = ctx.containerServerPort ? this.containerServerRoute() : undefined;
 		// In this process's network namespace every server needs a port of its own, and the API is on loopback.
-		const netnsServerPort = serverRoute === 'netns' ? await allocateFreePort() : undefined;
+		// Only a run that needs its server reachable joins it (`RunContext.containerServerRequired`).
+		const netnsServerPort =
+			serverRoute === 'netns' && ctx.containerServerRequired ? await allocateFreePort() : undefined;
+		if (serverRoute === 'netns' && !ctx.containerServerRequired) {
+			onLog(
+				formatRuntimeLog(
+					`The run's web server on port ${ctx.containerServerPort} is not reachable by this runtime on this ` +
+						`container engine (Podman 3.x), so its live view will not work.`,
+				),
+			);
+		}
 		const env = Object.entries(netnsServerPort ? sharedNetnsEnv(ctx.env, netnsServerPort) : ctx.env).map(
 			([key, value]) => `${key}=${value}`,
 		);
@@ -1343,11 +1354,11 @@ export class DockerDriver implements Driver {
 	}
 
 	/**
-	 * How this process reaches a standby container's server: directly on `apify-local` when this process
+	 * How this process reaches a run container's server: directly on `apify-local` when this process
 	 * sits there too; otherwise through a published port - on loopback for a process running on the host
 	 * itself, on the host's address for one in a container off the network (rootless Podman). On Podman
 	 * 3.x the host's address from a container is the slirp4netns gateway, which reaches the host's
-	 * published ports only for containers started with `allow_host_loopback` - never this one - so the
+	 * published ports only for containers started with `allow_host_loopback` - never this one - so a
 	 * standby container joins this container's network namespace instead, as a browser-view sidecar does.
 	 */
 	private containerServerRoute(): 'network' | 'loopback' | 'host' | 'netns' {
@@ -1361,7 +1372,10 @@ export class DockerDriver implements Driver {
 		port: number,
 		route: 'network' | 'loopback' | 'host',
 	): Promise<ContainerServerAddress | undefined> {
-		const info = await container.inspect().catch(() => undefined);
+		// Never fails the run: a server address the runtime cannot determine only costs the live view.
+		const info = await Promise.resolve()
+			.then(() => container.inspect())
+			.catch(() => undefined);
 		if (!info) return undefined;
 		if (route === 'network') {
 			const host = containerAddress(info, NETWORK_NAME);

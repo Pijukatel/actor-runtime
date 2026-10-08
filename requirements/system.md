@@ -34,6 +34,10 @@
   overridable) - the runtime's own two ports above are unaffected, and no port is published for an Actor
   that never turned debug mode on.
 - Browser view (`actor-driver.md`) publishes no port on the host; the view is served on the console's port.
+- A run's web server (`actor-driver.md`) is served on the API port. The runtime reaches the Actor
+  container directly on its own network when it can; only when it cannot (a runtime running outside a
+  container, or in one off that network) is the server's port published on an engine-picked port, on
+  loopback for the former.
 - Required `docker run` flags: mount the host's Docker-Engine-API socket read-write
   (`-v /var/run/docker.sock:/var/run/docker.sock`) so the runtime can build and run Actor containers,
   and mount a persistent data directory (`-v <host-dir>:/data`, e.g. `-v "$(pwd)/data:/data"`) so

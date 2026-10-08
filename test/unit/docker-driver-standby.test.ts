@@ -1,4 +1,4 @@
-/** `DockerDriver.startRun`'s standby surface: how a standby container's server is made reachable. */
+/** `DockerDriver.startRun`'s server surface: how a run container's HTTP server is made reachable. */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -127,6 +127,7 @@ describe('DockerDriver.startRun - containerServerPort', () => {
 				memoryMbytes: 128,
 				timeoutSecs: 0,
 				containerServerPort: 4321,
+				containerServerRequired: true,
 			},
 			() => {},
 		);
@@ -145,6 +146,42 @@ describe('DockerDriver.startRun - containerServerPort', () => {
 		expect(port).toBeGreaterThan(0);
 		expect(env.ACTOR_WEB_SERVER_PORT).toBe(String(port));
 		expect(await driver.containerServerAddress('r5')).toEqual({ host: '127.0.0.1', port });
+
+		stub.triggerContainerExit(0);
+		stub.endLogStream();
+		await outcome;
+	});
+
+	it('on Podman 3.x, an ordinary run keeps its own networking: no namespace join, its server unreachable, said in its log', async () => {
+		process.env.HOSTNAME = 'self';
+		const stub = stubWithInspect({});
+		const driver = new DockerDriver(stub.docker);
+		driver.available = true;
+		(driver as unknown as { actorsOnDefaultNetwork: boolean }).actorsOnDefaultNetwork = true;
+		const log: string[] = [];
+
+		const outcome = driver.startRun(
+			{
+				runId: 'r6',
+				imageId: 'img',
+				env: { APIFY_API_BASE_URL: 'http://apify-api:3333', ACTOR_WEB_SERVER_PORT: '4321' },
+				memoryMbytes: 128,
+				timeoutSecs: 0,
+				containerServerPort: 4321,
+			},
+			(chunk) => log.push(chunk),
+		);
+		await vi.waitFor(() => expect(stub.createContainer).toHaveBeenCalled());
+		await settle();
+
+		const [options] = stub.createContainer.mock.calls[0]!;
+		expect(options.HostConfig?.NetworkMode).not.toBe('container:self');
+		expect(options.HostConfig?.PortBindings).toBeUndefined();
+		const env = Object.fromEntries(options.Env!.map((entry: string) => entry.split(/=(.*)/s).slice(0, 2)));
+		expect(env.APIFY_API_BASE_URL).toBe('http://apify-api:3333');
+		expect(env.ACTOR_WEB_SERVER_PORT).toBe('4321');
+		expect(await driver.containerServerAddress('r6')).toBeUndefined();
+		expect(log.join('')).toContain('web server on port 4321 is not reachable by this runtime');
 
 		stub.triggerContainerExit(0);
 		stub.endLogStream();

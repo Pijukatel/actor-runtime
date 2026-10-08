@@ -21,6 +21,7 @@ import { resetChargingForTests } from '../../../src/services/charging.js';
 import { resetStandbyForTests } from '../../../src/services/standby.js';
 import { resetStandbyFinishingForTests } from '../../../src/services/standby-finish.js';
 import { handleStandbyUpgrade } from '../../../src/api/standby-proxy.js';
+import { handleContainerUpgrade } from '../../../src/api/container-proxy.js';
 import type {
 	BuildContext,
 	BuildOutcome,
@@ -503,8 +504,10 @@ export async function startTestServer(
 	const wsBaseUrl = `ws://127.0.0.1:${port}`;
 	// Same server, same upgrade path as production (`index.ts`) - a real `ws` client against this handle
 	// exercises the actual `api/events-ws.ts` code, not a stand-in.
-	const eventsWebSocketServer = attachEventsWebSocket(server, (req, socket, head) =>
-		handleStandbyUpgrade(driver, req, socket, head),
+	const eventsWebSocketServer = attachEventsWebSocket(
+		server,
+		(req, socket, head) =>
+			handleContainerUpgrade(driver, req, socket, head) || handleStandbyUpgrade(driver, req, socket, head),
 	);
 
 	// maxRetries: 0 - real apify-client retries 5xx (so a deliberate 501 from the request-deletion

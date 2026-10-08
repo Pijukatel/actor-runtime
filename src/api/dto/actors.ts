@@ -3,6 +3,7 @@ import { publicEnvVar } from '../../services/env-vars.js';
 import { getRunTelemetry } from '../../services/events-channel.js';
 import { computeRunUsage } from '../../services/run-usage.js';
 import { standbyUrl, type StandbyUrlAudience } from '../../services/standby-config.js';
+import { containerUrl } from '../../services/container-url.js';
 
 /** Matches `services/actors.ts`'s `DEFAULT_BUILD_TAG` - backfilled here only for run records that
  * predate `options.build` (directly-seeded test fixtures); every real run always has it set already. */
@@ -67,7 +68,7 @@ export function buildDto(build: BuildRecord) {
 	};
 }
 
-export function runDto(run: RunRecord) {
+export function runDto(run: RunRecord, audience: StandbyUrlAudience = 'host') {
 	// The accumulators outlive the run, and a run turns terminal a moment before they are copied onto its
 	// record, so reading them for a finished run too is what keeps its figures from briefly disappearing.
 	// Only a run whose figures were accumulated by an earlier process falls back to the record.
@@ -114,6 +115,6 @@ export function runDto(run: RunRecord) {
 		...(run.chargedEventCounts ? { chargedEventCounts: run.chargedEventCounts } : {}),
 		...(run.chargingStoppedAt ? { chargingStoppedAt: run.chargingStoppedAt } : {}),
 		statusMessage: run.statusMessage,
-		containerUrl: undefined,
+		containerUrl: containerUrl(run.id, audience),
 	};
 }

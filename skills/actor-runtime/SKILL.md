@@ -1,6 +1,6 @@
 ---
 name: apify-actor-runtime
-description: Drive the local Apify Actor runtime - a self-contained local Apify platform that emulates the Apify API and console so Actors can be developed, run and debugged without the cloud. Covers pointing the Apify CLI at it, the no-rebuild dev-folder loop, IDE debugging, watching a Playwright/Puppeteer browser, Actor Standby servers, migration testing, pay-per-event pricing and run cost estimates, and relaying unimplemented calls to the real platform.
+description: Drive the local Apify Actor runtime - a self-contained local Apify platform that emulates the Apify API and console so Actors can be developed, run and debugged without the cloud. Covers pointing the Apify CLI at it, the no-rebuild dev-folder loop, IDE debugging, watching a Playwright/Puppeteer browser, an Actor's web server and live view, Actor Standby servers, migration testing, pay-per-event pricing and run cost estimates, and relaying unimplemented calls to the real platform.
 ---
 
 # Local Apify Actor runtime
@@ -206,6 +206,27 @@ the display the Actor's browser draws on. Add `"interactive": true` to also send
 input. The browser must run **headful** to show anything; Apify's templates default to headless,
 which shows as a black display. Disable with `{"enabled": false}`.
 
+## See the web page an Actor serves (live view)
+
+Every run has a `containerUrl`, as on the platform: an HTTP server the Actor starts on
+`ACTOR_WEB_SERVER_PORT` (4321) is reachable there for the life of the run, no token needed. The run log
+names both the URL and the console's live view page, which frames it:
+
+```sh
+apify call                              # the log: Live view: http://localhost:3000/runs/<runId>/live-view ...
+curl http://<runid>.runs.localhost:3333/            # the run owns / of this origin, as on *.runs.apify.net
+curl http://localhost:3333/actor-runtime/container/<runId>/   # for clients that do not resolve *.localhost
+```
+
+- `apify api GET actor-runs/<runId>` shows the `containerUrl`; the Actor reads it as `ACTOR_WEB_SERVER_URL`
+  (`Actor.config.get('containerUrl')`). From another Actor's container the run object carries
+  `http://apify-api:3333/actor-runtime/container/<runId>` instead.
+- While the Actor has started no server, the URL answers `503 web-server-not-ready` (a browser gets a page
+  that retries by itself); after the run ends, `410 run-finished`. Nothing changes for an Actor that never
+  listens.
+- `samples/actor_ts` serves a progress page this way; `samples/actor_standby_*` are full servers.
+- On Podman 3.x only a standby run's server is reachable; an ordinary run's log says so.
+
 ## Test pay-per-event pricing and see what a run costs
 
 Give the Actor a pricing exactly the way the platform stores it - the `pricingInfos` array on the Actor
@@ -350,12 +371,13 @@ a later step misses. Only a call naming an Actor this runtime does not know is r
   `/key-value-store/records/OUTPUT`, `/request-queue`, `/abort`. Add `?status=SUCCEEDED` to skip
   failed runs. `client.actor(id).lastRun()` in the SDKs uses these.
 - The console at `http://localhost:3000` shows the same objects, plus the pricing and dev-folder forms,
-  each run's usage and cost, the Migrate button, the browser view and an Actor's standby runs.
+  each run's usage and cost, the Migrate button, the browser view, each run's live view and an Actor's
+  standby runs.
 - The runtime's data directory holds every storage, build and run record on disk. Read it freely;
   write to it only through the API, never by editing the files.
 
 ## Reading the runtime's own output
 
 In a build or run log, everything the runtime itself says - dev-folder notices, the debug attach
-line, the browser-view URL, migration markers, a run that could not start - opens with a blue
+line, the live view and browser-view URLs, migration markers, a run that could not start - opens with a blue
 `[actor-runtime]` prefix. The Actor's own output is passed through byte for byte.

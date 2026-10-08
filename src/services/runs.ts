@@ -22,7 +22,8 @@ import {
 } from './debug-mode.js';
 import { browserViewLogLine, describeBrowserViewerStartFailure } from './browser-view.js';
 import { dedicatedCpusFor, platformIncompatibleMemoryWarning } from '../resources.js';
-import { CONTAINER_EVENTS_WS_BASE_URL } from '../config.js';
+import { CONSOLE_BASE_URL, CONTAINER_EVENTS_WS_BASE_URL } from '../config.js';
+import { containerUrl } from './container-url.js';
 import { formatRuntimeLogLines } from '../runtime-log.js';
 import { getRunTelemetry } from './events-channel.js';
 import { resolveRunMemory } from './actor-memory.js';
@@ -142,6 +143,15 @@ export function containerServerPortFor(version: ActorVersionRecord | undefined):
 	return DEFAULT_CONTAINER_SERVER_PORT;
 }
 
+/** Where the run's web server, if the Actor starts one, is reachable - the live view's URL first, since
+ * that is what a developer opens. */
+export function webServerLogLine(runId: string, port: number): string {
+	return (
+		`Live view: ${CONSOLE_BASE_URL}/runs/${runId}/live-view - a web server the Actor starts on port ${port} ` +
+		`(ACTOR_WEB_SERVER_PORT) is served at ${containerUrl(runId)}.`
+	);
+}
+
 /**
  * Version-level `envVars` (accepted and stored on `POST`/`PUT .../versions`, `actor-driver.md`) are
  * applied to the run's container environment, merged in *below* the platform-owned vars so a version
@@ -198,6 +208,10 @@ function buildEnv(
 		// Both, as on the platform: the JavaScript SDK reads the first, the Python SDK the second.
 		ACTOR_STANDBY_PORT: containerServerPort,
 		ACTOR_WEB_SERVER_PORT: containerServerPort,
+		APIFY_CONTAINER_PORT: containerServerPort,
+		// The host-facing form: what an Actor prints for its developer to open (`actor-driver.md`).
+		ACTOR_WEB_SERVER_URL: containerUrl(run.id),
+		APIFY_CONTAINER_URL: containerUrl(run.id),
 	};
 	if (options.standbyUrl) env.ACTOR_STANDBY_URL = options.standbyUrl;
 	if (options.proxyPassword !== undefined) env.APIFY_PROXY_PASSWORD = options.proxyPassword;
@@ -290,6 +304,10 @@ export async function startRun(
 	const startCharge = actorStartChargeMessage(record);
 	if (startCharge) appendRuntimeLog(record.id, startCharge);
 	if (options.proxyPassword) appendRuntimeLog(record.id, REAL_APIFY_PROXY_WARNING);
+	appendRuntimeLog(
+		record.id,
+		webServerLogLine(record.id, containerServerPortFor(findVersion(actor, build.versionNumber))),
+	);
 
 	void runInBackground(driver, actor, record, options).catch(async (error: unknown) => {
 		// Every *expected* failure mode inside `runInBackground` is already caught internally and mapped
@@ -482,9 +500,9 @@ export async function runInBackground(
 					memoryMbytes: record.options.memoryMbytes,
 					// The timeout budget is per run, not per container - a restart gets only what is left.
 					timeoutSecs: remainingTimeoutSecs(record),
-					...(record.meta.origin === 'STANDBY'
-						? { containerServerPort: containerServerPortFor(version) }
-						: {}),
+					containerServerPort: containerServerPortFor(version),
+					// Only a standby run's server is worth changing the container's networking for.
+					containerServerRequired: record.meta.origin === 'STANDBY',
 					devMount,
 					debug: debugPlan ? { language: debugPlan.language, port: debugPlan.port } : undefined,
 					// The sidecar outlives a migration/reboot restart; the new container mounts the same volume.
