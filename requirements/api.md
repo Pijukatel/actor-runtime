@@ -254,17 +254,6 @@
       The server sends `persistState` exactly once per graceful abort, alongside `aborting` (matching the
       platform), and never alongside `migrating` (the SDKs synthesize that one).
 
-## Run status messages
-
-- `PUT /v2/actor-runs/:runId` sets the run's `statusMessage` and `isStatusMessageTerminal`, as the SDKs'
-  `Actor.setStatusMessage()` and `Actor.exit()`/`Actor.fail()` with a message do. The response is the run.
-- Each call replaces both fields; a missing `statusMessage` clears it. A message over 500 characters is
-  truncated, not rejected. `isStatusMessageTerminal: true` without a message is `400`
-  `cannot-set-is-status-message-terminal`, matching the platform.
-- Accepted whatever the run's status, finished runs included, matching the platform. The run's other
-  fields are not settable here.
-- A status message the runtime sets itself (the cost cap's abort) is terminal.
-
 ## Graceful abort (`?gracefully=`)
 
 - `POST /v2/actor-runs/:runId/abort` accepts an optional `?gracefully=` boolean.

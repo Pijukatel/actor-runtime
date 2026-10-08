@@ -54,9 +54,6 @@ apify runs log <runId>
 apify datasets get-items <datasetId> --format json
 ```
 
-`Actor.setStatusMessage()` and `Actor.exit()`/`Actor.fail()` with a message work as on the platform: the
-message shows as `statusMessage` (with `isStatusMessageTerminal`) on the run object and its console page.
-
 ### Apple Silicon and other arm64 hosts
 
 Builds run for the host's architecture. Some Apify base images are published for `linux/amd64` only -
