@@ -250,6 +250,7 @@ export async function startRun(
 	}
 
 	const buildTag = options.build ?? DEFAULT_BUILD_TAG;
+	// `0` is a deliberate "no timeout" (as on the platform), distinct from an omitted option.
 	const timeoutSecs = options.timeoutSecs ?? DEFAULT_TIMEOUT_SECS;
 	const { memoryMbytes, logLines: memoryLogLines } = await resolveRunMemory(build.memorySettings, {
 		requestedMemoryMbytes: options.memoryMbytes,
@@ -607,9 +608,9 @@ async function persistRunTelemetry(runId: string): Promise<void> {
 }
 
 /** Clamped to at least 1s so a run migrated at the edge of its budget still starts and times out. A
- * run with no timeout (`0`) keeps having none. */
+ * run with no timeout (`0`, or anything else the driver arms no timer for) keeps having none. */
 function remainingTimeoutSecs(record: RunRecord): number {
-	if (record.options.timeoutSecs === 0) return 0;
+	if (record.options.timeoutSecs <= 0) return 0;
 	const elapsedSecs = (Date.now() - Date.parse(record.startedAt)) / 1000;
 	return Math.max(1, Math.ceil(record.options.timeoutSecs - elapsedSecs));
 }

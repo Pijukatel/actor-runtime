@@ -17,8 +17,6 @@ real account, not in the runtime.
 - Metamorph
 - Resurrecting finished runs
 - Restart on error
-- Infinite runs (timeout `0`), other than standby runs
-- Synchronous runs returning output (`run-sync`)
 - Result cap (`maxItems`)
 - Ad-hoc webhooks on run start
 - Metered usage other than compute units: storage operations, data transfer and proxy

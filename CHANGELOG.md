@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+<!-- git-cliff-unreleased-start -->
+## 0.1.2 - **not yet released**
+
+### 🚀 Features
+
+- Support synchronous runs returning output (run-sync) ([#92](https://github.com/apify/actor-runtime/pull/92)) ([4d7a9cc](https://github.com/apify/actor-runtime/commit/4d7a9cc3ba1bb171791faa4a41ce08152cc4aa31)) by [@Pijukatel](https://github.com/Pijukatel)
+- Support runs with no timeout (timeout 0) ([#94](https://github.com/apify/actor-runtime/pull/94)) ([03ba0b8](https://github.com/apify/actor-runtime/commit/03ba0b89927f92d9d781581b3f05cd77daa2ac15)) by [@Pijukatel](https://github.com/Pijukatel)
+
+
+<!-- git-cliff-unreleased-end -->
 ## [0.1.1](https://github.com/apify/actor-runtime/releases/tag/v0.1.1) (2026-09-30)
 
 ### 🚀 Features

@@ -11,7 +11,7 @@
   `RUNNING -> ABORTING -> ABORTED` while a stop is in flight (`ABORTING`/`ABORTED` are also reachable
   directly from `READY` - an abort issued before the build/run ever started).
 - Both builds and runs can end `TIMED-OUT` (timeout deadline reached) or `ABORTED`.
-- a **run's** timeout is caller-configurable (`timeoutSecs` on `POST .../runs`, default **300s** if omitted)
+- a **run's** timeout is caller-configurable (`timeoutSecs` on `POST .../runs`, default **300s** if omitted, `0` for none)
 - a **build's** timeout is a fixed internal default **1800s**
 - **Abort and timeout are race-proof.** A build/run never moves out of a terminal status; only the
   transitions drawn above ever occur. `POST /actor-builds/:id/abort` and `POST /actor-runs/:id/abort`
