@@ -4,9 +4,6 @@
  * in both its forms - while the run goes, framed by the console's live view page, and gone once the run
  * has ended. The requests to the container URL and the console are the narrow exception `test.md`
  * allows; every other assertion reads `apify` output.
- *
- * On Podman 3.x an ordinary run's server is not reachable by the runtime (`actor-driver.md`'s "Web
- * server and live view"); there the suite asserts that documented outcome instead.
  */
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
@@ -16,7 +13,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
 	buildRuntimeImage,
 	isDockerAvailable,
-	podmanMajorVersion,
 	pullBaseImages,
 	startRuntimeContainer,
 	stopRuntimeContainer,
@@ -110,36 +106,22 @@ describe('Run web server and live view via apify-cli (requires Docker)', () => {
 			const runId = started.id;
 			expect(started.containerUrl).toBe(`http://${runId.toLowerCase()}.runs.localhost:3333`);
 			const pathForm = `${API_URL}/actor-runtime/container/${runId}`;
-			const serverReachable = podmanMajorVersion() !== 3;
 
-			if (serverReachable) {
-				// The path form, for clients without `*.localhost`: answered by the Actor once its server listens.
-				const page = await waitFor(
-					async () => {
-						const res = await fetch(`${pathForm}/`);
-						const body = await res.text();
-						return res.status === 200 && body.includes(`Run ${runId}`) ? body : undefined;
-					},
-					120_000,
-					"the Actor's progress page at the path form of its containerUrl",
-				);
-				expect(page).toContain('page(s) crawled');
-				// The host form, where the run owns `/`.
-				const byHost = await getByHost(started.containerUrl, '/');
-				expect(byHost.status).toBe(200);
-				expect(byHost.body).toContain(`Run ${runId}`);
-			} else {
-				// Podman 3.x: the server cannot be reached, which the URL says while the run goes.
-				const notReady = await waitFor(
-					async () => {
-						const res = await fetch(`${pathForm}/`);
-						return res.status === 503 ? await res.json() : undefined;
-					},
-					120_000,
-					'the containerUrl to report the server as not reachable',
-				);
-				expect((notReady as { error: { type: string } }).error.type).toBe('web-server-not-ready');
-			}
+			// The path form, for clients without `*.localhost`: answered by the Actor once its server listens.
+			const page = await waitFor(
+				async () => {
+					const res = await fetch(`${pathForm}/`);
+					const body = await res.text();
+					return res.status === 200 && body.includes(`Run ${runId}`) ? body : undefined;
+				},
+				120_000,
+				"the Actor's progress page at the path form of its containerUrl",
+			);
+			expect(page).toContain('page(s) crawled');
+			// The host form, where the run owns `/`.
+			const byHost = await getByHost(started.containerUrl, '/');
+			expect(byHost.status).toBe(200);
+			expect(byHost.body).toContain(`Run ${runId}`);
 
 			// The console's run page links both; its live view page frames the URL.
 			const runPage = await (await fetchConsole(`/runs/${runId}`)).text();
@@ -169,7 +151,6 @@ describe('Run web server and live view via apify-cli (requires Docker)', () => {
 			);
 			expect(log).toContain(`Live view: http://localhost:3000/runs/${runId}/live-view`);
 			expect(log).toContain(`Progress page served at ${started.containerUrl}`);
-			if (!serverReachable) expect(log).toContain('is not reachable by this runtime on this container engine');
 
 			const gone = await fetch(`${pathForm}/`);
 			expect(gone.status).toBe(410);

@@ -215,7 +215,9 @@ differences:
 - The URL is `http://<runid>.runs.localhost:3333` (the run owns `/`), or
   `http://localhost:3333/actor-runtime/container/<runId>` for clients that do not resolve `*.localhost`;
   from another Actor's container, `http://apify-api:3333/actor-runtime/container/<runId>`.
-- On Podman 3.x only a standby run's server is reachable; an ordinary run's log says so.
+- Under rootless Podman 3.x the runtime container needs `--network slirp4netns:allow_host_loopback=true`
+  (`apify runtime start` adds it); without it only a standby run's server is reachable, and the run log
+  says so.
 - `samples/actor_ts` serves a progress page to try it with.
 
 ## Test pay-per-event pricing and see what a run costs

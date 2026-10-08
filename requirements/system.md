@@ -52,7 +52,9 @@
 
 - **Docker and Podman are equally supported**, rootful or rootless: everything the system offers works
   the same on either engine. The user picks the engine by mounting its Docker-compatible API socket in
-  place of the Docker one (e.g. `-v /run/podman/podman.sock:/var/run/docker.sock`).
+  place of the Docker one (e.g. `-v /run/podman/podman.sock:/var/run/docker.sock`). One exception:
+  under rootless Podman 3.x the runtime container also needs `--network slirp4netns:allow_host_loopback=true`
+  for runs' web servers (`actor-driver.md`); the CLI adds it.
 
 - Optionally set `APIFY_PROXY_PASSWORD` in the runtime's own environment to have it forwarded into
   every Actor container (see `actor-driver.md`).

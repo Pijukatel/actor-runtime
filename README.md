@@ -218,6 +218,9 @@ podman run --rm -p 3333:3333 -p 3000:3000 \
   the same numbers on the host (`-p 4333:4333 -p 4000:4000`).
 - Podman 3.4 (Ubuntu 22.04's stock package) and newer are supported. Keep the API port published on
   all interfaces (`-p 3333:3333` by default): under Podman 3.x and rootless Podman, Actors reach the API through it.
+- Under rootless Podman 3.x, add `--network slirp4netns:allow_host_loopback=true` to the `podman run`
+  above (`apify runtime start` does) so the runtime reaches the web servers of runs; without it only
+  standby runs' servers are reachable.
 - Podman does not create a missing bind-mount directory, hence `mkdir -p data`. `apify runtime start`
   creates its data directory itself.
 - Short image names in an Actor's `FROM` line (`apify/actor-node:20`) resolve to Docker Hub, as on the

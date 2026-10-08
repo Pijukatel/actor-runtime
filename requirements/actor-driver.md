@@ -180,8 +180,9 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 
 - Implemented as on the platform: every run has a `containerUrl` reaching the server the Actor starts on
   `ACTOR_WEB_SERVER_PORT`, shown as the run's live view in the console (`console.md`).
-- Differences: the URL is local (`api.md`) and the run log names it; on Podman 3.x only a standby run's
-  server is reachable, which the run log says.
+- Differences: the URL is local (`api.md`) and the run log names it; under rootless Podman 3.x the
+  runtime container must be started with `--network slirp4netns:allow_host_loopback=true`
+  (`apify runtime start` does), or only a standby run's server is reachable, which the run log says.
 
 # Networking
 
