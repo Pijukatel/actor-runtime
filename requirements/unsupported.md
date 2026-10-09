@@ -13,13 +13,8 @@ real account, not in the runtime.
 ## Running Actors
 
 - Multi-tenant Actor Standby, Standby for tasks, and Standby's Console-auth and tokenless options
-- Run web server and live view (`containerUrl`)
 - Metamorph
-- Resurrecting finished runs
 - Restart on error
-- Infinite runs (timeout `0`), other than standby runs
-- Synchronous runs returning output (`run-sync`)
-- Actor-set run status messages
 - Result cap (`maxItems`)
 - Ad-hoc webhooks on run start
 - Metered usage other than compute units: storage operations, data transfer and proxy
@@ -88,7 +83,7 @@ real account, not in the runtime.
 ## Inside the Actor container
 
 - Run metadata env vars (input key, build, task, user, timestamps)
-- Web server URL (`ACTOR_WEB_SERVER_URL`) and proxy env vars
+- Apify Proxy env vars other than the password (hostname, port, status URL)
 - Log rate limiting, line truncation and size cap
 - Legacy `cpuInfo` events
 

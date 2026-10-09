@@ -1,3 +1,5 @@
+import { createServer } from 'node:http';
+
 // Apify SDK - toolkit for building Apify Actors (Read more at https://docs.apify.com/sdk/js/)
 import { Actor, log } from 'apify';
 // Crawlee - web scraping and browser automation library (Read more at https://crawlee.dev)
@@ -44,6 +46,25 @@ const { startUrl, maxPages } = input;
 
 log.info(`Crawling up to ${maxPages} page(s) starting from ${startUrl}.`);
 
+// A progress page on the run's web server port: the platform (and the runtime) serve it at the run's
+// container URL, which the console links as the run's live view. Any server works; this one is plain http.
+const crawled: string[] = [];
+const runId = Actor.config.get('actorRunId');
+createServer((req, res) => {
+	if (req.url !== '/') {
+		res.writeHead(404).end();
+		return;
+	}
+	const rows = crawled.map((url) => `<li>${url.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</li>`).join('');
+	res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', refresh: '2' });
+	res.end(
+		`<!doctype html><html><head><meta charset="utf-8"><title>Run ${runId}</title></head>` +
+			`<body><h1>Run ${runId}</h1><p>${crawled.length} of up to ${maxPages} page(s) crawled.</p><ol>${rows}</ol></body></html>`,
+	);
+}).listen(Actor.config.get('containerPort'), () => {
+	log.info(`Progress page served at ${Actor.config.get('containerUrl')} (the run's live view).`);
+});
+
 // Crawling through the Actor's request queue exercises the runtime's request-queue endpoints
 // end to end: batch-add, head/lock, getRequest, and mark-handled all fire against the runtime.
 const requestQueue = await Actor.openRequestQueue();
@@ -59,6 +80,7 @@ const crawler = new CheerioCrawler({
 		log.info(`Processing ${request.url}`);
 		await enqueueLinks();
 		const title = $('title').text() || $('h1').first().text();
+		crawled.push(request.url);
 		await Actor.pushData({ url: request.url, title });
 		if (isPayPerEvent) {
 			const charge = await Actor.charge({ eventName: 'page-scraped' });

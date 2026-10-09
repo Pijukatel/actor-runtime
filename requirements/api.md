@@ -65,6 +65,8 @@
         - v2/actors/:actorId/builds
         - v2/actors/:actorId/builds/default
         - v2/actors/:actorId/runs
+        - v2/actors/:actorId/run-sync
+        - v2/actors/:actorId/run-sync-get-dataset-items
         - v2/actors/:actorId/runs/last, and its sub-paths (see "Last-run shortcuts")
         - v2/actors/:actorId/versions
         - v2/actors/:actorId/versions/:versionNumber
@@ -80,6 +82,7 @@
         - v2/actor-runs/:runId
         - v2/actor-runs/:runId/abort
         - v2/actor-runs/:runId/reboot
+        - v2/actor-runs/:runId/resurrect
         - v2/actor-runs/:runId/charge
         - v2/actor-runs/:runId/log
     - Datasets
@@ -158,6 +161,13 @@
   `http://<username>--<actor-name>.localhost:3333`, or `http://localhost:3333/actor-runtime/standby/<username>--<actor-name>`
   for clients without `*.localhost` (`http://apify-api:3333/...` from Actors). Standby errors are never
   relayed by the upstream fallback.
+
+# Run web server
+
+- Implemented as on the platform. Difference: `containerUrl` is `http://<runId>.runs.localhost:3333`, or
+  `http://localhost:3333/actor-runtime/container/<runId>` for clients without `*.localhost`
+  (`http://apify-api:3333/...` from Actors). A request the Actor's server cannot answer (not listening yet,
+  run finished, unknown run) gets an error saying why, never relayed by the upstream fallback.
 
 # Actor runtime API
 
@@ -293,9 +303,15 @@ This runtime emulates that observable experience on demand:
   `migrating` handler. Stops and restarts the run's container immediately (no warning frame), cancels an
   open migration window, and increments `stats.rebootCount`. A finished run is `403` `job-finished`; a
   non-terminal run with no container (`READY`, `ABORTING`) gets the count bump but no restart.
-- The run object's `stats` carries `migrationCount`, `rebootCount`, `restartCount`, and `resurrectCount`
-  (the latter two always `0` here), initialized to `0` at run creation like the platform.
+- The run object's `stats` carries `migrationCount`, `rebootCount`, `restartCount` (always `0` here), and
+  `resurrectCount`, initialized to `0` at run creation like the platform.
 - The run's log is cumulative across restarts, with a one-line marker between the incarnations' output.
+
+## Resurrecting a finished run
+
+- `POST /v2/actor-runs/:runId/resurrect` works as on the platform, except that `maxItems` and
+  `restartOnError` are not supported (`unsupported.md`) and the run keeps the pricing it was created
+  with, even when the Actor's pricing changed since.
 
 ## Upstream fallback (opt-in, off by default, all HTTP methods)
 

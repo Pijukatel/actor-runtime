@@ -1,4 +1,4 @@
-import type { Router } from 'express';
+import type { Request, Router } from 'express';
 
 import { requireUser } from '../auth.js';
 
@@ -39,6 +39,7 @@ import type {
 	ActorEnvVarRecord,
 	ActorPricingInfoRecord,
 	ActorRecord,
+	RunRecord,
 	ActorStandbyRecord,
 	ActorVersionRecord,
 } from '../../storage/entities.js';
@@ -143,6 +144,61 @@ function findEnvVarOrThrow(version: ActorVersionRecord, name: string): ActorEnvV
 	const envVar = version.envVars?.find((entry) => entry.name === name);
 	if (!envVar) throw recordNotFound('Environment variable was not found');
 	return envVar;
+}
+
+/** Starts a run the way `POST /actors/:actorId/runs` does - shared with the `run-sync` endpoints. */
+export async function startRunFromRequest(req: Request, deps: ApiServerDeps): Promise<RunRecord> {
+	const actor = await resolveActorParam(req);
+	if (!actor) throw recordNotFound();
+
+	const tag = queryString(req, 'build') ?? DEFAULT_TAG;
+	const maxTotalChargeUsd = queryNumber(req, 'maxTotalChargeUsd');
+	if (maxTotalChargeUsd !== undefined && maxTotalChargeUsd < 0) {
+		throw invalidRequest('"maxTotalChargeUsd" must be a number >= 0');
+	}
+	const lookup = await resolveTaggedBuild(actor, tag);
+	if (!lookup.found) {
+		// `no-such-tag` names the tag, matching base behavior exactly. `build-deleted` (the tag
+		// exists, but its BuildRecord was removed via `DELETE /actor-builds/:buildId`, which does
+		// not clear the tag pointing at it) throws the same bare `recordNotFound()` base did for
+		// this case too - not a custom message - so run-start stays byte-for-byte base-identical
+		// for every input class; `resolveTaggedBuild` (services/builds.ts) only exists so this
+		// route and the dev-folder probe can each still branch on *which* reason it was, without
+		// duplicating the tag/build lookup itself.
+		if (lookup.reason === 'build-deleted') throw recordNotFound();
+		throw recordNotFound(`Actor has no build tagged "${tag}"`);
+	}
+	const build = lookup.build;
+
+	const body = rawBody(req);
+	const processed = resolveBuildInput(
+		build,
+		body.length > 0 ? { body, contentType: req.header('content-type') ?? 'application/json' } : undefined,
+	);
+	if (processed.kind !== 'ok') {
+		throw processed.kind === 'invalid-input-schema'
+			? invalidInputSchema(processed.message)
+			: invalidInput(processed.message);
+	}
+
+	// `resolveProxyPassword(requireUser(req))` is the *run owner's* proxy password, not just "the
+	// caller's": `actor` was resolved via `resolveActorParam(req)` above, so
+	// `actor.userId === requireUser(req).id` always holds - the caller can only ever start a run on
+	// their own Actor - which makes the two the same user record (`actor-driver.md`'s "one
+	// harvested-per-account password used specifically for each user").
+	return startRun(deps.driver, actor, build, {
+		input: processed.input,
+		memoryMbytes: queryNumber(req, 'memory'),
+		timeoutSecs: queryNumber(req, 'timeout'),
+		maxTotalChargeUsd,
+		build: tag,
+		// Runtime-only extension (`api.md`): `?devFolder=false` skips the dev-folder mount for this run.
+		devFolder: queryBoolean(req, 'devFolder'),
+		standbyUrl: standbyUrl(actor, requireUser(req).username),
+		proxyPassword: resolveProxyPassword(requireUser(req)),
+		apiBaseUrl: CONTAINER_API_BASE_URL,
+		token: requireUser(req).token,
+	});
 }
 
 export function mountActors(router: Router, deps: ApiServerDeps): void {
@@ -455,68 +511,19 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 			const runs = await listOwnedRuns(requireUser(req).id, actor.id);
 			const sorted = sortByTimestamp(runs, (run) => run.startedAt);
 			const envelope = paginate(sorted, paginationParams(req));
-			sendData(res, { ...envelope, items: envelope.items.map(runDto) });
+			const audience = standbyUrlAudienceOf(req.headers.host);
+			sendData(res, { ...envelope, items: envelope.items.map((run) => runDto(run, audience)) });
 		}),
 	);
 
 	router.post(
 		'/actors/:actorId/runs',
 		h(async (req, res) => {
-			const actor = await resolveActorParam(req);
-			if (!actor) throw recordNotFound();
-
-			const tag = queryString(req, 'build') ?? DEFAULT_TAG;
-			const maxTotalChargeUsd = queryNumber(req, 'maxTotalChargeUsd');
-			if (maxTotalChargeUsd !== undefined && maxTotalChargeUsd < 0) {
-				throw invalidRequest('"maxTotalChargeUsd" must be a number >= 0');
-			}
-			const lookup = await resolveTaggedBuild(actor, tag);
-			if (!lookup.found) {
-				// `no-such-tag` names the tag, matching base behavior exactly. `build-deleted` (the tag
-				// exists, but its BuildRecord was removed via `DELETE /actor-builds/:buildId`, which does
-				// not clear the tag pointing at it) throws the same bare `recordNotFound()` base did for
-				// this case too - not a custom message - so run-start stays byte-for-byte base-identical
-				// for every input class; `resolveTaggedBuild` (services/builds.ts) only exists so this
-				// route and the dev-folder probe can each still branch on *which* reason it was, without
-				// duplicating the tag/build lookup itself.
-				if (lookup.reason === 'build-deleted') throw recordNotFound();
-				throw recordNotFound(`Actor has no build tagged "${tag}"`);
-			}
-			const build = lookup.build;
-
-			const body = rawBody(req);
-			const processed = resolveBuildInput(
-				build,
-				body.length > 0 ? { body, contentType: req.header('content-type') ?? 'application/json' } : undefined,
-			);
-			if (processed.kind !== 'ok') {
-				throw processed.kind === 'invalid-input-schema'
-					? invalidInputSchema(processed.message)
-					: invalidInput(processed.message);
-			}
-
-			// `resolveProxyPassword(requireUser(req))` is the *run owner's* proxy password, not just "the
-			// caller's": `actor` was resolved via `resolveActorParam(req)` above, so
-			// `actor.userId === requireUser(req).id` always holds - the caller can only ever start a run on
-			// their own Actor - which makes the two the same user record (`actor-driver.md`'s "one
-			// harvested-per-account password used specifically for each user").
-			const run = await startRun(deps.driver, actor, build, {
-				input: processed.input,
-				memoryMbytes: queryNumber(req, 'memory'),
-				timeoutSecs: queryNumber(req, 'timeout'),
-				maxTotalChargeUsd,
-				build: tag,
-				// Runtime-only extension (`api.md`): `?devFolder=false` skips the dev-folder mount for this run.
-				devFolder: queryBoolean(req, 'devFolder'),
-				standbyUrl: standbyUrl(actor, requireUser(req).username),
-				proxyPassword: resolveProxyPassword(requireUser(req)),
-				apiBaseUrl: CONTAINER_API_BASE_URL,
-				token: requireUser(req).token,
-			});
+			const run = await startRunFromRequest(req, deps);
 
 			const waitSecs = queryNumber(req, 'waitForFinish');
 			const finalRun = waitSecs ? ((await waitForRunFinish(run.id, waitSecs)) ?? run) : run;
-			sendData(res, runDto(finalRun), 201);
+			sendData(res, runDto(finalRun, standbyUrlAudienceOf(req.headers.host)), 201);
 		}),
 	);
 }

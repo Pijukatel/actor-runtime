@@ -7,6 +7,10 @@ describe('matchSpecPath', () => {
 		expect(entry?.implemented).toBe(true);
 	});
 
+	it('knows run resurrection as implemented', () => {
+		expect(matchSpecPath('POST', 'v2/actor-runs/abc/resurrect')?.implemented).toBe(true);
+	});
+
 	it('matches a real-but-unimplemented spec path as not implemented', () => {
 		const entry = matchSpecPath('GET', 'v2/schedules');
 		expect(entry).toBeDefined();
@@ -35,5 +39,14 @@ describe('matchSpecPath', () => {
 		// Same 501s as their own targets.
 		expect(matchSpecPath('GET', 'v2/actors/abc/runs/last/key-value-store/records')?.implemented).toBe(false);
 		expect(matchSpecPath('POST', 'v2/actors/abc/runs/last/metamorph')?.implemented).toBe(false);
+	});
+
+	it('serves the Actor run-sync endpoints but not their task variants', () => {
+		for (const method of ['GET', 'POST']) {
+			expect(matchSpecPath(method, 'v2/actors/abc/run-sync')?.implemented).toBe(true);
+			expect(matchSpecPath(method, 'v2/actors/abc/run-sync-get-dataset-items')?.implemented).toBe(true);
+			expect(matchSpecPath(method, 'v2/actor-tasks/abc/run-sync')?.implemented).toBe(false);
+			expect(matchSpecPath(method, 'v2/actor-tasks/abc/run-sync-get-dataset-items')?.implemented).toBe(false);
+		}
 	});
 });

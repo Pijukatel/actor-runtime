@@ -37,6 +37,70 @@ export function isDockerAvailable(): boolean {
 	}
 }
 
+/** The engine the suite drives, as far as the runtime container's command depends on it (`runtimeRunArgs`). */
+export interface EngineInfo {
+	cli: 'docker' | 'podman';
+	rootless: boolean;
+	/** Podman only. */
+	podmanMajorVersion?: number;
+}
+
+export function detectEngine(): EngineInfo {
+	if (CONTAINER_CLI !== 'podman') return { cli: 'docker', rootless: false };
+	try {
+		const output = execFileSync(
+			CONTAINER_CLI,
+			['info', '--format', '{{.Host.Security.Rootless}} {{.Version.Version}}'],
+			{ encoding: 'utf8' },
+		).trim();
+		const [rootless, version] = output.split(/\s+/);
+		const major = Number(version?.match(/^(\d+)\./)?.[1]);
+		return {
+			cli: 'podman',
+			rootless: rootless === 'true',
+			podmanMajorVersion: Number.isInteger(major) ? major : undefined,
+		};
+	} catch {
+		return { cli: 'podman', rootless: false };
+	}
+}
+
+export interface RuntimeRunArgsOptions {
+	image: string;
+	containerName: string;
+	hostSocketPath: string;
+	/** Mounted as the runtime's `/data`: a host directory, as the CLI mounts, or a named volume. */
+	dataMount: string;
+}
+
+/**
+ * The command `apify runtime start --detach` runs, as apify-cli's `buildRuntimeRunArgs` builds it (the
+ * container name and the data mount aside), so the suite starts the runtime exactly the way the CLI
+ * does on every engine - including the host-loopback network mode rootless Podman 3.x needs
+ * (`actor-driver.md`'s "Web server (live view)"). `test/unit/e2e-runtime-command.test.ts` pins it.
+ */
+export function runtimeRunArgs(engine: EngineInfo, options: RuntimeRunArgsOptions): string[] {
+	const hostLoopback = engine.cli === 'podman' && engine.rootless && engine.podmanMajorVersion === 3;
+	return [
+		'run',
+		'--rm',
+		'--init',
+		'--name',
+		options.containerName,
+		'--detach',
+		...(hostLoopback ? ['--network', 'slirp4netns:allow_host_loopback=true'] : []),
+		'-p',
+		'3333:3333',
+		'-p',
+		'3000:3000',
+		'-v',
+		`${options.hostSocketPath}:${RUNTIME_SOCKET_PATH}`,
+		'-v',
+		`${options.dataMount}:/data`,
+		options.image,
+	];
+}
+
 /** Set to an already built runtime image to test that instead of building one from this checkout - for
  * a machine whose container builds cannot reach the package registries the runtime's Dockerfile needs. */
 const PREBUILT_RUNTIME_IMAGE_ENV_VAR = 'ACTOR_RUNTIME_E2E_IMAGE';
@@ -97,33 +161,21 @@ export function pullImage(image: string): void {
 }
 
 export function startRuntimeContainer(tag: string, containerName: string): void {
-	execFileSync(
-		CONTAINER_CLI,
-		[
-			'run',
-			'-d',
-			'--name',
-			containerName,
-			// Host ports are fixed, not derived from `containerName` - only one runtime container can ever
-			// be bound to 3333/3000 at a time. `package.json`'s `test:e2e` script therefore runs
-			// `vitest run test/e2e --no-file-parallelism`: if a second e2e file's `beforeAll` ever raced
-			// this one, the loser's `docker run` would fail with "port is already allocated" and take that
-			// file's whole suite down with it. Adding an e2e file is safe as long as the suite stays
-			// serialized on one daemon - do not drop `--no-file-parallelism` without also parameterizing
-			// these two ports per container. CI parallelizes by running each file in its own job instead
-			// (`.github/workflows/ci.yml`).
-			'-p',
-			'3333:3333',
-			'-p',
-			'3000:3000',
-			'-v',
-			`${hostEngineSocketPath()}:${RUNTIME_SOCKET_PATH}`,
-			'-v',
-			`${containerName}-data:/data`,
-			tag,
-		],
-		{ stdio: 'inherit' },
-	);
+	// Host ports are fixed, not derived from `containerName` - only one runtime container can ever be
+	// bound to 3333/3000 at a time. `package.json`'s `test:e2e` script therefore runs
+	// `vitest run test/e2e --no-file-parallelism`: if a second e2e file's `beforeAll` ever raced this
+	// one, the loser's `docker run` would fail with "port is already allocated" and take that file's
+	// whole suite down with it. Adding an e2e file is safe as long as the suite stays serialized on one
+	// daemon - do not drop `--no-file-parallelism` without also parameterizing these two ports per
+	// container. CI parallelizes by running each file in its own job instead (`.github/workflows/ci.yml`).
+	const args = runtimeRunArgs(detectEngine(), {
+		image: tag,
+		containerName,
+		hostSocketPath: hostEngineSocketPath(),
+		dataMount: `${containerName}-data`,
+	});
+	process.stdout.write(`${CONTAINER_CLI} ${args.join(' ')}\n`);
+	execFileSync(CONTAINER_CLI, args, { stdio: 'inherit' });
 }
 
 export function stopRuntimeContainer(containerName: string): void {

@@ -141,6 +141,12 @@ export function markEventsTerminal(runId: string): void {
 	getOrCreate(runId).terminal = true;
 }
 
+/** A resurrected run's new container connects to the same path; its accumulators carry on, as the
+ * platform's figures for one run do. */
+export function reopenEvents(runId: string): void {
+	getOrCreate(runId).terminal = false;
+}
+
 export function isEventsTerminal(runId: string): boolean {
 	return live.get(runId)?.terminal ?? false;
 }

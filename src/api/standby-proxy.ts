@@ -8,8 +8,7 @@
  *
  * Mounted ahead of the API's body parser, so a request body is streamed through untouched.
  */
-import http, { type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from 'node:http';
-import net from 'node:net';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 
 import type { Driver } from '../driver/types.js';
@@ -18,18 +17,13 @@ import { getOrCreateUserForToken } from '../services/users.js';
 import { listOwnedActors } from '../services/actors.js';
 import { STANDBY_PATH_PREFIX, labelFromHost, standbyLabel } from '../services/standby-config.js';
 import { StandbyUnavailableError, acquireStandbyRun, type StandbyLease } from '../services/standby.js';
-
-/** Hop-by-hop headers (RFC 9110 7.6.1) never cross a proxy. */
-const HOP_BY_HOP_HEADERS = [
-	'connection',
-	'keep-alive',
-	'proxy-connection',
-	'proxy-authenticate',
-	'proxy-authorization',
-	'te',
-	'trailer',
-	'upgrade',
-];
+import {
+	endUpgradeWithError,
+	forwardHttpRequest,
+	forwardUpgrade,
+	sendJsonError,
+	trackUpgradedSocket,
+} from './http-proxy.js';
 
 interface StandbyTarget {
 	label: string;
@@ -109,21 +103,6 @@ async function resolveLease(driver: Driver, req: IncomingMessage, target: Standb
 	}
 }
 
-function forwardedHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders {
-	const forwarded: IncomingHttpHeaders = { ...headers };
-	for (const name of HOP_BY_HOP_HEADERS) delete forwarded[name];
-	return forwarded;
-}
-
-function sendJsonError(res: ServerResponse, status: number, type: string, message: string): void {
-	if (res.headersSent) {
-		res.destroy();
-		return;
-	}
-	res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
-	res.end(JSON.stringify({ error: { type, message } }));
-}
-
 /** Express-compatible middleware; passes everything not addressed to a standby Actor on to `next`. */
 export function standbyProxy(driver: Driver) {
 	return (req: IncomingMessage, res: ServerResponse, next: () => void): void => {
@@ -140,52 +119,22 @@ export function standbyProxy(driver: Driver) {
 				sendJsonError(res, resolution.status, resolution.type, resolution.message);
 				return;
 			}
-			forwardRequest(req, res, target, resolution.lease);
+			const { lease } = resolution;
+			forwardHttpRequest(req, res, lease.address, target.forwardPath, {
+				// Releasing on close frees the run's slot once the response is done or the client went away.
+				onClose: () => lease.release(),
+				onError: (error) => {
+					if (error.code === 'ECONNREFUSED') lease.markUnreachable();
+					sendJsonError(
+						res,
+						502,
+						'standby-bad-gateway',
+						`The Actor's standby run ${lease.runId} did not answer: ${error.message}`,
+					);
+				},
+			});
 		});
 	};
-}
-
-function forwardRequest(req: IncomingMessage, res: ServerResponse, target: StandbyTarget, lease: StandbyLease): void {
-	res.once('close', () => lease.release());
-	const upstream = http.request(
-		{
-			host: lease.address.host,
-			port: lease.address.port,
-			method: req.method,
-			path: target.forwardPath,
-			headers: forwardedHeaders(req.headers),
-		},
-		(upstreamRes) => {
-			const headers = { ...upstreamRes.headers };
-			for (const name of HOP_BY_HOP_HEADERS) delete headers[name];
-			res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.statusMessage, headers);
-			upstreamRes.pipe(res);
-		},
-	);
-	upstream.on('error', (error: NodeJS.ErrnoException) => {
-		if (error.code === 'ECONNREFUSED') lease.markUnreachable();
-		sendJsonError(
-			res,
-			502,
-			'standby-bad-gateway',
-			`The Actor's standby run ${lease.runId} did not answer: ${error.message}`,
-		);
-	});
-	// A client that goes away takes its upstream request with it (and so frees the run's slot).
-	res.once('close', () => {
-		if (!res.writableFinished) upstream.destroy();
-	});
-	req.pipe(upstream);
-	req.resume();
-}
-
-/** Upgraded sockets are not HTTP connections any more, so `closeAllConnections()` cannot end them. */
-const upgradedSockets = new Set<Duplex>();
-
-/** Ends every proxied websocket; a graceful shutdown would otherwise wait on them indefinitely. */
-export function closeStandbyUpgrades(): void {
-	for (const socket of upgradedSockets) socket.destroy();
-	upgradedSockets.clear();
 }
 
 /** The websocket counterpart of `standbyProxy`, for the API server's `upgrade` event. Returns `false`
@@ -193,44 +142,19 @@ export function closeStandbyUpgrades(): void {
 export function handleStandbyUpgrade(driver: Driver, req: IncomingMessage, socket: Duplex, head: Buffer): boolean {
 	const target = standbyTargetOf(req);
 	if (!target) return false;
-	socket.on('error', () => socket.destroy());
-	upgradedSockets.add(socket);
-	socket.once('close', () => upgradedSockets.delete(socket));
+	trackUpgradedSocket(socket);
 	void resolveLease(driver, req, target).then((resolution) => {
 		if (resolution.kind === 'error') {
-			const body = JSON.stringify({ error: { type: resolution.type, message: resolution.message } });
-			socket.end(
-				`HTTP/1.1 ${resolution.status} ${http.STATUS_CODES[resolution.status] ?? 'Error'}\r\n` +
-					`content-type: application/json; charset=utf-8\r\ncontent-length: ${Buffer.byteLength(body)}\r\n` +
-					`connection: close\r\n\r\n${body}`,
-			);
+			endUpgradeWithError(socket, resolution.status, resolution.type, resolution.message);
 			return;
 		}
 		const { lease } = resolution;
-		const upstream = net.connect(lease.address.port, lease.address.host, () => {
-			const lines = [`${req.method ?? 'GET'} ${target.forwardPath} HTTP/1.1`];
-			for (let i = 0; i < req.rawHeaders.length; i += 2)
-				lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
-			upstream.write(`${lines.join('\r\n')}\r\n\r\n`);
-			if (head.length > 0) upstream.write(head);
-			upstream.pipe(socket);
-			socket.pipe(upstream);
+		forwardUpgrade(req, socket, head, lease.address, target.forwardPath, {
+			onError: (error) => {
+				if (error.code === 'ECONNREFUSED') lease.markUnreachable();
+			},
+			onClose: () => lease.release(),
 		});
-		let released = false;
-		const close = () => {
-			if (!released) {
-				released = true;
-				lease.release();
-			}
-			upstream.destroy();
-			socket.destroy();
-		};
-		upstream.on('error', (error: NodeJS.ErrnoException) => {
-			if (error.code === 'ECONNREFUSED') lease.markUnreachable();
-			close();
-		});
-		upstream.on('close', close);
-		socket.on('close', close);
 	});
 	return true;
 }

@@ -67,6 +67,22 @@ describe('compute units', () => {
 		).toBe(30 * 60 * 1000);
 		expect(runDurationMillis(run({ status: 'READY' }), HOUR_LATER)).toBe(0);
 	});
+
+	it('a resurrected run counts from its resurrection on top of what it ran before, never the time in between', () => {
+		const resurrected = run({
+			resurrectedAt: '2026-09-21T10:50:00.000Z',
+			stats: { durationMillisBeforeResurrect: 5 * 60 * 1000 },
+		});
+		// 5 min before, 10 min since the resurrection; the 45 min it spent finished are not run time.
+		expect(runDurationMillis(resurrected, HOUR_LATER)).toBe(15 * 60 * 1000);
+		expect(runDurationMillis({ ...resurrected, status: 'READY' }, HOUR_LATER)).toBe(5 * 60 * 1000);
+		expect(
+			runDurationMillis(
+				{ ...resurrected, status: 'SUCCEEDED', finishedAt: '2026-09-21T10:52:00.000Z' },
+				HOUR_LATER,
+			),
+		).toBe(7 * 60 * 1000);
+	});
 });
 
 describe('computeRunUsage', () => {

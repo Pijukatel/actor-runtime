@@ -36,6 +36,7 @@ import { liveDevFolderStatus, setLiveDevFolder } from '../services/live-dev-fold
 import { getBuildById, listAllBuilds } from '../services/builds.js';
 import { getRunById, listAllRuns } from '../services/runs.js';
 import { standbyUrl } from '../services/standby-config.js';
+import { containerUrl } from '../services/container-url.js';
 import { describeSourceContextOrigin } from '../services/source-context.js';
 import { standbyPoolSnapshot } from '../services/standby.js';
 import { getUserById } from '../services/users.js';
@@ -574,6 +575,9 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				},
 			]);
 		}
+		// Every run has one, as on the platform (`actor-driver.md`'s "Web server (live view)").
+		const url = containerUrl(run.id);
+		rows.push(['containerUrl (live view)', { text: url, href: url }]);
 		const usage = computeRunUsage(run, getRunTelemetry(run.id));
 		const body =
 			definitionList(rows) +
