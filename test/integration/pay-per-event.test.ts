@@ -258,7 +258,8 @@ describe('pay-per-event: runs and charging', () => {
 		expect(run).not.toHaveProperty('chargedEventCounts');
 		expect(run).not.toHaveProperty('eventUsage');
 		expect(run.options).toEqual({ build: 'latest', memoryMbytes: 1024, timeoutSecs: 300, diskMbytes: 2048 });
-		expect(Object.hasOwn(driver.startCalls[0]!.ctx.env, 'ACTOR_MAX_TOTAL_CHARGE_USD')).toBe(false);
+		// Present but empty without a cap, as on the platform.
+		expect(driver.startCalls[0]!.ctx.env.ACTOR_MAX_TOTAL_CHARGE_USD).toBe('');
 		await finishRun(server, driver, runId);
 	});
 

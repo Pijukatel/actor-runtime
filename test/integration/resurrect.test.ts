@@ -119,7 +119,15 @@ describe('run resurrection', () => {
 		const second = driver.startCalls[1]!;
 		expect(second.ctx.runId).toBe(runId);
 		expect(second.ctx.imageId).toBe(driver.startCalls[0]!.ctx.imageId);
-		expect(second.ctx.env).toEqual(driver.startCalls[0]!.ctx.env);
+		// Same env except the timeout deadline, which moves with the restarted budget (`actor-driver.md`).
+		const firstEnv = driver.startCalls[0]!.ctx.env;
+		const timeoutAtKeys = ['ACTOR_TIMEOUT_AT', 'APIFY_TIMEOUT_AT'];
+		const withoutTimeoutAt = (env: Record<string, string>) =>
+			Object.fromEntries(Object.entries(env).filter(([key]) => !timeoutAtKeys.includes(key)));
+		expect(withoutTimeoutAt(second.ctx.env)).toEqual(withoutTimeoutAt(firstEnv));
+		for (const key of timeoutAtKeys) {
+			expect(Date.parse(second.ctx.env[key]!)).toBeGreaterThanOrEqual(Date.parse(firstEnv[key]!));
+		}
 		// The budget restarts in full, not what was left of the first incarnation's.
 		expect(second.ctx.timeoutSecs).toBeGreaterThanOrEqual(299);
 		expect(second.ctx.timeoutSecs).toBeLessThanOrEqual(300);

@@ -79,7 +79,8 @@ real account, not in the runtime.
 
 ## Inside the Actor container
 
-- Run metadata env vars (input key, build, user, timestamps)
+- Account and permission env vars (`APIFY_USER_IS_PAYING`, `APIFY_USER_PRICING_TIER`,
+  `ACTOR_PERMISSION_LEVEL`, `APIFY_WORKFLOW_KEY`, `ACTOR_MCP_CONNECTOR_BASE_URL`)
 - Apify Proxy env vars other than the password (hostname, port, status URL)
 - Log rate limiting, line truncation and size cap
 - Legacy `cpuInfo` events
