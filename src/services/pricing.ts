@@ -369,8 +369,12 @@ export function initialChargedEventCounts(
 	if (!isPayPerEvent(pricingInfo)) return undefined;
 	const counts: Record<string, number> = {};
 	for (const eventName of Object.keys(pricingInfo.pricingPerEvent.actorChargeEvents)) counts[eventName] = 0;
-	if (ACTOR_START_EVENT_NAME in counts) {
-		counts[ACTOR_START_EVENT_NAME] = Math.max(1, Math.floor(memoryMbytes / 1024));
-	}
+	if (ACTOR_START_EVENT_NAME in counts) counts[ACTOR_START_EVENT_NAME] = actorStartEventCount(memoryMbytes);
 	return counts;
+}
+
+/** One start event per whole gigabyte of the run's memory, at least one - charged at every start,
+ * a resurrection included. */
+export function actorStartEventCount(memoryMbytes: number): number {
+	return Math.max(1, Math.floor(memoryMbytes / 1024));
 }

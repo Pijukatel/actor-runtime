@@ -102,6 +102,7 @@ export const SPEC_TABLE: SpecTableEntry[] = [
 	pathTemplate('DELETE', 'v2/actor-runs/:runId', true),
 	pathTemplate('POST', 'v2/actor-runs/:runId/abort', true),
 	pathTemplate('POST', 'v2/actor-runs/:runId/reboot', true),
+	pathTemplate('POST', 'v2/actor-runs/:runId/resurrect', true),
 	pathTemplate('POST', 'v2/actor-runs/:runId/charge', true),
 	pathTemplate('GET', 'v2/actor-runs/:runId/log', true),
 
@@ -200,7 +201,6 @@ export const SPEC_TABLE: SpecTableEntry[] = [
 	pathTemplate('GET', 'v2/store/:storeId', false),
 	pathTemplate('GET', 'v2/users/:userId/limits', false),
 	pathTemplate('GET', 'v2/users/:userId/usage/monthly', false),
-	pathTemplate('POST', 'v2/actor-runs/:runId/resurrect', false),
 	pathTemplate('POST', 'v2/actor-runs/:runId/metamorph', false),
 	pathTemplate('POST', 'v2/actor-tasks/:taskId/webhooks', false),
 ];

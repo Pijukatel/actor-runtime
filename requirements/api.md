@@ -82,6 +82,7 @@
         - v2/actor-runs/:runId
         - v2/actor-runs/:runId/abort
         - v2/actor-runs/:runId/reboot
+        - v2/actor-runs/:runId/resurrect
         - v2/actor-runs/:runId/charge
         - v2/actor-runs/:runId/log
     - Datasets
@@ -302,9 +303,15 @@ This runtime emulates that observable experience on demand:
   `migrating` handler. Stops and restarts the run's container immediately (no warning frame), cancels an
   open migration window, and increments `stats.rebootCount`. A finished run is `403` `job-finished`; a
   non-terminal run with no container (`READY`, `ABORTING`) gets the count bump but no restart.
-- The run object's `stats` carries `migrationCount`, `rebootCount`, `restartCount`, and `resurrectCount`
-  (the latter two always `0` here), initialized to `0` at run creation like the platform.
+- The run object's `stats` carries `migrationCount`, `rebootCount`, `restartCount` (always `0` here), and
+  `resurrectCount`, initialized to `0` at run creation like the platform.
 - The run's log is cumulative across restarts, with a one-line marker between the incarnations' output.
+
+## Resurrecting a finished run
+
+- `POST /v2/actor-runs/:runId/resurrect` works as on the platform, except that `maxItems` and
+  `restartOnError` are not supported (`unsupported.md`) and the run keeps the pricing it was created
+  with, even when the Actor's pricing changed since.
 
 ## Upstream fallback (opt-in, off by default, all HTTP methods)
 

@@ -14,7 +14,6 @@ real account, not in the runtime.
 
 - Multi-tenant Actor Standby, Standby for tasks, and Standby's Console-auth and tokenless options
 - Metamorph
-- Resurrecting finished runs
 - Restart on error
 - Result cap (`maxItems`)
 - Ad-hoc webhooks on run start

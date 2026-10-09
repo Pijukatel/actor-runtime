@@ -319,7 +319,7 @@ apify api POST /actor-runtime/migrate/<runId>
 The run gets the real migration experience: a `migrating` event, its container stopped a few seconds
 later, then a fresh container for the same run - same run id, env vars and storages, in-memory state
 gone. The Migrate button on the run's console page does the same.
-`POST /v2/actor-runs/<runId>/reboot` is also implemented.
+`POST /v2/actor-runs/<runId>/reboot` and `POST /v2/actor-runs/<runId>/resurrect` are also implemented.
 
 ## When this runtime does not implement something
 

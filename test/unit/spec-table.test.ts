@@ -7,6 +7,10 @@ describe('matchSpecPath', () => {
 		expect(entry?.implemented).toBe(true);
 	});
 
+	it('knows run resurrection as implemented', () => {
+		expect(matchSpecPath('POST', 'v2/actor-runs/abc/resurrect')?.implemented).toBe(true);
+	});
+
 	it('matches a real-but-unimplemented spec path as not implemented', () => {
 		const entry = matchSpecPath('GET', 'v2/schedules');
 		expect(entry).toBeDefined();

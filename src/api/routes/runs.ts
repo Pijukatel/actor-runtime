@@ -7,16 +7,29 @@ import {
 	cannotChargeApifyEvent,
 	cannotChargeNonPayPerEventActor,
 	cannotRemoveRunningRun,
+	cannotResurrectUnfinishedRun,
 	cannotSetIsStatusMessageTerminal,
 	invalidRequest,
 	jobAlreadyFinished,
+	parametersMismatched,
 	recordNotFound,
 } from '../errors.js';
-import { h, jsonBody, paginationParams, queryBoolean } from '../handler.js';
-import { abortRun, deleteRun, getOwnedRun, listOwnedRuns, setRunStatusMessage } from '../../services/runs.js';
+import { h, jsonBody, paginationParams, queryBoolean, queryNumber, queryString } from '../handler.js';
+import {
+	abortRun,
+	deleteRun,
+	getOwnedRun,
+	listOwnedRuns,
+	resurrectRun,
+	setRunStatusMessage,
+} from '../../services/runs.js';
 import { rebootRun } from '../../services/migrations.js';
 import { chargeEvent, MAX_CHARGE_COUNT } from '../../services/charging.js';
 import { isTerminalJobStatus } from '../../services/job-status.js';
+import { getOwnedActor } from '../../services/actors.js';
+import { resolveProxyPassword } from '../../services/users.js';
+import { standbyUrl } from '../../services/standby-config.js';
+import { CONTAINER_API_BASE_URL } from '../../config.js';
 import { runDto } from '../dto/actors.js';
 import { standbyUrlAudienceOf } from '../../services/standby-config.js';
 import type { ApiServerDeps } from '../server.js';
@@ -111,6 +124,50 @@ export function mountRuns(router: Router, deps: ApiServerDeps): void {
 			if (isTerminalJobStatus(run.status)) throw jobAlreadyFinished();
 			const updated = await rebootRun(deps.driver, run);
 			sendData(res, runDto(updated ?? run, standbyUrlAudienceOf(req.headers.host)));
+		}),
+	);
+
+	router.post(
+		'/actor-runs/:runId/resurrect',
+		h(async (req, res) => {
+			const user = requireUser(req);
+			const run = await getOwnedRun(user.id, req.params.runId as string);
+			if (!run) throw recordNotFound();
+			const timeoutSecs = queryNumber(req, 'timeout');
+			if (timeoutSecs !== undefined && timeoutSecs < 0) throw invalidRequest('"timeout" must be a number >= 0');
+			const memoryMbytes = queryNumber(req, 'memory');
+			if (memoryMbytes !== undefined && memoryMbytes <= 0) throw invalidRequest('"memory" must be a number > 0');
+			const maxTotalChargeUsd = queryNumber(req, 'maxTotalChargeUsd');
+			if (maxTotalChargeUsd !== undefined && maxTotalChargeUsd < 0) {
+				throw invalidRequest('"maxTotalChargeUsd" must be a number >= 0');
+			}
+			const actor = await getOwnedActor(user.id, run.actorId);
+			if (!actor) throw recordNotFound('Actor associated with the given run');
+
+			const result = await resurrectRun(deps.driver, actor, run, {
+				build: queryString(req, 'build'),
+				timeoutSecs,
+				memoryMbytes,
+				maxTotalChargeUsd,
+				// The same runtime-only extension run start takes (`api.md`).
+				devFolder: queryBoolean(req, 'devFolder'),
+				standbyUrl: standbyUrl(actor, user.username),
+				proxyPassword: resolveProxyPassword(user),
+				apiBaseUrl: CONTAINER_API_BASE_URL,
+				token: user.token,
+			});
+			switch (result.kind) {
+				case 'not-finished':
+					throw cannotResurrectUnfinishedRun(result.status);
+				case 'gone':
+					throw recordNotFound();
+				case 'no-such-build':
+					throw recordNotFound(result.message);
+				case 'cost-limit-decreased':
+					throw parametersMismatched('Maximum cost per run cannot be decreased when resurrecting run');
+				case 'resurrected':
+					sendData(res, runDto(result.run, standbyUrlAudienceOf(req.headers.host)));
+			}
 		}),
 	);
 

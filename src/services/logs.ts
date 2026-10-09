@@ -84,6 +84,11 @@ export function markLogTerminal(id: string): void {
 	getOrCreate(id).terminal = true;
 }
 
+/** A resurrected run's log continues where it ended, so `?stream=true` must hold open again. */
+export function reopenLog(id: string): void {
+	getOrCreate(id).terminal = false;
+}
+
 export function isLogTerminal(id: string): boolean {
 	return live.get(id)?.terminal ?? false;
 }
