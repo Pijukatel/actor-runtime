@@ -356,7 +356,7 @@ export function runDetailsColumns(run: RunRecord, fields: Array<[string, unknown
 			{ text: id, href: `${prefix}/${encodeURIComponent(id)}` },
 		]),
 	);
-	return `<div class="columns">${definitionList(fields)}${definitionList(storages)}</div>`;
+	return `<div class="columns">${definitionList(fields)}${definitionList(storages, 'Storages')}</div>`;
 }
 
 export function usageSection(run: RunRecord, usage: RunUsage): string {
@@ -455,9 +455,11 @@ export function settingsForm(state: ApiFallbackState, apifyProxyEnabled: boolean
 	);
 }
 
-export function definitionList(fields: Array<[string, unknown]>): string {
+/** `title` heads the list in a first row spanning both columns. */
+export function definitionList(fields: Array<[string, unknown]>, title?: string): string {
 	const rows = fields.map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${renderValue(value)}</dd>`).join('');
-	return `<dl>${rows}</dl>`;
+	const heading = title ? `<div class="dl-title" role="heading" aria-level="2">${escapeHtml(title)}</div>` : '';
+	return `<dl>${heading}${rows}</dl>`;
 }
 
 /**

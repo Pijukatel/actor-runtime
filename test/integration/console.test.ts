@@ -270,6 +270,9 @@ describe('console pages (HTTP fetch)', () => {
 		// A second column of the run's details, listing every storage by alias.
 		expect(detail).toContain('<div class="columns">');
 		expect(detail).toContain(
+			'<dl><div class="dl-title" role="heading" aria-level="2">Storages</div><dt>dataset (default)</dt>',
+		);
+		expect(detail).toContain(
 			`<dt>dataset (categories)</dt><dd><a href="/datasets/${extraDataset.id}">${extraDataset.id}</a></dd>`,
 		);
 		expect(detail).toContain(`<a href="/datasets/${dataset.id}">${dataset.id}</a>`);
