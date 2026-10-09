@@ -242,6 +242,7 @@ describe('console pages (HTTP fetch)', () => {
 		const dataset = await server.client.datasets().getOrCreate();
 		const store = await server.client.keyValueStores().getOrCreate();
 		const queue = await server.client.requestQueues().getOrCreate();
+		const extraDataset = await server.client.datasets().getOrCreate();
 
 		const run: RunRecord = {
 			id: generateId(),
@@ -255,12 +256,25 @@ describe('console pages (HTTP fetch)', () => {
 			defaultDatasetId: dataset.id,
 			defaultKeyValueStoreId: store.id,
 			defaultRequestQueueId: queue.id,
+			storageIds: {
+				datasets: { default: dataset.id, categories: extraDataset.id },
+				keyValueStores: { default: store.id },
+				requestQueues: { default: queue.id },
+			},
 			options: { memoryMbytes: 1024, timeoutSecs: 300 },
 			meta: { origin: 'API' },
 		};
 		await getRegistries().runs.set(run.id, run);
 
 		const detail = (await axios.get(`${consoleBaseUrl}/runs/${run.id}`)).data as string;
+		// A second column of the run's details, listing every storage by alias.
+		expect(detail).toContain('<div class="columns">');
+		expect(detail).toContain(
+			'<dl><div class="dl-title" role="heading" aria-level="2">Storages</div><dt>dataset (default)</dt>',
+		);
+		expect(detail).toContain(
+			`<dt>dataset (categories)</dt><dd><a href="/datasets/${extraDataset.id}">${extraDataset.id}</a></dd>`,
+		);
 		expect(detail).toContain(`<a href="/datasets/${dataset.id}">${dataset.id}</a>`);
 		expect(detail).toContain(`<a href="/key-value-stores/${store.id}">${store.id}</a>`);
 		expect(detail).toContain(`<a href="/request-queues/${queue.id}">${queue.id}</a>`);

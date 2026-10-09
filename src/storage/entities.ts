@@ -11,6 +11,15 @@ export interface StorageRecord {
 	createdAt: string;
 	modifiedAt: string;
 	accessedAt: string;
+	/** The dataset schema (`.actor/actor.json`'s `storages.dataset`) its items are validated against;
+	 * datasets only, absent when it has none. Set at creation, never changed after. */
+	schema?: DatasetSchema;
+}
+
+/** A dataset schema, exactly as it was pushed or posted; only its `fields` is ever read. */
+export interface DatasetSchema {
+	[key: string]: unknown;
+	fields?: Record<string, unknown>;
 }
 
 /**
@@ -180,6 +189,18 @@ export interface ActorStandbyRecord {
 	shouldPassActorInput: boolean;
 }
 
+/** The platform's `defaultRunOptions` Actor field (`services/default-run-options.ts`). */
+export interface ActorDefaultRunOptionsRecord {
+	build: string;
+	timeoutSecs: number;
+	memoryMbytes: number;
+	maxTotalChargeUsd?: number;
+	restartOnError?: boolean;
+	/** Stored and returned only: result caps and permission levels are not emulated. */
+	maxItems?: number;
+	forcePermissionLevel?: string;
+}
+
 export interface ActorRecord {
 	id: string;
 	userId: string;
@@ -193,6 +214,8 @@ export interface ActorRecord {
 	pricingInfos?: ActorPricingInfoRecord[];
 	/** Exposed on `/v2`; absent until the Actor is first given one. */
 	actorStandby?: ActorStandbyRecord;
+	/** Exposed on `/v2`; absent until the Actor is first given one, which reads as the defaults. */
+	defaultRunOptions?: ActorDefaultRunOptionsRecord;
 	/** tag -> latest successful build for that tag; `apify push` polls this after a build. */
 	taggedBuilds: Record<string, { buildId: string; buildNumber: string }>;
 	/** Host path bind-mounted over the image's working directory at run start (`actor-driver.md`). Set or
@@ -213,8 +236,8 @@ export interface ActorRecord {
 	secretKeys?: ActorSecretKeys;
 }
 
-/** A task's saved run options; an absent field falls back to the run's own default. `maxItems` and
- * `restartOnError` are kept and returned as given, never applied (`unsupported.md`). */
+/** A task's saved run options; an absent field falls back to the Actor's default. `maxItems` is kept
+ * and returned as given, never applied (`unsupported.md`). */
 export interface TaskRunOptions {
 	build?: string;
 	timeoutSecs?: number;
@@ -277,9 +300,16 @@ export interface BuildRecord {
 	 * schema of the build it resolved, never another tag's more recently pushed one. Absent when the
 	 * Actor declares none - such a run takes its input exactly as the caller sent it. */
 	inputSchema?: InputSchema;
+	/** The dataset schemas this build's source declared, by `storages.datasets` alias (`default` for
+	 * `storages.dataset`), build-specific like `inputSchema`; each run's dataset of that alias is created
+	 * with its schema. Absent when the Actor declares none. */
+	datasetSchemas?: Record<string, DatasetSchema>;
 	/** The memory fields this build's `.actor/actor.json` declared, build-specific like `inputSchema`.
 	 * Absent when it declares none. */
 	memorySettings?: ActorMemorySettings;
+	/** The `storages.datasets` aliases other than `default` this build's `.actor/actor.json` declared;
+	 * each run of the build gets one dataset per alias. Absent when it declares none. */
+	extraDatasetAliases?: string[];
 	exitCode?: number;
 	statusMessage?: string;
 }
@@ -305,6 +335,13 @@ export interface RunRecord {
 	defaultDatasetId: string;
 	defaultKeyValueStoreId: string;
 	defaultRequestQueueId: string;
+	/** The run's storages by alias, as the platform's `Run.storageIds`; the `default` entries repeat the
+	 * `default*Id` fields. Optional for runs created before it was recorded (`runStorageIds` backfills). */
+	storageIds?: {
+		datasets: Record<string, string>;
+		keyValueStores: Record<string, string>;
+		requestQueues: Record<string, string>;
+	};
 	options: {
 		memoryMbytes: number;
 		/** `0` means no timeout - only a standby run has none. */
@@ -322,6 +359,7 @@ export interface RunRecord {
 		diskMbytes?: number;
 		/** Absent means no cap. */
 		maxTotalChargeUsd?: number;
+		restartOnError?: boolean;
 	};
 	exitCode?: number;
 	statusMessage?: string;
@@ -334,8 +372,7 @@ export interface RunRecord {
 	 * timeout budget and the current incarnation's duration count from here, `startedAt` staying the
 	 * original as on the platform. Never on `/v2`. */
 	resurrectedAt?: string;
-	/** The platform's restart-bookkeeping subset of `Run.stats`; locally only `migrationCount`,
-	 * `rebootCount` and `resurrectCount` ever move. Optional for pre-existing test fixtures; `runDto`
+	/** The platform's restart-bookkeeping subset of `Run.stats`. Optional for pre-existing test fixtures; `runDto`
 	 * backfills zeros. */
 	stats?: {
 		migrationCount?: number;

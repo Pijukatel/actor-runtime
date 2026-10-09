@@ -26,7 +26,8 @@ import { resolveTaskParam } from '../resolve-reference.js';
 import { runDto } from '../dto/actors.js';
 import type { ApiServerDeps } from '../server.js';
 import { runOptionsFromQuery, startActorRun } from './actors.js';
-import { getOwnedActor, DEFAULT_BUILD_TAG, resolveOwnedActor } from '../../services/actors.js';
+import { getOwnedActor, resolveOwnedActor } from '../../services/actors.js';
+import { defaultRunOptionsOf } from '../../services/default-run-options.js';
 import { pinRequestToLocal } from '../../services/api-fallback.js';
 import { resolveTaggedBuild } from '../../services/builds.js';
 import { inputSchemaPrefill, isJsonContentType, resolveBuildInput } from '../../services/input-schema.js';
@@ -197,7 +198,7 @@ function rejectPublication(body: JsonObject): void {
 /** The build the task's runs use, which the platform requires to exist whenever it creates a task or
  * saves its input. */
 async function taskBuildOrThrow(actor: ActorRecord, options: TaskRunOptions | null | undefined): Promise<BuildRecord> {
-	const tag = options?.build ?? DEFAULT_BUILD_TAG;
+	const tag = options?.build ?? defaultRunOptionsOf(actor).build;
 	const lookup = await resolveTaggedBuild(actor, tag);
 	if (!lookup.found) throw unknownBuildTag(tag);
 	return lookup.build;
@@ -245,8 +246,8 @@ function taskRunInput(req: Request, task: TaskRecord): { body: Buffer; contentTy
 }
 
 function savedRunOptions(options: TaskRunOptions | undefined) {
-	const { build, timeoutSecs, memoryMbytes, maxTotalChargeUsd } = options ?? {};
-	const saved = { build, timeoutSecs, memoryMbytes, maxTotalChargeUsd };
+	const { build, timeoutSecs, memoryMbytes, maxTotalChargeUsd, restartOnError } = options ?? {};
+	const saved = { build, timeoutSecs, memoryMbytes, maxTotalChargeUsd, restartOnError };
 	return Object.fromEntries(Object.entries(saved).filter(([, value]) => value !== undefined));
 }
 

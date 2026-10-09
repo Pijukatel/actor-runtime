@@ -14,13 +14,10 @@ real account, not in the runtime.
 
 - Multi-tenant Actor Standby, and Standby's Console-auth and tokenless options
 - Metamorph
-- Restart on error
 - Result cap (`maxItems`)
 - Ad-hoc webhooks on run start
 - Metered usage other than compute units: storage operations, data transfer and proxy
 - Billing: a run's charges and costs are reported, never invoiced or paid out
-- Actor-level default run options
-- Extra named default storages (`storageIds`)
 - Limited-permission Actors and per-run scoped tokens
 - Automatic run and build retention
 - Running Actors from the console
@@ -50,7 +47,7 @@ real account, not in the runtime.
 ## Storage
 
 - Dataset export formats (CSV, XLSX, XML, HTML, RSS, JSONL)
-- Dataset views, schema validation and field statistics
+- Dataset views and field statistics
 - Key-value store schema and collections
 - Bulk key-value store download (zip)
 - Public and signed storage URLs

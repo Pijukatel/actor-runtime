@@ -36,6 +36,7 @@ import { listOwnedRuns, startRun, waitForRunFinish } from '../../services/runs.j
 import { getRegistries } from '../../storage/registries.js';
 import { actorDto, buildDto, runDto, versionDto } from '../dto/actors.js';
 import type {
+	ActorDefaultRunOptionsRecord,
 	ActorEnvVarRecord,
 	ActorPricingInfoRecord,
 	ActorRecord,
@@ -56,6 +57,7 @@ import {
 	standbyUrlAudienceOf,
 } from '../../services/standby-config.js';
 import { deleteSourceContextFiles } from '../../services/source-context.js';
+import { defaultRunOptionsOf, mergeDefaultRunOptionsUpdate } from '../../services/default-run-options.js';
 
 /** `undefined` when the body does not mention the field; an invalid one throws. */
 function actorStandbyFromBody(body: { actorStandby?: unknown }, actor?: ActorRecord): ActorStandbyRecord | undefined {
@@ -63,6 +65,17 @@ function actorStandbyFromBody(body: { actorStandby?: unknown }, actor?: ActorRec
 	const result = mergeStandbyUpdate(body.actorStandby, actor?.actorStandby);
 	if (result.kind === 'invalid') throw invalidRequest(result.message);
 	return result.actorStandby;
+}
+
+/** `undefined` when the body does not mention the field; an invalid one throws. */
+function defaultRunOptionsFromBody(
+	body: { defaultRunOptions?: unknown },
+	actor?: ActorRecord,
+): ActorDefaultRunOptionsRecord | undefined {
+	if (body.defaultRunOptions === undefined || body.defaultRunOptions === null) return undefined;
+	const result = mergeDefaultRunOptionsUpdate(body.defaultRunOptions, actor?.defaultRunOptions);
+	if (result.kind === 'invalid') throw schemaValidation(result.message);
+	return result.defaultRunOptions;
 }
 
 function standbyEnabledByVersions(
@@ -152,6 +165,7 @@ export interface ActorRunRequest {
 	memoryMbytes?: number;
 	timeoutSecs?: number;
 	maxTotalChargeUsd?: number;
+	restartOnError?: boolean;
 	input?: ActorInput;
 	actorTaskId?: string;
 }
@@ -167,6 +181,7 @@ export function runOptionsFromQuery(req: Request): Omit<ActorRunRequest, 'input'
 		memoryMbytes: queryNumber(req, 'memory'),
 		timeoutSecs: queryNumber(req, 'timeout'),
 		maxTotalChargeUsd,
+		restartOnError: queryBoolean(req, 'restartOnError'),
 	};
 	return Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined));
 }
@@ -190,7 +205,7 @@ export async function startActorRun(
 	actor: ActorRecord,
 	request: ActorRunRequest,
 ): Promise<RunRecord> {
-	const tag = request.build ?? DEFAULT_TAG;
+	const tag = request.build ?? defaultRunOptionsOf(actor).build;
 	const lookup = await resolveTaggedBuild(actor, tag);
 	if (!lookup.found) {
 		// `no-such-tag` names the tag, matching base behavior exactly. `build-deleted` (the tag
@@ -222,6 +237,7 @@ export async function startActorRun(
 		memoryMbytes: request.memoryMbytes,
 		timeoutSecs: request.timeoutSecs,
 		maxTotalChargeUsd: request.maxTotalChargeUsd,
+		restartOnError: request.restartOnError,
 		build: tag,
 		...(request.actorTaskId ? { actorTaskId: request.actorTaskId } : {}),
 		// Runtime-only extension (`api.md`): `?devFolder=false` skips the dev-folder mount for this run.
@@ -258,6 +274,7 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 				versions?: ActorVersionRecord[];
 				pricingInfos?: unknown;
 				actorStandby?: unknown;
+				defaultRunOptions?: unknown;
 			}>(req);
 			if (!body.name) throw invalidRequest('Actor "name" is required');
 			if (body.pricingInfos !== undefined) throw cannotSetPricingOnCreate();
@@ -270,7 +287,13 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 				applyEnvVarsToBuild: undefined,
 				...versionEnvFieldsFromBody(version),
 			}));
-			const actor = await createActor(requireUser(req).id, { ...body, versions, actorStandby });
+			const defaultRunOptions = defaultRunOptionsFromBody(body);
+			const actor = await createActor(requireUser(req).id, {
+				...body,
+				versions,
+				actorStandby,
+				defaultRunOptions,
+			});
 			sendData(res, actorDto(actor, requireUser(req).username, standbyUrlAudienceOf(req.headers.host)), 201);
 		}),
 	);
@@ -289,17 +312,23 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 		h(async (req, res) => {
 			const actor = await resolveActorParam(req);
 			if (!actor) throw recordNotFound();
-			const body = jsonBody<{ name?: string; title?: string; pricingInfos?: unknown; actorStandby?: unknown }>(
-				req,
-			);
+			const body = jsonBody<{
+				name?: string;
+				title?: string;
+				pricingInfos?: unknown;
+				actorStandby?: unknown;
+				defaultRunOptions?: unknown;
+			}>(req);
 			const pricingInfos = pricingInfosFromBody(body, actor);
 			const actorStandby = actorStandbyFromBody(body, actor);
+			const defaultRunOptions = defaultRunOptionsFromBody(body, actor);
 			const updated = await updateActor(actor.id, (current) => ({
 				...current,
 				name: body.name ?? current.name,
 				title: body.title ?? current.title,
 				...(pricingInfos !== undefined ? { pricingInfos } : {}),
 				...(actorStandby !== undefined ? { actorStandby } : {}),
+				...(defaultRunOptions !== undefined ? { defaultRunOptions } : {}),
 			}));
 			sendData(
 				res,

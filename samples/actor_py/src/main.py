@@ -3,6 +3,7 @@
 Mirrors `samples/actor_ts`: crawls a live site (`startUrl` input, defaulting to
 `https://crawlee.dev/`) up to `maxPages` pages with `ParselCrawler` over the Actor's default
 request queue, pushes one dataset item per page, and charges the same pay-per-event events.
+Also writes to the extra datasets `.actor/actor.json` declares besides the default one.
 """
 
 from __future__ import annotations
@@ -45,6 +46,11 @@ async def main() -> None:
         max_pages = int(actor_input['maxPages'])
         Actor.log.info(f'Crawling up to {max_pages} page(s) starting from {start_url}.')
 
+        # Declared under `storages.datasets` in `.actor/actor.json`, so every run gets them already created.
+        page_links_dataset = await Actor.open_dataset(alias='pageLinks')
+        summary_dataset = await Actor.open_dataset(alias='summary')
+        crawled_urls: list[str] = []
+
         # Crawling through the Actor's default request queue exercises the runtime's
         # request-queue endpoints end to end via the Python SDK's non-locking dialect:
         # batch_add_requests, list_head, get_request, update_request.
@@ -62,6 +68,9 @@ async def main() -> None:
             await context.enqueue_links()
             title = context.selector.css('title::text').get()
             await context.push_data({'url': context.request.url, 'title': title})
+            links = context.selector.css('a[href]::attr(href)').getall()
+            await page_links_dataset.push_data({'url': context.request.url, 'linkCount': len(links)})
+            crawled_urls.append(context.request.url)
             if pricing.is_pay_per_event:
                 charge = await Actor.charge('page-scraped')
                 Actor.log.info(
@@ -73,6 +82,7 @@ async def main() -> None:
                     crawler.stop(reason='The pay-per-event charge limit was reached.')
 
         await crawler.run([start_url])
+        await summary_dataset.push_data({'startUrl': start_url, 'pagesCrawled': len(crawled_urls), 'urls': crawled_urls})
 
         if pricing.is_pay_per_event:
             # Charged once the work is done, so a run that hit its cap mid-crawl charges nothing here.

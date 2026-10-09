@@ -17,6 +17,7 @@ import {
 import { clearRunRestartState, consumeRunRestart } from './migrations.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
+import { defaultRunOptionsOf } from './default-run-options.js';
 import { resolveTaggedBuild } from './builds.js';
 import { decryptedEnvVars, ensureSecretKeys, inputSecretsEnv, sealInputSecrets } from './secrets.js';
 import { createLogRedactor } from './log-redaction.js';
@@ -34,6 +35,7 @@ import { containerUrl } from './container-url.js';
 import { formatRuntimeLogLines } from '../runtime-log.js';
 import { getRunTelemetry } from './events-channel.js';
 import { resolveRunMemory } from './actor-memory.js';
+import { DEFAULT_STORAGE_ALIAS, runStorageIds } from './actor-storages.js';
 import {
 	ACTOR_START_EVENT_NAME,
 	actorStartEventCount,
@@ -49,8 +51,6 @@ import {
 	unregisterDefaultDatasetForCharging,
 } from './charging.js';
 
-const DEFAULT_MEMORY_MBYTES = 1024;
-const DEFAULT_TIMEOUT_SECS = 300;
 /** `@apify/consts`' `DEFAULT_CONTAINER_PORT`. */
 const DEFAULT_CONTAINER_SERVER_PORT = 4321;
 /** The public API docs don't state a separate disk default; this mirrors the 2x ratio the public
@@ -59,6 +59,10 @@ const DEFAULT_CONTAINER_SERVER_PORT = 4321;
 const DISK_MBYTES_PER_MEMORY_MBYTE = 2;
 /** `?gracefully=true`'s wait between the `aborting` frame and the stop, matching the platform's 30s. */
 const GRACEFUL_ABORT_WINDOW_MS = 30_000;
+
+/** The platform's `ACTOR_RESTART_ON_ERROR` (`@apify/consts`). */
+const RESTART_ON_ERROR_MAX_RESTARTS = 3;
+const RESTART_ON_ERROR_INTERVAL_MS = 60_000;
 
 function memoryMbytesToDisk(memoryMbytes: number): number {
 	return memoryMbytes * DISK_MBYTES_PER_MEMORY_MBYTE;
@@ -143,17 +147,19 @@ export async function deleteRun(id: string): Promise<void> {
 
 export interface StartRunOptions {
 	input?: { body: Buffer; contentType: string };
+	/** Each of these, when absent, falls back to the Actor's `defaultRunOptions`. */
 	memoryMbytes?: number;
 	timeoutSecs?: number;
-	/** Build tag or build number this run should use (the real platform's `options.build`) - defaults to
-	 * `DEFAULT_BUILD_TAG` (`'latest'`, `services/actors.ts`) when omitted; `api/routes/actors.ts`'s route
-	 * imports that same constant as its local `DEFAULT_TAG` and always resolves and passes the actual tag
-	 * it used, so this default only matters for direct service-layer callers, e.g. tests. */
+	/** Build tag or build number this run should use (the real platform's `options.build`).
+	 * `api/routes/actors.ts`'s route always resolves and passes the tag it used, so the fallback only
+	 * matters for direct service-layer callers, e.g. tests. */
 	build?: string;
 	/** `false` skips the registered dev folder for this run only (`?devFolder=false`). */
 	devFolder?: boolean;
-	/** Absent means no cap. */
+	/** Absent means the Actor's default; no cap when that is absent too. */
 	maxTotalChargeUsd?: number;
+	/** Absent means the Actor's default. */
+	restartOnError?: boolean;
 	/** The task the run is started from, if any. */
 	actorTaskId?: string;
 	/** `STANDBY` for a run the standby router starts; `API` otherwise. */
@@ -240,6 +246,8 @@ function buildEnv(
 		APIFY_DEFAULT_KEY_VALUE_STORE_ID: run.defaultKeyValueStoreId,
 		APIFY_DEFAULT_DATASET_ID: run.defaultDatasetId,
 		APIFY_DEFAULT_REQUEST_QUEUE_ID: run.defaultRequestQueueId,
+		// How the SDKs find a storage by alias, e.g. `Actor.openDataset({ alias })`.
+		ACTOR_STORAGES_JSON: JSON.stringify(runStorageIds(run)),
 		APIFY_ACTOR_ID: actor.id,
 		ACTOR_ID: actor.id,
 		APIFY_ACTOR_RUN_ID: run.id,
@@ -279,10 +287,13 @@ export async function startRun(
 ): Promise<RunRecord> {
 	const { runs } = getRegistries();
 
-	const [dataset, keyValueStore, requestQueue] = await Promise.all([
-		createStorage(actor.userId, 'dataset'),
+	const extraDatasetAliases = build.extraDatasetAliases ?? [];
+	const schemaOf = (alias: string) => build.datasetSchemas?.[alias];
+	const [dataset, keyValueStore, requestQueue, ...extraDatasets] = await Promise.all([
+		createStorage(actor.userId, 'dataset', undefined, schemaOf(DEFAULT_STORAGE_ALIAS)),
 		createStorage(actor.userId, 'keyValueStore'),
 		createStorage(actor.userId, 'requestQueue'),
+		...extraDatasetAliases.map((alias) => createStorage(actor.userId, 'dataset', undefined, schemaOf(alias))),
 	]);
 
 	const input = await sealInputSecrets(actor, build.inputSchema, options.input);
@@ -291,17 +302,21 @@ export async function startRun(
 		await store.setValue('INPUT', input.body, { contentType: input.contentType });
 	}
 
-	const buildTag = options.build ?? DEFAULT_BUILD_TAG;
+	const defaults = defaultRunOptionsOf(actor);
+	const buildTag = options.build ?? defaults.build;
 	// `0` is a deliberate "no timeout" (as on the platform), distinct from an omitted option.
-	const timeoutSecs = options.timeoutSecs ?? DEFAULT_TIMEOUT_SECS;
+	const timeoutSecs = options.timeoutSecs ?? defaults.timeoutSecs;
+	const maxTotalChargeUsd = options.maxTotalChargeUsd ?? defaults.maxTotalChargeUsd;
+	const restartOnError = options.restartOnError ?? defaults.restartOnError;
+	// As on the platform, `.actor/actor.json`'s `defaultMemoryMbytes` outranks the Actor's default memory.
 	const { memoryMbytes, logLines: memoryLogLines } = await resolveRunMemory(build.memorySettings, {
 		requestedMemoryMbytes: options.memoryMbytes,
-		fallbackMemoryMbytes: DEFAULT_MEMORY_MBYTES,
+		fallbackMemoryMbytes: defaults.memoryMbytes,
 		runOptions: {
 			build: buildTag,
 			timeoutSecs,
-			diskMbytes: memoryMbytesToDisk(DEFAULT_MEMORY_MBYTES),
-			...(options.maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd: options.maxTotalChargeUsd } : {}),
+			diskMbytes: memoryMbytesToDisk(defaults.memoryMbytes),
+			...(maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd } : {}),
 		},
 		input: options.input,
 	});
@@ -320,12 +335,21 @@ export async function startRun(
 		defaultDatasetId: dataset.id,
 		defaultKeyValueStoreId: keyValueStore.id,
 		defaultRequestQueueId: requestQueue.id,
+		storageIds: {
+			datasets: {
+				[DEFAULT_STORAGE_ALIAS]: dataset.id,
+				...Object.fromEntries(extraDatasetAliases.map((alias, index) => [alias, extraDatasets[index]!.id])),
+			},
+			keyValueStores: { [DEFAULT_STORAGE_ALIAS]: keyValueStore.id },
+			requestQueues: { [DEFAULT_STORAGE_ALIAS]: requestQueue.id },
+		},
 		options: {
 			build: buildTag,
 			memoryMbytes,
 			timeoutSecs,
 			diskMbytes: memoryMbytesToDisk(memoryMbytes),
-			...(options.maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd: options.maxTotalChargeUsd } : {}),
+			...(maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd } : {}),
+			...(restartOnError !== undefined ? { restartOnError } : {}),
 		},
 		meta: { origin: options.origin ?? 'API' },
 		// Same zeros the platform writes at run creation (see `RunRecord.stats`).
@@ -398,6 +422,7 @@ export interface ResurrectRunOptions {
 	memoryMbytes?: number;
 	timeoutSecs?: number;
 	maxTotalChargeUsd?: number;
+	restartOnError?: boolean;
 	devFolder?: boolean;
 	standbyUrl?: string;
 	proxyPassword?: string;
@@ -459,6 +484,7 @@ export async function resurrectRun(
 	const buildTag = options.build ?? run.options.build ?? DEFAULT_BUILD_TAG;
 	const timeoutSecs = options.timeoutSecs ?? run.options.timeoutSecs;
 	const maxTotalChargeUsd = requestedCap ?? currentCap;
+	const restartOnError = options.restartOnError ?? run.options.restartOnError;
 	// Always a requested figure, so only the build's bounds apply - never its default expression, which
 	// the run's own memory already came from.
 	const { memoryMbytes, logLines: memoryLogLines } = await resolveRunMemory(build.memorySettings, {
@@ -522,6 +548,7 @@ export async function resurrectRun(
 				timeoutSecs,
 				diskMbytes: memoryMbytesToDisk(memoryMbytes),
 				maxTotalChargeUsd,
+				...(restartOnError !== undefined ? { restartOnError } : {}),
 			},
 			stats: {
 				...current.stats,
@@ -719,6 +746,8 @@ export async function runInBackground(
 		return;
 	}
 
+	// Kept per incarnation: a resurrection starts with a clean restart-on-error history.
+	const errorRestartTimes: number[] = [];
 	try {
 		// A migration/reboot stop restarts the same run instead of finishing it (`services/migrations.ts`).
 		for (;;) {
@@ -758,8 +787,18 @@ export async function runInBackground(
 				}
 			}
 
+			const standbyFinishing = consumeStandbyRunFinishing(record.id);
+			if (
+				!standbyFinishing &&
+				!outcome.timedOut &&
+				outcome.exitCode !== 0 &&
+				(await restartAfterError(record, outcome.exitCode, errorRestartTimes))
+			) {
+				continue;
+			}
+
 			// A standby run the runtime wound down ends `SUCCEEDED` whatever its exit code, as on the platform.
-			const status: JobStatus = consumeStandbyRunFinishing(record.id)
+			const status: JobStatus = standbyFinishing
 				? 'SUCCEEDED'
 				: outcome.timedOut
 					? 'TIMED-OUT'
@@ -824,6 +863,38 @@ export async function runInBackground(
 		// exact flag, mirroring `api/routes/logs.ts`'s `?stream=true` handling of `isLogTerminal`).
 		markEventsTerminal(record.id);
 	}
+}
+
+/**
+ * Restart on error, as on the platform: a `restartOnError` run whose container exits non-zero starts
+ * again as the same run, unless it already restarted `RESTART_ON_ERROR_MAX_RESTARTS` times within
+ * `RESTART_ON_ERROR_INTERVAL_MS`. Decided inside one serialized write, so an abort that raced the exit
+ * wins, and a resurrection's changed flag is honoured.
+ */
+async function restartAfterError(record: RunRecord, exitCode: number, restartTimes: number[]): Promise<boolean> {
+	const now = Date.now();
+	const recentRestarts = restartTimes.filter((time) => now - time < RESTART_ON_ERROR_INTERVAL_MS).length;
+	let decision: 'restart' | 'limit-reached' | undefined;
+	await getRegistries().runs.update(record.id, (current) => {
+		if (!current || current.status !== 'RUNNING' || !current.options.restartOnError) return current;
+		if (recentRestarts >= RESTART_ON_ERROR_MAX_RESTARTS) {
+			decision = 'limit-reached';
+			return current;
+		}
+		decision = 'restart';
+		return { ...current, stats: { ...current.stats, restartCount: (current.stats?.restartCount ?? 0) + 1 } };
+	});
+	if (decision === 'limit-reached') {
+		appendRuntimeLog(
+			record.id,
+			`The Actor run failed more than ${RESTART_ON_ERROR_MAX_RESTARTS} times within ` +
+				`${RESTART_ON_ERROR_INTERVAL_MS / 1000} seconds, so it is not restarted again.`,
+		);
+	}
+	if (decision !== 'restart') return false;
+	restartTimes.push(now);
+	appendRuntimeLog(record.id, `The Actor run exited with code ${exitCode}, restarting it (restart on error).`);
+	return true;
 }
 
 /** A plain update, never a status transition: the run is already terminal when this runs. */

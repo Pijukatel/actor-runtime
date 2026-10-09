@@ -77,6 +77,11 @@ apify call
 - `apify push` of such an Actor to the Apify platform stops with an error: it is not supported there yet
   (https://github.com/apify/apify-core/issues/28685). Build it from the Git repository instead.
 
+## Dataset schema validation
+
+A dataset schema in `.actor/actor.json` is enforced as on the platform. It comes from the **build**, so
+an edited schema takes effect only after `apify push`.
+
 ## Input schema: defaults and validation
 
 If the Actor declares an input schema - the `input` field of `.actor/actor.json`, or
@@ -128,9 +133,10 @@ apify api GET v2/actor-tasks/~small-crawl/runs/last/dataset/items
 ## Run memory
 
 With no `-m`/`--memory`, a run gets `defaultMemoryMbytes` from `.actor/actor.json` - a number or a
-memory expression over the input, evaluated as the platform does - or 1024 MB. Any memory, explicit
-or not, is then clamped to the Actor's `minMemoryMbytes` / `maxMemoryMbytes`, and the run log says so.
-An expression that fails falls back to 1024 MB with a warning in the run log. The fields come from the
+memory expression over the input, evaluated as the platform does - or the Actor's default run memory.
+Any memory, explicit or not, is then clamped to the Actor's `minMemoryMbytes` / `maxMemoryMbytes`, and
+the run log says so. An expression that fails falls back to the default run memory with a warning in
+the run log. The fields come from the
 build, so changing them needs an `apify push`.
 
 ## Environment variables and secrets

@@ -3,7 +3,7 @@ import type { Request, Response, Router } from 'express';
 import { requireUser } from '../auth.js';
 
 import { paginate, sendData, sortByTimestamp } from '../envelope.js';
-import { recordNotFound } from '../errors.js';
+import { invalidRequest, recordNotFound } from '../errors.js';
 import { resolveStorageParam } from '../resolve-reference.js';
 import {
 	h,
@@ -19,7 +19,8 @@ import { openDataset } from '../../storage/open.js';
 import { createStorage, listOwnedStorages, renameStorage, dropStorage, touchStorage } from '../../services/storages.js';
 import { applyDatasetProjection, type DatasetItem } from '../../services/dataset-projection.js';
 import { datasetDto } from '../dto/storages.js';
-import type { StorageRecord } from '../../storage/entities.js';
+import type { DatasetSchema, StorageRecord } from '../../storage/entities.js';
+import { findInvalidDatasetItems } from '../../services/dataset-schema.js';
 import { recordDefaultDatasetItems } from '../../services/charging.js';
 import type { ApiServerDeps } from '../server.js';
 
@@ -94,6 +95,18 @@ export function mountDatasetOperations(
 		h(async (req, res) => {
 			const record = await requireDataset(req);
 			const body = jsonBody<DatasetItem | DatasetItem[]>(req);
+			// All or nothing, as on the platform: one rejected item stores none of the batch.
+			const invalidItems = findInvalidDatasetItems(record.schema, Array.isArray(body) ? body : [body]);
+			if (invalidItems.length > 0) {
+				res.status(400).json({
+					error: {
+						type: 'schema-validation-error',
+						message: 'Schema validation failed',
+						data: { invalidItems },
+					},
+				});
+				return;
+			}
 			const dataset = await openDataset(record.id);
 			await dataset.pushData(body);
 			// The platform's synthetic per-item pay-per-event charge (`services/charging.ts`) - a no-op for
@@ -142,9 +155,13 @@ export function mountDatasets(router: Router, deps: ApiServerDeps): void {
 	router.post(
 		'/datasets',
 		h(async (req, res) => {
-			const body = optionalJsonBody<{ name?: string }>(req);
+			const body = optionalJsonBody<{ name?: string; schema?: unknown }>(req);
 			const name = queryString(req, 'name') ?? body?.name;
-			const record = await createStorage(requireUser(req).id, 'dataset', name);
+			const schema = body?.schema;
+			if (schema !== undefined && (schema === null || typeof schema !== 'object' || Array.isArray(schema))) {
+				throw invalidRequest('Dataset schema must be an object.');
+			}
+			const record = await createStorage(requireUser(req).id, 'dataset', name, schema as DatasetSchema);
 			const dataset = await openDataset(record.id);
 			sendData(res, datasetDto(record, await dataset.getInfo()), 201);
 		}),

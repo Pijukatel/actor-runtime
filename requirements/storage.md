@@ -12,6 +12,13 @@
 - Requests are also addressable by id (`GET /requests/:requestId`), with the same best-effort, this-process-only visibility as the `GET /requests` listing (see "Known differences" below).
 - Peeks and hand-outs never corrupt the queue's ordering, deduplication, in-progress/handled state, or counts.
 
+## Dataset schema validation
+
+- Dataset schemas work as on the Apify platform: each of a run's datasets, the default one and every
+  extra one the Actor declares, rejects items its schema does not accept.
+- **Difference**: a schema the platform would silently not enforce is reported as a warning in the
+  build log.
+
 # Storage objects
 
 - The system stores, in a single storage space, two kinds of objects: internal objects (system- and user-related records required for its own functioning) and user objects (created through the public API by users or their Actors).

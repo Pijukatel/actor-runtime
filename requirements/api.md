@@ -167,16 +167,16 @@
 # Tasks
 
 - Implemented as on the platform, for the caller's own Actors: a task saves an Actor's input and run
-  options (`build`, `timeoutSecs`, `memoryMbytes`, `maxTotalChargeUsd`), and a task run is a run of that
+  options (`build`, `timeoutSecs`, `memoryMbytes`, `maxTotalChargeUsd`, `restartOnError`), and a task run is a run of that
   Actor started from them.
     - A task created without a `name` is named `<actor-name>-task` (`-1`, `-2`, ... when taken); without
       `input`, it starts from the input schema's prefill values. Names are unique per user (`409`
       `actor-task-name-not-unique`).
-    - Creating a task, or saving its input, needs the build its runs use (`options.build`, default
-      `latest`) to exist (`403` `unknown-build-tag`); the input is validated against that build's input
+    - Creating a task, or saving its input, needs the build its runs use (`options.build`, or the
+      Actor's default build) to exist (`403` `unknown-build-tag`); the input is validated against that build's input
       schema.
     - A task run merges the request's input over the task's, key by key, and the request's run options
-      over the task's; the merged input is validated like any run's. The run's `actorTaskId` names the
+      over the task's, which go over the Actor's default run options; the merged input is validated like any run's. The run's `actorTaskId` names the
       task, as do `ACTOR_TASK_ID` / `APIFY_ACTOR_TASK_ID` in its container.
     - `PUT .../input` merges the given fields into the saved input.
     - Deleting a task aborts its unfinished runs; the runs themselves stay.
@@ -188,7 +188,7 @@
       `disableStandbyFieldsOverride`. An Actor and a task of the same name share an address; the Actor
       is served there.
 - Differences: a task's secret input fields are stored as given, and encrypted only in each run's input;
-  `maxItems` and `restartOnError` are saved but not applied; a task cannot be published (`400`
+  `maxItems` is saved but not applied; a task cannot be published (`400`
   `cannot-publish-actor-task`).
 
 # Actor Standby
@@ -339,14 +339,14 @@ This runtime emulates that observable experience on demand:
   `migrating` handler. Stops and restarts the run's container immediately (no warning frame), cancels an
   open migration window, and increments `stats.rebootCount`. A finished run is `403` `job-finished`; a
   non-terminal run with no container (`READY`, `ABORTING`) gets the count bump but no restart.
-- The run object's `stats` carries `migrationCount`, `rebootCount`, `restartCount` (always `0` here), and
+- The run object's `stats` carries `migrationCount`, `rebootCount`, `restartCount`, and
   `resurrectCount`, initialized to `0` at run creation like the platform.
 - The run's log is cumulative across restarts, with a one-line marker between the incarnations' output.
 
 ## Resurrecting a finished run
 
-- `POST /v2/actor-runs/:runId/resurrect` works as on the platform, except that `maxItems` and
-  `restartOnError` are not supported (`unsupported.md`) and the run keeps the pricing it was created
+- `POST /v2/actor-runs/:runId/resurrect` works as on the platform, except that `maxItems` is
+  not supported (`unsupported.md`) and the run keeps the pricing it was created
   with, even when the Actor's pricing changed since.
 
 ## Upstream fallback (opt-in, off by default, all HTTP methods)

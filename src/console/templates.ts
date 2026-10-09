@@ -4,6 +4,7 @@ import { getApiFallbackState, type ApiFallbackState } from '../services/api-fall
 import type { ActorLocalBrowserView, ActorLocalDebug, ActorPricingInfoRecord, RunRecord } from '../storage/entities.js';
 import { effectivePricingInfo, RESOLVED_PRICING_TIER } from '../services/pricing.js';
 import { STARTER_PLAN_COMPUTE_UNIT_PRICE_USD, type RunUsage } from '../services/run-usage.js';
+import { runStorageIds } from '../services/actor-storages.js';
 
 export function escapeHtml(value: unknown): string {
 	return String(value ?? '')
@@ -341,6 +342,23 @@ export function pricingSection(
 
 /** The run object's own estimate, with the compute and event components split and the assumptions named
  * (`console.md`) - the figures are easy to mistake for a bill otherwise. */
+/** The run's own fields beside its storages, which wrap below them on a narrow screen. */
+export function runDetailsColumns(run: RunRecord, fields: Array<[string, unknown]>): string {
+	const { datasets, keyValueStores, requestQueues } = runStorageIds(run);
+	const groups: Array<[string, string, Record<string, string>]> = [
+		['dataset', '/datasets', datasets],
+		['key-value store', '/key-value-stores', keyValueStores],
+		['request queue', '/request-queues', requestQueues],
+	];
+	const storages = groups.flatMap(([type, prefix, byAlias]) =>
+		Object.entries(byAlias).map(([alias, id]): [string, LinkedCell] => [
+			`${type} (${alias})`,
+			{ text: id, href: `${prefix}/${encodeURIComponent(id)}` },
+		]),
+	);
+	return `<div class="columns">${definitionList(fields)}${definitionList(storages, 'Storages')}</div>`;
+}
+
 export function usageSection(run: RunRecord, usage: RunUsage): string {
 	const { stats } = usage;
 	const megabytes = (bytes: number | undefined) =>
@@ -437,9 +455,11 @@ export function settingsForm(state: ApiFallbackState, apifyProxyEnabled: boolean
 	);
 }
 
-export function definitionList(fields: Array<[string, unknown]>): string {
+/** `title` heads the list in a first row spanning both columns. */
+export function definitionList(fields: Array<[string, unknown]>, title?: string): string {
 	const rows = fields.map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${renderValue(value)}</dd>`).join('');
-	return `<dl>${rows}</dl>`;
+	const heading = title ? `<div class="dl-title" role="heading" aria-level="2">${escapeHtml(title)}</div>` : '';
+	return `<dl>${heading}${rows}</dl>`;
 }
 
 /**

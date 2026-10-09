@@ -154,7 +154,7 @@ async function startStandbyRun(
 		}
 		input = processed.input;
 	}
-	const maxTotalChargeUsd = task?.options?.maxTotalChargeUsd;
+	const { maxTotalChargeUsd, restartOnError } = task?.options ?? {};
 	return startRun(driver, actor, build, {
 		origin: 'STANDBY',
 		input,
@@ -162,6 +162,7 @@ async function startStandbyRun(
 		timeoutSecs: 0,
 		build: config.build,
 		...(maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd } : {}),
+		...(restartOnError !== undefined ? { restartOnError } : {}),
 		...(task ? { actorTaskId: task.id } : {}),
 		standbyUrl: standbyUrl(task ?? actor, user.username),
 		proxyPassword: resolveProxyPassword(user),

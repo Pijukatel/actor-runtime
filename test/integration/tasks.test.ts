@@ -224,6 +224,19 @@ describe('tasks', () => {
 		expect((await server.client.task(task.id).get())?.stats).toMatchObject({ totalRuns: 2 });
 	});
 
+	it("applies the task's restartOnError, and falls back to the Actor's default run options", async () => {
+		const task = await server.client.tasks().create({ actId: actorId, options: { restartOnError: true } } as never);
+		const run = await server.client.task(task.id).call();
+		expect(run.options).toMatchObject({ restartOnError: true });
+
+		await server.client.actor(actorId).update({ defaultRunOptions: { build: 'beta' } } as never);
+		const noBeta = await call('post', 'actor-tasks', { actId: actorId });
+		expect(noBeta.status).toBe(403);
+		expect(noBeta.data.error.message).toBe(
+			'Build with tag "beta" was not found. Has the Actor been built already?',
+		);
+	});
+
 	it('serves run-sync for a task', async () => {
 		scripted.setBehaviour(async (ctx) => {
 			const store = await openKeyValueStore(ctx.env.APIFY_DEFAULT_KEY_VALUE_STORE_ID!);
