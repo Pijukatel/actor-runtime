@@ -180,6 +180,18 @@ export interface ActorStandbyRecord {
 	shouldPassActorInput: boolean;
 }
 
+/** The platform's `defaultRunOptions` Actor field (`services/default-run-options.ts`). */
+export interface ActorDefaultRunOptionsRecord {
+	build: string;
+	timeoutSecs: number;
+	memoryMbytes: number;
+	maxTotalChargeUsd?: number;
+	/** Stored and returned only: result caps, restarts and permission levels are not emulated. */
+	maxItems?: number;
+	restartOnError?: boolean;
+	forcePermissionLevel?: string;
+}
+
 export interface ActorRecord {
 	id: string;
 	userId: string;
@@ -193,6 +205,8 @@ export interface ActorRecord {
 	pricingInfos?: ActorPricingInfoRecord[];
 	/** Exposed on `/v2`; absent until the Actor is first given one. */
 	actorStandby?: ActorStandbyRecord;
+	/** Exposed on `/v2`; absent until the Actor is first given one, which reads as the defaults. */
+	defaultRunOptions?: ActorDefaultRunOptionsRecord;
 	/** tag -> latest successful build for that tag; `apify push` polls this after a build. */
 	taggedBuilds: Record<string, { buildId: string; buildNumber: string }>;
 	/** Host path bind-mounted over the image's working directory at run start (`actor-driver.md`). Set or

@@ -17,6 +17,7 @@ import {
 import { clearRunRestartState, consumeRunRestart } from './migrations.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
+import { defaultRunOptionsOf } from './default-run-options.js';
 import { resolveTaggedBuild } from './builds.js';
 import { decryptedEnvVars, ensureSecretKeys, inputSecretsEnv, sealInputSecrets } from './secrets.js';
 import { createLogRedactor } from './log-redaction.js';
@@ -49,8 +50,6 @@ import {
 	unregisterDefaultDatasetForCharging,
 } from './charging.js';
 
-const DEFAULT_MEMORY_MBYTES = 1024;
-const DEFAULT_TIMEOUT_SECS = 300;
 /** `@apify/consts`' `DEFAULT_CONTAINER_PORT`. */
 const DEFAULT_CONTAINER_SERVER_PORT = 4321;
 /** The public API docs don't state a separate disk default; this mirrors the 2x ratio the public
@@ -135,16 +134,16 @@ export async function deleteRun(id: string): Promise<void> {
 
 export interface StartRunOptions {
 	input?: { body: Buffer; contentType: string };
+	/** Each of these four, when absent, falls back to the Actor's `defaultRunOptions`. */
 	memoryMbytes?: number;
 	timeoutSecs?: number;
-	/** Build tag or build number this run should use (the real platform's `options.build`) - defaults to
-	 * `DEFAULT_BUILD_TAG` (`'latest'`, `services/actors.ts`) when omitted; `api/routes/actors.ts`'s route
-	 * imports that same constant as its local `DEFAULT_TAG` and always resolves and passes the actual tag
-	 * it used, so this default only matters for direct service-layer callers, e.g. tests. */
+	/** Build tag or build number this run should use (the real platform's `options.build`).
+	 * `api/routes/actors.ts`'s route always resolves and passes the tag it used, so the fallback only
+	 * matters for direct service-layer callers, e.g. tests. */
 	build?: string;
 	/** `false` skips the registered dev folder for this run only (`?devFolder=false`). */
 	devFolder?: boolean;
-	/** Absent means no cap. */
+	/** Absent means the Actor's default; no cap when that is absent too. */
 	maxTotalChargeUsd?: number;
 	/** `STANDBY` for a run the standby router starts; `API` otherwise. */
 	origin?: 'API' | 'STANDBY';
@@ -280,17 +279,20 @@ export async function startRun(
 		await store.setValue('INPUT', input.body, { contentType: input.contentType });
 	}
 
-	const buildTag = options.build ?? DEFAULT_BUILD_TAG;
+	const defaults = defaultRunOptionsOf(actor);
+	const buildTag = options.build ?? defaults.build;
 	// `0` is a deliberate "no timeout" (as on the platform), distinct from an omitted option.
-	const timeoutSecs = options.timeoutSecs ?? DEFAULT_TIMEOUT_SECS;
+	const timeoutSecs = options.timeoutSecs ?? defaults.timeoutSecs;
+	const maxTotalChargeUsd = options.maxTotalChargeUsd ?? defaults.maxTotalChargeUsd;
+	// As on the platform, `.actor/actor.json`'s `defaultMemoryMbytes` outranks the Actor's default memory.
 	const { memoryMbytes, logLines: memoryLogLines } = await resolveRunMemory(build.memorySettings, {
 		requestedMemoryMbytes: options.memoryMbytes,
-		fallbackMemoryMbytes: DEFAULT_MEMORY_MBYTES,
+		fallbackMemoryMbytes: defaults.memoryMbytes,
 		runOptions: {
 			build: buildTag,
 			timeoutSecs,
-			diskMbytes: memoryMbytesToDisk(DEFAULT_MEMORY_MBYTES),
-			...(options.maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd: options.maxTotalChargeUsd } : {}),
+			diskMbytes: memoryMbytesToDisk(defaults.memoryMbytes),
+			...(maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd } : {}),
 		},
 		input: options.input,
 	});
@@ -313,7 +315,7 @@ export async function startRun(
 			memoryMbytes,
 			timeoutSecs,
 			diskMbytes: memoryMbytesToDisk(memoryMbytes),
-			...(options.maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd: options.maxTotalChargeUsd } : {}),
+			...(maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd } : {}),
 		},
 		meta: { origin: options.origin ?? 'API' },
 		// Same zeros the platform writes at run creation (see `RunRecord.stats`).

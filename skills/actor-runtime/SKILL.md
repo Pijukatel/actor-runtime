@@ -109,10 +109,23 @@ valid: Field input.maxPages must be >= 1`); no run is created and no container s
 ## Run memory
 
 With no `-m`/`--memory`, a run gets `defaultMemoryMbytes` from `.actor/actor.json` - a number or a
-memory expression over the input, evaluated as the platform does - or 1024 MB. Any memory, explicit
+memory expression over the input, evaluated as the platform does - or the Actor's default memory
+(1024 MB unless set, see "Default run options"). Any memory, explicit
 or not, is then clamped to the Actor's `minMemoryMbytes` / `maxMemoryMbytes`, and the run log says so.
 An expression that fails falls back to 1024 MB with a warning in the run log. The fields come from the
 build, so changing them needs an `apify push`.
+
+## Default run options
+
+An Actor's `defaultRunOptions` apply to every run that leaves the option out, as on the platform:
+
+```sh
+apify api PUT v2/actors/<actorId> --body '{"defaultRunOptions":{"build":"beta","timeoutSecs":0,"memoryMbytes":2048}}'
+```
+
+`build`, `timeoutSecs`, `memoryMbytes` and `maxTotalChargeUsd` take effect; an option set on the run
+itself (`--build`, `--timeout`, `-m`, or the matching query parameter) wins. `maxItems`,
+`restartOnError` and `forcePermissionLevel` are stored but have no effect locally.
 
 ## Environment variables and secrets
 
