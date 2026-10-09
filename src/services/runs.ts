@@ -17,6 +17,7 @@ import {
 import { clearRunRestartState, consumeRunRestart } from './migrations.js';
 import { isTerminalJobStatus, transitionJobStatus } from './job-status.js';
 import { DEFAULT_BUILD_TAG, findVersion } from './actors.js';
+import { defaultRunOptionsOf } from './default-run-options.js';
 import { resolveTaggedBuild } from './builds.js';
 import { decryptedEnvVars, ensureSecretKeys, inputSecretsEnv, sealInputSecrets } from './secrets.js';
 import { createLogRedactor } from './log-redaction.js';
@@ -34,6 +35,7 @@ import { containerUrl } from './container-url.js';
 import { formatRuntimeLogLines } from '../runtime-log.js';
 import { getRunTelemetry } from './events-channel.js';
 import { resolveRunMemory } from './actor-memory.js';
+import { DEFAULT_STORAGE_ALIAS, runStorageIds } from './actor-storages.js';
 import {
 	ACTOR_START_EVENT_NAME,
 	actorStartEventCount,
@@ -49,8 +51,6 @@ import {
 	unregisterDefaultDatasetForCharging,
 } from './charging.js';
 
-const DEFAULT_MEMORY_MBYTES = 1024;
-const DEFAULT_TIMEOUT_SECS = 300;
 /** `@apify/consts`' `DEFAULT_CONTAINER_PORT`. */
 const DEFAULT_CONTAINER_SERVER_PORT = 4321;
 /** The public API docs don't state a separate disk default; this mirrors the 2x ratio the public
@@ -139,17 +139,18 @@ export async function deleteRun(id: string): Promise<void> {
 
 export interface StartRunOptions {
 	input?: { body: Buffer; contentType: string };
+	/** Each of these, when absent, falls back to the Actor's `defaultRunOptions`. */
 	memoryMbytes?: number;
 	timeoutSecs?: number;
-	/** Build tag or build number this run should use (the real platform's `options.build`) - defaults to
-	 * `DEFAULT_BUILD_TAG` (`'latest'`, `services/actors.ts`) when omitted; `api/routes/actors.ts`'s route
-	 * imports that same constant as its local `DEFAULT_TAG` and always resolves and passes the actual tag
-	 * it used, so this default only matters for direct service-layer callers, e.g. tests. */
+	/** Build tag or build number this run should use (the real platform's `options.build`).
+	 * `api/routes/actors.ts`'s route always resolves and passes the tag it used, so the fallback only
+	 * matters for direct service-layer callers, e.g. tests. */
 	build?: string;
 	/** `false` skips the registered dev folder for this run only (`?devFolder=false`). */
 	devFolder?: boolean;
-	/** Absent means no cap. */
+	/** Absent means the Actor's default; no cap when that is absent too. */
 	maxTotalChargeUsd?: number;
+	/** Absent means the Actor's default. */
 	restartOnError?: boolean;
 	/** `STANDBY` for a run the standby router starts; `API` otherwise. */
 	origin?: 'API' | 'STANDBY';
@@ -235,6 +236,8 @@ function buildEnv(
 		APIFY_DEFAULT_KEY_VALUE_STORE_ID: run.defaultKeyValueStoreId,
 		APIFY_DEFAULT_DATASET_ID: run.defaultDatasetId,
 		APIFY_DEFAULT_REQUEST_QUEUE_ID: run.defaultRequestQueueId,
+		// How the SDKs find a storage by alias, e.g. `Actor.openDataset({ alias })`.
+		ACTOR_STORAGES_JSON: JSON.stringify(runStorageIds(run)),
 		APIFY_ACTOR_ID: actor.id,
 		ACTOR_ID: actor.id,
 		APIFY_ACTOR_RUN_ID: run.id,
@@ -273,10 +276,12 @@ export async function startRun(
 ): Promise<RunRecord> {
 	const { runs } = getRegistries();
 
-	const [dataset, keyValueStore, requestQueue] = await Promise.all([
+	const extraDatasetAliases = build.extraDatasetAliases ?? [];
+	const [dataset, keyValueStore, requestQueue, ...extraDatasets] = await Promise.all([
 		createStorage(actor.userId, 'dataset'),
 		createStorage(actor.userId, 'keyValueStore'),
 		createStorage(actor.userId, 'requestQueue'),
+		...extraDatasetAliases.map(() => createStorage(actor.userId, 'dataset')),
 	]);
 
 	const input = await sealInputSecrets(actor, build.inputSchema, options.input);
@@ -285,17 +290,21 @@ export async function startRun(
 		await store.setValue('INPUT', input.body, { contentType: input.contentType });
 	}
 
-	const buildTag = options.build ?? DEFAULT_BUILD_TAG;
+	const defaults = defaultRunOptionsOf(actor);
+	const buildTag = options.build ?? defaults.build;
 	// `0` is a deliberate "no timeout" (as on the platform), distinct from an omitted option.
-	const timeoutSecs = options.timeoutSecs ?? DEFAULT_TIMEOUT_SECS;
+	const timeoutSecs = options.timeoutSecs ?? defaults.timeoutSecs;
+	const maxTotalChargeUsd = options.maxTotalChargeUsd ?? defaults.maxTotalChargeUsd;
+	const restartOnError = options.restartOnError ?? defaults.restartOnError;
+	// As on the platform, `.actor/actor.json`'s `defaultMemoryMbytes` outranks the Actor's default memory.
 	const { memoryMbytes, logLines: memoryLogLines } = await resolveRunMemory(build.memorySettings, {
 		requestedMemoryMbytes: options.memoryMbytes,
-		fallbackMemoryMbytes: DEFAULT_MEMORY_MBYTES,
+		fallbackMemoryMbytes: defaults.memoryMbytes,
 		runOptions: {
 			build: buildTag,
 			timeoutSecs,
-			diskMbytes: memoryMbytesToDisk(DEFAULT_MEMORY_MBYTES),
-			...(options.maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd: options.maxTotalChargeUsd } : {}),
+			diskMbytes: memoryMbytesToDisk(defaults.memoryMbytes),
+			...(maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd } : {}),
 		},
 		input: options.input,
 	});
@@ -313,13 +322,21 @@ export async function startRun(
 		defaultDatasetId: dataset.id,
 		defaultKeyValueStoreId: keyValueStore.id,
 		defaultRequestQueueId: requestQueue.id,
+		storageIds: {
+			datasets: {
+				[DEFAULT_STORAGE_ALIAS]: dataset.id,
+				...Object.fromEntries(extraDatasetAliases.map((alias, index) => [alias, extraDatasets[index]!.id])),
+			},
+			keyValueStores: { [DEFAULT_STORAGE_ALIAS]: keyValueStore.id },
+			requestQueues: { [DEFAULT_STORAGE_ALIAS]: requestQueue.id },
+		},
 		options: {
 			build: buildTag,
 			memoryMbytes,
 			timeoutSecs,
 			diskMbytes: memoryMbytesToDisk(memoryMbytes),
-			...(options.maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd: options.maxTotalChargeUsd } : {}),
-			...(options.restartOnError !== undefined ? { restartOnError: options.restartOnError } : {}),
+			...(maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd } : {}),
+			...(restartOnError !== undefined ? { restartOnError } : {}),
 		},
 		meta: { origin: options.origin ?? 'API' },
 		// Same zeros the platform writes at run creation (see `RunRecord.stats`).

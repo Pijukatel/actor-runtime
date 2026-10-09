@@ -160,6 +160,27 @@ describe('restart on error', () => {
 		expect(driver.startCalls).toHaveLength(3);
 	});
 
+	it("uses the Actor's default when the run start leaves the option out", async () => {
+		const driver = restartTrackingDriver();
+		server = await startTestServer(driver);
+		const actor = await seedActorWithBuild(server, 'restart-default-actor');
+		await server.client.actor(actor.id).update({ defaultRunOptions: { restartOnError: true } } as never);
+
+		const defaultedRunId = await startRun(server, actor.id, '');
+		await driver.waitForStartCalls(1);
+		await failAndExpectRestart(driver, 0);
+		driver.startCalls[1]!.resolve({ exitCode: 0, timedOut: false });
+		await waitForRunStatus(defaultedRunId, 'SUCCEEDED');
+		const defaulted = await server.client.run(defaultedRunId).get();
+		expect((defaulted?.options as { restartOnError?: boolean }).restartOnError).toBe(true);
+
+		const overriddenRunId = await startRun(server, actor.id, 'restartOnError=false');
+		await driver.waitForStartCalls(3);
+		driver.startCalls[2]!.resolve({ exitCode: 1, timedOut: false });
+		await waitForRunStatus(overriddenRunId, 'FAILED');
+		expect(driver.startCalls).toHaveLength(3);
+	});
+
 	it('resurrect can turn the option on for a finished run', async () => {
 		const driver = restartTrackingDriver();
 		server = await startTestServer(driver);
