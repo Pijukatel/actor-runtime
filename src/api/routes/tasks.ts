@@ -48,6 +48,7 @@ import {
 	TaskNameTakenError,
 	updateTask,
 } from '../../services/tasks.js';
+import { deleteWebhooksWithCondition } from '../../services/webhooks.js';
 import type {
 	ActorRecord,
 	BuildRecord,
@@ -382,6 +383,7 @@ export function mountTasks(router: Router, deps: ApiServerDeps): void {
 				if (!isTerminalJobStatus(run.status)) await abortRun(deps.driver, run);
 			}
 			await deleteTask(task.id);
+			await deleteWebhooksWithCondition({ actorTaskId: task.id });
 			res.status(204).end();
 		}),
 	);

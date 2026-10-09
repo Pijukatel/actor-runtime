@@ -129,7 +129,30 @@ apify api GET v2/actor-tasks/~small-crawl/runs/last/dataset/items
 - The saved input is validated against the input schema of the build the task runs, as on the platform.
 - A task of a Standby Actor has its own `standbyUrl` (see "Run an Actor server").
 - The console's Tasks page shows each task's input, run options, standby URL and runs.
-- Tasks cannot be published, scheduled or given webhooks here.
+- Tasks cannot be published or scheduled here.
+
+## Webhooks
+
+Webhooks work as on the platform: a webhook POSTs its payload to `requestUrl` whenever an event it names
+happens to the Actor, task or run in its `condition`.
+
+```sh
+apify api POST v2/webhooks --body '{"eventTypes": ["ACTOR.RUN.SUCCEEDED", "ACTOR.RUN.FAILED"], "condition": {"actorId": "<actorId>"}, "requestUrl": "http://host.docker.internal:8080/hook"}'
+apify api POST v2/webhooks/<webhookId>/test       # sends a test dispatch right away
+apify api GET v2/webhooks/<webhookId>/dispatches  # each delivery, with every attempt's status and answer
+```
+
+- Events: `ACTOR.RUN.CREATED`, `.SUCCEEDED`, `.FAILED`, `.TIMED_OUT`, `.ABORTED`, `.RESURRECTED` and the
+  same `ACTOR.BUILD.*` (no `RESURRECTED`). Payload and headers templates, their variables
+  (`{{resource}}`, `{{eventData}}`, ...), `shouldInterpolateStrings` and `doNotRetry` behave as on the
+  platform; a failed delivery is retried after 1 min, then 2, 4, ... `apify-client`'s webhook calls and
+  the SDK's `Actor.addWebhook()` (ad-hoc webhooks) work against it.
+- Requests are sent from the runtime: when it runs in Docker, `localhost` there is the runtime's own
+  container, so reach a server on your machine through `host.docker.internal` (Docker Desktop) or
+  `host.containers.internal` (Podman). A URL naming the runtime's own API (`http://localhost:3333/v2/...`)
+  reaches it, authenticated as you unless the URL has a `token`.
+- Only HTTP requests: Slack, email, Drive and GitHub actions are refused.
+- The console's Webhooks page shows each webhook, its dispatches and every delivery attempt.
 
 ## Run memory
 

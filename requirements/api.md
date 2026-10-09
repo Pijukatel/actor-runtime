@@ -81,6 +81,15 @@
         - v2/actor-tasks/:actorTaskId/run-sync
         - v2/actor-tasks/:actorTaskId/run-sync-get-dataset-items
         - v2/actor-tasks/:actorTaskId/runs/last, and its sub-paths (see "Last-run shortcuts")
+        - v2/actor-tasks/:actorTaskId/webhooks
+    - Webhooks
+        - v2/webhooks
+        - v2/webhooks/:webhookId
+        - v2/webhooks/:webhookId/test
+        - v2/webhooks/:webhookId/dispatches
+        - v2/webhook-dispatches
+        - v2/webhook-dispatches/:dispatchId
+        - v2/actors/:actorId/webhooks
     - Builds
         - v2/actor-builds
         - v2/actor-builds/:buildId
@@ -190,6 +199,25 @@
 - Differences: a task's secret input fields are stored as given, and encrypted only in each run's input;
   `maxItems` is saved but not applied; a task cannot be published (`400`
   `cannot-publish-actor-task`).
+
+# Webhooks
+
+- Implemented as on the platform, for the caller's own Actors, tasks and runs: a webhook fires on the
+  run and build events it names (`ACTOR.RUN.*`, `ACTOR.BUILD.*`) of the Actor, task or run in its
+  `condition`, and every event it fires on is a dispatch - an HTTP POST of its rendered payload and
+  headers templates to `requestUrl`.
+    - Validation, defaults, template variables (`resource` with its `links` and `storages` included),
+      `shouldInterpolateStrings`, `idempotencyKey`, `isEnabled`, ad-hoc webhooks for a run, test
+      dispatches and the per-Actor and per-task lists match the platform.
+    - A dispatch is retried on a network error or a non-2xx answer on the platform's schedule (1 min,
+      doubling, at most 11 retries; 3 for a test dispatch) unless `doNotRetry` is set, and resumes after
+      a restart. Its `calls` record each attempt's status, error and the first 2 KB of the answer.
+    - Deleting an Actor or a task deletes its webhooks; dispatches stay.
+    - A `requestUrl` naming this runtime's API (`localhost:3333`, `apify-api:3333`, a standby address) is
+      sent to the runtime itself, authenticated as the webhook's owner unless it carries a `token`.
+- Differences: only the `HTTP_REQUEST` action is accepted (`400` `invalid-request` for the others);
+  requests are sent from the runtime, so other `localhost` URLs reach its own container, private
+  addresses are allowed and redirects are not followed.
 
 # Actor Standby
 

@@ -116,6 +116,41 @@ describe('console pages (HTTP fetch)', () => {
 		expect((await axios.get(`${consoleBaseUrl}/tasks/nope`, { validateStatus: () => true })).status).toBe(404);
 	});
 
+	it('webhooks: listed next to tasks, with a detail view, their dispatches, and on their Actor', async () => {
+		const actor = await server.client.actors().create({ name: 'console-webhook-actor' });
+		const webhook = await server.client.webhooks().create({
+			eventTypes: ['ACTOR.RUN.SUCCEEDED'],
+			condition: { actorId: actor.id },
+			requestUrl: 'http://127.0.0.1:9/unreachable',
+			doNotRetry: true,
+		} as never);
+		const dispatch = await server.client.webhook(webhook.id).test();
+
+		const nav = (await axios.get(`${consoleBaseUrl}/`)).data as string;
+		expect(nav).toMatch(/<a href="\/tasks">Tasks<\/a><a href="\/webhooks">Webhooks<\/a>/);
+
+		const list = (await axios.get(`${consoleBaseUrl}/webhooks`)).data as string;
+		expect(list).toContain(`<a href="/webhooks/${webhook.id}">${webhook.id}</a>`);
+		expect(list).toContain(`<a href="/actors/${actor.id}">`);
+
+		const detail = (await axios.get(`${consoleBaseUrl}/webhooks/${webhook.id}`)).data as string;
+		expect(detail).toContain('ACTOR.RUN.SUCCEEDED');
+		expect(detail).toContain(`<a href="/webhook-dispatches/${dispatch!.id}">${dispatch!.id}</a>`);
+
+		const dispatchDetail = (await axios.get(`${consoleBaseUrl}/webhook-dispatches/${dispatch!.id}`)).data as string;
+		expect(dispatchDetail).toContain(`<a href="/webhooks/${webhook.id}">${webhook.id}</a>`);
+		expect(dispatchDetail).toContain('TEST');
+
+		const actorDetail = (await axios.get(`${consoleBaseUrl}/actors/${actor.id}`)).data as string;
+		expect(actorDetail).toContain(`<a href="/webhooks/${webhook.id}">${webhook.id}</a>`);
+
+		expect((await axios.get(`${consoleBaseUrl}/webhooks/nope`, { validateStatus: () => true })).status).toBe(404);
+		const missingDispatch = await axios.get(`${consoleBaseUrl}/webhook-dispatches/nope`, {
+			validateStatus: () => true,
+		});
+		expect(missingDispatch.status).toBe(404);
+	});
+
 	it('builds and runs list+detail views render (even with no Docker)', async () => {
 		const actor = await server.client.actors().create({ name: 'console-build-actor' });
 		await server.client

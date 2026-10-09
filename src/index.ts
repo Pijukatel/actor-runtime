@@ -10,6 +10,8 @@ import { closeProxiedUpgrades } from './api/http-proxy.js';
 import { createConsoleServer } from './console/server.js';
 import { attachBrowserViewWebSocket } from './console/browser-view-ws.js';
 import { startLogFlusher } from './services/logs.js';
+import { startWebhookDispatcher } from './services/webhook-dispatches.js';
+import { buildDto, runDto } from './api/dto/actors.js';
 import { gracefulShutdown } from './shutdown.js';
 import { API_PORT, CONSOLE_PORT, DEFAULT_DATA_DIR } from './config.js';
 
@@ -22,6 +24,8 @@ async function main(): Promise<void> {
 	startLogFlusher();
 
 	const driver = await createDriver();
+	// Ahead of the reconciliation, so the runs and builds it aborts fire their webhooks.
+	await startWebhookDispatcher({ apiPort: API_PORT, runResource: (run) => runDto(run), buildResource: buildDto });
 	await reconcileOrphanedJobs(driver);
 
 	const apiApp = createApiServer({ driver });
