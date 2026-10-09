@@ -68,6 +68,7 @@ import {
 	settingsForm,
 	standbyLink,
 	table,
+	runDetailsColumns,
 	usageSection,
 	type LinkedCell,
 } from './templates.js';
@@ -554,9 +555,6 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			['origin', run.meta.origin],
 			['migrationCount', run.stats?.migrationCount ?? 0],
 			['rebootCount', run.stats?.rebootCount ?? 0],
-			['defaultDatasetId', storageLink('/datasets', run.defaultDatasetId)],
-			['defaultKeyValueStoreId', storageLink('/key-value-stores', run.defaultKeyValueStoreId)],
-			['defaultRequestQueueId', storageLink('/request-queues', run.defaultRequestQueueId)],
 		];
 		// Only present for a run that resolved a debug plan; never on the emulated `/v2` run object.
 		if (run.localDebug) {
@@ -576,7 +574,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		rows.push(['containerUrl (live view)', { text: url, href: url }]);
 		const usage = computeRunUsage(run, getRunTelemetry(run.id));
 		const body =
-			definitionList(rows) +
+			runDetailsColumns(run, rows) +
 			usageSection(run, usage) +
 			migrateSection +
 			'<h2>Log</h2><pre>' +

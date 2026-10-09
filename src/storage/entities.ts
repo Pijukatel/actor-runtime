@@ -248,6 +248,9 @@ export interface BuildRecord {
 	/** The memory fields this build's `.actor/actor.json` declared, build-specific like `inputSchema`.
 	 * Absent when it declares none. */
 	memorySettings?: ActorMemorySettings;
+	/** The `storages.datasets` aliases other than `default` this build's `.actor/actor.json` declared;
+	 * each run of the build gets one dataset per alias. Absent when it declares none. */
+	extraDatasetAliases?: string[];
 	exitCode?: number;
 	statusMessage?: string;
 }
@@ -271,6 +274,13 @@ export interface RunRecord {
 	defaultDatasetId: string;
 	defaultKeyValueStoreId: string;
 	defaultRequestQueueId: string;
+	/** The run's storages by alias, as the platform's `Run.storageIds`; the `default` entries repeat the
+	 * `default*Id` fields. Optional for runs created before it was recorded (`runStorageIds` backfills). */
+	storageIds?: {
+		datasets: Record<string, string>;
+		keyValueStores: Record<string, string>;
+		requestQueues: Record<string, string>;
+	};
 	options: {
 		memoryMbytes: number;
 		/** `0` means no timeout - only a standby run has none. */
