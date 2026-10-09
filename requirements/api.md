@@ -23,6 +23,9 @@
   JSON object, or that the schema rejects, naming every offending field; `400` `invalid-input-schema`
   when the Actor's own schema is not valid. Both messages match the Apify platform's. A build with no
   input schema accepts any body, unvalidated.
+- `POST /v2/datasets/:datasetId/items` (and its `actor-runs/:runId/dataset/items` alias) on a dataset with
+  a schema (`storage.md`) answers `400` `schema-validation-error` when any item fails it, with the
+  platform's `data.invalidItems` (`itemPosition`, `validationErrors`), and stores nothing.
 - Four endpoints are exceptions to the `{data}` envelope:
     - `GET /v2/logs/:buildOrRunId` (and its `actor-builds`/`actor-runs` aliases): the body is plain text,
       never `{data}`-wrapped, matching apify-client-js's `log().get()`.

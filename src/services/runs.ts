@@ -269,7 +269,7 @@ export async function startRun(
 	const { runs } = getRegistries();
 
 	const [dataset, keyValueStore, requestQueue] = await Promise.all([
-		createStorage(actor.userId, 'dataset'),
+		createStorage(actor.userId, 'dataset', undefined, build.datasetSchema),
 		createStorage(actor.userId, 'keyValueStore'),
 		createStorage(actor.userId, 'requestQueue'),
 	]);

@@ -51,7 +51,7 @@ real account, not in the runtime.
 ## Storage
 
 - Dataset export formats (CSV, XLSX, XML, HTML, RSS, JSONL)
-- Dataset views, schema validation and field statistics
+- Dataset views and field statistics
 - Key-value store schema and collections
 - Bulk key-value store download (zip)
 - Public and signed storage URLs

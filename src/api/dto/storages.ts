@@ -26,6 +26,7 @@ export function datasetDto(
 		// server redirects that shape to its own page (`console.md`).
 		consoleUrl: `${CONSOLE_BASE_URL}/storage/datasets/${record.id}`,
 		stats: { ...zeroedStats(), storageBytes: 0 },
+		...(record.schema ? { schema: record.schema } : {}),
 	};
 }
 

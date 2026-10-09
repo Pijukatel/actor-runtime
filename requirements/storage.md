@@ -12,6 +12,20 @@
 - Requests are also addressable by id (`GET /requests/:requestId`), with the same best-effort, this-process-only visibility as the `GET /requests` listing (see "Known differences" below).
 - Peeks and hand-outs never corrupt the queue's ordering, deduplication, in-progress/handled state, or counts.
 
+## Dataset schema validation
+
+- **Dataset schemas work as on the Apify platform**: a dataset with a schema rejects any push holding
+  an item its `fields` JSON schema does not accept - `400` `schema-validation-error`, naming each
+  rejected item's position and errors, and storing none of the batch (`api.md`).
+- A run's default dataset gets the schema its build read from `.actor/actor.json` - `storages.dataset`, or
+  the `default` of `storages.datasets` - inline or as a file path relative to `.actor/`. A build whose
+  named schema file is missing, cannot be read or is not a valid dataset schema fails with the reason in
+  its log; a schema whose `fields` cannot be compiled is kept, with a warning in the build log, and its
+  items are not validated.
+- `POST /v2/datasets` takes a `schema` in its body. A dataset's schema is set when it is created and
+  never changes; it shows on the dataset object.
+- Without a schema, or without `fields`, every item is accepted.
+
 # Storage objects
 
 - The system stores, in a single storage space, two kinds of objects: internal objects (system- and user-related records required for its own functioning) and user objects (created through the public API by users or their Actors).
@@ -26,6 +40,7 @@
     - `value` is the metadata of the storage
         - owner (`userId`)
         - statistics
+        - the dataset schema, for a dataset that has one
 - The system stores users in dedicated key-value store called `__USERS__`:
     - `key` is the `userId`
     - `value` is the metadata of the user
