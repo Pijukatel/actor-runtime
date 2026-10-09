@@ -36,8 +36,13 @@ export interface RunContext {
 	memoryMbytes: number;
 	/** `0` means no timeout. */
 	timeoutSecs: number;
-	/** Set for a standby run: the port its HTTP server listens on, which the runtime must be able to reach. */
+	/** The port the Actor's HTTP server listens on (`ACTOR_WEB_SERVER_PORT`), which the runtime reaches to
+	 * serve the run's `containerUrl`. */
 	containerServerPort?: number;
+	/** Set for a standby run, whose server must be reachable: an engine that cannot route to it any
+	 * other way has the container share this process's network namespace. An ordinary run's server stays
+	 * unreachable there instead - a run's own networking is never changed for its optional web server. */
+	containerServerRequired?: boolean;
 	devMount?: DevFolderMount;
 	debug?: DebugRunTarget;
 	/** Volume from `BrowserViewerHandle`, mounted over the Actor container's `/tmp/.X11-unix`. */
@@ -220,6 +225,7 @@ export interface Driver {
 	stopBrowserViewer(runId: string): Promise<void>;
 
 	/** Where the run's current container serves `RunContext.containerServerPort`, or `undefined` while
-	 * the run has no started container with one. Changes when a migration restarts the container. */
+	 * the run has no started container, or its server cannot be reached on this engine. Changes when a
+	 * migration restarts the container. */
 	containerServerAddress(runId: string): Promise<ContainerServerAddress | undefined>;
 }

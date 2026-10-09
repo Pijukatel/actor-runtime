@@ -13,6 +13,7 @@ import { isTerminalJobStatus } from '../../services/job-status.js';
 import { getOwnedRun } from '../../services/runs.js';
 import { migrateRun } from '../../services/migrations.js';
 import { runDto } from '../dto/actors.js';
+import { standbyUrlAudienceOf } from '../../services/standby-config.js';
 import type { ApiServerDeps } from '../server.js';
 
 export function mountMigrate(router: Router, deps: ApiServerDeps): void {
@@ -32,7 +33,7 @@ export function mountMigrate(router: Router, deps: ApiServerDeps): void {
 
 			// Read back after the migration started, like abort/reboot return the post-write record.
 			const current = await getOwnedRun(user.id, run.id);
-			sendData(res, runDto(current ?? run));
+			sendData(res, runDto(current ?? run, standbyUrlAudienceOf(req.headers.host)));
 		}),
 	);
 }

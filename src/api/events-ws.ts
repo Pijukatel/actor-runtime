@@ -75,7 +75,8 @@ async function handleConnection(ws: WebSocket, runId: string): Promise<void> {
 /** Registers the upgrade handler on the API server and returns a handle shutdown can close. */
 export function attachEventsWebSocket(
 	server: Server,
-	/** Tried first for every upgrade; returns `true` when it took the connection (the standby router). */
+	/** Tried first for every upgrade; returns `true` when it took the connection (the container-URL and
+	 * standby routers). */
 	otherUpgrade?: (req: IncomingMessage, socket: Duplex, head: Buffer) => boolean,
 ): EventsWebSocketServer {
 	const wss = new WebSocketServer({ noServer: true });
