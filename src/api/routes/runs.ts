@@ -166,7 +166,7 @@ export function mountRuns(router: Router, deps: ApiServerDeps): void {
 				case 'cost-limit-decreased':
 					throw parametersMismatched('Maximum cost per run cannot be decreased when resurrecting run');
 				case 'resurrected':
-					sendData(res, runDto(result.run));
+					sendData(res, runDto(result.run, standbyUrlAudienceOf(req.headers.host)));
 			}
 		}),
 	);

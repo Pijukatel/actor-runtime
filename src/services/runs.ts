@@ -542,6 +542,7 @@ export async function resurrectRun(
 		if (startCharge) appendRuntimeLog(run.id, startCharge);
 	}
 	if (options.proxyPassword) appendRuntimeLog(run.id, REAL_APIFY_PROXY_WARNING);
+	appendRuntimeLog(run.id, webServerLogLine(run.id, containerServerPortFor(findVersion(actor, build.versionNumber))));
 
 	launchInBackground(driver, actor, updated, { ...options, memoryMbytes, timeoutSecs, build: buildTag });
 	return { kind: 'resurrected', run: updated };
