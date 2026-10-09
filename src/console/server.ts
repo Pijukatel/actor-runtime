@@ -63,7 +63,6 @@ import {
 	escapeHtml,
 	formatUsd,
 	layout,
-	liveViewPage,
 	migrateRunForm,
 	pricingSection,
 	settingsForm,
@@ -572,16 +571,9 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				},
 			]);
 		}
-		// Every run has one, as on the platform (`actor-driver.md`'s "Web server and live view").
+		// Every run has one, as on the platform (`actor-driver.md`'s "Web server (live view)").
 		const url = containerUrl(run.id);
-		rows.push(['containerUrl', { text: url, href: url }]);
-		rows.push([
-			'live view',
-			{
-				text: isTerminalJobStatus(run.status) ? 'run finished, no live view' : "the Actor's web page, framed",
-				href: `/runs/${encodeURIComponent(run.id)}/live-view`,
-			},
-		]);
+		rows.push(['containerUrl (live view)', { text: url, href: url }]);
 		const usage = computeRunUsage(run, getRunTelemetry(run.id));
 		const body =
 			definitionList(rows) +
@@ -591,28 +583,6 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			(log ? ansiToHtml(log) : '(empty)') +
 			'</pre>';
 		res.send(layout(`Run ${run.id}`, body));
-	});
-
-	/** The live view (`console.md`): the Actor's web page at the run's `containerUrl`, framed. */
-	app.get('/runs/:id/live-view', async (req, res) => {
-		const run = await getRunById(req.params.id);
-		if (!run) {
-			res.status(404).send(layout('Not found', '<p>Run not found.</p>'));
-			return;
-		}
-		const title = `Live view of run ${run.id}`;
-		if (isTerminalJobStatus(run.status)) {
-			res.send(
-				layout(
-					title,
-					`<p class="empty">Run finished (status: ${escapeHtml(run.status)}). The live view content cannot be ` +
-						`retrieved as the run has already ended.</p>` +
-						`<p><a href="/runs/${encodeURIComponent(run.id)}">Back to the run</a></p>`,
-				),
-			);
-			return;
-		}
-		res.send(layout(title, liveViewPage(run, containerUrl(run.id))));
 	});
 
 	/** The viewer page; its websocket is handled by `console/browser-view-ws.ts`, not Express. */

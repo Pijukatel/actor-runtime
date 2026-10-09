@@ -167,17 +167,17 @@ Requests are handed to standby runs the runtime starts, scales by `desiredReques
 `maxRequestsPerActorRun` and winds down after `idleTimeoutSecs` without a request, as on the platform.
 Single-tenant only - see `requirements/actor-driver.md`'s "Actor Standby".
 
-## Web server and live view
+## Web server (live view)
 
 Every run has a `containerUrl`, as on the platform. An HTTP server the Actor starts on
-`ACTOR_WEB_SERVER_PORT` (4321) is reachable there while the run goes, no token needed, and the console's
-run page frames it as the run's live view - the run log names both:
+`ACTOR_WEB_SERVER_PORT` (4321) is reachable there while the run goes, no token needed; the run log and
+the run's console page name it:
 
 ```bash
 cd samples/actor_ts             # serves a crawl progress page
 apify call --input '{"maxPages":5}'
-# [actor-runtime] Live view: http://localhost:3000/runs/<runId>/live-view - a web server the Actor starts
-# on port 4321 (ACTOR_WEB_SERVER_PORT) is served at http://<runid>.runs.localhost:3333.
+# [actor-runtime] Web server: a server the Actor starts on port 4321 (ACTOR_WEB_SERVER_PORT) is served at
+# http://<runid>.runs.localhost:3333 (live view).
 ```
 
 The URL has the platform's shape, one `*.runs.localhost` hostname per run, so the Actor's page owns `/`.

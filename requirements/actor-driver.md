@@ -176,10 +176,10 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 - The view lives exactly as long as the run, survives a migration/reboot of the run, and is gone once the run
   ends. It composes with debug mode and the dev-folder bind mount.
 
-# Web server and live view
+# Web server (live view)
 
 - Implemented as on the platform: every run has a `containerUrl` reaching the server the Actor starts on
-  `ACTOR_WEB_SERVER_PORT`, shown as the run's live view in the console (`console.md`).
+  `ACTOR_WEB_SERVER_PORT`, linked from the run's console page as its live view (`console.md`).
 - Differences: the URL is local (`api.md`) and the run log names it; under rootless Podman 3.x the
   runtime container must be started with `--network slirp4netns:allow_host_loopback=true`
   (`apify runtime start` does), or only a standby run's server is reachable, which the run log says.

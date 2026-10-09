@@ -123,7 +123,7 @@ function acceptsHtml(req: IncomingMessage): boolean {
 	return typeof accept === 'string' && accept.includes('text/html');
 }
 
-/** A browser - the live view's frame, or a tab opened on the URL - gets a page that retries by itself. */
+/** A browser tab opened on the URL gets a page that retries by itself. */
 function sendError(req: IncomingMessage, res: ServerResponse, error: ProxyError): void {
 	if (!acceptsHtml(req)) {
 		if (error.transient && !res.headersSent) res.setHeader('retry-after', String(RETRY_AFTER_SECS));

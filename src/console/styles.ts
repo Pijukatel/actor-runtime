@@ -434,15 +434,6 @@ button:active {
 
 .browser-view-screen canvas {
 	outline: none;
-}
-
-.live-view-frame {
-	display: block;
-	width: 100%;
-	height: 75vh;
-	border: 1px solid var(--color-neutral-border);
-	border-radius: 8px;
-	background: #fff;
 }`;
 
 /** The stylesheet `console/server.ts` serves at `/console.css`. */

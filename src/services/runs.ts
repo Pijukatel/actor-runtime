@@ -22,7 +22,7 @@ import {
 } from './debug-mode.js';
 import { browserViewLogLine, describeBrowserViewerStartFailure } from './browser-view.js';
 import { dedicatedCpusFor, platformIncompatibleMemoryWarning } from '../resources.js';
-import { CONSOLE_BASE_URL, CONTAINER_EVENTS_WS_BASE_URL } from '../config.js';
+import { CONTAINER_EVENTS_WS_BASE_URL } from '../config.js';
 import { containerUrl } from './container-url.js';
 import { formatRuntimeLogLines } from '../runtime-log.js';
 import { getRunTelemetry } from './events-channel.js';
@@ -162,12 +162,11 @@ export function containerServerPortFor(version: ActorVersionRecord | undefined):
 	return DEFAULT_CONTAINER_SERVER_PORT;
 }
 
-/** Where the run's web server, if the Actor starts one, is reachable - the live view's URL first, since
- * that is what a developer opens. */
+/** Where the run's web server, if the Actor starts one, is reachable. */
 export function webServerLogLine(runId: string, port: number): string {
 	return (
-		`Live view: ${CONSOLE_BASE_URL}/runs/${runId}/live-view - a web server the Actor starts on port ${port} ` +
-		`(ACTOR_WEB_SERVER_PORT) is served at ${containerUrl(runId)}.`
+		`Web server: a server the Actor starts on port ${port} (ACTOR_WEB_SERVER_PORT) is served at ` +
+		`${containerUrl(runId)} (live view).`
 	);
 }
 

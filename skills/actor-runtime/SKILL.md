@@ -1,6 +1,6 @@
 ---
 name: apify-actor-runtime
-description: Drive the local Apify Actor runtime - a self-contained local Apify platform that emulates the Apify API and console so Actors can be developed, run and debugged without the cloud. Covers pointing the Apify CLI at it, the no-rebuild dev-folder loop, IDE debugging, watching a Playwright/Puppeteer browser, an Actor's web server and live view, Actor Standby servers, migration testing, pay-per-event pricing and run cost estimates, and relaying unimplemented calls to the real platform.
+description: Drive the local Apify Actor runtime - a self-contained local Apify platform that emulates the Apify API and console so Actors can be developed, run and debugged without the cloud. Covers pointing the Apify CLI at it, the no-rebuild dev-folder loop, IDE debugging, watching a Playwright/Puppeteer browser, an Actor's web server (live view), Actor Standby servers, migration testing, pay-per-event pricing and run cost estimates, and relaying unimplemented calls to the real platform.
 ---
 
 # Local Apify Actor runtime
@@ -208,9 +208,8 @@ which shows as a black display. Disable with `{"enabled": false}`.
 
 ## See the web page an Actor serves (live view)
 
-A run's web server (`ACTOR_WEB_SERVER_PORT`) and `containerUrl` work as on the platform; the run log names
-the URL and the console's live view page (`http://localhost:3000/runs/<runId>/live-view`). Local
-differences:
+A run's web server (`ACTOR_WEB_SERVER_PORT`) and `containerUrl` work as on the platform; the run log and
+the run's console page name the URL. Local differences:
 
 - The URL is `http://<runid>.runs.localhost:3333` (the run owns `/`), or
   `http://localhost:3333/actor-runtime/container/<runId>` for clients that do not resolve `*.localhost`;
@@ -364,13 +363,13 @@ a later step misses. Only a call naming an Actor this runtime does not know is r
   `/key-value-store/records/OUTPUT`, `/request-queue`, `/abort`. Add `?status=SUCCEEDED` to skip
   failed runs. `client.actor(id).lastRun()` in the SDKs uses these.
 - The console at `http://localhost:3000` shows the same objects, plus the pricing and dev-folder forms,
-  each run's usage and cost, the Migrate button, the browser view, each run's live view and an Actor's
-  standby runs.
+  each run's usage and cost, the Migrate button, the browser view, each run's `containerUrl` and an
+  Actor's standby runs.
 - The runtime's data directory holds every storage, build and run record on disk. Read it freely;
   write to it only through the API, never by editing the files.
 
 ## Reading the runtime's own output
 
 In a build or run log, everything the runtime itself says - dev-folder notices, the debug attach
-line, the live view and browser-view URLs, migration markers, a run that could not start - opens with a blue
+line, the container and browser-view URLs, migration markers, a run that could not start - opens with a blue
 `[actor-runtime]` prefix. The Actor's own output is passed through byte for byte.

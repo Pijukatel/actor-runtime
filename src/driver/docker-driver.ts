@@ -1149,7 +1149,7 @@ export class DockerDriver implements Driver {
 				formatRuntimeLog(
 					`The run's web server on port ${ctx.containerServerPort} is not reachable by this runtime: under ` +
 						`rootless Podman 3.x that needs the runtime container started with ${RUNTIME_HOST_LOOPBACK_FLAG} ` +
-						`('apify runtime start' does). Its live view will not work.`,
+						`('apify runtime start' does). Its containerUrl will not answer.`,
 				),
 			);
 		}
@@ -1434,7 +1434,7 @@ export class DockerDriver implements Driver {
 		port: number,
 		route: Exclude<ContainerServerRoute, 'netns'>,
 	): Promise<ContainerServerAddress | undefined> {
-		// Never fails the run: a server address the runtime cannot determine only costs the live view.
+		// Never fails the run: a server address the runtime cannot determine only costs the containerUrl.
 		const info = await Promise.resolve()
 			.then(() => container.inspect())
 			.catch(() => undefined);

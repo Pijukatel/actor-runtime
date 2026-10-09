@@ -1,7 +1,7 @@
 /**
- * Run web server and live view (`actor-driver.md`, `api.md`, `console.md`): every run's `containerUrl`,
- * the env vars that tell the Actor about it, the container-URL router forwarding requests to the server
- * inside the run's container, and the console's live view. The driver stub runs each "container" as a
+ * Run web server (`actor-driver.md`, `api.md`, `console.md`): every run's `containerUrl`, the env vars
+ * that tell the Actor about it, the container-URL router forwarding requests to the server inside the
+ * run's container, and the console's link to it. The driver stub runs each "container" as a
  * real local HTTP server, so every request crosses a real proxy hop.
  */
 import http, { type IncomingMessage, type Server } from 'node:http';
@@ -190,7 +190,7 @@ describe('run web server (containerUrl)', () => {
 		return { actor, run, container };
 	}
 
-	it('gives every run a containerUrl, the Actor its web server env vars, and the run log the live view URL', async () => {
+	it('gives every run a containerUrl, the Actor its web server env vars, and the run log the URL', async () => {
 		driver = serverDriver();
 		server = await startTestServer(driver);
 		const { run, container } = await startedRun();
@@ -207,10 +207,11 @@ describe('run web server (containerUrl)', () => {
 		});
 		const log = await waitUntil(async () => {
 			const text = await getFullLog(run.id);
-			return text.includes('Live view') ? text : undefined;
+			return text.includes('Web server:') ? text : undefined;
 		});
-		expect(log).toContain(`http://localhost:3000/runs/${run.id}/live-view`);
-		expect(log).toContain(run.containerUrl);
+		// The runtime colors the URL; the ANSI codes are stripped before asserting.
+		// eslint-disable-next-line no-control-regex
+		expect(log.replace(/\x1b\[[0-9;]*m/g, '')).toContain(`is served at ${run.containerUrl} (live view).`);
 
 		// The run object read from inside a container carries the path form on the API alias.
 		const fromContainer = await new Promise<string>((resolve, reject) => {
@@ -312,7 +313,7 @@ describe('run web server (containerUrl)', () => {
 		);
 	});
 
-	it('shows the containerUrl on the run page and frames it on the live view page while the run goes', async () => {
+	it('links the containerUrl, as the live view, on the run page', async () => {
 		driver = serverDriver();
 		server = await startTestServer(driver);
 		const { run } = await startedRun();
@@ -323,17 +324,9 @@ describe('run web server (containerUrl)', () => {
 		try {
 			const { port } = consoleServer.address() as AddressInfo;
 			const runHtml = await (await fetch(`http://127.0.0.1:${port}/runs/${run.id}`)).text();
+			expect(runHtml).toContain('containerUrl (live view)');
 			expect(runHtml).toContain(`href="${run.containerUrl}"`);
-			expect(runHtml).toContain(`href="/runs/${run.id}/live-view"`);
-
-			const liveView = await (await fetch(`http://127.0.0.1:${port}/runs/${run.id}/live-view`)).text();
-			expect(liveView).toContain(`<iframe class="live-view-frame" src="${run.containerUrl}/"`);
-
-			driver.containers.find((c) => c.ctx.runId === run.id)!.finish({ exitCode: 0, timedOut: false });
-			await waitUntil(async () => (await server.client.run(run.id).get())?.status === 'SUCCEEDED');
-			const ended = await (await fetch(`http://127.0.0.1:${port}/runs/${run.id}/live-view`)).text();
-			expect(ended).not.toContain('<iframe');
-			expect(ended).toContain('Run finished');
+			expect(runHtml).not.toContain('/live-view');
 		} finally {
 			await new Promise((resolve) => consoleServer.close(resolve));
 		}

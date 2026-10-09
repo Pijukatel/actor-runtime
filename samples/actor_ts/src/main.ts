@@ -47,7 +47,7 @@ const { startUrl, maxPages } = input;
 log.info(`Crawling up to ${maxPages} page(s) starting from ${startUrl}.`);
 
 // A progress page on the run's web server port: the platform (and the runtime) serve it at the run's
-// container URL, which the console shows as the run's live view. Any server works; this one is plain http.
+// container URL, which the console links as the run's live view. Any server works; this one is plain http.
 const crawled: string[] = [];
 const runId = Actor.config.get('actorRunId');
 createServer((req, res) => {

@@ -147,7 +147,7 @@ describe('end-to-end: a run never reads terminal via HTTP before its log has ful
 		// A fresh, non-stream log read the instant status is observed terminal must contain the full
 		// output - not just what had arrived before the container "exited".
 		const log = await server.client.log(run.id).get();
-		// Strip the per-line timestamps and the runtime's own lines (the live view notice every run gets) -
+		// Strip the per-line timestamps and the runtime's own lines (the web server notice every run gets) -
 		// this test is about the drain race, not the log format.
 		const actorOutput = log
 			?.split('\n')

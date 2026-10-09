@@ -77,7 +77,7 @@ export interface RuntimeRunArgsOptions {
  * The command `apify runtime start --detach` runs, as apify-cli's `buildRuntimeRunArgs` builds it (the
  * container name and the data mount aside), so the suite starts the runtime exactly the way the CLI
  * does on every engine - including the host-loopback network mode rootless Podman 3.x needs
- * (`actor-driver.md`'s "Web server and live view"). `test/unit/e2e-runtime-command.test.ts` pins it.
+ * (`actor-driver.md`'s "Web server (live view)"). `test/unit/e2e-runtime-command.test.ts` pins it.
  */
 export function runtimeRunArgs(engine: EngineInfo, options: RuntimeRunArgsOptions): string[] {
 	const hostLoopback = engine.cli === 'podman' && engine.rootless && engine.podmanMajorVersion === 3;

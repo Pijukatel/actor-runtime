@@ -1,8 +1,7 @@
 /**
- * Run web server and live view end to end (`test.md`'s "Web server and live view"): `samples/actor_ts`
- * serves a progress page on `ACTOR_WEB_SERVER_PORT`, which is reachable at the run's `containerUrl` -
- * in both its forms - while the run goes, framed by the console's live view page, and gone once the run
- * has ended. The requests to the container URL and the console are the narrow exception `test.md`
+ * Run web server end to end (`test.md`'s "Web server (live view)"): `samples/actor_ts` serves a progress
+ * page on `ACTOR_WEB_SERVER_PORT`, which is reachable at the run's `containerUrl` - in both its forms -
+ * while the run goes, linked from the console's run page, and gone once the run has ended. The requests to the container URL and the console are the narrow exception `test.md`
  * allows; every other assertion reads `apify` output.
  */
 import http from 'node:http';
@@ -61,7 +60,7 @@ function getByHost(containerUrl: string, path: string): Promise<{ status: number
 	});
 }
 
-describe('Run web server and live view via apify-cli (requires Docker)', () => {
+describe('Run web server via apify-cli (requires Docker)', () => {
 	let isolatedApifyHome: string;
 	let env: NodeJS.ProcessEnv;
 
@@ -89,7 +88,7 @@ describe('Run web server and live view via apify-cli (requires Docker)', () => {
 	});
 
 	it(
-		"the run's progress page is served at its containerUrl and live view while it runs, and gone once it ended",
+		"the run's progress page is served at its containerUrl while it runs, and gone once it ended",
 		async () => {
 			const push = JSON.parse(apify(['push', '--json'], { cwd: SAMPLE_ACTOR_DIR, env })) as PushResult;
 			expect(push.build.status).toBe('SUCCEEDED');
@@ -123,11 +122,10 @@ describe('Run web server and live view via apify-cli (requires Docker)', () => {
 			expect(byHost.status).toBe(200);
 			expect(byHost.body).toContain(`Run ${runId}`);
 
-			// The console's run page links both; its live view page frames the URL.
+			// The console's run page links the URL as the run's live view.
 			const runPage = await (await fetchConsole(`/runs/${runId}`)).text();
+			expect(runPage).toContain('containerUrl (live view)');
 			expect(runPage).toContain(`href="${started.containerUrl}"`);
-			const liveView = await (await fetchConsole(`/runs/${runId}/live-view`)).text();
-			expect(liveView).toContain(`<iframe class="live-view-frame" src="${started.containerUrl}/"`);
 
 			const finished = await waitFor(
 				() => {
@@ -149,15 +147,14 @@ describe('Run web server and live view via apify-cli (requires Docker)', () => {
 				/\x1b\[[0-9;]*m/g,
 				'',
 			);
-			expect(log).toContain(`Live view: http://localhost:3000/runs/${runId}/live-view`);
+			expect(log).toContain(
+				`Web server: a server the Actor starts on port 4321 (ACTOR_WEB_SERVER_PORT) is served at ${started.containerUrl} (live view).`,
+			);
 			expect(log).toContain(`Progress page served at ${started.containerUrl}`);
 
 			const gone = await fetch(`${pathForm}/`);
 			expect(gone.status).toBe(410);
 			expect(((await gone.json()) as { error: { type: string } }).error.type).toBe('run-finished');
-			const endedView = await (await fetchConsole(`/runs/${runId}/live-view`)).text();
-			expect(endedView).toContain('Run finished');
-			expect(endedView).not.toContain('<iframe');
 		},
 		10 * 60 * 1000,
 	);

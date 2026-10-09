@@ -1,5 +1,5 @@
 /**
- * A run's `containerUrl` (`actor-driver.md`'s "Web server and live view"): where requests reach the HTTP
+ * A run's `containerUrl` (`actor-driver.md`'s "Web server (live view)"): where requests reach the HTTP
  * server an Actor may start on `ACTOR_WEB_SERVER_PORT` inside its run's container. The platform serves
  * it at `https://<key>.runs.apify.net`; here it is on the API port, in the platform's host-based shape for
  * clients on the host, and in a path form for Actor containers and clients that do not resolve

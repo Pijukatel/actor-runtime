@@ -285,20 +285,6 @@ connect();
 	);
 }
 
-/** The live view (`console.md`): the page the Actor serves at its run's `containerUrl`, framed. The
- * frame itself shows the router's own "not listening yet" page, which reloads on its own, until the
- * Actor starts a server. */
-export function liveViewPage(run: RunRecord, url: string): string {
-	const runLink = `<a href="/runs/${encodeURIComponent(run.id)}">${escapeHtml(run.id)}</a>`;
-	return (
-		`<p>Web page served by the Actor of run ${runLink} on its web server port (<code>ACTOR_WEB_SERVER_PORT</code>, ` +
-		`4321 unless the Actor's version sets it), at ` +
-		`<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>. ` +
-		`An Actor that starts no server shows a "nothing is listening" notice here instead, which checks again on its own.</p>` +
-		`<iframe class="live-view-frame" src="${escapeHtml(url)}/" title="Live view of run ${escapeHtml(run.id)}"></iframe>`
-	);
-}
-
 /** Six decimals at most, trailing zeros trimmed, never exponent notation. */
 export function formatUsd(value: number): string {
 	return `$${Number(value.toFixed(6)).toString()}`;

@@ -51,11 +51,11 @@ Test case must verify full Actor development flow:
 - Each standby sample, pushed: its requests share one `STANDBY` run, which ends `SUCCEEDED` once idle, and
   the next request starts a new one; `samples/actor_standby_web` is also reachable from another Actor's run.
 
-## Web server and live view
+## Web server (live view)
 
 - `samples/actor_ts`, pushed and run: its progress page is served at the run's `containerUrl`, in both
-  forms, and framed by the console's live view page while the run goes; once the run has ended the URL
-  says so and the live view page shows no frame.
+  forms, while the run goes, and the console's run page links the URL; once the run has ended the URL
+  says so.
 
 ## Monorepo Actors
 
