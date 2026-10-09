@@ -261,7 +261,9 @@ function buildEnv(
 		ACTOR_ID: actor.id,
 		APIFY_ACTOR_RUN_ID: run.id,
 		ACTOR_RUN_ID: run.id,
-		...(run.actorTaskId ? { APIFY_ACTOR_TASK_ID: run.actorTaskId, ACTOR_TASK_ID: run.actorTaskId } : {}),
+		// Empty for a run outside any task, as the platform's worker sets it.
+		APIFY_ACTOR_TASK_ID: run.actorTaskId ?? '',
+		ACTOR_TASK_ID: run.actorTaskId ?? '',
 		...(ownerUsername ? { ACTOR_FULL_NAME: `${ownerUsername}/${actor.name}` } : {}),
 		// The user who started the run - in the runtime always the Actor's owner. No `ACTOR_` counterpart.
 		APIFY_USER_ID: run.userId,
@@ -301,9 +303,8 @@ function buildEnv(
 	// Deliberately not accompanied by `APIFY_ACTOR_PRICING_INFO`/`APIFY_CHARGED_ACTOR_EVENT_COUNTS`: with
 	// both set the SDKs skip their fetch of the run object, and a container restarted by a migration would
 	// then read charge counts frozen at run start.
-	if (run.options.maxTotalChargeUsd !== undefined) {
-		env.ACTOR_MAX_TOTAL_CHARGE_USD = String(run.options.maxTotalChargeUsd);
-	}
+	// Empty for a run without a cap (a zero cap included), exactly as the platform's worker sets it.
+	env.ACTOR_MAX_TOTAL_CHARGE_USD = run.options.maxTotalChargeUsd ? String(run.options.maxTotalChargeUsd) : '';
 	return env;
 }
 
