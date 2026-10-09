@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
 - Support restart on error ([#97](https://github.com/apify/actor-runtime/pull/97)) ([2f0e87e](https://github.com/apify/actor-runtime/commit/2f0e87ea412091a10ed0e900e0bc908b072aefc6)) by [@Pijukatel](https://github.com/Pijukatel)
 - Support dataset schema validation ([#98](https://github.com/apify/actor-runtime/pull/98)) ([96dec5a](https://github.com/apify/actor-runtime/commit/96dec5ae091af3ae1536c96523ae5065b6e46745)) by [@Pijukatel](https://github.com/Pijukatel)
 - Support Actor tasks (saved input configurations) ([#99](https://github.com/apify/actor-runtime/pull/99)) ([e433fd1](https://github.com/apify/actor-runtime/commit/e433fd1d6dd8ed3bb152d3fac2fa18f4d7821d93)) by [@Pijukatel](https://github.com/Pijukatel)
+- Support webhooks and webhook dispatches ([#100](https://github.com/apify/actor-runtime/pull/100)) ([7d7b128](https://github.com/apify/actor-runtime/commit/7d7b128b8be5614ea0af1240ed3959f3b1af8329)) by [@Pijukatel](https://github.com/Pijukatel)
 
 
 <!-- git-cliff-unreleased-end -->
