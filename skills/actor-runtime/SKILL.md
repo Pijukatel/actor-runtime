@@ -321,10 +321,6 @@ later, then a fresh container for the same run - same run id, env vars and stora
 gone. The Migrate button on the run's console page does the same.
 `POST /v2/actor-runs/<runId>/reboot` and `POST /v2/actor-runs/<runId>/resurrect` are also implemented.
 
-To test an Actor's recovery from a crash, start it with restart on error, as on the platform:
-`apify api POST '/v2/actors/<actorId>/runs?restartOnError=true'`. A non-zero exit restarts the same run
-(`stats.restartCount`); after 3 restarts within a minute the run ends `FAILED`.
-
 ## When this runtime does not implement something
 
 A call can fail because this runtime does not know the id, or does not implement the endpoint at

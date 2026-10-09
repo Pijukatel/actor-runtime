@@ -307,17 +307,6 @@ This runtime emulates that observable experience on demand:
   `resurrectCount`, initialized to `0` at run creation like the platform.
 - The run's log is cumulative across restarts, with a one-line marker between the incarnations' output.
 
-## Restart on error
-
-- `restartOnError=true` on run start (`POST /v2/actors/:actorId/runs` and the `run-sync` endpoints) or
-  on resurrect works as on the platform: when the run's container exits with a non-zero code, the same
-  run restarts the way a reboot does, and `stats.restartCount` increments. The option is reported in
-  the run object's `options`.
-- A run that already restarted 3 times within the last minute is not restarted again: it ends `FAILED`
-  with the container's exit code, and its log says why.
-- A timed-out or aborted run is never restarted. A resurrection keeps the run's option unless it sets
-  one, and starts with a clean restart history.
-
 ## Resurrecting a finished run
 
 - `POST /v2/actor-runs/:runId/resurrect` works as on the platform, except that `maxItems` is
