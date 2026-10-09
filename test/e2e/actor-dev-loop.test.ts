@@ -107,6 +107,31 @@ describe('full Actor dev loop via apify-cli (requires Docker)', () => {
 		);
 	}
 
+	it('Python sample actor fills the extra datasets its .actor/actor.json declares', () => {
+		const env = apifyEnv(isolatedApifyHome);
+		const actorDir = join(REPO_ROOT, 'samples', 'actor_py');
+		const callOutput = apify(['call', '--input', JSON.stringify({ maxPages: 2 }), '--json'], {
+			cwd: actorDir,
+			env,
+		});
+		const call = JSON.parse(callOutput) as CallResult;
+		expect(call.run.status).toBe('SUCCEEDED');
+
+		const runApiOutput = apify(['api', 'GET', `actor-runs/${call.run.id}`], { cwd: REPO_ROOT, env });
+		const { datasets } = (
+			JSON.parse(runApiOutput) as ApiEnvelope<{ storageIds: { datasets: Record<string, string> } }>
+		).data.storageIds;
+		expect(datasets.default).toBe(call.storage.defaultDatasetId);
+
+		const itemCountOf = (datasetId: string | undefined): number => {
+			expect(datasetId).toBeTruthy();
+			const infoOutput = apify(['datasets', 'info', datasetId!, '--json'], { cwd: actorDir, env });
+			return (JSON.parse(infoOutput) as DatasetInfoResult).itemCount;
+		};
+		expect(itemCountOf(datasets.pageLinks)).toBe(2);
+		expect(itemCountOf(datasets.summary)).toBe(1);
+	});
+
 	it(
 		'samples/actor_crawler: push -> build succeeds (build-only - its Dockerfile lives at .actor/Dockerfile, ' +
 			'the layout that used to fail with a daemon-side "Cannot locate specified Dockerfile" error)',

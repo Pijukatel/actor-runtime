@@ -19,7 +19,6 @@ real account, not in the runtime.
 - Ad-hoc webhooks on run start
 - Metered usage other than compute units: storage operations, data transfer and proxy
 - Billing: a run's charges and costs are reported, never invoiced or paid out
-- Extra named default storages (`storageIds`)
 - Limited-permission Actors and per-run scoped tokens
 - Automatic run and build retention
 - Running Actors from the console

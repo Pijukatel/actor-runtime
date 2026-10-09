@@ -35,6 +35,7 @@ import { containerUrl } from './container-url.js';
 import { formatRuntimeLogLines } from '../runtime-log.js';
 import { getRunTelemetry } from './events-channel.js';
 import { resolveRunMemory } from './actor-memory.js';
+import { DEFAULT_STORAGE_ALIAS, runStorageIds } from './actor-storages.js';
 import {
 	ACTOR_START_EVENT_NAME,
 	actorStartEventCount,
@@ -229,6 +230,8 @@ function buildEnv(
 		APIFY_DEFAULT_KEY_VALUE_STORE_ID: run.defaultKeyValueStoreId,
 		APIFY_DEFAULT_DATASET_ID: run.defaultDatasetId,
 		APIFY_DEFAULT_REQUEST_QUEUE_ID: run.defaultRequestQueueId,
+		// How the SDKs find a storage by alias, e.g. `Actor.openDataset({ alias })`.
+		ACTOR_STORAGES_JSON: JSON.stringify(runStorageIds(run)),
 		APIFY_ACTOR_ID: actor.id,
 		ACTOR_ID: actor.id,
 		APIFY_ACTOR_RUN_ID: run.id,
@@ -267,10 +270,12 @@ export async function startRun(
 ): Promise<RunRecord> {
 	const { runs } = getRegistries();
 
-	const [dataset, keyValueStore, requestQueue] = await Promise.all([
+	const extraDatasetAliases = build.extraDatasetAliases ?? [];
+	const [dataset, keyValueStore, requestQueue, ...extraDatasets] = await Promise.all([
 		createStorage(actor.userId, 'dataset'),
 		createStorage(actor.userId, 'keyValueStore'),
 		createStorage(actor.userId, 'requestQueue'),
+		...extraDatasetAliases.map(() => createStorage(actor.userId, 'dataset')),
 	]);
 
 	const input = await sealInputSecrets(actor, build.inputSchema, options.input);
@@ -310,6 +315,14 @@ export async function startRun(
 		defaultDatasetId: dataset.id,
 		defaultKeyValueStoreId: keyValueStore.id,
 		defaultRequestQueueId: requestQueue.id,
+		storageIds: {
+			datasets: {
+				[DEFAULT_STORAGE_ALIAS]: dataset.id,
+				...Object.fromEntries(extraDatasetAliases.map((alias, index) => [alias, extraDatasets[index]!.id])),
+			},
+			keyValueStores: { [DEFAULT_STORAGE_ALIAS]: keyValueStore.id },
+			requestQueues: { [DEFAULT_STORAGE_ALIAS]: requestQueue.id },
+		},
 		options: {
 			build: buildTag,
 			memoryMbytes,
