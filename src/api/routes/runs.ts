@@ -149,6 +149,7 @@ export function mountRuns(router: Router, deps: ApiServerDeps): void {
 				timeoutSecs,
 				memoryMbytes,
 				maxTotalChargeUsd,
+				restartOnError: queryBoolean(req, 'restartOnError'),
 				// The same runtime-only extension run start takes (`api.md`).
 				devFolder: queryBoolean(req, 'devFolder'),
 				standbyUrl: standbyUrl(actor, user.username),

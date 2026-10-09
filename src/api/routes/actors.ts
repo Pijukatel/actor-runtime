@@ -205,6 +205,7 @@ export async function startRunFromRequest(req: Request, deps: ApiServerDeps): Pr
 		memoryMbytes: queryNumber(req, 'memory'),
 		timeoutSecs: queryNumber(req, 'timeout'),
 		maxTotalChargeUsd,
+		restartOnError: queryBoolean(req, 'restartOnError'),
 		build: tag,
 		// Runtime-only extension (`api.md`): `?devFolder=false` skips the dev-folder mount for this run.
 		devFolder: queryBoolean(req, 'devFolder'),
