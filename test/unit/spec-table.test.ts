@@ -41,12 +41,19 @@ describe('matchSpecPath', () => {
 		expect(matchSpecPath('POST', 'v2/actors/abc/runs/last/metamorph')?.implemented).toBe(false);
 	});
 
-	it('serves the Actor run-sync endpoints but not their task variants', () => {
+	it('serves the run-sync endpoints of Actors and tasks', () => {
 		for (const method of ['GET', 'POST']) {
 			expect(matchSpecPath(method, 'v2/actors/abc/run-sync')?.implemented).toBe(true);
 			expect(matchSpecPath(method, 'v2/actors/abc/run-sync-get-dataset-items')?.implemented).toBe(true);
-			expect(matchSpecPath(method, 'v2/actor-tasks/abc/run-sync')?.implemented).toBe(false);
-			expect(matchSpecPath(method, 'v2/actor-tasks/abc/run-sync-get-dataset-items')?.implemented).toBe(false);
+			expect(matchSpecPath(method, 'v2/actor-tasks/abc/run-sync')?.implemented).toBe(true);
+			expect(matchSpecPath(method, 'v2/actor-tasks/abc/run-sync-get-dataset-items')?.implemented).toBe(true);
 		}
+	});
+
+	it('serves tasks, but not their webhooks', () => {
+		expect(matchSpecPath('GET', 'v2/actor-tasks')?.implemented).toBe(true);
+		expect(matchSpecPath('PUT', 'v2/actor-tasks/abc/input')?.implemented).toBe(true);
+		expect(matchSpecPath('GET', 'v2/actor-tasks/abc/runs/last/dataset/items')?.implemented).toBe(true);
+		expect(matchSpecPath('GET', 'v2/actor-tasks/abc/webhooks')?.implemented).toBe(false);
 	});
 });

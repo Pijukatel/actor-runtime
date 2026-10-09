@@ -87,6 +87,9 @@ number }`, both already resolved (never `"auto"`, never absent-meaning-default).
           particular build succeeded and its own image's working directory could be captured (also
           absent when the captured value was empty or `/`) - never on any other build, and never derived
           from, or copied onto, the Actor record (see `localDevFolder`'s entry above).
+- The system stores tasks in dedicated key-value store called `__TASKS__`:
+    - `key` is the id of the task (`actorTaskId`)
+    - `value` is the task: owner (`userId`), Actor (`actorId`), name, saved input and run options
 - The system stores logs in dedicated key-value store called `__LOGS__`:
     - `key` is the id of the Actor build (`logId`)
     - `value` is the metadata of the Actor

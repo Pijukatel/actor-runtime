@@ -1,6 +1,6 @@
 /**
  * Generic per-record registry over an internal `KeyValueStore` (one of `__STORAGES__` / `__USERS__` /
- * `__ACTORS__` / `__RUNS__` / `__BUILDS__` / `__LOGS__` / `__FILES__`). Never routable from the public
+ * `__ACTORS__` / `__RUNS__` / `__BUILDS__` / `__TASKS__` / `__LOGS__` / `__FILES__`). Never routable from the public
  * API - the API only resolves ids found in the matching registry, so these stores are unreachable by
  * construction (they are never opened by an id an external caller could guess into a public route).
  */

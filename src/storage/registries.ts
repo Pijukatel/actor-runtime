@@ -1,11 +1,11 @@
 /**
- * The seven internal `__*__` registries from `storage.md`, opened once at startup. They are ordinary
+ * The eight internal `__*__` registries from `storage.md`, opened once at startup. They are ordinary
  * `KeyValueStore` frontends opened by name, in the same physical space as user storages, and are never
  * routable from the public API - the API only ever resolves ids it first finds in one of these.
  */
 import { Registry } from './registry.js';
 import { openKeyValueStore } from './open.js';
-import type { ActorRecord, BuildRecord, RunRecord, StorageRecord, UserRecord } from './entities.js';
+import type { ActorRecord, BuildRecord, RunRecord, StorageRecord, TaskRecord, UserRecord } from './entities.js';
 
 export interface Registries {
 	storages: Registry<StorageRecord>;
@@ -13,6 +13,7 @@ export interface Registries {
 	actors: Registry<ActorRecord>;
 	runs: Registry<RunRecord>;
 	builds: Registry<BuildRecord>;
+	tasks: Registry<TaskRecord>;
 	/** Plain-text log bodies, keyed by build/run id. Not JSON - see `LogStore`. */
 	logs: Awaited<ReturnType<typeof openKeyValueStore>>;
 	files: Awaited<ReturnType<typeof openKeyValueStore>>;
@@ -28,6 +29,7 @@ export async function openRegistries(): Promise<Registries> {
 		actors: await Registry.open<ActorRecord>('__ACTORS__'),
 		runs: await Registry.open<RunRecord>('__RUNS__'),
 		builds: await Registry.open<BuildRecord>('__BUILDS__'),
+		tasks: await Registry.open<TaskRecord>('__TASKS__'),
 		logs: await openKeyValueStore('__LOGS__'),
 		files: await openKeyValueStore('__FILES__'),
 	};

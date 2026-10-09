@@ -153,3 +153,41 @@ export function runFailed(runId: string, status: string): ApiError {
 export function defaultDatasetNotFound(): ApiError {
 	return new ApiError(400, 'default-dataset-not-found', 'The run does not have a default dataset.');
 }
+
+/** Matches the real platform's `actorTask.actorTaskNameExists`. */
+export function actorTaskNameExists(name: string): ApiError {
+	return new ApiError(409, 'actor-task-name-not-unique', `Some other Actor task already has this name ("${name}").`);
+}
+
+/** Matches the real platform's `actorTask.cannotPublishActorTask`; publishing is not supported here. */
+export function cannotPublishActorTask(): ApiError {
+	return new ApiError(
+		400,
+		'cannot-publish-actor-task',
+		'Cannot publish Actor task: publishing tasks is not supported by the local runtime',
+	);
+}
+
+function jsonTypeOf(value: unknown): string {
+	return Array.isArray(value) ? 'array' : typeof value;
+}
+
+/** Matches the real platform's `actorTask.actorTaskInputNotObject`. */
+export function actorTaskInputNotObject(input: unknown): ApiError {
+	return new ApiError(403, 'invalid-input', `Actor task input must be object, got "${jsonTypeOf(input)}" instead.`);
+}
+
+/** Matches the real platform's `actorTask.providedInputNotObject`. */
+export function providedInputNotObject(input: unknown): ApiError {
+	return new ApiError(403, 'invalid-input', `Provided input must be object, got "${jsonTypeOf(input)}" instead.`);
+}
+
+/** Matches the real platform's `actorTask.providedInputNotValidJson`. */
+export function providedInputNotValidJson(error: Error): ApiError {
+	return new ApiError(400, 'invalid-input', `Cannot parse body of provided input: ${error.message}`);
+}
+
+/** Matches the real platform's `actorTask.actorTaskInputNotJson`. */
+export function actorTaskInputNotJson(): ApiError {
+	return new ApiError(403, 'invalid-input', 'Actor task input must have content type "application/json".');
+}

@@ -59,6 +59,7 @@ describe('API shell: envelope, 501/404, internal-object isolation, ownership sco
 			'__ACTORS__',
 			'__RUNS__',
 			'__BUILDS__',
+			'__TASKS__',
 			'__LOGS__',
 			'__FILES__',
 		];

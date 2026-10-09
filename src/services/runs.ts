@@ -64,9 +64,17 @@ function memoryMbytesToDisk(memoryMbytes: number): number {
 	return memoryMbytes * DISK_MBYTES_PER_MEMORY_MBYTE;
 }
 
-export async function listOwnedRuns(userId: string, actorId?: string): Promise<RunRecord[]> {
+/** Which runs a listing covers: one Actor's, or one task's. */
+export type RunScope = { actorId: string } | { actorTaskId: string };
+
+function inScope(run: RunRecord, scope: RunScope | undefined): boolean {
+	if (!scope) return true;
+	return 'actorId' in scope ? run.actorId === scope.actorId : run.actorTaskId === scope.actorTaskId;
+}
+
+export async function listOwnedRuns(userId: string, scope?: RunScope): Promise<RunRecord[]> {
 	const all = await getRegistries().runs.list();
-	return all.filter((run) => run.userId === userId && (!actorId || run.actorId === actorId));
+	return all.filter((run) => run.userId === userId && inScope(run, scope));
 }
 
 export async function getOwnedRun(userId: string, id: string): Promise<RunRecord | null> {
@@ -101,10 +109,10 @@ export async function setRunStatusMessage(
  */
 export async function findLastOwnedRun(
 	userId: string,
-	actorId: string,
+	scope: RunScope,
 	filter: { status?: string; origin?: string } = {},
 ): Promise<RunRecord | null> {
-	const runs = await listOwnedRuns(userId, actorId);
+	const runs = await listOwnedRuns(userId, scope);
 	let newest: RunRecord | null = null;
 	for (const run of runs) {
 		if (filter.status !== undefined && run.status !== filter.status) continue;
@@ -146,6 +154,8 @@ export interface StartRunOptions {
 	devFolder?: boolean;
 	/** Absent means no cap. */
 	maxTotalChargeUsd?: number;
+	/** The task the run is started from, if any. */
+	actorTaskId?: string;
 	/** `STANDBY` for a run the standby router starts; `API` otherwise. */
 	origin?: 'API' | 'STANDBY';
 	/** The Actor's standby URL, given to every run as `ACTOR_STANDBY_URL`, as on the platform. */
@@ -234,6 +244,7 @@ function buildEnv(
 		ACTOR_ID: actor.id,
 		APIFY_ACTOR_RUN_ID: run.id,
 		ACTOR_RUN_ID: run.id,
+		...(run.actorTaskId ? { APIFY_ACTOR_TASK_ID: run.actorTaskId, ACTOR_TASK_ID: run.actorTaskId } : {}),
 		// No token: the endpoint is unauthenticated and the run id in the path is all there is to scope on.
 		ACTOR_EVENTS_WEBSOCKET_URL: eventsWebSocketUrl,
 		APIFY_ACTOR_EVENTS_WS_URL: eventsWebSocketUrl,
@@ -301,6 +312,7 @@ export async function startRun(
 		id: generateId(),
 		userId: actor.userId,
 		actorId: actor.id,
+		...(options.actorTaskId ? { actorTaskId: options.actorTaskId } : {}),
 		buildId: build.id,
 		buildNumber: build.buildNumber,
 		status: 'READY',

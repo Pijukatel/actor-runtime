@@ -5,10 +5,11 @@
  */
 import type { Request } from 'express';
 
-import type { ActorRecord, StorageRecord, StorageType } from '../storage/entities.js';
+import type { ActorRecord, StorageRecord, StorageType, TaskRecord } from '../storage/entities.js';
 import { parseResourceReference, type ResolvableReference } from '../services/resource-reference.js';
 import { resolveOwnedActor } from '../services/actors.js';
 import { resolveOwnedStorage } from '../services/storages.js';
+import { resolveOwnedTask } from '../services/tasks.js';
 import { requireUser } from './auth.js';
 import { invalidRequest } from './errors.js';
 
@@ -28,4 +29,8 @@ export async function resolveStorageParam(
 	type: StorageType,
 ): Promise<StorageRecord | null> {
 	return resolveOwnedStorage(requireUser(req), referenceFrom(req, param), type);
+}
+
+export async function resolveTaskParam(req: Request): Promise<TaskRecord | null> {
+	return resolveOwnedTask(requireUser(req), referenceFrom(req, 'actorTaskId'));
 }

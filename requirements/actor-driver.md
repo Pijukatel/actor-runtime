@@ -294,7 +294,7 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
   the API)
 - `APIFY_ACTOR_ID` / `ACTOR_ID` and `APIFY_ACTOR_RUN_ID` / `ACTOR_RUN_ID` —
   both the legacy `APIFY_`-prefixed and the modern unprefixed spellings, equal
-  in value.
+  in value. A task run also gets `APIFY_ACTOR_TASK_ID` / `ACTOR_TASK_ID`.
 - `APIFY_PROXY_PASSWORD` — set when a value is known, from either of two sources in precedence order:
   (1) `APIFY_PROXY_PASSWORD` set in the runtime's own environment (README.md's "Apify Proxy" section) —
   always wins when set; otherwise (2) the proxy password obtained for the run owner's own account during

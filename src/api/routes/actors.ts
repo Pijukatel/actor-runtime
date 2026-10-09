@@ -47,7 +47,7 @@ import type { ApiServerDeps } from '../server.js';
 import { CONTAINER_API_BASE_URL } from '../../config.js';
 import { resolveProxyPassword } from '../../services/users.js';
 import { validatePricingInfosUpdate } from '../../services/pricing.js';
-import { resolveBuildInput } from '../../services/input-schema.js';
+import { resolveBuildInput, type ActorInput } from '../../services/input-schema.js';
 import { publicEnvVar, validateEnvVar, validateEnvVars } from '../../services/env-vars.js';
 import {
 	mergeStandbyUpdate,
@@ -146,16 +146,51 @@ function findEnvVarOrThrow(version: ActorVersionRecord, name: string): ActorEnvV
 	return envVar;
 }
 
-/** Starts a run the way `POST /actors/:actorId/runs` does - shared with the `run-sync` endpoints. */
-export async function startRunFromRequest(req: Request, deps: ApiServerDeps): Promise<RunRecord> {
-	const actor = await resolveActorParam(req);
-	if (!actor) throw recordNotFound();
+/** What a run-starting request asks for; anything absent falls back to the run's own default. */
+export interface ActorRunRequest {
+	build?: string;
+	memoryMbytes?: number;
+	timeoutSecs?: number;
+	maxTotalChargeUsd?: number;
+	input?: ActorInput;
+	actorTaskId?: string;
+}
 
-	const tag = queryString(req, 'build') ?? DEFAULT_TAG;
+/** The run options a run-starting request names in its query string. */
+export function runOptionsFromQuery(req: Request): Omit<ActorRunRequest, 'input' | 'actorTaskId'> {
 	const maxTotalChargeUsd = queryNumber(req, 'maxTotalChargeUsd');
 	if (maxTotalChargeUsd !== undefined && maxTotalChargeUsd < 0) {
 		throw invalidRequest('"maxTotalChargeUsd" must be a number >= 0');
 	}
+	const options = {
+		build: queryString(req, 'build'),
+		memoryMbytes: queryNumber(req, 'memory'),
+		timeoutSecs: queryNumber(req, 'timeout'),
+		maxTotalChargeUsd,
+	};
+	return Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined));
+}
+
+/** Starts a run the way `POST /actors/:actorId/runs` does - shared with the `run-sync` endpoints. */
+export async function startRunFromRequest(req: Request, deps: ApiServerDeps): Promise<RunRecord> {
+	const actor = await resolveActorParam(req);
+	if (!actor) throw recordNotFound();
+	const options = runOptionsFromQuery(req);
+	const body = rawBody(req);
+	return startActorRun(req, deps, actor, {
+		...options,
+		input: body.length > 0 ? { body, contentType: req.header('content-type') ?? 'application/json' } : undefined,
+	});
+}
+
+/** Starts a run of the caller's own `actor` - shared by Actor and task runs. */
+export async function startActorRun(
+	req: Request,
+	deps: ApiServerDeps,
+	actor: ActorRecord,
+	request: ActorRunRequest,
+): Promise<RunRecord> {
+	const tag = request.build ?? DEFAULT_TAG;
 	const lookup = await resolveTaggedBuild(actor, tag);
 	if (!lookup.found) {
 		// `no-such-tag` names the tag, matching base behavior exactly. `build-deleted` (the tag
@@ -170,11 +205,7 @@ export async function startRunFromRequest(req: Request, deps: ApiServerDeps): Pr
 	}
 	const build = lookup.build;
 
-	const body = rawBody(req);
-	const processed = resolveBuildInput(
-		build,
-		body.length > 0 ? { body, contentType: req.header('content-type') ?? 'application/json' } : undefined,
-	);
+	const processed = resolveBuildInput(build, request.input);
 	if (processed.kind !== 'ok') {
 		throw processed.kind === 'invalid-input-schema'
 			? invalidInputSchema(processed.message)
@@ -188,10 +219,11 @@ export async function startRunFromRequest(req: Request, deps: ApiServerDeps): Pr
 	// harvested-per-account password used specifically for each user").
 	return startRun(deps.driver, actor, build, {
 		input: processed.input,
-		memoryMbytes: queryNumber(req, 'memory'),
-		timeoutSecs: queryNumber(req, 'timeout'),
-		maxTotalChargeUsd,
+		memoryMbytes: request.memoryMbytes,
+		timeoutSecs: request.timeoutSecs,
+		maxTotalChargeUsd: request.maxTotalChargeUsd,
 		build: tag,
+		...(request.actorTaskId ? { actorTaskId: request.actorTaskId } : {}),
 		// Runtime-only extension (`api.md`): `?devFolder=false` skips the dev-folder mount for this run.
 		devFolder: queryBoolean(req, 'devFolder'),
 		standbyUrl: standbyUrl(actor, requireUser(req).username),
@@ -508,7 +540,7 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 		h(async (req, res) => {
 			const actor = await resolveActorParam(req);
 			if (!actor) throw recordNotFound();
-			const runs = await listOwnedRuns(requireUser(req).id, actor.id);
+			const runs = await listOwnedRuns(requireUser(req).id, { actorId: actor.id });
 			const sorted = sortByTimestamp(runs, (run) => run.startedAt);
 			const envelope = paginate(sorted, paginationParams(req));
 			const audience = standbyUrlAudienceOf(req.headers.host);

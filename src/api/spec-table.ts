@@ -88,6 +88,21 @@ export const SPEC_TABLE: SpecTableEntry[] = [
 	pathTemplate('PUT', 'v2/actors/:actorId/versions/:versionNumber/env-vars/:envVarName', true),
 	pathTemplate('DELETE', 'v2/actors/:actorId/versions/:versionNumber/env-vars/:envVarName', true),
 
+	// --- Tasks ---
+	pathTemplate('GET', 'v2/actor-tasks', true),
+	pathTemplate('POST', 'v2/actor-tasks', true),
+	pathTemplate('GET', 'v2/actor-tasks/:taskId', true),
+	pathTemplate('PUT', 'v2/actor-tasks/:taskId', true),
+	pathTemplate('DELETE', 'v2/actor-tasks/:taskId', true),
+	pathTemplate('GET', 'v2/actor-tasks/:taskId/input', true),
+	pathTemplate('PUT', 'v2/actor-tasks/:taskId/input', true),
+	pathTemplate('GET', 'v2/actor-tasks/:taskId/runs', true),
+	pathTemplate('POST', 'v2/actor-tasks/:taskId/runs', true),
+	pathTemplate('GET', 'v2/actor-tasks/:taskId/run-sync', true),
+	pathTemplate('POST', 'v2/actor-tasks/:taskId/run-sync', true),
+	pathTemplate('GET', 'v2/actor-tasks/:taskId/run-sync-get-dataset-items', true),
+	pathTemplate('POST', 'v2/actor-tasks/:taskId/run-sync-get-dataset-items', true),
+
 	// --- Builds ---
 	pathTemplate('GET', 'v2/actor-builds', true),
 	pathTemplate('GET', 'v2/actor-builds/:buildId', true),
@@ -171,19 +186,14 @@ export const SPEC_TABLE: SpecTableEntry[] = [
 	pathTemplate('POST', 'v2/actors/:actorId/runs/last/reboot', true),
 	pathTemplate('POST', 'v2/actors/:actorId/runs/last/metamorph', false),
 	...runStorageAliasEntries('v2/actors/:actorId/runs/last'),
+	pathTemplate('GET', 'v2/actor-tasks/:taskId/runs/last', true),
+	pathTemplate('GET', 'v2/actor-tasks/:taskId/runs/last/log', true),
+	pathTemplate('POST', 'v2/actor-tasks/:taskId/runs/last/abort', true),
+	pathTemplate('POST', 'v2/actor-tasks/:taskId/runs/last/reboot', true),
+	pathTemplate('POST', 'v2/actor-tasks/:taskId/runs/last/metamorph', false),
+	...runStorageAliasEntries('v2/actor-tasks/:taskId/runs/last'),
 
 	// --- Known, real Apify API v2 paths this runtime does not implement (-> 501) ---
-	pathTemplate('GET', 'v2/actor-tasks', false),
-	pathTemplate('POST', 'v2/actor-tasks', false),
-	pathTemplate('GET', 'v2/actor-tasks/:taskId', false),
-	pathTemplate('PUT', 'v2/actor-tasks/:taskId', false),
-	pathTemplate('DELETE', 'v2/actor-tasks/:taskId', false),
-	pathTemplate('GET', 'v2/actor-tasks/:taskId/runs', false),
-	pathTemplate('POST', 'v2/actor-tasks/:taskId/runs', false),
-	pathTemplate('GET', 'v2/actor-tasks/:taskId/run-sync', false),
-	pathTemplate('POST', 'v2/actor-tasks/:taskId/run-sync', false),
-	pathTemplate('GET', 'v2/actor-tasks/:taskId/run-sync-get-dataset-items', false),
-	pathTemplate('POST', 'v2/actor-tasks/:taskId/run-sync-get-dataset-items', false),
 	pathTemplate('GET', 'v2/schedules', false),
 	pathTemplate('POST', 'v2/schedules', false),
 	pathTemplate('GET', 'v2/schedules/:scheduleId', false),
@@ -202,6 +212,7 @@ export const SPEC_TABLE: SpecTableEntry[] = [
 	pathTemplate('GET', 'v2/users/:userId/limits', false),
 	pathTemplate('GET', 'v2/users/:userId/usage/monthly', false),
 	pathTemplate('POST', 'v2/actor-runs/:runId/metamorph', false),
+	pathTemplate('GET', 'v2/actor-tasks/:taskId/webhooks', false),
 	pathTemplate('POST', 'v2/actor-tasks/:taskId/webhooks', false),
 ];
 
