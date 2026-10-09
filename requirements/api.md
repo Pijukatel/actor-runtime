@@ -311,7 +311,7 @@ This runtime emulates that observable experience on demand:
 
 - `POST /v2/actor-runs/:runId/resurrect` works as on the platform, except that `maxItems` and
   `restartOnError` are not supported (`unsupported.md`) and the run keeps the pricing it was created
-  with, even when the Actor's pricing changed since. `?devFolder=false` works as on run start.
+  with, even when the Actor's pricing changed since.
 
 ## Upstream fallback (opt-in, off by default, all HTTP methods)
 
