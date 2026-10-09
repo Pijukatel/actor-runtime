@@ -303,15 +303,29 @@ describe('run metadata env vars (input key, build, user, timestamps), as on the 
 		expect(env.APIFY_TIMEOUT_AT).toBe(expectedTimeoutAt);
 	});
 
-	it('a run with no timeout gets no ACTOR_TIMEOUT_AT', async () => {
+	it('a run with no timeout gets an empty ACTOR_TIMEOUT_AT, as on the platform', async () => {
 		const actor = await seedBuiltActor('env-no-timeout-actor');
 		const run = await server.client.actor(actor.id).start({}, { timeout: 0, waitForFinish: 5 });
 		expect(run.status).toBe('SUCCEEDED');
 
 		const env = getCapturedEnv()!;
-		expect(Object.hasOwn(env, 'ACTOR_TIMEOUT_AT')).toBe(false);
-		expect(Object.hasOwn(env, 'APIFY_TIMEOUT_AT')).toBe(false);
+		expect(env.ACTOR_TIMEOUT_AT).toBe('');
+		expect(env.APIFY_TIMEOUT_AT).toBe('');
 		expect(env.ACTOR_STARTED_AT).toBe(new Date(run.startedAt).toISOString());
+	});
+
+	it('ACTOR_RESTART_ON_ERROR is 1 with restart on error on and empty otherwise, as on the platform', async () => {
+		const actor = await seedBuiltActor('env-restart-actor');
+
+		const plain = await server.client.actor(actor.id).start({}, { waitForFinish: 5 });
+		expect(plain.status).toBe('SUCCEEDED');
+		expect(getCapturedEnv()!.ACTOR_RESTART_ON_ERROR).toBe('');
+
+		const restarting = await server.client
+			.actor(actor.id)
+			.start({}, { restartOnError: true, waitForFinish: 5 } as never);
+		expect(restarting.status).toBe('SUCCEEDED');
+		expect(getCapturedEnv()!.ACTOR_RESTART_ON_ERROR).toBe('1');
 	});
 
 	it('a resurrection keeps ACTOR_STARTED_AT and restarts the ACTOR_TIMEOUT_AT budget', async () => {

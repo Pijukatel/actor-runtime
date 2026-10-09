@@ -270,13 +270,17 @@ function buildEnv(
 		ACTOR_BUILD_NUMBER: run.buildNumber,
 		APIFY_ACTOR_BUILD_NUMBER: run.buildNumber,
 		// Fixed at container start, as on the platform: a later retag of the build does not change it.
-		...(buildTags.length > 0 ? { ACTOR_BUILD_TAGS: buildTags.join(',') } : {}),
+		ACTOR_BUILD_TAGS: buildTags.join(','),
 		// Where `startRun` stored the input in the default key-value store.
 		ACTOR_INPUT_KEY: INPUT_KEY,
 		APIFY_INPUT_KEY: INPUT_KEY,
 		ACTOR_STARTED_AT: run.startedAt,
 		APIFY_STARTED_AT: run.startedAt,
-		...(timeoutAt ? { ACTOR_TIMEOUT_AT: timeoutAt, APIFY_TIMEOUT_AT: timeoutAt } : {}),
+		// Empty for a run with no timeout, as the platform's worker sets it.
+		ACTOR_TIMEOUT_AT: timeoutAt ?? '',
+		APIFY_TIMEOUT_AT: timeoutAt ?? '',
+		// `'1'` or empty, exactly as the platform's worker sets it. No `APIFY_` counterpart exists.
+		ACTOR_RESTART_ON_ERROR: run.options.restartOnError ? '1' : '',
 		// No token: the endpoint is unauthenticated and the run id in the path is all there is to scope on.
 		ACTOR_EVENTS_WEBSOCKET_URL: eventsWebSocketUrl,
 		APIFY_ACTOR_EVENTS_WS_URL: eventsWebSocketUrl,
