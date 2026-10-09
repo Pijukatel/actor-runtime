@@ -9,5 +9,60 @@
 	"meta": {
 		"templateId": "python-empty"
 	},
-	"dockerfile": "../Dockerfile"
+	"dockerfile": "../Dockerfile",
+	"storages": {
+		"datasets": {
+			"default": {
+				"actorSpecification": 1,
+				"title": "Pages",
+				"description": "One item per crawled page.",
+				"fields": {
+					"type": "object",
+					"properties": {
+						"url": {
+							"type": "string"
+						},
+						"title": {
+							"type": "string"
+						}
+					}
+				}
+			},
+			"pageLinks": {
+				"actorSpecification": 1,
+				"title": "Page links",
+				"description": "How many links each crawled page has.",
+				"fields": {
+					"type": "object",
+					"properties": {
+						"url": {
+							"type": "string"
+						},
+						"linkCount": {
+							"type": "integer"
+						}
+					}
+				}
+			},
+			"summary": {
+				"actorSpecification": 1,
+				"title": "Summary",
+				"description": "One item per run: what was crawled.",
+				"fields": {
+					"type": "object",
+					"properties": {
+						"startUrl": {
+							"type": "string"
+						},
+						"pagesCrawled": {
+							"type": "integer"
+						},
+						"urls": {
+							"type": "array"
+						}
+					}
+				}
+			}
+		}
+	}
 }
