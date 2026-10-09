@@ -60,6 +60,10 @@ const DISK_MBYTES_PER_MEMORY_MBYTE = 2;
 /** `?gracefully=true`'s wait between the `aborting` frame and the stop, matching the platform's 30s. */
 const GRACEFUL_ABORT_WINDOW_MS = 30_000;
 
+/** The platform's `ACTOR_RESTART_ON_ERROR` (`@apify/consts`). */
+const RESTART_ON_ERROR_MAX_RESTARTS = 3;
+const RESTART_ON_ERROR_INTERVAL_MS = 60_000;
+
 function memoryMbytesToDisk(memoryMbytes: number): number {
 	return memoryMbytes * DISK_MBYTES_PER_MEMORY_MBYTE;
 }
@@ -146,6 +150,7 @@ export interface StartRunOptions {
 	devFolder?: boolean;
 	/** Absent means no cap. */
 	maxTotalChargeUsd?: number;
+	restartOnError?: boolean;
 	/** `STANDBY` for a run the standby router starts; `API` otherwise. */
 	origin?: 'API' | 'STANDBY';
 	/** The Actor's standby URL, given to every run as `ACTOR_STANDBY_URL`, as on the platform. */
@@ -314,6 +319,7 @@ export async function startRun(
 			timeoutSecs,
 			diskMbytes: memoryMbytesToDisk(memoryMbytes),
 			...(options.maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd: options.maxTotalChargeUsd } : {}),
+			...(options.restartOnError !== undefined ? { restartOnError: options.restartOnError } : {}),
 		},
 		meta: { origin: options.origin ?? 'API' },
 		// Same zeros the platform writes at run creation (see `RunRecord.stats`).
@@ -386,6 +392,7 @@ export interface ResurrectRunOptions {
 	memoryMbytes?: number;
 	timeoutSecs?: number;
 	maxTotalChargeUsd?: number;
+	restartOnError?: boolean;
 	devFolder?: boolean;
 	standbyUrl?: string;
 	proxyPassword?: string;
@@ -447,6 +454,7 @@ export async function resurrectRun(
 	const buildTag = options.build ?? run.options.build ?? DEFAULT_BUILD_TAG;
 	const timeoutSecs = options.timeoutSecs ?? run.options.timeoutSecs;
 	const maxTotalChargeUsd = requestedCap ?? currentCap;
+	const restartOnError = options.restartOnError ?? run.options.restartOnError;
 	// Always a requested figure, so only the build's bounds apply - never its default expression, which
 	// the run's own memory already came from.
 	const { memoryMbytes, logLines: memoryLogLines } = await resolveRunMemory(build.memorySettings, {
@@ -510,6 +518,7 @@ export async function resurrectRun(
 				timeoutSecs,
 				diskMbytes: memoryMbytesToDisk(memoryMbytes),
 				maxTotalChargeUsd,
+				...(restartOnError !== undefined ? { restartOnError } : {}),
 			},
 			stats: {
 				...current.stats,
@@ -707,6 +716,8 @@ export async function runInBackground(
 		return;
 	}
 
+	// Kept per incarnation: a resurrection starts with a clean restart-on-error history.
+	const errorRestartTimes: number[] = [];
 	try {
 		// A migration/reboot stop restarts the same run instead of finishing it (`services/migrations.ts`).
 		for (;;) {
@@ -746,8 +757,18 @@ export async function runInBackground(
 				}
 			}
 
+			const standbyFinishing = consumeStandbyRunFinishing(record.id);
+			if (
+				!standbyFinishing &&
+				!outcome.timedOut &&
+				outcome.exitCode !== 0 &&
+				(await restartAfterError(record, outcome.exitCode, errorRestartTimes))
+			) {
+				continue;
+			}
+
 			// A standby run the runtime wound down ends `SUCCEEDED` whatever its exit code, as on the platform.
-			const status: JobStatus = consumeStandbyRunFinishing(record.id)
+			const status: JobStatus = standbyFinishing
 				? 'SUCCEEDED'
 				: outcome.timedOut
 					? 'TIMED-OUT'
@@ -812,6 +833,38 @@ export async function runInBackground(
 		// exact flag, mirroring `api/routes/logs.ts`'s `?stream=true` handling of `isLogTerminal`).
 		markEventsTerminal(record.id);
 	}
+}
+
+/**
+ * Restart on error, as on the platform: a `restartOnError` run whose container exits non-zero starts
+ * again as the same run, unless it already restarted `RESTART_ON_ERROR_MAX_RESTARTS` times within
+ * `RESTART_ON_ERROR_INTERVAL_MS`. Decided inside one serialized write, so an abort that raced the exit
+ * wins, and a resurrection's changed flag is honoured.
+ */
+async function restartAfterError(record: RunRecord, exitCode: number, restartTimes: number[]): Promise<boolean> {
+	const now = Date.now();
+	const recentRestarts = restartTimes.filter((time) => now - time < RESTART_ON_ERROR_INTERVAL_MS).length;
+	let decision: 'restart' | 'limit-reached' | undefined;
+	await getRegistries().runs.update(record.id, (current) => {
+		if (!current || current.status !== 'RUNNING' || !current.options.restartOnError) return current;
+		if (recentRestarts >= RESTART_ON_ERROR_MAX_RESTARTS) {
+			decision = 'limit-reached';
+			return current;
+		}
+		decision = 'restart';
+		return { ...current, stats: { ...current.stats, restartCount: (current.stats?.restartCount ?? 0) + 1 } };
+	});
+	if (decision === 'limit-reached') {
+		appendRuntimeLog(
+			record.id,
+			`The Actor run failed more than ${RESTART_ON_ERROR_MAX_RESTARTS} times within ` +
+				`${RESTART_ON_ERROR_INTERVAL_MS / 1000} seconds, so it is not restarted again.`,
+		);
+	}
+	if (decision !== 'restart') return false;
+	restartTimes.push(now);
+	appendRuntimeLog(record.id, `The Actor run exited with code ${exitCode}, restarting it (restart on error).`);
+	return true;
 }
 
 /** A plain update, never a status transition: the run is already terminal when this runs. */

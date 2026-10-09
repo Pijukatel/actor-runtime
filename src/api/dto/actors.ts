@@ -100,6 +100,7 @@ export function runDto(run: RunRecord, audience: StandbyUrlAudience = 'host') {
 			...(run.options.maxTotalChargeUsd !== undefined
 				? { maxTotalChargeUsd: run.options.maxTotalChargeUsd }
 				: {}),
+			...(run.options.restartOnError !== undefined ? { restartOnError: run.options.restartOnError } : {}),
 		},
 		generalAccess: run.generalAccess ?? 'FOLLOW_USER_SETTING',
 		meta: run.meta,

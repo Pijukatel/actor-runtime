@@ -288,6 +288,7 @@ export interface RunRecord {
 		diskMbytes?: number;
 		/** Absent means no cap. */
 		maxTotalChargeUsd?: number;
+		restartOnError?: boolean;
 	};
 	exitCode?: number;
 	statusMessage?: string;
@@ -300,8 +301,7 @@ export interface RunRecord {
 	 * timeout budget and the current incarnation's duration count from here, `startedAt` staying the
 	 * original as on the platform. Never on `/v2`. */
 	resurrectedAt?: string;
-	/** The platform's restart-bookkeeping subset of `Run.stats`; locally only `migrationCount`,
-	 * `rebootCount` and `resurrectCount` ever move. Optional for pre-existing test fixtures; `runDto`
+	/** The platform's restart-bookkeeping subset of `Run.stats`. Optional for pre-existing test fixtures; `runDto`
 	 * backfills zeros. */
 	stats?: {
 		migrationCount?: number;
