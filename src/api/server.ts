@@ -24,6 +24,7 @@ import { mountLiveDevFolder } from './routes/live-dev-folder.js';
 import { mountSkill } from './routes/skill.js';
 import { mountSourceContext } from './routes/source-context.js';
 import { standbyProxy } from './standby-proxy.js';
+import { containerProxy } from './container-proxy.js';
 import { attemptFallback, type LocalError } from '../services/api-fallback.js';
 import type { Driver } from '../driver/types.js';
 
@@ -43,7 +44,9 @@ async function respondWithLocalError(req: Request, res: Response, localError: Lo
 export function createApiServer(deps: ApiServerDeps): Express {
 	const app = express();
 	app.disable('x-powered-by');
-	// Ahead of the body parser below: a standby request's body streams through to the Actor untouched.
+	// Ahead of the body parser below: a request to a run's web server or to a standby Actor streams its
+	// body through to the Actor untouched.
+	app.use(containerProxy(deps.driver));
 	app.use(standbyProxy(deps.driver));
 	// Every body arrives as a raw Buffer regardless of Content-Type: KV records need byte-exact
 	// round-tripping, run/build inputs carry arbitrary content types, and everything else is JSON we

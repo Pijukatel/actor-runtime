@@ -167,6 +167,23 @@ Requests are handed to standby runs the runtime starts, scales by `desiredReques
 `maxRequestsPerActorRun` and winds down after `idleTimeoutSecs` without a request, as on the platform.
 Single-tenant only - see `requirements/actor-driver.md`'s "Actor Standby".
 
+## Web server (live view)
+
+Every run has a `containerUrl`, as on the platform. An HTTP server the Actor starts on
+`ACTOR_WEB_SERVER_PORT` (4321) is reachable there while the run goes, no token needed; the run log and
+the run's console page name it:
+
+```bash
+cd samples/actor_ts             # serves a crawl progress page
+apify call --input '{"maxPages":5}'
+# [actor-runtime] Web server: a server the Actor starts on port 4321 (ACTOR_WEB_SERVER_PORT) is served at
+# http://<runid>.runs.localhost:3333 (live view).
+```
+
+The URL has the platform's shape, one `*.runs.localhost` hostname per run, so the Actor's page owns `/`.
+Clients that do not resolve `*.localhost` use `http://localhost:3333/actor-runtime/container/<runId>`, and
+other Actors `http://apify-api:3333/actor-runtime/container/<runId>`.
+
 ## Apify Proxy
 
 Set `APIFY_PROXY_PASSWORD` in the runtime container's environment
@@ -201,6 +218,9 @@ podman run --rm -p 3333:3333 -p 3000:3000 \
   the same numbers on the host (`-p 4333:4333 -p 4000:4000`).
 - Podman 3.4 (Ubuntu 22.04's stock package) and newer are supported. Keep the API port published on
   all interfaces (`-p 3333:3333` by default): under Podman 3.x and rootless Podman, Actors reach the API through it.
+- Under rootless Podman 3.x, add `--network slirp4netns:allow_host_loopback=true` to the `podman run`
+  above (`apify runtime start` does) so the runtime reaches the web servers of runs; without it only
+  standby runs' servers are reachable.
 - Podman does not create a missing bind-mount directory, hence `mkdir -p data`. `apify runtime start`
   creates its data directory itself.
 - Short image names in an Actor's `FROM` line (`apify/actor-node:20`) resolve to Docker Hub, as on the

@@ -26,8 +26,8 @@
 - The API port (default 3333) and console port (default 3000) are set by `ACTOR_RUNTIME_API_PORT` and
   `ACTOR_RUNTIME_CONSOLE_PORT`, published under the same numbers on the host. Every URL the runtime shows
   uses them.
-- The API port also serves the per-run events websocket and standby Actors (`api.md`); no additional port is
-  published for either.
+- The API port also serves the per-run events websocket, standby Actors and run web servers (`api.md`); no
+  additional port is published for any of them.
 - **Debug mode is the one exception to "no other Actor container port is ever published"**
   (`actor-driver.md`'s "Debug mode" section): when debug mode is on for an Actor, that Actor's runs get a
   port published on the host, bound to `127.0.0.1` (`5678` Python / `9229` Node by default, per-Actor
@@ -52,7 +52,9 @@
 
 - **Docker and Podman are equally supported**, rootful or rootless: everything the system offers works
   the same on either engine. The user picks the engine by mounting its Docker-compatible API socket in
-  place of the Docker one (e.g. `-v /run/podman/podman.sock:/var/run/docker.sock`).
+  place of the Docker one (e.g. `-v /run/podman/podman.sock:/var/run/docker.sock`). One exception:
+  under rootless Podman 3.x the runtime container also needs `--network slirp4netns:allow_host_loopback=true`
+  for runs' web servers (`actor-driver.md`); the CLI adds it.
 
 - Optionally set `APIFY_PROXY_PASSWORD` in the runtime's own environment to have it forwarded into
   every Actor container (see `actor-driver.md`).

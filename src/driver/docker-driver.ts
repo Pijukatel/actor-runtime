@@ -42,7 +42,7 @@ import { PassThrough } from 'node:stream';
 import { createReadStream } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import * as os from 'node:os';
-import { createServer } from 'node:net';
+import { connect as netConnect, createServer } from 'node:net';
 import * as path from 'node:path';
 import Docker from 'dockerode';
 import * as tar from 'tar-stream';
@@ -472,6 +472,36 @@ async function allocateFreePort(): Promise<number> {
 	});
 }
 
+/** How long the host-loopback probe (`gatewayReachesHost`) waits for a connection. */
+const HOST_LOOPBACK_PROBE_TIMEOUT_MS = 1_500;
+
+/** True when a TCP connection to `host:port` is accepted within the timeout. */
+export function tcpConnects(host: string, port: number, timeoutMs = HOST_LOOPBACK_PROBE_TIMEOUT_MS): Promise<boolean> {
+	return new Promise((resolve) => {
+		const socket = netConnect({ host, port });
+		const done = (outcome: boolean) => {
+			socket.destroy();
+			resolve(outcome);
+		};
+		socket.setTimeout(timeoutMs, () => done(false));
+		socket.once('connect', () => done(true));
+		socket.once('error', () => done(false));
+	});
+}
+
+/** The flag that gives this process's own container a route to the host under rootless Podman 3.x. */
+export const RUNTIME_HOST_LOOPBACK_FLAG = '--network slirp4netns:allow_host_loopback=true';
+
+/**
+ * How this process reaches a run container's HTTP server (`containerServerRoute`): at the container's own
+ * address on `apify-local` (`network`) or on the engine's default bridge (`default-network`); through a
+ * port published on the host, reached on loopback by a process on the host itself (`loopback`), through
+ * the slirp4netns gateway by a container allowed the host's loopback (`gateway-loopback`), or at the
+ * host's own address by a container off the Actor network (`host`); or, last resort, by the run container
+ * sharing this process's network namespace (`netns`).
+ */
+type ContainerServerRoute = 'network' | 'default-network' | 'loopback' | 'gateway-loopback' | 'host' | 'netns';
+
 /**
  * A standby container's env inside this process's network namespace: its server on `port`, and the API
  * on loopback, since `apify-api` is not in the hosts file a joined namespace shares.
@@ -483,6 +513,7 @@ export function sharedNetnsEnv(env: Record<string, string>, port: number): Recor
 	}
 	shared.ACTOR_STANDBY_PORT = String(port);
 	shared.ACTOR_WEB_SERVER_PORT = String(port);
+	shared.APIFY_CONTAINER_PORT = String(port);
 	return shared;
 }
 
@@ -713,11 +744,14 @@ export class DockerDriver implements Driver {
 	private readonly hostsFile: string;
 	private readonly routeFile: string;
 	private readonly networkInterfaces: () => NodeJS.Dict<os.NetworkInterfaceInfo[]>;
+	private readonly tcpConnects: (host: string, port: number) => Promise<boolean>;
+	/** `gatewayReachesHost`'s answer, computed once on first use. */
+	private gatewayReachesHostProbe: Promise<boolean> | undefined;
 	private browserViewerImageId: string | undefined;
 	/** Shared by concurrent callers; cleared on failure so a later call retries (like `probeImageBuild`). */
 	private browserViewerImport: Promise<string> | undefined;
 	private readonly browserViewers = new Map<string, { container: Docker.Container; volumeName: string }>();
-	/** A started standby container's server address, keyed by run id; gone with the container. */
+	/** A started container's server address, keyed by run id; gone with the container. */
 	private readonly containerServers = new Map<string, ContainerServerAddress>();
 
 	available = false;
@@ -731,12 +765,15 @@ export class DockerDriver implements Driver {
 			hostsFile?: string;
 			routeFile?: string;
 			networkInterfaces?: () => NodeJS.Dict<os.NetworkInterfaceInfo[]>;
+			/** The host-loopback probe (`gatewayReachesHost`); tests inject one instead of connecting. */
+			tcpConnects?: (host: string, port: number) => Promise<boolean>;
 		} = {},
 	) {
 		this.docker = docker;
 		this.hostsFile = options.hostsFile ?? '/etc/hosts';
 		this.routeFile = options.routeFile ?? '/proc/net/route';
 		this.networkInterfaces = options.networkInterfaces ?? (() => os.networkInterfaces());
+		this.tcpConnects = options.tcpConnects ?? tcpConnects;
 	}
 
 	async init(): Promise<void> {
@@ -776,7 +813,11 @@ export class DockerDriver implements Driver {
 				`Podman 3.x: Actor containers run on the engine's default network (its user-defined networks are ` +
 					`not used) and reach this API as ${route.extraHost}` +
 					`${route.networkMode ? ` (network mode ${route.networkMode})` : ''}; keep -p ${API_PORT}:${API_PORT} ` +
-					`published on all interfaces.`,
+					`published on all interfaces.` +
+					(route.networkMode
+						? ` Start this container with ${RUNTIME_HOST_LOOPBACK_FLAG} ('apify runtime start' does) so ` +
+							`that runs' web servers are reachable.`
+						: ''),
 			);
 			this.available = true;
 			return;
@@ -1098,9 +1139,20 @@ export class DockerDriver implements Driver {
 			throw new Error(this.unavailableReason ?? 'Docker is not available');
 		}
 
-		const serverRoute = ctx.containerServerPort ? this.containerServerRoute() : undefined;
+		const serverRoute = ctx.containerServerPort ? await this.containerServerRoute() : undefined;
 		// In this process's network namespace every server needs a port of its own, and the API is on loopback.
-		const netnsServerPort = serverRoute === 'netns' ? await allocateFreePort() : undefined;
+		// Only a run that needs its server reachable joins it (`RunContext.containerServerRequired`).
+		const netnsServerPort =
+			serverRoute === 'netns' && ctx.containerServerRequired ? await allocateFreePort() : undefined;
+		if (serverRoute === 'netns' && !ctx.containerServerRequired) {
+			onLog(
+				formatRuntimeLog(
+					`The run's web server on port ${ctx.containerServerPort} is not reachable by this runtime: under ` +
+						`rootless Podman 3.x that needs the runtime container started with ${RUNTIME_HOST_LOOPBACK_FLAG} ` +
+						`('apify runtime start' does). Its containerUrl will not answer.`,
+				),
+			);
+		}
 		const env = Object.entries(netnsServerPort ? sharedNetnsEnv(ctx.env, netnsServerPort) : ctx.env).map(
 			([key, value]) => `${key}=${value}`,
 		);
@@ -1150,13 +1202,16 @@ export class DockerDriver implements Driver {
 				: []),
 		];
 
-		// Only a server this process cannot reach on `apify-local` is published, on an engine-picked port.
+		// Only a server this process cannot reach at the container's own address is published, on an
+		// engine-picked port.
 		const serverPublish =
-			ctx.containerServerPort && (serverRoute === 'loopback' || serverRoute === 'host')
+			ctx.containerServerPort &&
+			(serverRoute === 'loopback' || serverRoute === 'gateway-loopback' || serverRoute === 'host')
 				? {
 						port: `${ctx.containerServerPort}/tcp`,
-						// A process on the host reaches loopback; one in a container off the network reaches the host.
-						binding: { HostIp: serverRoute === 'loopback' ? '127.0.0.1' : '', HostPort: '' },
+						// Loopback is enough for a process on the host and for a container that reaches the host's
+						// loopback through its gateway; a container off the network needs the host's own address.
+						binding: { HostIp: serverRoute === 'host' ? '' : '127.0.0.1', HostPort: '' },
 					}
 				: undefined;
 		const exposedPorts: Record<string, object> = {
@@ -1343,36 +1398,58 @@ export class DockerDriver implements Driver {
 	}
 
 	/**
-	 * How this process reaches a standby container's server: directly on `apify-local` when this process
-	 * sits there too; otherwise through a published port - on loopback for a process running on the host
-	 * itself, on the host's address for one in a container off the network (rootless Podman). On Podman
-	 * 3.x the host's address from a container is the slirp4netns gateway, which reaches the host's
-	 * published ports only for containers started with `allow_host_loopback` - never this one - so the
+	 * How this process reaches a run container's server (`ContainerServerRoute`): directly when the two
+	 * share a network - `apify-local`, or the engine's default bridge on rootful Podman 3.x; otherwise
+	 * through a published port. Under rootless Podman 3.x both sides sit under slirp4netns, whose gateway
+	 * reaches the host's published ports only for a container started with `allow_host_loopback`: when
+	 * this process's own container was (`gatewayReachesHost`), that is the route; when it was not, a
 	 * standby container joins this container's network namespace instead, as a browser-view sidecar does.
 	 */
-	private containerServerRoute(): 'network' | 'loopback' | 'host' | 'netns' {
+	private async containerServerRoute(): Promise<ContainerServerRoute> {
 		if (this.onActorNetwork && !this.actorsOnDefaultNetwork) return 'network';
-		if (this.actorsOnDefaultNetwork && process.env.HOSTNAME) return 'netns';
+		if (this.actorsOnDefaultNetwork && process.env.HOSTNAME) {
+			const route = await this.routeOnDefaultNetwork();
+			if (route.networkMode !== SLIRP4NETNS_HOST_LOOPBACK_MODE) return 'default-network';
+			return (await this.gatewayReachesHost()) ? 'gateway-loopback' : 'netns';
+		}
 		return process.env.HOSTNAME ? 'host' : 'loopback';
+	}
+
+	/** Whether this container's gateway reaches the host's loopback: its own API, published there, answers
+	 * through it. Probed once, after the API is listening (the first run start is always later). */
+	private gatewayReachesHost(): Promise<boolean> {
+		this.gatewayReachesHostProbe ??= (async () => {
+			const gateway = await this.defaultGateway();
+			return gateway ? this.tcpConnects(gateway, API_PORT) : false;
+		})();
+		return this.gatewayReachesHostProbe;
+	}
+
+	private async defaultGateway(): Promise<string | undefined> {
+		return defaultGatewayFromRouteTable(await readFile(this.routeFile, 'utf8').catch(() => ''));
 	}
 
 	private async resolveContainerServer(
 		container: Docker.Container,
 		port: number,
-		route: 'network' | 'loopback' | 'host',
+		route: Exclude<ContainerServerRoute, 'netns'>,
 	): Promise<ContainerServerAddress | undefined> {
-		const info = await container.inspect().catch(() => undefined);
+		// Never fails the run: a server address the runtime cannot determine only costs the containerUrl.
+		const info = await Promise.resolve()
+			.then(() => container.inspect())
+			.catch(() => undefined);
 		if (!info) return undefined;
-		if (route === 'network') {
-			const host = containerAddress(info, NETWORK_NAME);
+		if (route === 'network' || route === 'default-network') {
+			const host = containerAddress(info, route === 'network' ? NETWORK_NAME : undefined);
 			return host ? { host, port } : undefined;
 		}
 		const hostPort = Number(info.NetworkSettings?.Ports?.[`${port}/tcp`]?.[0]?.HostPort);
 		if (!Number.isInteger(hostPort) || hostPort <= 0) return undefined;
 		if (route === 'loopback') return { host: '127.0.0.1', port: hostPort };
 		const host =
-			(await engineHostEntry(this.hostsFile)) ??
-			defaultGatewayFromRouteTable(await readFile(this.routeFile, 'utf8').catch(() => ''));
+			route === 'gateway-loopback'
+				? await this.defaultGateway()
+				: ((await engineHostEntry(this.hostsFile)) ?? (await this.defaultGateway()));
 		return host ? { host, port: hostPort } : undefined;
 	}
 

@@ -54,6 +54,7 @@ jobs:
                     - all-modes
                     - pay-per-event
                     - standby
+                    - web-server
         steps:
             - uses: actions/checkout@v4
             - uses: pnpm/action-setup@v4

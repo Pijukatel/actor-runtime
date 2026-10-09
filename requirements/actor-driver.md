@@ -176,6 +176,14 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 - The view lives exactly as long as the run, survives a migration/reboot of the run, and is gone once the run
   ends. It composes with debug mode and the dev-folder bind mount.
 
+# Web server (live view)
+
+- Implemented as on the platform: every run has a `containerUrl` reaching the server the Actor starts on
+  `ACTOR_WEB_SERVER_PORT`, linked from the run's console page as its live view (`console.md`).
+- Differences: the URL is local (`api.md`) and the run log names it; under rootless Podman 3.x the
+  runtime container must be started with `--network slirp4netns:allow_host_loopback=true`
+  (`apify runtime start` does), or only a standby run's server is reachable, which the run log says.
+
 # Networking
 
 - Every Actor container reaches the runtime's API at `http://apify-api:<API port>`, whatever the host's own
@@ -296,6 +304,8 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
   Apify Proxy, billed to the Apify account, and that the Settings page can disable it.
 - `ACTOR_EVENTS_WEBSOCKET_URL` / `APIFY_ACTOR_EVENTS_WS_URL` — the run's own events channel
   (`api.md`), carrying no credential.
+- `ACTOR_WEB_SERVER_PORT` / `APIFY_CONTAINER_PORT`, `ACTOR_WEB_SERVER_URL` / `APIFY_CONTAINER_URL`,
+  `ACTOR_STANDBY_PORT` and `ACTOR_STANDBY_URL` — as on the platform, with the local URLs (`api.md`).
 - `ACTOR_MEMORY_MBYTES` / `APIFY_MEMORY_MBYTES` — the run's requested `memoryMbytes`.
 - `APIFY_DEDICATED_CPUS` — the run's granted CPU cores. No `ACTOR_`-prefixed counterpart; only the
   Python SDK reads it.

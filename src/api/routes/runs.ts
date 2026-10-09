@@ -18,6 +18,7 @@ import { rebootRun } from '../../services/migrations.js';
 import { chargeEvent, MAX_CHARGE_COUNT } from '../../services/charging.js';
 import { isTerminalJobStatus } from '../../services/job-status.js';
 import { runDto } from '../dto/actors.js';
+import { standbyUrlAudienceOf } from '../../services/standby-config.js';
 import type { ApiServerDeps } from '../server.js';
 import { serveLog } from './logs.js';
 
@@ -28,7 +29,8 @@ export function mountRuns(router: Router, deps: ApiServerDeps): void {
 			const runs = await listOwnedRuns(requireUser(req).id);
 			const sorted = sortByTimestamp(runs, (run) => run.startedAt);
 			const envelope = paginate(sorted, paginationParams(req));
-			sendData(res, { ...envelope, items: envelope.items.map(runDto) });
+			const audience = standbyUrlAudienceOf(req.headers.host);
+			sendData(res, { ...envelope, items: envelope.items.map((run) => runDto(run, audience)) });
 		}),
 	);
 
@@ -37,7 +39,7 @@ export function mountRuns(router: Router, deps: ApiServerDeps): void {
 		h(async (req, res) => {
 			const run = await getOwnedRun(requireUser(req).id, req.params.runId as string);
 			if (!run) throw recordNotFound();
-			sendData(res, runDto(run));
+			sendData(res, runDto(run, standbyUrlAudienceOf(req.headers.host)));
 		}),
 	);
 
@@ -95,7 +97,7 @@ export function mountRuns(router: Router, deps: ApiServerDeps): void {
 			// (`services/runs.ts: abortRun`'s doc comment).
 			const gracefully = queryBoolean(req, 'gracefully') ?? false;
 			const updated = await abortRun(deps.driver, run, gracefully);
-			sendData(res, runDto(updated ?? run));
+			sendData(res, runDto(updated ?? run, standbyUrlAudienceOf(req.headers.host)));
 		}),
 	);
 
@@ -108,7 +110,7 @@ export function mountRuns(router: Router, deps: ApiServerDeps): void {
 			// default `migrating` handler.
 			if (isTerminalJobStatus(run.status)) throw jobAlreadyFinished();
 			const updated = await rebootRun(deps.driver, run);
-			sendData(res, runDto(updated ?? run));
+			sendData(res, runDto(updated ?? run, standbyUrlAudienceOf(req.headers.host)));
 		}),
 	);
 
