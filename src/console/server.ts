@@ -45,7 +45,6 @@ import { isTerminalJobStatus } from '../services/job-status.js';
 import { isBrowserViewPending } from './browser-view-ws.js';
 import { getFullLog } from '../services/logs.js';
 import { getStorageById, listAllStorages } from '../services/storages.js';
-import { DEFAULT_STORAGE_ALIAS, runStorageIds } from '../services/actor-storages.js';
 import { listRequests } from '../services/request-queues.js';
 import { openDataset, openKeyValueStore, openRequestQueue } from '../storage/open.js';
 import { pageKeys } from '../services/kv-key-listing.js';
@@ -69,6 +68,7 @@ import {
 	settingsForm,
 	standbyLink,
 	table,
+	runDetailsColumns,
 	usageSection,
 	type LinkedCell,
 } from './templates.js';
@@ -555,13 +555,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			['origin', run.meta.origin],
 			['migrationCount', run.stats?.migrationCount ?? 0],
 			['rebootCount', run.stats?.rebootCount ?? 0],
-			['defaultDatasetId', storageLink('/datasets', run.defaultDatasetId)],
-			['defaultKeyValueStoreId', storageLink('/key-value-stores', run.defaultKeyValueStoreId)],
-			['defaultRequestQueueId', storageLink('/request-queues', run.defaultRequestQueueId)],
 		];
-		for (const [alias, datasetId] of Object.entries(runStorageIds(run).datasets)) {
-			if (alias !== DEFAULT_STORAGE_ALIAS) rows.push([`dataset "${alias}"`, storageLink('/datasets', datasetId)]);
-		}
 		// Only present for a run that resolved a debug plan; never on the emulated `/v2` run object.
 		if (run.localDebug) {
 			rows.push(['debug', `${run.localDebug.language}, attach at 127.0.0.1:${run.localDebug.port}`]);
@@ -580,7 +574,7 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		rows.push(['containerUrl (live view)', { text: url, href: url }]);
 		const usage = computeRunUsage(run, getRunTelemetry(run.id));
 		const body =
-			definitionList(rows) +
+			runDetailsColumns(run, rows) +
 			usageSection(run, usage) +
 			migrateSection +
 			'<h2>Log</h2><pre>' +

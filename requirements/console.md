@@ -36,9 +36,9 @@
 - The Actor builds list, the Actor runs list, and the combined Logs list all show the most recently
   started build or run first.
 - Detail view of an object is showing only one object with all the available data
-- A run's default storage ids (`defaultDatasetId`, `defaultKeyValueStoreId`, `defaultRequestQueueId`) are
-  rendered as links to the corresponding storage detail views (in the run detail view and in the runs
-  list's dataset column), not as plain text.
+- The run detail view lists all of the run's storages by type and alias in a second column beside the
+  run's fields. Storage ids there and in the runs list's dataset column are
+  links to the storage detail views.
 - A run whose debug plan resolved (`actor-driver.md`'s "Debug mode" section) gets one extra row on its
   detail view: `debug` - `<language>, attach at 127.0.0.1:<port>`. Absent entirely for a non-debug run.
   This field is local-only and never appears in the emulated `/v2` run object (`api.md`).

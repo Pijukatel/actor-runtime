@@ -282,6 +282,13 @@ dl > :nth-last-child(-n + 2) {
 	border-bottom: 0;
 }
 
+.columns {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(36rem, 100%), 1fr));
+	gap: 0 2.4rem;
+	align-items: start;
+}
+
 code,
 pre {
 	font-family: 'IBM Plex Mono', Consolas, 'Liberation Mono', Menlo, monospace;
