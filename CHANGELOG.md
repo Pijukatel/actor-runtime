@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 - Resurrect finished runs ([#95](https://github.com/apify/actor-runtime/pull/95)) ([cd8b247](https://github.com/apify/actor-runtime/commit/cd8b2479188251ba70374e1d891f3a0bf920b97d)) by [@Pijukatel](https://github.com/Pijukatel)
 - Support extra named default datasets (storageIds) ([#93](https://github.com/apify/actor-runtime/pull/93)) ([3f6c5d2](https://github.com/apify/actor-runtime/commit/3f6c5d29afa25e6ff2a796a5b2b4c70b3d97840b)) by [@Pijukatel](https://github.com/Pijukatel)
 - Support Actor-level default run options ([#96](https://github.com/apify/actor-runtime/pull/96)) ([ddb25c7](https://github.com/apify/actor-runtime/commit/ddb25c7003d9ed6c8982912d9f7b8946ac231212)) by [@Pijukatel](https://github.com/Pijukatel)
+- Support restart on error ([#97](https://github.com/apify/actor-runtime/pull/97)) ([2f0e87e](https://github.com/apify/actor-runtime/commit/2f0e87ea412091a10ed0e900e0bc908b072aefc6)) by [@Pijukatel](https://github.com/Pijukatel)
 
 
 <!-- git-cliff-unreleased-end -->
