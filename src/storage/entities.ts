@@ -268,6 +268,68 @@ export interface TaskRecord {
 	modifiedAt: string;
 }
 
+/** What a webhook fires for: every job of an Actor, every run of a task, or one run (`api.md`'s "Webhooks"). */
+export type WebhookCondition = { actorId: string } | { actorTaskId: string } | { actorRunId: string };
+
+/** The platform's `lastDispatch` webhook field: the newest dispatch's outcome so far. */
+export interface WebhookLastDispatch {
+	status: WebhookDispatchStatus;
+	finishedAt: string | null;
+}
+
+/** A webhook (`api.md`'s "Webhooks"); only the `HTTP_REQUEST` action is ever stored. */
+export interface WebhookRecord {
+	id: string;
+	userId: string;
+	createdAt: string;
+	modifiedAt: string;
+	isEnabled: boolean;
+	isAdHoc: boolean;
+	eventTypes: string[];
+	condition: WebhookCondition;
+	requestUrl: string;
+	payloadTemplate: string;
+	headersTemplate?: string;
+	ignoreSslErrors: boolean;
+	doNotRetry: boolean;
+	shouldInterpolateStrings: boolean;
+	title?: string;
+	description?: string;
+	idempotencyKey?: string;
+	lastDispatch: WebhookLastDispatch | null;
+	stats: { totalDispatches: number };
+}
+
+export type WebhookDispatchStatus = 'ACTIVE' | 'SUCCEEDED' | 'FAILED';
+
+/** One delivery attempt of a dispatch, as the platform records it. */
+export interface WebhookDispatchCall {
+	startedAt: string;
+	finishedAt: string | null;
+	errorMessage: string | null;
+	responseStatus: number | null;
+	responseBody: string | null;
+}
+
+/** One event delivered to one webhook (`api.md`'s "Webhooks"), with every attempt made so far. */
+export interface WebhookDispatchRecord {
+	id: string;
+	userId: string;
+	webhookId: string;
+	createdAt: string;
+	finishedAt: string | null;
+	status: WebhookDispatchStatus;
+	eventType: string;
+	eventData: Record<string, string> | null;
+	/** The webhook as it was when the event happened; its later edits do not change this dispatch. */
+	webhook: WebhookRecord;
+	/** The run or build as the API returned it when the event happened, or a test dispatch's own resource. */
+	resource: Record<string, unknown>;
+	/** When the next attempt is due; meaningful only while `ACTIVE`. */
+	callAt: string;
+	calls: WebhookDispatchCall[];
+}
+
 export type JobStatus = 'READY' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'ABORTING' | 'ABORTED' | 'TIMED-OUT';
 
 /** Matches the real platform's `RUN_GENERAL_ACCESS` enum (public `@apify/consts`) - `FOLLOW_USER_SETTING`

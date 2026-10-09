@@ -50,10 +50,18 @@ describe('matchSpecPath', () => {
 		}
 	});
 
-	it('serves tasks, but not their webhooks', () => {
+	it('serves tasks and their webhooks', () => {
 		expect(matchSpecPath('GET', 'v2/actor-tasks')?.implemented).toBe(true);
 		expect(matchSpecPath('PUT', 'v2/actor-tasks/abc/input')?.implemented).toBe(true);
 		expect(matchSpecPath('GET', 'v2/actor-tasks/abc/runs/last/dataset/items')?.implemented).toBe(true);
-		expect(matchSpecPath('GET', 'v2/actor-tasks/abc/webhooks')?.implemented).toBe(false);
+		expect(matchSpecPath('GET', 'v2/actor-tasks/abc/webhooks')?.implemented).toBe(true);
+	});
+
+	it('serves webhooks and webhook dispatches', () => {
+		expect(matchSpecPath('POST', 'v2/webhooks')?.implemented).toBe(true);
+		expect(matchSpecPath('POST', 'v2/webhooks/abc/test')?.implemented).toBe(true);
+		expect(matchSpecPath('GET', 'v2/webhooks/abc/dispatches')?.implemented).toBe(true);
+		expect(matchSpecPath('GET', 'v2/webhook-dispatches/abc')?.implemented).toBe(true);
+		expect(matchSpecPath('GET', 'v2/actors/abc/webhooks')?.implemented).toBe(true);
 	});
 });

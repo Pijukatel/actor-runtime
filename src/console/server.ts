@@ -1,5 +1,5 @@
 /**
- * Server-rendered console: list + detail views for Actors, tasks, builds, runs, logs, and the three
+ * Server-rendered console: list + detail views for Actors, tasks, webhooks, builds, runs, logs, and the three
  * user-storage types, each with exactly one inspection widget per storage type (`console.md`). Reads
  * through the same service layer as the API handlers, so ownership filtering (over on the API side) is
  * shared rather than reimplemented.
@@ -23,7 +23,7 @@ import express, { type Express, type Request } from 'express';
 import { getActorById, listAllActors, setActorPricingInfos } from '../services/actors.js';
 import { getRunTelemetry } from '../services/events-channel.js';
 import { computeRunUsage } from '../services/run-usage.js';
-import type { ActorRecord, LocalSourceContext } from '../storage/entities.js';
+import type { ActorRecord, LocalSourceContext, WebhookCondition } from '../storage/entities.js';
 import {
 	describeDevFolderFailure,
 	devFolderStatus,
@@ -45,6 +45,8 @@ import {
 	type StandbyService,
 } from '../services/standby.js';
 import { getTaskById, listAllTasks } from '../services/tasks.js';
+import { getWebhookById, listAllWebhooks } from '../services/webhooks.js';
+import { getWebhookDispatchById, listAllWebhookDispatches } from '../services/webhook-dispatches.js';
 import { getUserById } from '../services/users.js';
 import { migrateRun } from '../services/migrations.js';
 import { isTerminalJobStatus } from '../services/job-status.js';
@@ -312,7 +314,8 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				]),
 				0,
 				'/tasks',
-			);
+			) +
+			(await webhooksSection('actorId', actor.id));
 		res.send(layout(`Actor ${actor.name}`, body));
 	});
 
@@ -374,8 +377,152 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				]),
 				0,
 				'/runs',
-			);
+			) +
+			(await webhooksSection('actorTaskId', task.id));
 		res.send(layout(`Task ${task.name}`, body));
+	});
+
+	/** The webhooks that fire for one Actor or task. */
+	async function webhooksSection(key: 'actorId' | 'actorTaskId', id: string): Promise<string> {
+		const webhooks = (await listAllWebhooks()).filter(
+			(webhook) => (webhook.condition as Record<string, string>)[key] === id,
+		);
+		return (
+			'<h2>Webhooks</h2>' +
+			table(
+				['id', 'event types', 'request URL', 'enabled'],
+				newestCreatedFirst(webhooks).map((webhook) => [
+					webhook.id,
+					webhook.eventTypes.join(', '),
+					webhook.requestUrl,
+					webhook.isEnabled ? 'yes' : 'no',
+				]),
+				0,
+				'/webhooks',
+			)
+		);
+	}
+
+	/** The Actor, task or run a webhook fires for, linked to its page. */
+	async function conditionCell(names: ReturnType<typeof createNameResolver>, condition: WebhookCondition) {
+		if ('actorId' in condition) return names.actorLink(condition.actorId);
+		if ('actorTaskId' in condition) return names.taskLink(condition.actorTaskId);
+		return { text: `run ${condition.actorRunId}`, href: `/runs/${encodeURIComponent(condition.actorRunId)}` };
+	}
+
+	app.get('/webhooks', async (_req, res) => {
+		const webhooks = newestCreatedFirst(await listAllWebhooks());
+		const names = createNameResolver();
+		const rows = await Promise.all(
+			webhooks.map(async (webhook) => [
+				webhook.id,
+				await names.userName(webhook.userId),
+				await conditionCell(names, webhook.condition),
+				webhook.eventTypes.join(', '),
+				webhook.requestUrl,
+				webhook.isEnabled ? 'yes' : 'no',
+				String(webhook.stats.totalDispatches),
+				webhook.lastDispatch?.status ?? '',
+			]),
+		);
+		res.send(
+			layout(
+				'Webhooks',
+				table(
+					['id', 'user', 'fires for', 'event types', 'request URL', 'enabled', 'dispatches', 'last dispatch'],
+					rows,
+					0,
+					'/webhooks',
+				),
+			),
+		);
+	});
+
+	app.get('/webhooks/:id', async (req, res) => {
+		const webhook = await getWebhookById(req.params.id);
+		if (!webhook) {
+			res.status(404).send(layout('Not found', '<p>Webhook not found.</p>'));
+			return;
+		}
+		const names = createNameResolver();
+		const dispatches = newestCreatedFirst(
+			(await listAllWebhookDispatches()).filter((dispatch) => dispatch.webhookId === webhook.id),
+		);
+		const body =
+			definitionList([
+				['id', webhook.id],
+				['user', await names.userName(webhook.userId)],
+				['title', webhook.title ?? ''],
+				['description', webhook.description ?? ''],
+				['fires for', await conditionCell(names, webhook.condition)],
+				['event types', webhook.eventTypes.join(', ')],
+				['request URL', webhook.requestUrl],
+				['enabled', webhook.isEnabled ? 'yes' : 'no'],
+				['ad hoc', webhook.isAdHoc ? 'yes' : 'no'],
+				['retries', webhook.doNotRetry ? 'no' : 'yes'],
+				['ignore SSL errors', webhook.ignoreSslErrors ? 'yes' : 'no'],
+				['interpolate strings', webhook.shouldInterpolateStrings ? 'yes' : 'no'],
+				['createdAt', webhook.createdAt],
+				['modifiedAt', webhook.modifiedAt],
+			]) +
+			'<h2>Payload template</h2><pre>' +
+			escapeHtml(webhook.payloadTemplate) +
+			'</pre>' +
+			(webhook.headersTemplate
+				? `<h2>Headers template</h2><pre>${escapeHtml(webhook.headersTemplate)}</pre>`
+				: '') +
+			'<h2>Dispatches</h2>' +
+			table(
+				['id', 'event type', 'status', 'createdAt', 'calls'],
+				dispatches.map((dispatch) => [
+					dispatch.id,
+					dispatch.eventType,
+					dispatch.status,
+					dispatch.createdAt,
+					String(dispatch.calls.length),
+				]),
+				0,
+				'/webhook-dispatches',
+			);
+		res.send(layout(`Webhook ${webhook.title ?? webhook.id}`, body));
+	});
+
+	app.get('/webhook-dispatches/:id', async (req, res) => {
+		const dispatch = await getWebhookDispatchById(req.params.id);
+		if (!dispatch) {
+			res.status(404).send(layout('Not found', '<p>Webhook dispatch not found.</p>'));
+			return;
+		}
+		const names = createNameResolver();
+		const body =
+			definitionList([
+				['id', dispatch.id],
+				['user', await names.userName(dispatch.userId)],
+				['webhook', { text: dispatch.webhookId, href: `/webhooks/${encodeURIComponent(dispatch.webhookId)}` }],
+				['event type', dispatch.eventType],
+				['status', dispatch.status],
+				['request URL', dispatch.webhook.requestUrl],
+				['createdAt', dispatch.createdAt],
+				['finishedAt', dispatch.finishedAt ?? ''],
+				...(dispatch.status === 'ACTIVE'
+					? ([['next attempt', dispatch.callAt]] as Array<[string, string]>)
+					: []),
+			]) +
+			'<h2>Calls</h2>' +
+			table(
+				['startedAt', 'finishedAt', 'response status', 'error', 'response body'],
+				dispatch.calls.map((call) => [
+					call.startedAt,
+					call.finishedAt ?? '',
+					call.responseStatus === null ? '' : String(call.responseStatus),
+					call.errorMessage ?? '',
+					call.responseBody ?? '',
+				]),
+			) +
+			'<h2>Event data</h2><pre>' +
+			escapeHtml(JSON.stringify(dispatch.eventData, null, 2)) +
+			'</pre>';
+		res.send(layout(`Webhook dispatch ${dispatch.id}`, body));
 	});
 
 	/** Same `setActorPricingInfos` as the API, cross-user like the other Actor forms. Only the JSON parse

@@ -87,6 +87,7 @@ export const SPEC_TABLE: SpecTableEntry[] = [
 	pathTemplate('GET', 'v2/actors/:actorId/versions/:versionNumber/env-vars/:envVarName', true),
 	pathTemplate('PUT', 'v2/actors/:actorId/versions/:versionNumber/env-vars/:envVarName', true),
 	pathTemplate('DELETE', 'v2/actors/:actorId/versions/:versionNumber/env-vars/:envVarName', true),
+	pathTemplate('GET', 'v2/actors/:actorId/webhooks', true),
 
 	// --- Tasks ---
 	pathTemplate('GET', 'v2/actor-tasks', true),
@@ -102,6 +103,19 @@ export const SPEC_TABLE: SpecTableEntry[] = [
 	pathTemplate('POST', 'v2/actor-tasks/:taskId/run-sync', true),
 	pathTemplate('GET', 'v2/actor-tasks/:taskId/run-sync-get-dataset-items', true),
 	pathTemplate('POST', 'v2/actor-tasks/:taskId/run-sync-get-dataset-items', true),
+
+	pathTemplate('GET', 'v2/actor-tasks/:taskId/webhooks', true),
+
+	// --- Webhooks ---
+	pathTemplate('GET', 'v2/webhooks', true),
+	pathTemplate('POST', 'v2/webhooks', true),
+	pathTemplate('GET', 'v2/webhooks/:webhookId', true),
+	pathTemplate('PUT', 'v2/webhooks/:webhookId', true),
+	pathTemplate('DELETE', 'v2/webhooks/:webhookId', true),
+	pathTemplate('POST', 'v2/webhooks/:webhookId/test', true),
+	pathTemplate('GET', 'v2/webhooks/:webhookId/dispatches', true),
+	pathTemplate('GET', 'v2/webhook-dispatches', true),
+	pathTemplate('GET', 'v2/webhook-dispatches/:dispatchId', true),
 
 	// --- Builds ---
 	pathTemplate('GET', 'v2/actor-builds', true),
@@ -199,20 +213,11 @@ export const SPEC_TABLE: SpecTableEntry[] = [
 	pathTemplate('GET', 'v2/schedules/:scheduleId', false),
 	pathTemplate('PUT', 'v2/schedules/:scheduleId', false),
 	pathTemplate('DELETE', 'v2/schedules/:scheduleId', false),
-	pathTemplate('GET', 'v2/webhooks', false),
-	pathTemplate('POST', 'v2/webhooks', false),
-	pathTemplate('GET', 'v2/webhooks/:webhookId', false),
-	pathTemplate('PUT', 'v2/webhooks/:webhookId', false),
-	pathTemplate('DELETE', 'v2/webhooks/:webhookId', false),
-	pathTemplate('GET', 'v2/webhooks/:webhookId/dispatches', false),
-	pathTemplate('GET', 'v2/webhook-dispatches', false),
-	pathTemplate('GET', 'v2/webhook-dispatches/:dispatchId', false),
 	pathTemplate('GET', 'v2/store', false),
 	pathTemplate('GET', 'v2/store/:storeId', false),
 	pathTemplate('GET', 'v2/users/:userId/limits', false),
 	pathTemplate('GET', 'v2/users/:userId/usage/monthly', false),
 	pathTemplate('POST', 'v2/actor-runs/:runId/metamorph', false),
-	pathTemplate('GET', 'v2/actor-tasks/:taskId/webhooks', false),
 	pathTemplate('POST', 'v2/actor-tasks/:taskId/webhooks', false),
 ];
 

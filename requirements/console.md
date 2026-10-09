@@ -24,6 +24,7 @@
 - It contains list view and detail view for following objects:
     - Actors
     - Actor tasks
+    - Webhooks, with their dispatches
     - Actor builds
     - Actor runs
     - Logs
@@ -50,6 +51,9 @@
   input and run options, its Standby URL and settings when its Actor's Standby is on, and its runs. The
   Actor detail view lists the Actor's tasks, and a task run's detail view links its task as
   `username~taskname`.
+- Webhooks are read-only, changed through the API (`api.md`'s "Webhooks"). A webhook's detail view shows
+  its settings, templates and dispatches; a dispatch's detail view shows every delivery attempt. The
+  Actor and task detail views list their webhooks.
 - Log views render ANSI colors from actor output as HTML, while the `/v2/logs/:id` API keeps serving logs raw (unconverted) for the CLI to render itself.
 - The console accepts the real Apify Console's URL shapes (as printed by stock apify-cli, e.g. `/actors/:actorId/runs/:runId`, `/storage/datasets/:id`) via redirects to its own pages.
 

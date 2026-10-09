@@ -37,7 +37,7 @@ real account, not in the runtime.
 ## Automation and integrations
 
 - Schedules
-- Webhooks and webhook dispatches
+- Webhook actions other than HTTP requests (Slack, email, Drive, GitHub issues)
 - Actor-to-Actor integrations
 - Integrations (Slack, Gmail, Drive, GitHub, Zapier, Make)
 - Run notifications (email, Slack)

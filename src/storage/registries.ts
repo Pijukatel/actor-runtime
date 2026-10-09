@@ -1,11 +1,20 @@
 /**
- * The eight internal `__*__` registries from `storage.md`, opened once at startup. They are ordinary
+ * The ten internal `__*__` registries from `storage.md`, opened once at startup. They are ordinary
  * `KeyValueStore` frontends opened by name, in the same physical space as user storages, and are never
  * routable from the public API - the API only ever resolves ids it first finds in one of these.
  */
 import { Registry } from './registry.js';
 import { openKeyValueStore } from './open.js';
-import type { ActorRecord, BuildRecord, RunRecord, StorageRecord, TaskRecord, UserRecord } from './entities.js';
+import type {
+	ActorRecord,
+	BuildRecord,
+	RunRecord,
+	StorageRecord,
+	TaskRecord,
+	UserRecord,
+	WebhookDispatchRecord,
+	WebhookRecord,
+} from './entities.js';
 
 export interface Registries {
 	storages: Registry<StorageRecord>;
@@ -14,6 +23,8 @@ export interface Registries {
 	runs: Registry<RunRecord>;
 	builds: Registry<BuildRecord>;
 	tasks: Registry<TaskRecord>;
+	webhooks: Registry<WebhookRecord>;
+	webhookDispatches: Registry<WebhookDispatchRecord>;
 	/** Plain-text log bodies, keyed by build/run id. Not JSON - see `LogStore`. */
 	logs: Awaited<ReturnType<typeof openKeyValueStore>>;
 	files: Awaited<ReturnType<typeof openKeyValueStore>>;
@@ -30,6 +41,8 @@ export async function openRegistries(): Promise<Registries> {
 		runs: await Registry.open<RunRecord>('__RUNS__'),
 		builds: await Registry.open<BuildRecord>('__BUILDS__'),
 		tasks: await Registry.open<TaskRecord>('__TASKS__'),
+		webhooks: await Registry.open<WebhookRecord>('__WEBHOOKS__'),
+		webhookDispatches: await Registry.open<WebhookDispatchRecord>('__WEBHOOK_DISPATCHES__'),
 		logs: await openKeyValueStore('__LOGS__'),
 		files: await openKeyValueStore('__FILES__'),
 	};

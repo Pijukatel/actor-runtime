@@ -200,3 +200,13 @@ export function unknownBuildTag(tag: string): ApiError {
 		`Build with tag "${tag}" was not found. Has the Actor been built already?`,
 	);
 }
+
+/** Matches the real platform's `webhooks.idDoesNotMatch`: a test dispatch's run or build must be one the
+ * webhook fires for. */
+export function idDoesNotMatch(passedId: string, actualId: string): ApiError {
+	return new ApiError(
+		400,
+		'id-does-not-match',
+		`Passed run/build ${passedId} is not a run/build of Actor/task ${actualId}.`,
+	);
+}

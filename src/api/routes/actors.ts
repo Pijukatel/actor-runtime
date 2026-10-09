@@ -58,6 +58,7 @@ import {
 } from '../../services/standby-config.js';
 import { deleteSourceContextFiles } from '../../services/source-context.js';
 import { defaultRunOptionsOf, mergeDefaultRunOptionsUpdate } from '../../services/default-run-options.js';
+import { deleteWebhooksWithCondition } from '../../services/webhooks.js';
 
 /** `undefined` when the body does not mention the field; an invalid one throws. */
 function actorStandbyFromBody(body: { actorStandby?: unknown }, actor?: ActorRecord): ActorStandbyRecord | undefined {
@@ -345,6 +346,7 @@ export function mountActors(router: Router, deps: ApiServerDeps): void {
 			// "applies uniformly to every DELETE").
 			if (!actor) throw recordNotFound();
 			await deleteActor(actor.id);
+			await deleteWebhooksWithCondition({ actorId: actor.id });
 			for (const version of actor.versions) await deleteSourceContextFiles(version.localSourceContext);
 			res.status(204).end();
 		}),
