@@ -25,6 +25,7 @@
     - Actors
     - Actor tasks
     - Webhooks, with their dispatches
+    - Schedules
     - Actor builds
     - Actor runs
     - Logs
@@ -54,6 +55,9 @@
 - Webhooks are read-only, changed through the API (`api.md`'s "Webhooks"). A webhook's detail view shows
   its settings, templates and dispatches; a dispatch's detail view shows every delivery attempt. The
   Actor and task detail views list their webhooks.
+- Schedules are read-only, changed through the API (`api.md`'s "Schedules"). A schedule's detail view shows
+  its settings, actions, the runs it started and its log; a scheduled run's detail view links its schedule
+  as `username~schedulename`. The Actor and task detail views list the schedules that run them.
 - Log views render ANSI colors from actor output as HTML, while the `/v2/logs/:id` API keeps serving logs raw (unconverted) for the CLI to render itself.
 - The console accepts the real Apify Console's URL shapes (as printed by stock apify-cli, e.g. `/actors/:actorId/runs/:runId`, `/storage/datasets/:id`) via redirects to its own pages.
 

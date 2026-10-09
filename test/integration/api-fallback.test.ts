@@ -346,7 +346,7 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 				expect(offSpec.data.error.type).toBe('not-found');
 				expect(offSpec.headers['x-actor-runtime-fallback']).toBeUndefined();
 
-				const notImplemented = await call('get', '/v2/schedules');
+				const notImplemented = await call('get', '/v2/store');
 				expect(notImplemented.status).toBe(501);
 				expect(notImplemented.data.error.type).toBe('not-implemented');
 
@@ -383,12 +383,12 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 		});
 
 		it('relays a spec-known 501 path, with the trigger header "unimplemented"', async () => {
-			const stub = await startStubUpstream(fixedOkResponse('schedules-marker'));
+			const stub = await startStubUpstream(fixedOkResponse('store-marker'));
 			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
 			try {
-				const res = await call('get', '/v2/schedules');
+				const res = await call('get', '/v2/store');
 				expect(res.status).toBe(200);
-				expect(res.data).toEqual({ fromUpstream: true, marker: 'schedules-marker' });
+				expect(res.data).toEqual({ fromUpstream: true, marker: 'store-marker' });
 				expect(res.headers['x-actor-runtime-fallback-trigger']).toBe('unimplemented');
 				expect(stub.hitCount()).toBe(1);
 			} finally {
@@ -465,10 +465,10 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 		});
 
 		it('relays a write method (POST) against an unbuilt endpoint family', async () => {
-			const stub = await startStubUpstream(fixedOkResponse('schedules-post-marker'));
+			const stub = await startStubUpstream(fixedOkResponse('webhooks-post-marker'));
 			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
 			try {
-				const res = await call('post', '/v2/schedules', { body: { name: 'whatever' } });
+				const res = await call('post', '/v2/actor-tasks/abc/webhooks', { body: { name: 'whatever' } });
 				expect(res.status).toBe(200);
 				expect(res.headers['x-actor-runtime-fallback-trigger']).toBe('unimplemented');
 				expect(stub.hitCount()).toBe(1);
@@ -506,7 +506,7 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 				expect(offSpec.status).toBe(404);
 				expect(offSpec.data.error.type).toBe('not-found');
 
-				const notImplemented = await call('get', '/v2/schedules');
+				const notImplemented = await call('get', '/v2/store');
 				expect(notImplemented.status).toBe(501);
 
 				expect(stub.hitCount()).toBe(0);
@@ -636,7 +636,7 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 			}));
 			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
 			try {
-				const unimplemented = await call('get', '/v2/schedules');
+				const unimplemented = await call('get', '/v2/store');
 				expect(unimplemented.status).toBe(200);
 				expect(unimplemented.headers['x-actor-runtime-fallback-trigger']).toBe('unimplemented');
 
@@ -753,8 +753,8 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 			}));
 			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
 			try {
-				const baseline = await localBothOffResponse('get', '/v2/schedules');
-				const res = await call('get', '/v2/schedules');
+				const baseline = await localBothOffResponse('get', '/v2/store');
+				const res = await call('get', '/v2/store');
 				expect(res.status).toBe(baseline.status);
 				expect(res.data).toEqual(baseline.data);
 				expect(res.headers['x-actor-runtime-fallback']).toBeUndefined();

@@ -18,6 +18,7 @@ const NAV = [
 	['/actors', 'Actors'],
 	['/tasks', 'Tasks'],
 	['/webhooks', 'Webhooks'],
+	['/schedules', 'Schedules'],
 	['/builds', 'Builds'],
 	['/runs', 'Runs'],
 	['/logs', 'Logs'],

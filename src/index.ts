@@ -11,6 +11,7 @@ import { createConsoleServer } from './console/server.js';
 import { attachBrowserViewWebSocket } from './console/browser-view-ws.js';
 import { startLogFlusher } from './services/logs.js';
 import { startWebhookDispatcher } from './services/webhook-dispatches.js';
+import { startScheduler } from './services/scheduler.js';
 import { buildDto, runDto } from './api/dto/actors.js';
 import { gracefulShutdown } from './shutdown.js';
 import { API_PORT, CONSOLE_PORT, DEFAULT_DATA_DIR } from './config.js';
@@ -27,6 +28,8 @@ async function main(): Promise<void> {
 	// Ahead of the reconciliation, so the runs and builds it aborts fire their webhooks.
 	await startWebhookDispatcher({ apiPort: API_PORT, runResource: (run) => runDto(run), buildResource: buildDto });
 	await reconcileOrphanedJobs(driver);
+	// After it, so a schedule due at start sees its previous run already aborted.
+	await startScheduler({ driver });
 
 	const apiApp = createApiServer({ driver });
 	const consoleApp = createConsoleServer({ driver });

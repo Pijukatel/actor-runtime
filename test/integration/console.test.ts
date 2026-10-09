@@ -151,6 +151,31 @@ describe('console pages (HTTP fetch)', () => {
 		expect(missingDispatch.status).toBe(404);
 	});
 
+	it('schedules: listed next to webhooks, with a detail view, and on their Actor and task', async () => {
+		const actor = await server.client.actors().create({ name: 'console-schedule-actor' });
+		const schedule = await server.client.schedules().create({
+			name: 'console-schedule',
+			actions: [{ type: 'RUN_ACTOR', actorId: actor.id }],
+		} as never);
+
+		const nav = (await axios.get(`${consoleBaseUrl}/`)).data as string;
+		expect(nav).toMatch(/<a href="\/webhooks">Webhooks<\/a><a href="\/schedules">Schedules<\/a>/);
+
+		const list = (await axios.get(`${consoleBaseUrl}/schedules`)).data as string;
+		expect(list).toContain(`<a href="/schedules/${schedule.id}">${schedule.id}</a>`);
+		expect(list).toContain('@daily');
+
+		const detail = (await axios.get(`${consoleBaseUrl}/schedules/${schedule.id}`)).data as string;
+		expect(detail).toContain('console-schedule');
+		expect(detail).toContain(`<a href="/actors/${actor.id}">`);
+		expect(detail).toContain('RUN_ACTOR');
+
+		const actorDetail = (await axios.get(`${consoleBaseUrl}/actors/${actor.id}`)).data as string;
+		expect(actorDetail).toContain(`<a href="/schedules/${schedule.id}">${schedule.id}</a>`);
+
+		expect((await axios.get(`${consoleBaseUrl}/schedules/nope`, { validateStatus: () => true })).status).toBe(404);
+	});
+
 	it('builds and runs list+detail views render (even with no Docker)', async () => {
 		const actor = await server.client.actors().create({ name: 'console-build-actor' });
 		await server.client

@@ -210,3 +210,33 @@ export function idDoesNotMatch(passedId: string, actualId: string): ApiError {
 		`Passed run/build ${passedId} is not a run/build of Actor/task ${actualId}.`,
 	);
 }
+
+/** Matches the real platform's `scheduling.cronExpressionInvalid`; `message` already carries the prefix. */
+export function cronExpressionInvalid(message: string): ApiError {
+	return new ApiError(400, 'cron-expression-invalid', message);
+}
+
+/** Matches the real platform's `scheduling.scheduleNameExists`. */
+export function scheduleNameExists(name: string): ApiError {
+	return new ApiError(409, 'schedule-name-not-unique', `Some other schedule already has this name ("${name}").`);
+}
+
+/** Matches the real platform's `scheduling.scheduleTooManyValues`. */
+export function scheduleTooManyValues(message: string): ApiError {
+	return new ApiError(403, 'too-many-values', message);
+}
+
+/** Matches the real platform's `scheduling.actorNotFound` / `actorTaskNotFound`: a schedule action names a
+ * missing Actor or task. */
+export function scheduleTargetNotFound(target: 'actor' | 'task', message: string): ApiError {
+	return new ApiError(
+		404,
+		target === 'actor' ? 'schedule-actor-not-found' : 'schedule-actor-task-not-found',
+		message,
+	);
+}
+
+/** Matches the real platform's `scheduling.runInputBodyNotValidJson`. */
+export function runInputBodyNotValidJson(): ApiError {
+	return new ApiError(400, 'run-input-body-not-valid-json', 'The runInput.body is not valid JSON.');
+}

@@ -129,7 +129,7 @@ apify api GET v2/actor-tasks/~small-crawl/runs/last/dataset/items
 - The saved input is validated against the input schema of the build the task runs, as on the platform.
 - A task of a Standby Actor has its own `standbyUrl` (see "Run an Actor server").
 - The console's Tasks page shows each task's input, run options, standby URL and runs.
-- Tasks cannot be published or scheduled here.
+- Tasks cannot be published here.
 
 ## Webhooks
 
@@ -145,6 +145,26 @@ apify api GET v2/webhooks/<webhookId>/dispatches  # each delivery, with every at
 - A URL naming the runtime's own API (`http://localhost:3333/v2/...`) is authenticated as you unless it
   has a `token`, so a webhook can start another local Actor.
 - Only HTTP request webhooks: Slack, email, Drive and GitHub actions are refused.
+
+## Schedules
+
+Schedules work as on the platform, including `apify-client`'s schedule calls: a cron expression starts
+runs of your Actors and tasks while the runtime is running.
+
+```sh
+apify api POST v2/schedules --body '{"name": "nightly", "cronExpression": "0 2 * * *", "timezone": "Europe/Prague", "isEnabled": true, "actions": [{"type": "RUN_ACTOR", "actorId": "<actorId>", "runInput": {"body": "{\"maxPages\": 3}", "contentType": "application/json"}}, {"type": "RUN_ACTOR_TASK", "actorTaskId": "<taskId>"}]}'
+apify api POST v2/schedules/<scheduleId>/invoke   # run its actions now
+apify api GET v2/schedules/<scheduleId>/log       # every invocation, skipped action and failed start
+apify api GET 'v2/actors/<actorId>/runs/last?origin=SCHEDULER'
+```
+
+- A schedule is created disabled unless the body sets `isEnabled`; `nextRunAt` shows when it fires next.
+  `@hourly`, `@daily` and the other shortcuts fire at a random offset inside their period, as on the
+  platform, so use an explicit expression for a precise time.
+- An exclusive schedule (the default) skips an action while its previous run is still going.
+- A run time missed while the runtime was down is made up once at the next start. No email is sent when
+  a run fails to start; the schedule's log says so instead.
+- The console's Schedules page shows each schedule's actions, the runs it started and its log.
 
 ## Run memory
 

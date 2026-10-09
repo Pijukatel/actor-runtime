@@ -90,6 +90,11 @@
         - v2/webhook-dispatches
         - v2/webhook-dispatches/:dispatchId
         - v2/actors/:actorId/webhooks
+    - Schedules
+        - v2/schedules
+        - v2/schedules/:scheduleId
+        - v2/schedules/:scheduleId/log
+        - v2/schedules/:scheduleId/invoke
     - Builds
         - v2/actor-builds
         - v2/actor-builds/:buildId
@@ -209,6 +214,28 @@
       allowed and redirects are not followed.
     - The runtime's own API stands in for the Apify API: a request to it without a `token` is
       authenticated as the webhook's owner.
+
+# Schedules
+
+- Implemented as on the platform, for the caller's own Actors and tasks: a schedule saves a cron
+  expression, a timezone and up to 10 Actor actions (an input and run options) and 10 task actions (an
+  input merged over the task's), and starts their runs at every time the expression names (`meta.origin`
+  `SCHEDULER`, with the schedule, action and run time in `meta`).
+    - A schedule created without a `name` is named `my-schedule` (`-1`, `-2`, ... when taken); names are
+      unique per user (`409` `schedule-name-not-unique`). It is disabled until `isEnabled` is set;
+      `nextRunAt` is `null` while disabled.
+    - `@hourly`, `@daily`, `@weekly`, `@monthly` and `@yearly` run at a random offset inside their period,
+      fixed per schedule; runs are never closer than 10 seconds. An invalid expression is `400`
+      `cron-expression-invalid`.
+    - With `isExclusive` (the default), an action is skipped while its previous run is still going, with a
+      warning in the schedule's log.
+    - `POST .../invoke` starts the actions now, without touching the schedule's run times.
+    - The schedule's log (`GET .../log`, the newest 250 entries) records every invocation, skipped action
+      and run that could not start.
+    - Deleting an Actor or a task drops the actions that would run it.
+- Differences: a run time that passed while the runtime was not running is made up once at the next start;
+  `notifications.email` is saved but no email is sent (`unsupported.md`); an action may name an Actor as
+  `username~name` like the rest of the API, and is stored by id.
 
 # Actor Standby
 

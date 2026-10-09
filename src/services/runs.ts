@@ -1,6 +1,13 @@
 import { generateId } from '../storage/ids.js';
 import { liveDevFolderDisabledLine, liveDevFolderWarningLines, unknownWorkingDirectoryLine } from './dev-folder.js';
-import type { ActorRecord, ActorVersionRecord, BuildRecord, JobStatus, RunRecord } from '../storage/entities.js';
+import type {
+	ActorRecord,
+	ActorVersionRecord,
+	BuildRecord,
+	JobStatus,
+	RunMeta,
+	RunRecord,
+} from '../storage/entities.js';
 import { getRegistries } from '../storage/registries.js';
 import { createStorage } from './storages.js';
 import { openKeyValueStore } from '../storage/open.js';
@@ -162,8 +169,10 @@ export interface StartRunOptions {
 	restartOnError?: boolean;
 	/** The task the run is started from, if any. */
 	actorTaskId?: string;
-	/** `STANDBY` for a run the standby router starts; `API` otherwise. */
-	origin?: 'API' | 'STANDBY';
+	/** `STANDBY` for a run the standby router starts, `SCHEDULER` for a schedule's; `API` otherwise. */
+	origin?: 'API' | 'STANDBY' | 'SCHEDULER';
+	/** A scheduled run's schedule, action and run time (`services/scheduler.ts`). */
+	scheduleMeta?: Omit<RunMeta, 'origin'>;
 	/** The Actor's standby URL, given to every run as `ACTOR_STANDBY_URL`, as on the platform. */
 	standbyUrl?: string;
 	/** `''` sets `APIFY_PROXY_PASSWORD` explicitly empty (the Apify Proxy setting turned off). */
@@ -351,7 +360,7 @@ export async function startRun(
 			...(maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd } : {}),
 			...(restartOnError !== undefined ? { restartOnError } : {}),
 		},
-		meta: { origin: options.origin ?? 'API' },
+		meta: { origin: options.origin ?? 'API', ...options.scheduleMeta },
 		// Same zeros the platform writes at run creation (see `RunRecord.stats`).
 		stats: {
 			migrationCount: 0,

@@ -49,6 +49,7 @@ import {
 	updateTask,
 } from '../../services/tasks.js';
 import { deleteWebhooksWithCondition } from '../../services/webhooks.js';
+import { removeScheduleActionsFor } from '../../services/schedules.js';
 import type {
 	ActorRecord,
 	BuildRecord,
@@ -384,6 +385,7 @@ export function mountTasks(router: Router, deps: ApiServerDeps): void {
 			}
 			await deleteTask(task.id);
 			await deleteWebhooksWithCondition({ actorTaskId: task.id });
+			await removeScheduleActionsFor({ actorTaskId: task.id });
 			res.status(204).end();
 		}),
 	);

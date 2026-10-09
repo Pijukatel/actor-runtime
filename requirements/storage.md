@@ -103,6 +103,9 @@ number }`, both already resolved (never `"auto"`, never absent-meaning-default).
 - The system stores webhook dispatches in dedicated key-value store called `__WEBHOOK_DISPATCHES__`:
     - `key` is the id of the dispatch (`dispatchId`)
     - `value` is the dispatch, with every delivery attempt
+- The system stores schedules in dedicated key-value store called `__SCHEDULES__`:
+    - `key` is the id of the schedule (`scheduleId`)
+    - `value` is the schedule, with its actions, next and last run times and log
 - The system stores logs in dedicated key-value store called `__LOGS__`:
     - `key` is the id of the Actor build (`logId`)
     - `value` is the metadata of the Actor

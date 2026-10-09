@@ -30,7 +30,7 @@ describe('API shell: envelope, 501/404, internal-object isolation, ownership sco
 	});
 
 	it('a real-but-unimplemented spec path answers 501', async () => {
-		const res = await get('/v2/schedules');
+		const res = await get('/v2/store');
 		expect(res.status).toBe(501);
 	});
 

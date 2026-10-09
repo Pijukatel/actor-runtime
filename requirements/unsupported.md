@@ -36,11 +36,10 @@ real account, not in the runtime.
 
 ## Automation and integrations
 
-- Schedules
 - Webhook actions other than HTTP requests (Slack, email, Drive, GitHub issues)
 - Actor-to-Actor integrations
 - Integrations (Slack, Gmail, Drive, GitHub, Zapier, Make)
-- Run notifications (email, Slack)
+- Run notifications (email, Slack), and the email a schedule sends when a run fails to start
 - Monitoring and alerting
 - Apify MCP server and MCP connectors
 

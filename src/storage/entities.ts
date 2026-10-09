@@ -330,6 +330,68 @@ export interface WebhookDispatchRecord {
 	calls: WebhookDispatchCall[];
 }
 
+/** The platform's `SCHEDULE_ACTIONS`. */
+export type ScheduleActionType = 'RUN_ACTOR' | 'RUN_ACTOR_TASK';
+
+/** A schedule's run options for an Actor action; an absent field falls back to the Actor's default. */
+export interface ScheduledActorRunOptions {
+	build?: string;
+	timeoutSecs?: number;
+	memoryMbytes?: number;
+	restartOnError?: boolean;
+}
+
+/** `RUN_ACTOR`: a run of an Actor from the given input and run options, like `POST /v2/actors/:actorId/runs`. */
+export interface ScheduledActorAction {
+	id: string;
+	type: 'RUN_ACTOR';
+	actorId: string;
+	runInput?: { body: string; contentType: string } | null;
+	runOptions?: ScheduledActorRunOptions | null;
+}
+
+/** `RUN_ACTOR_TASK`: a run of a task, `input` merged over the task's saved input. */
+export interface ScheduledTaskAction {
+	id: string;
+	type: 'RUN_ACTOR_TASK';
+	actorTaskId: string;
+	input?: Record<string, unknown>;
+}
+
+export type ScheduleAction = ScheduledActorAction | ScheduledTaskAction;
+
+export type ScheduleLogLevel = 'INFO' | 'WARNING' | 'ERROR';
+
+/** One line of a schedule's log (`GET /v2/schedules/:scheduleId/log`). */
+export interface ScheduleLogMessage {
+	message: string;
+	level: ScheduleLogLevel;
+	createdAt: string;
+}
+
+/** A schedule (`api.md`'s "Schedules"): a cron expression that starts its actions' runs. */
+export interface ScheduleRecord {
+	id: string;
+	userId: string;
+	name: string;
+	title: string;
+	description?: string;
+	cronExpression: string;
+	timezone: string;
+	isEnabled: boolean;
+	isExclusive: boolean;
+	notifications: { email: boolean };
+	/** Fixed at creation: spreads `@hourly`/`@daily`/... schedules over their period, as on the platform. */
+	randomOffsetCoeff: number;
+	actions: ScheduleAction[];
+	createdAt: string;
+	modifiedAt: string;
+	/** `null` while the schedule is disabled. */
+	nextRunAt: string | null;
+	lastRunAt: string | null;
+	log: ScheduleLogMessage[];
+}
+
 export type JobStatus = 'READY' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'ABORTING' | 'ABORTED' | 'TIMED-OUT';
 
 /** Matches the real platform's `RUN_GENERAL_ACCESS` enum (public `@apify/consts`) - `FOLLOW_USER_SETTING`
@@ -383,6 +445,16 @@ export interface ActorMemorySettings {
 	maxMemoryMbytes?: number;
 }
 
+/** The platform's run `meta`: how the run was started, and for a scheduled run, by which schedule action
+ * and for which of its run times (the platform's own field names, `scheduledAct2Id` included). */
+export interface RunMeta {
+	origin: string;
+	scheduleId?: string;
+	scheduledAct2Id?: string;
+	scheduledActorTaskId?: string;
+	scheduledAt?: string;
+}
+
 export interface RunRecord {
 	id: string;
 	userId: string;
@@ -429,7 +501,7 @@ export interface RunRecord {
 	isStatusMessageTerminal?: boolean;
 	/** The runtime's own reason for ending the run, which the Actor's later messages must not hide. */
 	isStatusMessageFromRuntime?: boolean;
-	meta: { origin: string };
+	meta: RunMeta;
 	/** When the run was last resurrected (`services/runs.ts: resurrectRun`); absent until then. The
 	 * timeout budget and the current incarnation's duration count from here, `startedAt` staying the
 	 * original as on the platform. Never on `/v2`. */

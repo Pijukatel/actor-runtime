@@ -117,6 +117,15 @@ export const SPEC_TABLE: SpecTableEntry[] = [
 	pathTemplate('GET', 'v2/webhook-dispatches', true),
 	pathTemplate('GET', 'v2/webhook-dispatches/:dispatchId', true),
 
+	// --- Schedules ---
+	pathTemplate('GET', 'v2/schedules', true),
+	pathTemplate('POST', 'v2/schedules', true),
+	pathTemplate('GET', 'v2/schedules/:scheduleId', true),
+	pathTemplate('PUT', 'v2/schedules/:scheduleId', true),
+	pathTemplate('DELETE', 'v2/schedules/:scheduleId', true),
+	pathTemplate('GET', 'v2/schedules/:scheduleId/log', true),
+	pathTemplate('POST', 'v2/schedules/:scheduleId/invoke', true),
+
 	// --- Builds ---
 	pathTemplate('GET', 'v2/actor-builds', true),
 	pathTemplate('GET', 'v2/actor-builds/:buildId', true),
@@ -208,11 +217,6 @@ export const SPEC_TABLE: SpecTableEntry[] = [
 	...runStorageAliasEntries('v2/actor-tasks/:taskId/runs/last'),
 
 	// --- Known, real Apify API v2 paths this runtime does not implement (-> 501) ---
-	pathTemplate('GET', 'v2/schedules', false),
-	pathTemplate('POST', 'v2/schedules', false),
-	pathTemplate('GET', 'v2/schedules/:scheduleId', false),
-	pathTemplate('PUT', 'v2/schedules/:scheduleId', false),
-	pathTemplate('DELETE', 'v2/schedules/:scheduleId', false),
 	pathTemplate('GET', 'v2/store', false),
 	pathTemplate('GET', 'v2/store/:storeId', false),
 	pathTemplate('GET', 'v2/users/:userId/limits', false),

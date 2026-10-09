@@ -12,7 +12,7 @@ describe('matchSpecPath', () => {
 	});
 
 	it('matches a real-but-unimplemented spec path as not implemented', () => {
-		const entry = matchSpecPath('GET', 'v2/schedules');
+		const entry = matchSpecPath('GET', 'v2/store');
 		expect(entry).toBeDefined();
 		expect(entry?.implemented).toBe(false);
 	});
@@ -55,6 +55,13 @@ describe('matchSpecPath', () => {
 		expect(matchSpecPath('PUT', 'v2/actor-tasks/abc/input')?.implemented).toBe(true);
 		expect(matchSpecPath('GET', 'v2/actor-tasks/abc/runs/last/dataset/items')?.implemented).toBe(true);
 		expect(matchSpecPath('GET', 'v2/actor-tasks/abc/webhooks')?.implemented).toBe(true);
+	});
+
+	it('serves schedules, their log and manual invocation', () => {
+		expect(matchSpecPath('POST', 'v2/schedules')?.implemented).toBe(true);
+		expect(matchSpecPath('PUT', 'v2/schedules/abc')?.implemented).toBe(true);
+		expect(matchSpecPath('GET', 'v2/schedules/abc/log')?.implemented).toBe(true);
+		expect(matchSpecPath('POST', 'v2/schedules/abc/invoke')?.implemented).toBe(true);
 	});
 
 	it('serves webhooks and webhook dispatches', () => {

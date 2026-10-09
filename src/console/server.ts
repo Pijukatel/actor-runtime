@@ -1,5 +1,5 @@
 /**
- * Server-rendered console: list + detail views for Actors, tasks, webhooks, builds, runs, logs, and the three
+ * Server-rendered console: list + detail views for Actors, tasks, webhooks, schedules, builds, runs, logs, and the three
  * user-storage types, each with exactly one inspection widget per storage type (`console.md`). Reads
  * through the same service layer as the API handlers, so ownership filtering (over on the API side) is
  * shared rather than reimplemented.
@@ -23,7 +23,7 @@ import express, { type Express, type Request } from 'express';
 import { getActorById, listAllActors, setActorPricingInfos } from '../services/actors.js';
 import { getRunTelemetry } from '../services/events-channel.js';
 import { computeRunUsage } from '../services/run-usage.js';
-import type { ActorRecord, LocalSourceContext, WebhookCondition } from '../storage/entities.js';
+import type { ActorRecord, LocalSourceContext, ScheduleAction, WebhookCondition } from '../storage/entities.js';
 import {
 	describeDevFolderFailure,
 	devFolderStatus,
@@ -46,6 +46,7 @@ import {
 } from '../services/standby.js';
 import { getTaskById, listAllTasks } from '../services/tasks.js';
 import { getWebhookById, listAllWebhooks } from '../services/webhooks.js';
+import { getScheduleById, listAllSchedules } from '../services/schedules.js';
 import { getWebhookDispatchById, listAllWebhookDispatches } from '../services/webhook-dispatches.js';
 import { getUserById } from '../services/users.js';
 import { migrateRun } from '../services/migrations.js';
@@ -315,7 +316,8 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				0,
 				'/tasks',
 			) +
-			(await webhooksSection('actorId', actor.id));
+			(await webhooksSection('actorId', actor.id)) +
+			(await schedulesSection('actorId', actor.id));
 		res.send(layout(`Actor ${actor.name}`, body));
 	});
 
@@ -378,7 +380,8 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 				0,
 				'/runs',
 			) +
-			(await webhooksSection('actorTaskId', task.id));
+			(await webhooksSection('actorTaskId', task.id)) +
+			(await schedulesSection('actorTaskId', task.id));
 		res.send(layout(`Task ${task.name}`, body));
 	});
 
@@ -523,6 +526,135 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			escapeHtml(JSON.stringify(dispatch.eventData, null, 2)) +
 			'</pre>';
 		res.send(layout(`Webhook dispatch ${dispatch.id}`, body));
+	});
+
+	/** The schedules with an action that runs one Actor or task. */
+	async function schedulesSection(key: 'actorId' | 'actorTaskId', id: string): Promise<string> {
+		const schedules = (await listAllSchedules()).filter((schedule) =>
+			schedule.actions.some((action) => (action as unknown as Record<string, string>)[key] === id),
+		);
+		return (
+			'<h2>Schedules</h2>' +
+			table(
+				['id', 'name', 'cron expression', 'enabled', 'nextRunAt'],
+				newestCreatedFirst(schedules).map((schedule) => [
+					schedule.id,
+					schedule.name,
+					schedule.cronExpression,
+					schedule.isEnabled ? 'yes' : 'no',
+					schedule.nextRunAt ?? '',
+				]),
+				0,
+				'/schedules',
+			)
+		);
+	}
+
+	/** What an action runs, linked to its page. */
+	async function actionTargetCell(names: ReturnType<typeof createNameResolver>, action: ScheduleAction) {
+		return action.type === 'RUN_ACTOR' ? names.actorLink(action.actorId) : names.taskLink(action.actorTaskId);
+	}
+
+	app.get('/schedules', async (_req, res) => {
+		const schedules = newestCreatedFirst(await listAllSchedules());
+		const names = createNameResolver();
+		const rows = await Promise.all(
+			schedules.map(async (schedule) => [
+				schedule.id,
+				await names.userName(schedule.userId),
+				schedule.name,
+				schedule.cronExpression,
+				schedule.timezone,
+				schedule.isEnabled ? 'yes' : 'no',
+				String(schedule.actions.length),
+				schedule.nextRunAt ?? '',
+				schedule.lastRunAt ?? '',
+			]),
+		);
+		res.send(
+			layout(
+				'Schedules',
+				table(
+					[
+						'id',
+						'user',
+						'name',
+						'cron expression',
+						'timezone',
+						'enabled',
+						'actions',
+						'nextRunAt',
+						'lastRunAt',
+					],
+					rows,
+					0,
+					'/schedules',
+				),
+			),
+		);
+	});
+
+	app.get('/schedules/:id', async (req, res) => {
+		const schedule = await getScheduleById(req.params.id);
+		if (!schedule) {
+			res.status(404).send(layout('Not found', '<p>Schedule not found.</p>'));
+			return;
+		}
+		const names = createNameResolver();
+		const runs = newestFirst((await listAllRuns()).filter((run) => run.meta.scheduleId === schedule.id));
+		const actionRows = await Promise.all(
+			schedule.actions.map(async (action) => [
+				action.id,
+				action.type,
+				await actionTargetCell(names, action),
+				action.type === 'RUN_ACTOR'
+					? (action.runInput?.body ?? '')
+					: action.input
+						? JSON.stringify(action.input)
+						: '',
+				action.type === 'RUN_ACTOR' && action.runOptions ? JSON.stringify(action.runOptions) : '',
+			]),
+		);
+		const body =
+			definitionList([
+				['id', schedule.id],
+				['user', await names.userName(schedule.userId)],
+				['name', schedule.name],
+				['title', schedule.title],
+				['description', schedule.description ?? ''],
+				['cron expression', schedule.cronExpression],
+				['timezone', schedule.timezone],
+				['enabled', schedule.isEnabled ? 'yes' : 'no'],
+				['exclusive', schedule.isExclusive ? 'yes' : 'no'],
+				['nextRunAt', schedule.nextRunAt ?? ''],
+				['lastRunAt', schedule.lastRunAt ?? ''],
+				['createdAt', schedule.createdAt],
+				['modifiedAt', schedule.modifiedAt],
+			]) +
+			'<h2>Actions</h2>' +
+			table(['id', 'type', 'runs', 'input', 'run options'], actionRows) +
+			'<h2>Runs</h2>' +
+			table(
+				['id', 'actor', 'status', 'scheduledAt', 'startedAt', 'usageTotalUsd'],
+				await Promise.all(
+					runs.map(async (r) => [
+						r.id,
+						await names.actorLink(r.actorId),
+						r.status,
+						r.meta.scheduledAt ?? '',
+						r.startedAt,
+						formatUsd(computeRunUsage(r, getRunTelemetry(r.id)).usageTotalUsd),
+					]),
+				),
+				0,
+				'/runs',
+			) +
+			'<h2>Log</h2>' +
+			table(
+				['createdAt', 'level', 'message'],
+				[...schedule.log].reverse().map((entry) => [entry.createdAt, entry.level, entry.message]),
+			);
+		res.send(layout(`Schedule ${schedule.name}`, body));
 	});
 
 	/** Same `setActorPricingInfos` as the API, cross-user like the other Actor forms. Only the JSON parse
@@ -783,6 +915,11 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			['finishedAt', run.finishedAt ?? ''],
 			['statusMessage', run.statusMessage ?? ''],
 			['origin', run.meta.origin],
+			...(run.meta.scheduleId
+				? ([['schedule', await createNameResolver().scheduleLink(run.meta.scheduleId)]] as Array<
+						[string, unknown]
+					>)
+				: []),
 			['migrationCount', run.stats?.migrationCount ?? 0],
 			['rebootCount', run.stats?.rebootCount ?? 0],
 		];

@@ -17,6 +17,7 @@ import { mountLastRun } from './routes/last-run.js';
 import { mountRunSync } from './routes/run-sync.js';
 import { mountTasks } from './routes/tasks.js';
 import { mountWebhooks } from './routes/webhooks.js';
+import { mountSchedules } from './routes/schedules.js';
 import { mountDevFolder } from './routes/dev-folder.js';
 import { mountDebugMode } from './routes/debug-mode.js';
 import { mountBrowserView } from './routes/browser-view.js';
@@ -99,6 +100,7 @@ export function createApiServer(deps: ApiServerDeps): Express {
 	mountActors(v2, deps);
 	mountTasks(v2, deps);
 	mountWebhooks(v2);
+	mountSchedules(v2);
 	mountRunSync(v2, deps);
 	mountBuilds(v2, deps);
 	mountRuns(v2, deps);
