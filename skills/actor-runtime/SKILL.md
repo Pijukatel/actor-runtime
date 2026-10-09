@@ -77,6 +77,11 @@ apify call
 - `apify push` of such an Actor to the Apify platform stops with an error: it is not supported there yet
   (https://github.com/apify/apify-core/issues/28685). Build it from the Git repository instead.
 
+## Dataset schema validation
+
+A dataset schema in `.actor/actor.json` is enforced as on the platform. It comes from the **build**, so
+an edited schema takes effect only after `apify push`.
+
 ## Input schema: defaults and validation
 
 If the Actor declares an input schema - the `input` field of `.actor/actor.json`, or

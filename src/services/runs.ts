@@ -277,11 +277,12 @@ export async function startRun(
 	const { runs } = getRegistries();
 
 	const extraDatasetAliases = build.extraDatasetAliases ?? [];
+	const schemaOf = (alias: string) => build.datasetSchemas?.[alias];
 	const [dataset, keyValueStore, requestQueue, ...extraDatasets] = await Promise.all([
-		createStorage(actor.userId, 'dataset'),
+		createStorage(actor.userId, 'dataset', undefined, schemaOf(DEFAULT_STORAGE_ALIAS)),
 		createStorage(actor.userId, 'keyValueStore'),
 		createStorage(actor.userId, 'requestQueue'),
-		...extraDatasetAliases.map(() => createStorage(actor.userId, 'dataset')),
+		...extraDatasetAliases.map((alias) => createStorage(actor.userId, 'dataset', undefined, schemaOf(alias))),
 	]);
 
 	const input = await sealInputSecrets(actor, build.inputSchema, options.input);

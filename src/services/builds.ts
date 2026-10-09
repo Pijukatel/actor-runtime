@@ -13,6 +13,7 @@ import { dockerContextFiles, nameInDockerContext, resolveDockerContext } from '.
 import { describeActorJsonDefect } from './actor-json-validation.js';
 import { DEFAULT_DOCKERFILE_NAME } from './default-dockerfile.js';
 import { resolveInputSchemaLocation } from './input-schema-location.js';
+import { resolveDatasetSchemas } from './dataset-schema.js';
 import { resolveExtraDatasetAliases } from './actor-storages.js';
 import { resolveActorMemorySettings } from './actor-memory.js';
 import { buildArgsOf } from './env-vars.js';
@@ -279,6 +280,14 @@ export async function runBuildInBackground(
 	for (const line of inputSchemaResolution.logLines) appendRuntimeLog(record.id, line);
 	const inputSchema = inputSchemaResolution.outcome === 'resolved' ? inputSchemaResolution.schema : undefined;
 
+	const datasetSchemaResolution = resolveDatasetSchemas(versionSourceFiles, actorPath);
+	if (datasetSchemaResolution.outcome === 'failure') {
+		await failBuild(record.id, datasetSchemaResolution.message);
+		return;
+	}
+	for (const line of datasetSchemaResolution.logLines) appendRuntimeLog(record.id, line);
+	const datasetSchemas = datasetSchemaResolution.schemas;
+
 	const memoryResolution = resolveActorMemorySettings(versionSourceFiles, actorPath);
 	if (memoryResolution.outcome === 'failure') {
 		await failBuild(record.id, memoryResolution.message);
@@ -364,6 +373,7 @@ export async function runBuildInBackground(
 				? { imageWorkingDirectory: outcome.imageWorkingDirectory }
 				: {}),
 			...(inputSchema !== undefined ? { inputSchema } : {}),
+			...(datasetSchemas !== undefined ? { datasetSchemas } : {}),
 			...(memorySettings !== undefined ? { memorySettings } : {}),
 			...(extraDatasetAliases !== undefined ? { extraDatasetAliases } : {}),
 		});

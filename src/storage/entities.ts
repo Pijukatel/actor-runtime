@@ -11,6 +11,15 @@ export interface StorageRecord {
 	createdAt: string;
 	modifiedAt: string;
 	accessedAt: string;
+	/** The dataset schema (`.actor/actor.json`'s `storages.dataset`) its items are validated against;
+	 * datasets only, absent when it has none. Set at creation, never changed after. */
+	schema?: DatasetSchema;
+}
+
+/** A dataset schema, exactly as it was pushed or posted; only its `fields` is ever read. */
+export interface DatasetSchema {
+	[key: string]: unknown;
+	fields?: Record<string, unknown>;
 }
 
 /**
@@ -259,6 +268,10 @@ export interface BuildRecord {
 	 * schema of the build it resolved, never another tag's more recently pushed one. Absent when the
 	 * Actor declares none - such a run takes its input exactly as the caller sent it. */
 	inputSchema?: InputSchema;
+	/** The dataset schemas this build's source declared, by `storages.datasets` alias (`default` for
+	 * `storages.dataset`), build-specific like `inputSchema`; each run's dataset of that alias is created
+	 * with its schema. Absent when the Actor declares none. */
+	datasetSchemas?: Record<string, DatasetSchema>;
 	/** The memory fields this build's `.actor/actor.json` declared, build-specific like `inputSchema`.
 	 * Absent when it declares none. */
 	memorySettings?: ActorMemorySettings;

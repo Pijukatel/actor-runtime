@@ -5,7 +5,7 @@
  * live, because `KeyValueStore` has no `getInfo()` of its own.
  */
 import { generateId } from '../storage/ids.js';
-import type { StorageRecord, StorageType, UserRecord } from '../storage/entities.js';
+import type { DatasetSchema, StorageRecord, StorageType, UserRecord } from '../storage/entities.js';
 import { getRegistries } from '../storage/registries.js';
 import { openDataset, openKeyValueStore, openRequestQueue } from '../storage/open.js';
 import { closeRequestQueueBuffer } from '../storage/request-queue/registry.js';
@@ -22,21 +22,28 @@ const createByNameMutex = new KeyedMutex();
 /**
  * Idempotent by `name`: apify-client-js's `getOrCreate(name)` does no dedup of its own
  * (`resource_collection_client.ts:41-49`), so the server must. An existing storage comes back
- * unchanged, matched case-insensitively and keeping its original casing.
+ * unchanged, matched case-insensitively and keeping its original casing - its `schema` too, as on the
+ * platform.
  */
-export async function createStorage(userId: string, type: StorageType, name?: string): Promise<StorageRecord> {
+export async function createStorage(
+	userId: string,
+	type: StorageType,
+	name?: string,
+	schema?: DatasetSchema,
+): Promise<StorageRecord> {
 	if (name) {
 		return createByNameMutex.run(`${userId}:${type}:${normalizeName(name)}`, () =>
-			createStorageRecord(userId, type, name),
+			createStorageRecord(userId, type, name, schema),
 		);
 	}
-	return createStorageRecord(userId, type, undefined);
+	return createStorageRecord(userId, type, undefined, schema);
 }
 
 async function createStorageRecord(
 	userId: string,
 	type: StorageType,
 	name: string | undefined,
+	schema: DatasetSchema | undefined,
 ): Promise<StorageRecord> {
 	if (name) {
 		const existing = await findOwnedStorageByName(userId, type, name);
@@ -51,7 +58,16 @@ async function createStorageRecord(
 	else if (type === 'keyValueStore') await openKeyValueStore(id);
 	else await openRequestQueue(id);
 
-	const record: StorageRecord = { id, type, userId, name, createdAt: now, modifiedAt: now, accessedAt: now };
+	const record: StorageRecord = {
+		id,
+		type,
+		userId,
+		name,
+		createdAt: now,
+		modifiedAt: now,
+		accessedAt: now,
+		...(type === 'dataset' && schema ? { schema } : {}),
+	};
 	await getRegistries().storages.set(id, record);
 	return record;
 }
