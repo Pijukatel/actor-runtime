@@ -172,8 +172,9 @@
     - A task created without a `name` is named `<actor-name>-task` (`-1`, `-2`, ... when taken); without
       `input`, it starts from the input schema's prefill values. Names are unique per user (`409`
       `actor-task-name-not-unique`).
-    - Its input is validated against the input schema of the build its runs use, on every save. A task
-      whose Actor has no such build yet is saved unvalidated.
+    - Creating a task, or saving its input, needs the build its runs use (`options.build`, default
+      `latest`) to exist (`403` `unknown-build-tag`); the input is validated against that build's input
+      schema.
     - A task run merges the request's input over the task's, key by key, and the request's run options
       over the task's; the merged input is validated like any run's. The run's `actorTaskId` names the
       task, as do `ACTOR_TASK_ID` / `APIFY_ACTOR_TASK_ID` in its container.

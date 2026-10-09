@@ -191,3 +191,12 @@ export function providedInputNotValidJson(error: Error): ApiError {
 export function actorTaskInputNotJson(): ApiError {
 	return new ApiError(403, 'invalid-input', 'Actor task input must have content type "application/json".');
 }
+
+/** Matches the real platform's `actor.unknownBuildTag`. */
+export function unknownBuildTag(tag: string): ApiError {
+	return new ApiError(
+		403,
+		'unknown-build-tag',
+		`Build with tag "${tag}" was not found. Has the Actor been built already?`,
+	);
+}

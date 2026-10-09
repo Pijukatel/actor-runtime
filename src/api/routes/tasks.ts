@@ -19,6 +19,7 @@ import {
 	providedInputNotValidJson,
 	recordNotFound,
 	schemaValidation,
+	unknownBuildTag,
 } from '../errors.js';
 import { h, jsonBody, paginationParams, queryNumber, rawBody } from '../handler.js';
 import { resolveTaskParam } from '../resolve-reference.js';
@@ -41,7 +42,7 @@ import {
 	TaskNameTakenError,
 	updateTask,
 } from '../../services/tasks.js';
-import type { ActorRecord, RunRecord, TaskRecord, TaskRunOptions } from '../../storage/entities.js';
+import type { ActorRecord, BuildRecord, RunRecord, TaskRecord, TaskRunOptions } from '../../storage/entities.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -168,25 +169,23 @@ function rejectPublication(body: JsonObject): void {
 	}
 }
 
-/**
- * Validates `input` against the input schema of the build the task's runs would use, as the platform
- * does on every save. A task whose Actor has no such build yet is saved unvalidated; its runs still are.
- */
-async function validateTaskInput(actor: ActorRecord, options: TaskRunOptions | null | undefined, input: JsonObject) {
-	const lookup = await resolveTaggedBuild(actor, options?.build ?? DEFAULT_BUILD_TAG);
-	if (!lookup.found || !lookup.build.inputSchema) return;
-	const processed = resolveBuildInput(lookup.build, {
+/** The build the task's runs use, which the platform requires to exist whenever it creates a task or
+ * saves its input. */
+async function taskBuildOrThrow(actor: ActorRecord, options: TaskRunOptions | null | undefined): Promise<BuildRecord> {
+	const tag = options?.build ?? DEFAULT_BUILD_TAG;
+	const lookup = await resolveTaggedBuild(actor, tag);
+	if (!lookup.found) throw unknownBuildTag(tag);
+	return lookup.build;
+}
+
+/** Validates `input` against the input schema of `build`, as the platform does on every save. */
+function validateTaskInput(build: BuildRecord, input: JsonObject): void {
+	const processed = resolveBuildInput(build, {
 		body: Buffer.from(JSON.stringify(input), 'utf8'),
 		contentType: 'application/json',
 	});
 	if (processed.kind === 'invalid-input') throw invalidInput(processed.message);
 	if (processed.kind === 'invalid-input-schema') throw invalidInputSchema(processed.message);
-}
-
-/** A new task without input starts from its input schema's prefill values, as on the platform. */
-async function initialInput(actor: ActorRecord, options: TaskRunOptions | null | undefined): Promise<JsonObject> {
-	const lookup = await resolveTaggedBuild(actor, options?.build ?? DEFAULT_BUILD_TAG);
-	return lookup.found && lookup.build.inputSchema ? inputSchemaPrefill(lookup.build.inputSchema) : {};
 }
 
 function withNameTakenAsApiError<T>(promise: Promise<T>): Promise<T> {
@@ -275,8 +274,10 @@ export function mountTasks(router: Router, deps: ApiServerDeps): void {
 			const actor = reference.kind === 'empty-name' ? null : await resolveOwnedActor(user, reference);
 			if (!actor) throw recordNotFound('Actor was not found');
 
-			if (providedInput) await validateTaskInput(actor, options, providedInput);
-			const input = providedInput ?? (await initialInput(actor, options));
+			const build = await taskBuildOrThrow(actor, options);
+			if (providedInput) validateTaskInput(build, providedInput);
+			// Without input, a new task starts from its input schema's prefill values, as on the platform.
+			const input = providedInput ?? (build.inputSchema ? inputSchemaPrefill(build.inputSchema) : {});
 			const task = await withNameTakenAsApiError(
 				createTask(
 					{
@@ -318,7 +319,7 @@ export function mountTasks(router: Router, deps: ApiServerDeps): void {
 
 			if (input) {
 				const actor = await taskActorOrThrow(req, task);
-				await validateTaskInput(actor, options === undefined ? task.options : options, input);
+				validateTaskInput(await taskBuildOrThrow(actor, options === undefined ? task.options : options), input);
 			}
 			const updated = await withNameTakenAsApiError(
 				updateTask(task, (current) => {
@@ -372,7 +373,7 @@ export function mountTasks(router: Router, deps: ApiServerDeps): void {
 			const actor = await taskActorOrThrow(req, task);
 			// Merged key by key over the saved input, not replacing it.
 			const merged = { ...task.input, ...body };
-			await validateTaskInput(actor, task.options, merged);
+			validateTaskInput(await taskBuildOrThrow(actor, task.options), merged);
 			const updated = await updateTask(task, (current) => ({ ...current, input: { ...current.input, ...body } }));
 			if (!updated) throw recordNotFound('Actor task was not found');
 			res.status(200).json(updated.input ?? {});

@@ -144,6 +144,15 @@ describe('tasks', () => {
 		expect(published.status).toBe(400);
 		expect(published.data.error.type).toBe('cannot-publish-actor-task');
 
+		const unbuilt = await server.client.actors().create({ name: 'unbuilt' });
+		const noBuild = await call('post', 'actor-tasks', { actId: unbuilt.id });
+		expect(noBuild.status).toBe(403);
+		expect(noBuild.data.error.type).toBe('unknown-build-tag');
+		const noSuchTag = await call('post', 'actor-tasks', { actId: actorId, options: { build: 'beta' } });
+		expect(noSuchTag.data.error.message).toBe(
+			'Build with tag "beta" was not found. Has the Actor been built already?',
+		);
+
 		expect((await server.client.tasks().list()).total).toBe(1);
 	});
 
