@@ -1,13 +1,14 @@
 /**
- * The standby run pool (`actor-driver.md`'s "Actor Standby"): which run of a standby Actor serves the
- * next request, when another run is started, and when an idle one is wound down. Single-tenant only -
- * every run belongs to the Actor's owner, who is the only caller the router lets through.
+ * The standby run pool (`actor-driver.md`'s "Actor Standby"): which run of a standby Actor, or of a task
+ * of one, serves the next request, when another run is started, and when an idle one is wound down. Each
+ * Actor and each task has a pool of its own. Single-tenant only - every run belongs to the owner, who is
+ * the only caller the router lets through.
  *
  * In memory only: a runtime restart aborts every run anyway (`reconcileOrphanedJobs`).
  */
 import http from 'node:http';
 
-import type { ActorRecord, ActorStandbyRecord, BuildRecord, UserRecord } from '../storage/entities.js';
+import type { ActorRecord, ActorStandbyRecord, BuildRecord, TaskRecord, UserRecord } from '../storage/entities.js';
 import type { ContainerServerAddress, Driver } from '../driver/types.js';
 import { getRegistries } from '../storage/registries.js';
 import { CONTAINER_API_BASE_URL } from '../config.js';
@@ -20,7 +21,7 @@ import { resolveProxyPassword } from './users.js';
 import { containerServerPortFor, startRun } from './runs.js';
 import { findVersion } from './actors.js';
 import { markStandbyRunFinishing } from './standby-finish.js';
-import { standbyUrl } from './standby-config.js';
+import { standbyUrl, taskStandbyConfig } from './standby-config.js';
 
 /** The platform's readiness probe: a `GET /` carrying this header; any HTTP response means ready. */
 export const READINESS_PROBE_HEADER = 'x-apify-container-server-readiness-probe';
@@ -57,6 +58,27 @@ interface PooledRun {
 	retiring?: string;
 }
 
+/** What a standby address serves: an Actor, or a task of one, with the settings its runs use. */
+export interface StandbyService {
+	actor: ActorRecord;
+	task?: TaskRecord;
+	/** `undefined` while the Actor's Standby is off. */
+	config: ActorStandbyRecord | undefined;
+}
+
+export function actorStandbyService(actor: ActorRecord): StandbyService {
+	return { actor, config: actor.actorStandby?.isEnabled ? actor.actorStandby : undefined };
+}
+
+export function taskStandbyService(actor: ActorRecord, task: TaskRecord): StandbyService {
+	return { actor, task, config: taskStandbyConfig(actor, task) };
+}
+
+/** The pool a service's runs live in. */
+function poolKeyOf(service: StandbyService): string {
+	return service.task ? `task:${service.task.id}` : service.actor.id;
+}
+
 export interface StandbyLease {
 	runId: string;
 	address: ContainerServerAddress;
@@ -69,17 +91,17 @@ const pools = new Map<string, PooledRun[]>();
 let readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS;
 let finishWarningMs = FINISH_WARNING_MS;
 
-function poolOf(actorId: string): PooledRun[] {
-	let pool = pools.get(actorId);
+function poolOf(key: string): PooledRun[] {
+	let pool = pools.get(key);
 	if (!pool) {
 		pool = [];
-		pools.set(actorId, pool);
+		pools.set(key, pool);
 	}
 	return pool;
 }
 
-function removeFromPool(actorId: string, entry: PooledRun): void {
-	const pool = pools.get(actorId);
+function removeFromPool(key: string, entry: PooledRun): void {
+	const pool = pools.get(key);
 	if (!pool) return;
 	const index = pool.indexOf(entry);
 	if (index !== -1) pool.splice(index, 1);
@@ -88,13 +110,13 @@ function removeFromPool(actorId: string, entry: PooledRun): void {
 }
 
 /** Drops runs that ended on their own (crashed, aborted, finished) since the pool last looked. */
-async function pruneEndedRuns(actorId: string): Promise<void> {
+async function pruneEndedRuns(key: string): Promise<void> {
 	const { runs } = getRegistries();
-	for (const entry of [...poolOf(actorId)]) {
+	for (const entry of [...poolOf(key)]) {
 		if (!entry.knownRunId) continue;
 		const record = await runs.get(entry.knownRunId);
 		if (!record || isTerminalJobStatus(record.status) || record.status === 'ABORTING') {
-			removeFromPool(actorId, entry);
+			removeFromPool(key, entry);
 		}
 	}
 }
@@ -109,24 +131,40 @@ async function resolveStandbyBuild(actor: ActorRecord, config: ActorStandbyRecor
 	);
 }
 
-/** The run the platform's controller would start: standby build and memory, no timeout, input only on request. */
-async function startStandbyRun(driver: Driver, actor: ActorRecord, build: BuildRecord, user: UserRecord) {
-	const config = actor.actorStandby!;
+/**
+ * The run the platform's controller would start: standby build and memory, no timeout, input only on
+ * request. A task's run takes the task's input and its other run options, as any run of the task does.
+ */
+async function startStandbyRun(
+	driver: Driver,
+	service: StandbyService,
+	config: ActorStandbyRecord,
+	build: BuildRecord,
+	user: UserRecord,
+) {
+	const { actor, task } = service;
 	let input: { body: Buffer; contentType: string } | undefined;
 	if (config.shouldPassActorInput) {
-		const processed = resolveBuildInput(build, undefined);
+		const taskInput = task?.input
+			? { body: Buffer.from(JSON.stringify(task.input), 'utf8'), contentType: 'application/json' }
+			: undefined;
+		const processed = resolveBuildInput(build, taskInput);
 		if (processed.kind !== 'ok') {
 			throw new StandbyUnavailableError(400, processed.kind, processed.message);
 		}
 		input = processed.input;
 	}
+	const { maxTotalChargeUsd, restartOnError } = task?.options ?? {};
 	return startRun(driver, actor, build, {
 		origin: 'STANDBY',
 		input,
 		memoryMbytes: config.memoryMbytes,
 		timeoutSecs: 0,
 		build: config.build,
-		standbyUrl: standbyUrl(actor, user.username),
+		...(maxTotalChargeUsd !== undefined ? { maxTotalChargeUsd } : {}),
+		...(restartOnError !== undefined ? { restartOnError } : {}),
+		...(task ? { actorTaskId: task.id } : {}),
+		standbyUrl: standbyUrl(task ?? actor, user.username),
 		proxyPassword: resolveProxyPassword(user),
 		apiBaseUrl: CONTAINER_API_BASE_URL,
 		token: user.token,
@@ -135,13 +173,15 @@ async function startStandbyRun(driver: Driver, actor: ActorRecord, build: BuildR
 
 function addRun(
 	driver: Driver,
-	actor: ActorRecord,
+	service: StandbyService,
+	config: ActorStandbyRecord,
 	build: BuildRecord,
 	user: UserRecord,
 	onStarted: (entry: PooledRun, runId: string) => void,
 ): PooledRun {
-	const pool = poolOf(actor.id);
-	const started = startStandbyRun(driver, actor, build, user).then((run) => run.id);
+	const key = poolKeyOf(service);
+	const pool = poolOf(key);
+	const started = startStandbyRun(driver, service, config, build, user).then((run) => run.id);
 	const entry: PooledRun = { runId: started, buildId: build.id, openRequests: 0 };
 	pool.push(entry);
 	started.then(
@@ -149,7 +189,7 @@ function addRun(
 			entry.knownRunId = runId;
 			onStarted(entry, runId);
 		},
-		() => removeFromPool(actor.id, entry),
+		() => removeFromPool(key, entry),
 	);
 	return entry;
 }
@@ -159,28 +199,33 @@ function addRun(
  * starts one more ahead of demand once every run is above `desiredRequestsPerActorRun`. Resolves once the
  * picked run's server answers; the caller must `release()` the lease when its request is done.
  */
-export async function acquireStandbyRun(driver: Driver, actor: ActorRecord, user: UserRecord): Promise<StandbyLease> {
-	const config = actor.actorStandby;
-	if (!config?.isEnabled) {
+export async function acquireStandbyRun(
+	driver: Driver,
+	service: StandbyService,
+	user: UserRecord,
+): Promise<StandbyLease> {
+	const { actor, task, config } = service;
+	if (!config) {
 		throw new StandbyUnavailableError(400, 'standby-not-enabled', "This Actor doesn't have Standby mode enabled.");
 	}
+	const key = poolKeyOf(service);
 	const build = await resolveStandbyBuild(actor, config);
-	await pruneEndedRuns(actor.id);
+	await pruneEndedRuns(key);
 
 	// Synchronous from here to the reservation, so two concurrent requests can never both see an empty pool.
-	const pool = poolOf(actor.id);
+	const pool = poolOf(key);
 	for (const entry of [...pool]) {
 		if (entry.buildId !== build.id && !entry.retiring) {
-			retire(driver, actor.id, entry, `a newer build (${build.buildNumber}) now serves Actor Standby`);
+			retire(driver, key, entry, `a newer build (${build.buildNumber}) now serves Actor Standby`);
 		}
 	}
 	const onStarted = (entry: PooledRun, runId: string) => {
 		appendRuntimeLog(
 			runId,
-			`Actor Standby: this run serves requests to ${standbyUrl(actor, user.username)}; waiting for the ` +
-				`Actor's server on port ${containerServerPortFor(findVersion(actor, build.versionNumber))}.`,
+			`Actor Standby: this run serves requests to ${standbyUrl(task ?? actor, user.username)}; waiting for ` +
+				`the Actor's server on port ${containerServerPortFor(findVersion(actor, build.versionNumber))}.`,
 		);
-		if (entry.openRequests === 0) armIdleTimer(driver, actor.id, entry, config);
+		if (entry.openRequests === 0) armIdleTimer(driver, key, entry, config);
 	};
 	const candidates = () => pool.filter((entry) => !entry.retiring);
 	let picked: PooledRun | undefined;
@@ -188,12 +233,12 @@ export async function acquireStandbyRun(driver: Driver, actor: ActorRecord, user
 		if (entry.openRequests >= config.maxRequestsPerActorRun) continue;
 		if (!picked || entry.openRequests < picked.openRequests) picked = entry;
 	}
-	picked ??= addRun(driver, actor, build, user, onStarted);
+	picked ??= addRun(driver, service, config, build, user, onStarted);
 	picked.openRequests++;
 	if (picked.idleTimer) clearTimeout(picked.idleTimer);
 	picked.idleTimer = undefined;
 	if (candidates().every((entry) => entry.openRequests > config.desiredRequestsPerActorRun)) {
-		addRun(driver, actor, build, user, onStarted);
+		addRun(driver, service, config, build, user, onStarted);
 	}
 
 	const entry = picked;
@@ -204,7 +249,7 @@ export async function acquireStandbyRun(driver: Driver, actor: ActorRecord, user
 		entry.openRequests--;
 		if (entry.openRequests > 0) return;
 		if (entry.retiring) void finishRun(driver, entry, entry.retiring);
-		else armIdleTimer(driver, actor.id, entry, config);
+		else armIdleTimer(driver, key, entry, config);
 	};
 
 	try {
@@ -288,21 +333,21 @@ function answersReadinessProbe(address: ContainerServerAddress): Promise<boolean
 	});
 }
 
-function armIdleTimer(driver: Driver, actorId: string, entry: PooledRun, config: ActorStandbyRecord): void {
+function armIdleTimer(driver: Driver, key: string, entry: PooledRun, config: ActorStandbyRecord): void {
 	if (entry.idleTimer) clearTimeout(entry.idleTimer);
 	entry.idleTimer = setTimeout(() => {
 		entry.idleTimer = undefined;
-		if (entry.openRequests > 0 || !pools.get(actorId)?.includes(entry)) return;
-		removeFromPool(actorId, entry);
+		if (entry.openRequests > 0 || !pools.get(key)?.includes(entry)) return;
+		removeFromPool(key, entry);
 		void finishRun(driver, entry, 'Actor Standby server was idle for too long, finishing run.');
 	}, config.idleTimeoutSecs * 1000);
 }
 
-function retire(driver: Driver, actorId: string, entry: PooledRun, reason: string): void {
+function retire(driver: Driver, key: string, entry: PooledRun, reason: string): void {
 	entry.retiring = `Actor Standby: ${reason}, finishing this run.`;
 	if (entry.idleTimer) clearTimeout(entry.idleTimer);
 	entry.idleTimer = undefined;
-	removeFromPool(actorId, entry);
+	removeFromPool(key, entry);
 	if (entry.openRequests === 0) void finishRun(driver, entry, entry.retiring);
 }
 
@@ -331,9 +376,11 @@ async function finishRun(driver: Driver, entry: PooledRun, message: string): Pro
 	}, finishWarningMs);
 }
 
-/** For the console: the pool's live view of an Actor's standby runs. */
-export function standbyPoolSnapshot(actorId: string): Array<{ runId?: string; openRequests: number; ready: boolean }> {
-	return (pools.get(actorId) ?? []).map((entry) => ({
+/** For the console: the pool's live view of an Actor's or a task's standby runs. */
+export function standbyPoolSnapshot(
+	service: StandbyService,
+): Array<{ runId?: string; openRequests: number; ready: boolean }> {
+	return (pools.get(poolKeyOf(service)) ?? []).map((entry) => ({
 		runId: entry.knownRunId,
 		openRequests: entry.openRequests,
 		ready: entry.readyAddress !== undefined,

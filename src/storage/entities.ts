@@ -236,6 +236,38 @@ export interface ActorRecord {
 	secretKeys?: ActorSecretKeys;
 }
 
+/** A task's saved run options; an absent field falls back to the Actor's default. `maxItems` is kept
+ * and returned as given, never applied (`unsupported.md`). */
+export interface TaskRunOptions {
+	build?: string;
+	timeoutSecs?: number;
+	memoryMbytes?: number;
+	maxTotalChargeUsd?: number;
+	maxItems?: number;
+	restartOnError?: boolean;
+}
+
+/** A task's own Standby settings, merged over its Actor's (`services/standby-config.ts`). */
+export type TaskStandbyRecord = Omit<ActorStandbyRecord, 'isEnabled' | 'disableStandbyFieldsOverride'>;
+
+/** A saved Actor configuration (`api.md`'s "Tasks"). */
+export interface TaskRecord {
+	id: string;
+	userId: string;
+	actorId: string;
+	name: string;
+	title: string;
+	description?: string;
+	/** Absent when the task saves none, so every run option falls back to its default. */
+	options?: TaskRunOptions;
+	/** Stored as given: secret fields are encrypted when a run starts, not when the task is saved. */
+	input?: Record<string, unknown>;
+	/** Absent when the task's standby runs use the Actor's settings alone. */
+	actorStandby?: TaskStandbyRecord;
+	createdAt: string;
+	modifiedAt: string;
+}
+
 export type JobStatus = 'READY' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'ABORTING' | 'ABORTED' | 'TIMED-OUT';
 
 /** Matches the real platform's `RUN_GENERAL_ACCESS` enum (public `@apify/consts`) - `FOLLOW_USER_SETTING`
@@ -293,6 +325,8 @@ export interface RunRecord {
 	id: string;
 	userId: string;
 	actorId: string;
+	/** The task the run was started from; absent for a run of the Actor itself. */
+	actorTaskId?: string;
 	buildId: string;
 	buildNumber: string;
 	status: JobStatus;

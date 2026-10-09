@@ -10,3 +10,8 @@
 export function newestFirst<T extends { id: string; startedAt: string }>(items: readonly T[]): T[] {
 	return [...items].sort((a, b) => b.startedAt.localeCompare(a.startedAt) || a.id.localeCompare(b.id));
 }
+
+/** The same, for records that are created rather than started (tasks). */
+export function newestCreatedFirst<T extends { id: string; createdAt: string }>(items: readonly T[]): T[] {
+	return [...items].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
+}

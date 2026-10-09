@@ -23,6 +23,7 @@
 
 - It contains list view and detail view for following objects:
     - Actors
+    - Actor tasks
     - Actor builds
     - Actor runs
     - Logs
@@ -45,6 +46,10 @@
 - A run with browser view (`actor-driver.md`) gets one extra row on its detail view: `browser view` - a
   link to its viewer page (below). Absent for other runs; never in the emulated `/v2` run object.
 - Every run's detail view shows its `containerUrl` (the run's live view) as a link.
+- Tasks are read-only, changed through the API (`api.md`'s "Tasks"). A task's detail view shows its saved
+  input and run options, its Standby URL and settings when its Actor's Standby is on, and its runs. The
+  Actor detail view lists the Actor's tasks, and a task run's detail view links its task as
+  `username~taskname`.
 - Log views render ANSI colors from actor output as HTML, while the `/v2/logs/:id` API keeps serving logs raw (unconverted) for the CLI to render itself.
 - The console accepts the real Apify Console's URL shapes (as printed by stock apify-cli, e.g. `/actors/:actorId/runs/:runId`, `/storage/datasets/:id`) via redirects to its own pages.
 

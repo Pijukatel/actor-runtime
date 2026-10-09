@@ -465,10 +465,10 @@ describe('api-fallback: eligibility, relay, and fail-closed behaviour', () => {
 		});
 
 		it('relays a write method (POST) against an unbuilt endpoint family', async () => {
-			const stub = await startStubUpstream(fixedOkResponse('actor-tasks-post-marker'));
+			const stub = await startStubUpstream(fixedOkResponse('schedules-post-marker'));
 			process.env.APIFY_UPSTREAM_API_BASE_URL = stub.baseUrl;
 			try {
-				const res = await call('post', '/v2/actor-tasks', { body: { name: 'whatever' } });
+				const res = await call('post', '/v2/schedules', { body: { name: 'whatever' } });
 				expect(res.status).toBe(200);
 				expect(res.headers['x-actor-runtime-fallback-trigger']).toBe('unimplemented');
 				expect(stub.hitCount()).toBe(1);

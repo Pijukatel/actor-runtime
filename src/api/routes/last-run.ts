@@ -1,11 +1,12 @@
 /**
- * `v2/actors/:actorId/runs/last` and its sub-paths (`api.md`'s "Last-run shortcuts"). The platform serves
- * these by re-dispatching internally onto the run's own routes (apify-core's `routeToLastRunRoutes`), so
- * this does the same rather than reimplementing each target.
+ * `v2/actors/:actorId/runs/last`, `v2/actor-tasks/:actorTaskId/runs/last` and their sub-paths (`api.md`'s
+ * "Last-run shortcuts"). The platform serves these by re-dispatching internally onto the run's own routes
+ * (apify-core's `routeToLastRunRoutes`), so this does the same rather than reimplementing each target.
  *
- * The Actor lookup is the only point at which such a request can still leave the runtime: found locally,
- * it is pinned (`pinRequestToLocal`), because the platform cannot answer about a local run; unknown here,
- * it 404s before anything else is resolved, so the fallback relays the caller's original URL whole.
+ * The Actor (or task) lookup is the only point at which such a request can still leave the runtime: found
+ * locally, it is pinned (`pinRequestToLocal`), because the platform cannot answer about a local run;
+ * unknown here, it 404s before anything else is resolved, so the fallback relays the caller's original URL
+ * whole.
  */
 import type { Request, Response, Router } from 'express';
 
@@ -13,9 +14,9 @@ import { requireUser } from '../auth.js';
 import { sendError } from '../envelope.js';
 import { endpointNotFound, invalidRequest, recordNotFound } from '../errors.js';
 import { h } from '../handler.js';
-import { resolveActorParam } from '../resolve-reference.js';
+import { resolveActorParam, resolveTaskParam } from '../resolve-reference.js';
 import { pinRequestToLocal } from '../../services/api-fallback.js';
-import { findLastOwnedRun } from '../../services/runs.js';
+import { findLastOwnedRun, type RunScope } from '../../services/runs.js';
 import type { RunRecord } from '../../storage/entities.js';
 
 /** `@apify/consts`'s `ACTOR_JOB_STATUSES`, wider than this runtime's own `JobStatus`: the platform
@@ -121,22 +122,43 @@ function redispatch(req: Request, res: Response, url: string): void {
 	});
 }
 
+/** The run scope a `runs/last` request names: an Actor's, or a task's (`null` when unknown here). */
+type ScopeResolver = (req: Request) => Promise<RunScope | null>;
+
 export function mountLastRun(router: Router): void {
-	router.all(
-		'/actors/:actorId/runs/last{/*rest}',
-		h(async (req, res) => {
-			const status = filterParam(req, 'status', ACTOR_JOB_STATUSES);
-			const origin = filterParam(req, 'origin', META_ORIGINS);
+	const routes: Array<[string, ScopeResolver]> = [
+		[
+			'/actors/:actorId/runs/last{/*rest}',
+			async (req) => {
+				const actor = await resolveActorParam(req);
+				return actor && { actorId: actor.id };
+			},
+		],
+		[
+			'/actor-tasks/:actorTaskId/runs/last{/*rest}',
+			async (req) => {
+				const task = await resolveTaskParam(req);
+				return task && { actorTaskId: task.id };
+			},
+		],
+	];
+	for (const [path, resolveScope] of routes) {
+		router.all(
+			path,
+			h(async (req, res) => {
+				const status = filterParam(req, 'status', ACTOR_JOB_STATUSES);
+				const origin = filterParam(req, 'origin', META_ORIGINS);
 
-			const actor = await resolveActorParam(req);
-			// The one miss on this route the fallback may act on - see the module doc comment.
-			if (!actor) throw recordNotFound();
-			pinRequestToLocal(req);
+				const scope = await resolveScope(req);
+				// The one miss on this route the fallback may act on - see the module doc comment.
+				if (!scope) throw recordNotFound();
+				pinRequestToLocal(req);
 
-			const run = await findLastOwnedRun(requireUser(req).id, actor.id, { status, origin });
-			if (!run) throw recordNotFound('Actor run was not found');
+				const run = await findLastOwnedRun(requireUser(req).id, scope, { status, origin });
+				if (!run) throw recordNotFound('Actor run was not found');
 
-			redispatch(req, res, lastRunTargetUrl(req.method, req.url, run));
-		}),
-	);
+				redispatch(req, res, lastRunTargetUrl(req.method, req.url, run));
+			}),
+		);
+	}
 }

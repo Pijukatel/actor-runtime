@@ -3,8 +3,8 @@
  * one of its standby runs, starting runs as `services/standby.ts` decides. Two addressings, both on the
  * API port: `http://<label>.localhost:3333/<path>` (the Actor's `standbyUrl`, the platform's host-based
  * shape, where the Actor owns `/`) and `/actor-runtime/standby/<label>/<path>` (for Actor containers and
- * clients that do not resolve `*.localhost`). `<label>` is the platform's `<username>--<actor-name>`, or
- * the Actor id.
+ * clients that do not resolve `*.localhost`). `<label>` is the platform's `<username>--<actor-name>` or
+ * `<username>--<task-name>`, or the Actor or task id; an Actor wins over a task of the same name.
  *
  * Mounted ahead of the API's body parser, so a request body is streamed through untouched.
  */
@@ -12,11 +12,19 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 
 import type { Driver } from '../driver/types.js';
-import type { ActorRecord, UserRecord } from '../storage/entities.js';
+import type { UserRecord } from '../storage/entities.js';
 import { getOrCreateUserForToken } from '../services/users.js';
-import { listOwnedActors } from '../services/actors.js';
+import { getOwnedActor, listOwnedActors } from '../services/actors.js';
+import { listOwnedTasks } from '../services/tasks.js';
 import { STANDBY_PATH_PREFIX, labelFromHost, standbyLabel } from '../services/standby-config.js';
-import { StandbyUnavailableError, acquireStandbyRun, type StandbyLease } from '../services/standby.js';
+import {
+	StandbyUnavailableError,
+	acquireStandbyRun,
+	actorStandbyService,
+	taskStandbyService,
+	type StandbyLease,
+	type StandbyService,
+} from '../services/standby.js';
 import {
 	endUpgradeWithError,
 	forwardHttpRequest,
@@ -59,9 +67,14 @@ function tokenOf(req: IncomingMessage): string | undefined {
 	return token || undefined;
 }
 
-async function resolveStandbyActor(user: UserRecord, label: string): Promise<ActorRecord | undefined> {
-	const owned = await listOwnedActors(user.id);
-	return owned.find((actor) => actor.id.toLowerCase() === label || standbyLabel(actor, user.username) === label);
+async function resolveStandbyService(user: UserRecord, label: string): Promise<StandbyService | undefined> {
+	const matches = (record: { id: string; name: string }) =>
+		record.id.toLowerCase() === label || standbyLabel(record, user.username) === label;
+	const actor = (await listOwnedActors(user.id)).find(matches);
+	if (actor) return actorStandbyService(actor);
+	const task = (await listOwnedTasks(user.id)).find(matches);
+	const taskActor = task && (await getOwnedActor(user.id, task.actorId));
+	return task && taskActor ? taskStandbyService(taskActor, task) : undefined;
 }
 
 type Resolution =
@@ -79,16 +92,16 @@ async function resolveLease(driver: Driver, req: IncomingMessage, target: Standb
 	}
 	try {
 		const user = await getOrCreateUserForToken(token);
-		const actor = await resolveStandbyActor(user, target.label);
-		if (!actor) {
+		const service = await resolveStandbyService(user, target.label);
+		if (!service) {
 			return {
 				kind: 'error',
 				status: 404,
 				type: 'record-not-found',
-				message: `No Actor of yours is served at standby address "${target.label}"`,
+				message: `No Actor or task of yours is served at standby address "${target.label}"`,
 			};
 		}
-		return { kind: 'ok', lease: await acquireStandbyRun(driver, actor, user) };
+		return { kind: 'ok', lease: await acquireStandbyRun(driver, service, user) };
 	} catch (error) {
 		if (error instanceof StandbyUnavailableError) {
 			return { kind: 'error', status: error.status, type: error.type, message: error.message };

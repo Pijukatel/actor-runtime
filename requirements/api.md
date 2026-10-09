@@ -23,7 +23,7 @@
   JSON object, or that the schema rejects, naming every offending field; `400` `invalid-input-schema`
   when the Actor's own schema is not valid. Both messages match the Apify platform's. A build with no
   input schema accepts any body, unvalidated.
-- Four endpoints are exceptions to the `{data}` envelope:
+- Five endpoints are exceptions to the `{data}` envelope:
     - `GET /v2/logs/:buildOrRunId` (and its `actor-builds`/`actor-runs` aliases): the body is plain text,
       never `{data}`-wrapped, matching apify-client-js's `log().get()`.
     - `GET /v2/datasets/:datasetId/items` (and its `actor-runs/:runId/dataset/items` alias): the body is
@@ -32,6 +32,7 @@
     - `GET /actor-runtime/events/:runId`: a websocket upgrade, not a JSON response at all - see "Actor
       runtime API" below.
     - `POST /v2/actor-runs/:runId/charge`: a bare `{}`, matching the platform.
+    - `GET`/`PUT /v2/actor-tasks/:actorTaskId/input`: the bare input object, matching the platform.
 - `*At` timestamp fields are ISO-8601 strings.
 - Log content matches the Apify platform's log format: every log line starts with an ISO-8601 UTC
   timestamp with millisecond precision followed by a space (`2026-08-31T09:13:25.123Z `), exactly one
@@ -40,7 +41,7 @@
 
 # Resource id encoding
 
-- `:actorId`, `:datasetId`, `:storeId` and `:queueId` accept `~name` (the caller's own),
+- `:actorId`, `:actorTaskId`, `:datasetId`, `:storeId` and `:queueId` accept `~name` (the caller's own),
   `username~name` or `userId~name` in place of the id, on every route.
 - A bare segment without a separator is an id, except `:actorId`, which also accepts a plain Actor name
   (what `apify push` looks up before an id exists).
@@ -72,6 +73,14 @@
         - v2/actors/:actorId/versions/:versionNumber
         - v2/actors/:actorId/versions/:versionNumber/env-vars
         - v2/actors/:actorId/versions/:versionNumber/env-vars/:envVarName
+    - Tasks
+        - v2/actor-tasks
+        - v2/actor-tasks/:actorTaskId
+        - v2/actor-tasks/:actorTaskId/input
+        - v2/actor-tasks/:actorTaskId/runs
+        - v2/actor-tasks/:actorTaskId/run-sync
+        - v2/actor-tasks/:actorTaskId/run-sync-get-dataset-items
+        - v2/actor-tasks/:actorTaskId/runs/last, and its sub-paths (see "Last-run shortcuts")
     - Builds
         - v2/actor-builds
         - v2/actor-builds/:buildId
@@ -142,7 +151,8 @@
 
 # Last-run shortcuts
 
-- `v2/actors/:actorId/runs/last` answers with the caller's newest run of that Actor, and each sub-path
+- `v2/actors/:actorId/runs/last` answers with the caller's newest run of that Actor
+  (`v2/actor-tasks/:actorTaskId/runs/last`: of that task), and each sub-path
   under it - `/log`, `/dataset/*`, `/key-value-store/*`, `/request-queue/*`, `/abort`, `/reboot`,
   `/metamorph` - answers exactly as the same request against that run's own endpoint, for every method
   the endpoint accepts. The bare form is `GET`-only; any other sub-path is `404` `not-found`.
@@ -150,10 +160,36 @@
   other value is `400` `invalid-request`.
 - An unknown Actor and no matching run are both `404` `record-not-found`; past that the target endpoint's
   own responses apply, `501` included.
-- `v2/actor-tasks/:taskId/runs/last*` is not implemented (`unsupported.md`).
-- **One source per request**: an Actor that resolves locally is answered locally, including every later
-  miss; only a request naming an Actor unknown here is eligible for the upstream fallback (below), and
-  then as the caller's original request, which the platform resolves end to end.
+- **One source per request**: an Actor (or task) that resolves locally is answered locally, including
+  every later miss; only a request naming one unknown here is eligible for the upstream fallback (below),
+  and then as the caller's original request, which the platform resolves end to end.
+
+# Tasks
+
+- Implemented as on the platform, for the caller's own Actors: a task saves an Actor's input and run
+  options (`build`, `timeoutSecs`, `memoryMbytes`, `maxTotalChargeUsd`, `restartOnError`), and a task run is a run of that
+  Actor started from them.
+    - A task created without a `name` is named `<actor-name>-task` (`-1`, `-2`, ... when taken); without
+      `input`, it starts from the input schema's prefill values. Names are unique per user (`409`
+      `actor-task-name-not-unique`).
+    - Creating a task, or saving its input, needs the build its runs use (`options.build`, or the
+      Actor's default build) to exist (`403` `unknown-build-tag`); the input is validated against that build's input
+      schema.
+    - A task run merges the request's input over the task's, key by key, and the request's run options
+      over the task's, which go over the Actor's default run options; the merged input is validated like any run's. The run's `actorTaskId` names the
+      task, as do `ACTOR_TASK_ID` / `APIFY_ACTOR_TASK_ID` in its container.
+    - `PUT .../input` merges the given fields into the saved input.
+    - Deleting a task aborts its unfinished runs; the runs themselves stay.
+    - Standby for tasks works as on the platform: while the Actor's Standby is on, a task is served at its
+      own `standbyUrl` (`<username>--<task-name>`, as in "Actor Standby" below) by standby runs of its own,
+      with its `actorStandby` settings over the Actor's (unless the Actor sets
+      `disableStandbyFieldsOverride`), its input when `shouldPassActorInput` is set, and its other run
+      options. A task's `actorStandby` takes every Actor setting except `isEnabled` and
+      `disableStandbyFieldsOverride`. An Actor and a task of the same name share an address; the Actor
+      is served there.
+- Differences: a task's secret input fields are stored as given, and encrypted only in each run's input;
+  `maxItems` is saved but not applied; a task cannot be published (`400`
+  `cannot-publish-actor-task`).
 
 # Actor Standby
 

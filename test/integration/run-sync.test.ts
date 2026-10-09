@@ -152,14 +152,4 @@ describe('synchronous runs', () => {
 		expect(response.status).toBe(404);
 		expect(response.data.error.type).toBe('record-not-found');
 	});
-
-	it('the task variants answer 501', async () => {
-		for (const path of ['run-sync', 'run-sync-get-dataset-items']) {
-			const response = await axios.post(`${server.baseUrl}/v2/actor-tasks/some-task/${path}`, undefined, {
-				headers: { Authorization: `Bearer ${server.token}` },
-				validateStatus: () => true,
-			});
-			expect(response.status).toBe(501);
-		}
-	});
 });

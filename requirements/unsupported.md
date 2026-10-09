@@ -12,7 +12,7 @@ real account, not in the runtime.
 
 ## Running Actors
 
-- Multi-tenant Actor Standby, Standby for tasks, and Standby's Console-auth and tokenless options
+- Multi-tenant Actor Standby, and Standby's Console-auth and tokenless options
 - Metamorph
 - Result cap (`maxItems`)
 - Ad-hoc webhooks on run start
@@ -28,7 +28,7 @@ real account, not in the runtime.
 - Build on push (Git integration)
 - Generated per-build OpenAPI definition
 - Output, key-value store and web server schemas
-- Publishing to Apify Store
+- Publishing to Apify Store, published tasks included
 - Actor monetization other than pay-per-event pricing (`actor-driver.md`): rental, pay per result, and the
   Store-side flows (payouts, pricing-change notifications, per-tier prices above the lowest paid tier)
 - Actor status, deprecation and maintenance notices
@@ -36,7 +36,6 @@ real account, not in the runtime.
 
 ## Automation and integrations
 
-- Tasks (saved input configurations)
 - Schedules
 - Webhooks and webhook dispatches
 - Actor-to-Actor integrations
@@ -80,7 +79,7 @@ real account, not in the runtime.
 
 ## Inside the Actor container
 
-- Run metadata env vars (input key, build, task, user, timestamps)
+- Run metadata env vars (input key, build, user, timestamps)
 - Apify Proxy env vars other than the password (hostname, port, status URL)
 - Log rate limiting, line truncation and size cap
 - Legacy `cpuInfo` events

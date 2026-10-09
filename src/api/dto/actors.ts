@@ -80,7 +80,7 @@ export function runDto(run: RunRecord, audience: StandbyUrlAudience = 'host') {
 		userId: run.userId,
 		actId: run.actorId,
 		actorId: run.actorId,
-		actorTaskId: undefined,
+		actorTaskId: run.actorTaskId,
 		status: run.status,
 		startedAt: run.startedAt,
 		finishedAt: run.finishedAt,

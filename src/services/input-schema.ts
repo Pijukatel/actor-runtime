@@ -98,7 +98,7 @@ export function processActorInput(input: ActorInput | undefined, schema: InputSc
 const DEFAULT_INPUT_CONTENT_TYPE = 'application/json';
 
 /** Parameters such as `; charset=utf-8` are ignored. */
-function isJsonContentType(contentType: string): boolean {
+export function isJsonContentType(contentType: string): boolean {
 	return contentType.split(';')[0]?.trim().toLowerCase() === DEFAULT_INPUT_CONTENT_TYPE;
 }
 
@@ -121,6 +121,19 @@ export function assignDefaults(values: Record<string, unknown>, schema: InputSch
 	// input must be copies - otherwise a later mutation of either would reach the other.
 	assignRecursively(values, structuredClone(defaults), schema);
 	return values;
+}
+
+/** The input a new task starts with, as on the platform: each field's `prefill`, or its `default` for a
+ * hidden field. */
+export function inputSchemaPrefill(schema: InputSchema): Record<string, unknown> {
+	const properties = isPlainObject(schema.properties) ? schema.properties : {};
+	const prefill: Record<string, unknown> = {};
+	for (const [key, fieldSchema] of Object.entries(properties)) {
+		if (!isPlainObject(fieldSchema)) continue;
+		const value = fieldSchema.editor === 'hidden' ? fieldSchema.default : fieldSchema.prefill;
+		if (value !== undefined) prefill[key] = structuredClone(value);
+	}
+	return prefill;
 }
 
 /** A field's own `default` wins, key by key, over the defaults of its nested fields. */

@@ -1,5 +1,5 @@
 /**
- * Server-rendered console: list + detail views for Actors, builds, runs, logs, and the three
+ * Server-rendered console: list + detail views for Actors, tasks, builds, runs, logs, and the three
  * user-storage types, each with exactly one inspection widget per storage type (`console.md`). Reads
  * through the same service layer as the API handlers, so ownership filtering (over on the API side) is
  * shared rather than reimplemented.
@@ -38,7 +38,13 @@ import { getRunById, listAllRuns } from '../services/runs.js';
 import { standbyUrl } from '../services/standby-config.js';
 import { containerUrl } from '../services/container-url.js';
 import { describeSourceContextOrigin } from '../services/source-context.js';
-import { standbyPoolSnapshot } from '../services/standby.js';
+import {
+	actorStandbyService,
+	standbyPoolSnapshot,
+	taskStandbyService,
+	type StandbyService,
+} from '../services/standby.js';
+import { getTaskById, listAllTasks } from '../services/tasks.js';
 import { getUserById } from '../services/users.js';
 import { migrateRun } from '../services/migrations.js';
 import { isTerminalJobStatus } from '../services/job-status.js';
@@ -51,7 +57,7 @@ import { pageKeys } from '../services/kv-key-listing.js';
 import { applyDatasetProjection, type DatasetItem } from '../services/dataset-projection.js';
 import { ansiToHtml } from './ansi.js';
 import { createNameResolver } from './names.js';
-import { newestFirst } from './order.js';
+import { newestCreatedFirst, newestFirst } from './order.js';
 import {
 	apiFallbackWarning,
 	browserViewForm,
@@ -213,15 +219,16 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		);
 	});
 
-	/** Read-only: the settings are changed through the API, as on the platform. */
-	async function standbySection(actor: ActorRecord): Promise<string> {
-		const config = actor.actorStandby;
-		if (!config?.isEnabled) {
+	/** Read-only: the settings are changed through the API, as on the platform. A task shows the settings
+	 * its runs use: its own over the Actor's. */
+	async function standbySection(service: StandbyService): Promise<string> {
+		const { config } = service;
+		if (!config) {
 			return '<h2>Actor Standby</h2><p class="empty">(Actor Standby is off)</p>';
 		}
-		const owner = await getUserById(actor.userId);
-		const url = owner ? standbyUrl(actor, owner.username) : '';
-		const pool = standbyPoolSnapshot(actor.id);
+		const owner = await getUserById(service.actor.userId);
+		const url = owner ? standbyUrl(service.task ?? service.actor, owner.username) : '';
+		const pool = standbyPoolSnapshot(service);
 		return (
 			'<h2>Actor Standby</h2>' +
 			(owner
@@ -294,8 +301,81 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 			devFolderSection(actor.id, devFolderStatus(actor), liveDevFolderStatus(actor).enabled, devFolderError) +
 			debugModeSection(actor.id, actor.localDebug, debugModeError) +
 			browserViewSection(actor.id, actor.localBrowserView, browserViewError) +
-			(await standbySection(actor));
+			(await standbySection(actorStandbyService(actor))) +
+			'<h2>Tasks</h2>' +
+			table(
+				['id', 'name', 'title'],
+				newestCreatedFirst((await listAllTasks()).filter((task) => task.actorId === actor.id)).map((task) => [
+					task.id,
+					task.name,
+					task.title,
+				]),
+				0,
+				'/tasks',
+			);
 		res.send(layout(`Actor ${actor.name}`, body));
+	});
+
+	app.get('/tasks', async (_req, res) => {
+		const tasks = newestCreatedFirst(await listAllTasks());
+		const runs = await listAllRuns();
+		const names = createNameResolver();
+		const rows = await Promise.all(
+			tasks.map(async (task) => [
+				task.id,
+				await names.userName(task.userId),
+				task.name,
+				task.title,
+				await names.actorLink(task.actorId),
+				String(runs.filter((run) => run.actorTaskId === task.id).length),
+			]),
+		);
+		res.send(layout('Tasks', table(['id', 'user', 'name', 'title', 'actor', 'runs'], rows, 0, '/tasks')));
+	});
+
+	app.get('/tasks/:id', async (req, res) => {
+		const task = await getTaskById(req.params.id);
+		if (!task) {
+			res.status(404).send(layout('Not found', '<p>Task not found.</p>'));
+			return;
+		}
+		const names = createNameResolver();
+		const actor = await getActorById(task.actorId);
+		const options = Object.entries(task.options ?? {});
+		const runs = newestFirst((await listAllRuns()).filter((run) => run.actorTaskId === task.id));
+		const body =
+			definitionList([
+				['id', task.id],
+				['user', await names.userName(task.userId)],
+				['name', task.name],
+				['title', task.title],
+				['description', task.description ?? ''],
+				['actor', await names.actorLink(task.actorId)],
+				['createdAt', task.createdAt],
+				['modifiedAt', task.modifiedAt],
+			]) +
+			'<h2>Run options</h2>' +
+			(options.length > 0
+				? definitionList(options)
+				: '<p class="empty">(none - runs use the Actor\'s default run options)</p>') +
+			'<h2>Input</h2><pre>' +
+			escapeHtml(JSON.stringify(task.input ?? {}, null, 2)) +
+			'</pre>' +
+			(actor ? await standbySection(taskStandbyService(actor, task)) : '') +
+			'<h2>Runs</h2>' +
+			table(
+				['id', 'status', 'origin', 'startedAt', 'usageTotalUsd'],
+				runs.map((r) => [
+					r.id,
+					r.status,
+					r.meta.origin,
+					r.startedAt,
+					formatUsd(computeRunUsage(r, getRunTelemetry(r.id)).usageTotalUsd),
+				]),
+				0,
+				'/runs',
+			);
+		res.send(layout(`Task ${task.name}`, body));
 	});
 
 	/** Same `setActorPricingInfos` as the API, cross-user like the other Actor forms. Only the JSON parse
@@ -547,6 +627,9 @@ export function createConsoleServer(deps: ConsoleServerDeps): Express {
 		const rows: Array<[string, unknown]> = [
 			['id', run.id],
 			['actor', await createNameResolver().actorLink(run.actorId)],
+			...(run.actorTaskId
+				? ([['task', await createNameResolver().taskLink(run.actorTaskId)]] as Array<[string, unknown]>)
+				: []),
 			['build', { text: run.buildNumber, href: `/builds/${encodeURIComponent(run.buildId)}` }],
 			['status', run.status],
 			['startedAt', run.startedAt],

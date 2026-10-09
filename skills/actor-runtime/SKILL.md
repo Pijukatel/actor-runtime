@@ -111,6 +111,26 @@ valid: Field input.maxPages must be >= 1`); no run is created and no container s
   account; the run log carries a warning saying so. Unchecking "Use Apify Proxy" on the console's
   Settings page (on by default) sets `APIFY_PROXY_PASSWORD` to an empty string instead.
 
+## Saved inputs (tasks)
+
+Tasks work as on the platform, for your own Actors: save an input and run options once, then run from
+them.
+
+```sh
+apify api POST v2/actor-tasks --body '{"actId": "my-actor", "name": "small-crawl", "input": {"maxPages": 3}, "options": {"memoryMbytes": 2048}}'
+apify api POST v2/actor-tasks/~small-crawl/runs                       # runs my-actor with the saved input
+apify api POST v2/actor-tasks/~small-crawl/runs --body '{"maxPages": 5}'  # merged over the saved input
+apify api GET v2/actor-tasks/~small-crawl/runs/last/dataset/items
+```
+
+- The SDKs' and `apify-client`'s task calls (`client.task(id).call()`, `getInput()`, `updateInput()`)
+  work against it, `run-sync` included. A task run's `actorTaskId`, and `ACTOR_TASK_ID` in its
+  container, name the task.
+- The saved input is validated against the input schema of the build the task runs, as on the platform.
+- A task of a Standby Actor has its own `standbyUrl` (see "Run an Actor server").
+- The console's Tasks page shows each task's input, run options, standby URL and runs.
+- Tasks cannot be published, scheduled or given webhooks here.
+
 ## Run memory
 
 With no `-m`/`--memory`, a run gets `defaultMemoryMbytes` from `.actor/actor.json` - a number or a
@@ -309,10 +329,13 @@ curl "http://localhost:3333/actor-runtime/standby/<username>--<actor-name>/some/
 - A request that cannot be served says why: `standby-not-enabled`, `standby-run-finished` (the run
   crashed before its server came up - read its log), `standby-run-not-ready` (nothing listened on the port
   within 180 s).
+- A task of the Actor is served the same way at its own `standbyUrl` (`<username>--<task-name>`), by its
+  own standby runs, with the task's `actorStandby` settings over the Actor's and, with
+  `shouldPassActorInput`, the task's input.
 - `apify call` still starts an ordinary `API` run of the same Actor. `samples/actor_standby_ts` and
   `samples/actor_standby_py` are complete Actor servers (JSON, request body, Server-Sent Events, websocket,
   graceful shutdown) to start from; `samples/actor_standby_web` serves a web page and, in an ordinary run,
-  calls a standby Actor from its container. Multi-tenant Standby and Standby for tasks are not emulated.
+  calls a standby Actor from its container. Multi-tenant Standby is not emulated.
 
 ## Test how an Actor handles a platform migration
 
@@ -358,7 +381,7 @@ a later step misses. Only a call naming an Actor this runtime does not know is r
 
 - `apify api ...` sends authenticated calls: `apify api GET v2/datasets`, `apify api GET v2/acts`.
   The `v2/` prefix and the leading slash are both optional.
-- A named Actor, dataset, key-value store or request queue can stand in for its id as `~name` (your
+- A named Actor, task, dataset, key-value store or request queue can stand in for its id as `~name` (your
   own), `username~name` or `userId~name`, like on the platform:
   `apify api GET v2/datasets/~my-results/items`. Names match case-insensitively. A bare name without
   `~` is an id, except for an Actor, where it is also tried as a name. Another user's resource is not
@@ -367,7 +390,8 @@ a later step misses. Only a call naming an Actor this runtime does not know is r
 - The `runs/last` shortcuts address an Actor's newest run without knowing its id:
   `apify api GET v2/actors/<actorId>/runs/last`, and the same under `/log`, `/dataset/items`,
   `/key-value-store/records/OUTPUT`, `/request-queue`, `/abort`. Add `?status=SUCCEEDED` to skip
-  failed runs. `client.actor(id).lastRun()` in the SDKs uses these.
+  failed runs. `client.actor(id).lastRun()` in the SDKs uses these; `v2/actor-tasks/<taskId>/runs/last`
+  does the same for a task.
 - The console at `http://localhost:3000` shows the same objects, plus the pricing and dev-folder forms,
   each run's usage and cost, the Migrate button, the browser view, each run's `containerUrl` and an
   Actor's standby runs.
