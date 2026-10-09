@@ -97,6 +97,12 @@ number }`, both already resolved (never `"auto"`, never absent-meaning-default).
 - The system stores tasks in dedicated key-value store called `__TASKS__`:
     - `key` is the id of the task (`actorTaskId`)
     - `value` is the task: owner (`userId`), Actor (`actorId`), name, saved input and run options
+- The system stores webhooks in dedicated key-value store called `__WEBHOOKS__`:
+    - `key` is the id of the webhook (`webhookId`)
+    - `value` is the webhook
+- The system stores webhook dispatches in dedicated key-value store called `__WEBHOOK_DISPATCHES__`:
+    - `key` is the id of the dispatch (`dispatchId`)
+    - `value` is the dispatch, with every delivery attempt
 - The system stores logs in dedicated key-value store called `__LOGS__`:
     - `key` is the id of the Actor build (`logId`)
     - `value` is the metadata of the Actor

@@ -81,6 +81,15 @@
         - v2/actor-tasks/:actorTaskId/run-sync
         - v2/actor-tasks/:actorTaskId/run-sync-get-dataset-items
         - v2/actor-tasks/:actorTaskId/runs/last, and its sub-paths (see "Last-run shortcuts")
+        - v2/actor-tasks/:actorTaskId/webhooks
+    - Webhooks
+        - v2/webhooks
+        - v2/webhooks/:webhookId
+        - v2/webhooks/:webhookId/test
+        - v2/webhooks/:webhookId/dispatches
+        - v2/webhook-dispatches
+        - v2/webhook-dispatches/:dispatchId
+        - v2/actors/:actorId/webhooks
     - Builds
         - v2/actor-builds
         - v2/actor-builds/:buildId
@@ -190,6 +199,16 @@
 - Differences: a task's secret input fields are stored as given, and encrypted only in each run's input;
   `maxItems` is saved but not applied; a task cannot be published (`400`
   `cannot-publish-actor-task`).
+
+# Webhooks
+
+- Implemented as on the platform, for the caller's own Actors, tasks and runs.
+- Differences:
+    - Only the `HTTP_REQUEST` action is supported (`400` `invalid-request` for the others).
+    - Requests are sent from the runtime: `localhost` means the runtime itself, private addresses are
+      allowed and redirects are not followed.
+    - The runtime's own API stands in for the Apify API: a request to it without a `token` is
+      authenticated as the webhook's owner.
 
 # Actor Standby
 

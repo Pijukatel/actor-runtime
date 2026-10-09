@@ -20,6 +20,8 @@ import { resetGracefulAbortsForTests } from '../../../src/services/runs.js';
 import { resetChargingForTests } from '../../../src/services/charging.js';
 import { resetStandbyForTests } from '../../../src/services/standby.js';
 import { resetStandbyFinishingForTests } from '../../../src/services/standby-finish.js';
+import { startWebhookDispatcher, stopWebhookDispatcherForTests } from '../../../src/services/webhook-dispatches.js';
+import { buildDto, runDto } from '../../../src/api/dto/actors.js';
 import { handleStandbyUpgrade } from '../../../src/api/standby-proxy.js';
 import { handleContainerUpgrade } from '../../../src/api/container-proxy.js';
 import type {
@@ -500,6 +502,7 @@ export async function startTestServer(
 		const s = app.listen(0, () => resolve(s));
 	});
 	const { port } = server.address() as AddressInfo;
+	await startWebhookDispatcher({ apiPort: port, runResource: (run) => runDto(run), buildResource: buildDto });
 	const baseUrl = `http://127.0.0.1:${port}`;
 	const wsBaseUrl = `ws://127.0.0.1:${port}`;
 	// Same server, same upgrade path as production (`index.ts`) - a real `ws` client against this handle
@@ -531,6 +534,7 @@ export async function startTestServer(
 				server.close(() => resolve());
 				server.closeAllConnections();
 			});
+			await stopWebhookDispatcherForTests();
 			stopLogFlusher();
 			resetLogsForTests();
 			resetEventsChannelForTests();

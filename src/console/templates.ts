@@ -17,6 +17,7 @@ export function escapeHtml(value: unknown): string {
 const NAV = [
 	['/actors', 'Actors'],
 	['/tasks', 'Tasks'],
+	['/webhooks', 'Webhooks'],
 	['/builds', 'Builds'],
 	['/runs', 'Runs'],
 	['/logs', 'Logs'],
