@@ -1,4 +1,5 @@
 import { getActorById } from '../services/actors.js';
+import { getTaskById } from '../services/tasks.js';
 import { getUserById } from '../services/users.js';
 import type { LinkedCell } from './templates.js';
 
@@ -8,6 +9,8 @@ export interface NameResolver {
 	userName(userId: string): Promise<string>;
 	/** `username~actorname`, linked to the Actor's detail view. */
 	actorLink(actorId: string): Promise<LinkedCell>;
+	/** `username~taskname`, linked to the task's detail view. */
+	taskLink(taskId: string): Promise<LinkedCell>;
 }
 
 export function createNameResolver(): NameResolver {
@@ -34,8 +37,14 @@ export function createNameResolver(): NameResolver {
 		return name;
 	};
 
+	const taskName = async (taskId: string): Promise<string> => {
+		const task = await getTaskById(taskId);
+		return task ? `${await userName(task.userId)}~${task.name}` : taskId;
+	};
+
 	return {
 		userName,
+		taskLink: async (taskId) => ({ text: await taskName(taskId), href: `/tasks/${encodeURIComponent(taskId)}` }),
 		actorLink: async (actorId) => ({
 			text: await actorName(actorId),
 			href: `/actors/${encodeURIComponent(actorId)}`,

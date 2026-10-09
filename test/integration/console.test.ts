@@ -53,6 +53,69 @@ describe('console pages (HTTP fetch)', () => {
 		});
 	}
 
+	it('tasks: listed next to Actors, with a detail view, on their Actor, and on their runs', async () => {
+		const actor = await server.client.actors().create({ name: 'console-task-actor' });
+		const buildId = generateId();
+		await getRegistries().builds.set(buildId, {
+			id: buildId,
+			userId: actor.userId,
+			actorId: actor.id,
+			versionNumber: '0.0',
+			buildNumber: '0.0.1',
+			tag: 'latest',
+			status: 'SUCCEEDED',
+			startedAt: new Date().toISOString(),
+			finishedAt: new Date().toISOString(),
+			imageId: 'fake-image',
+		});
+		await updateActor(actor.id, (current) => recordTaggedBuild(current, 'latest', buildId, '0.0.1'));
+		const task = await server.client.tasks().create({
+			actId: actor.id,
+			name: 'console-task',
+			input: { query: 'saved' },
+			options: { memoryMbytes: 2048 },
+		} as never);
+		const runId = generateId();
+		await getRegistries().runs.set(runId, {
+			id: runId,
+			userId: actor.userId,
+			actorId: actor.id,
+			actorTaskId: task.id,
+			buildId,
+			buildNumber: '0.0.1',
+			status: 'SUCCEEDED',
+			startedAt: new Date().toISOString(),
+			defaultDatasetId: 'd',
+			defaultKeyValueStoreId: 'k',
+			defaultRequestQueueId: 'q',
+			options: { memoryMbytes: 2048, timeoutSecs: 300 },
+			meta: { origin: 'API' },
+		});
+		const qualified = `${(await server.client.user('me').get()).username}~console-task`;
+
+		const nav = (await axios.get(`${consoleBaseUrl}/`)).data as string;
+		expect(nav).toMatch(/<a href="\/actors">Actors<\/a><a href="\/tasks">Tasks<\/a>/);
+
+		const list = (await axios.get(`${consoleBaseUrl}/tasks`)).data as string;
+		expect(list).toContain(`<a href="/tasks/${task.id}">${task.id}</a>`);
+		expect(list).toContain(`<a href="/actors/${actor.id}">`);
+
+		const detail = (await axios.get(`${consoleBaseUrl}/tasks/${task.id}`)).data as string;
+		expect(detail).toContain('console-task');
+		expect(detail).toContain('2048');
+		expect(detail).toContain('&quot;query&quot;: &quot;saved&quot;');
+		expect(detail).toContain(`<a href="/runs/${runId}">${runId}</a>`);
+		expect(detail).toContain('(Actor Standby is off)');
+
+		const actorDetail = (await axios.get(`${consoleBaseUrl}/actors/${actor.id}`)).data as string;
+		expect(actorDetail).toContain(`<a href="/tasks/${task.id}">${task.id}</a>`);
+
+		const runDetail = (await axios.get(`${consoleBaseUrl}/runs/${runId}`)).data as string;
+		expect(runDetail).toContain(`<a href="/tasks/${task.id}">${qualified}</a>`);
+
+		expect((await axios.get(`${consoleBaseUrl}/tasks/nope`, { validateStatus: () => true })).status).toBe(404);
+	});
+
 	it('builds and runs list+detail views render (even with no Docker)', async () => {
 		const actor = await server.client.actors().create({ name: 'console-build-actor' });
 		await server.client

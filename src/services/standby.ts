@@ -376,9 +376,11 @@ async function finishRun(driver: Driver, entry: PooledRun, message: string): Pro
 	}, finishWarningMs);
 }
 
-/** For the console: the pool's live view of an Actor's standby runs. */
-export function standbyPoolSnapshot(actorId: string): Array<{ runId?: string; openRequests: number; ready: boolean }> {
-	return (pools.get(actorId) ?? []).map((entry) => ({
+/** For the console: the pool's live view of an Actor's or a task's standby runs. */
+export function standbyPoolSnapshot(
+	service: StandbyService,
+): Array<{ runId?: string; openRequests: number; ready: boolean }> {
+	return (pools.get(poolKeyOf(service)) ?? []).map((entry) => ({
 		runId: entry.knownRunId,
 		openRequests: entry.openRequests,
 		ready: entry.readyAddress !== undefined,

@@ -128,7 +128,8 @@ apify api GET v2/actor-tasks/~small-crawl/runs/last/dataset/items
   container, name the task.
 - The saved input is validated against the input schema of the build the task runs, as on the platform.
 - A task of a Standby Actor has its own `standbyUrl` (see "Run an Actor server").
-- Tasks cannot be published, scheduled or given webhooks here, and the console does not show them.
+- The console's Tasks page shows each task's input, run options, standby URL and runs.
+- Tasks cannot be published, scheduled or given webhooks here.
 
 ## Run memory
 

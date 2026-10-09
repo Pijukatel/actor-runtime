@@ -71,7 +71,6 @@ real account, not in the runtime.
 ## Console
 
 - Input editor and run start from the console
-- Tasks in the console
 - Run charts
 - Output tab, storage export and download
 - Login, account, token and billing settings

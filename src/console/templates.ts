@@ -16,6 +16,7 @@ export function escapeHtml(value: unknown): string {
 
 const NAV = [
 	['/actors', 'Actors'],
+	['/tasks', 'Tasks'],
 	['/builds', 'Builds'],
 	['/runs', 'Runs'],
 	['/logs', 'Logs'],

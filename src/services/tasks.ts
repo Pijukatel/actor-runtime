@@ -57,6 +57,11 @@ export async function listAllTasks(): Promise<TaskRecord[]> {
 	return getRegistries().tasks.list();
 }
 
+/** Cross-user lookup by id, for the console only (see `listAllTasks`). */
+export async function getTaskById(id: string): Promise<TaskRecord | null> {
+	return getRegistries().tasks.get(id);
+}
+
 export async function getOwnedTask(userId: string, id: string): Promise<TaskRecord | null> {
 	const record = await getRegistries().tasks.get(id);
 	if (!record || record.userId !== userId) return null;
