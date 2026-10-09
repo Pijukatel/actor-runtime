@@ -13,7 +13,8 @@ import { dockerContextFiles, nameInDockerContext, resolveDockerContext } from '.
 import { describeActorJsonDefect } from './actor-json-validation.js';
 import { DEFAULT_DOCKERFILE_NAME } from './default-dockerfile.js';
 import { resolveInputSchemaLocation } from './input-schema-location.js';
-import { resolveDatasetSchema } from './dataset-schema.js';
+import { resolveDatasetSchemas } from './dataset-schema.js';
+import { resolveExtraDatasetAliases } from './actor-storages.js';
 import { resolveActorMemorySettings } from './actor-memory.js';
 import { buildArgsOf } from './env-vars.js';
 import { appendLog, appendRuntimeLog, flushLog, markLogTerminal } from './logs.js';
@@ -279,13 +280,13 @@ export async function runBuildInBackground(
 	for (const line of inputSchemaResolution.logLines) appendRuntimeLog(record.id, line);
 	const inputSchema = inputSchemaResolution.outcome === 'resolved' ? inputSchemaResolution.schema : undefined;
 
-	const datasetSchemaResolution = resolveDatasetSchema(versionSourceFiles, actorPath);
+	const datasetSchemaResolution = resolveDatasetSchemas(versionSourceFiles, actorPath);
 	if (datasetSchemaResolution.outcome === 'failure') {
 		await failBuild(record.id, datasetSchemaResolution.message);
 		return;
 	}
 	for (const line of datasetSchemaResolution.logLines) appendRuntimeLog(record.id, line);
-	const datasetSchema = datasetSchemaResolution.schema;
+	const datasetSchemas = datasetSchemaResolution.schemas;
 
 	const memoryResolution = resolveActorMemorySettings(versionSourceFiles, actorPath);
 	if (memoryResolution.outcome === 'failure') {
@@ -293,6 +294,7 @@ export async function runBuildInBackground(
 		return;
 	}
 	const memorySettings = memoryResolution.settings;
+	const extraDatasetAliases = resolveExtraDatasetAliases(versionSourceFiles, actorPath);
 
 	const contextFiles = dockerContextFiles(versionSourceFiles, contextPath);
 	const sourceFiles: SourceFile[] = qualifyDockerfileImages(
@@ -371,8 +373,9 @@ export async function runBuildInBackground(
 				? { imageWorkingDirectory: outcome.imageWorkingDirectory }
 				: {}),
 			...(inputSchema !== undefined ? { inputSchema } : {}),
-			...(datasetSchema !== undefined ? { datasetSchema } : {}),
+			...(datasetSchemas !== undefined ? { datasetSchemas } : {}),
 			...(memorySettings !== undefined ? { memorySettings } : {}),
+			...(extraDatasetAliases !== undefined ? { extraDatasetAliases } : {}),
 		});
 		if (succeeded?.status !== 'SUCCEEDED') {
 			await updateActor(actor.id, (current) => {

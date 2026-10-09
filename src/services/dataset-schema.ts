@@ -1,6 +1,6 @@
 /**
  * Dataset schemas (`storage.md`'s "Dataset schema validation"): resolved from `.actor/actor.json`'s
- * `storages.dataset` at build time, and enforced on every item pushed to a dataset that carries one.
+ * `storages.dataset`/`storages.datasets` at build time, and enforced on every item pushed to a dataset that carries one.
  *
  * Item validation uses the platform API's own AJV configuration, and answers with its exact error shape,
  * so a developer sees locally the rejection the platform would send.
@@ -16,16 +16,24 @@ import {
 	parseActorJson,
 	resolveActorJsonPathField,
 	sourceFileToText,
+	type IndexedFile,
 } from './actor-source-files.js';
+import { DEFAULT_STORAGE_ALIAS } from './actor-storages.js';
 
 // AJV ships as CommonJS, so under this package's ESM resolution its class arrives as the module's
 // `default`.
 const Ajv = ajvPackage.default;
 type ItemValidator = ReturnType<InstanceType<typeof Ajv>['compile']>;
 
+/** Keyed by `storages.datasets` alias, `default` being the run's default dataset. */
+export type DatasetSchemas = Record<string, DatasetSchema>;
+
 export type DatasetSchemaResolution =
-	| { outcome: 'resolved'; schema: DatasetSchema | undefined; logLines: string[] }
+	| { outcome: 'resolved'; schemas: DatasetSchemas | undefined; logLines: string[] }
 	| { outcome: 'failure'; message: string };
+
+type SchemaResolution =
+	{ outcome: 'resolved'; schema: DatasetSchema; logLines: string[] } | { outcome: 'failure'; message: string };
 
 /** `null` for a valid dataset schema, the defect otherwise. */
 export function describeDatasetSchemaDefect(schema: unknown): string | null {
@@ -37,23 +45,25 @@ export function describeDatasetSchemaDefect(schema: unknown): string | null {
 	return JSON.stringify(validate.errors, null, 4);
 }
 
-/** The schema field the platform creates a run's default dataset from: `storages.datasets.default` (or,
- * for the schemas that predate that requirement, the first alias), else `storages.dataset`. */
-function defaultDatasetField(specification: unknown): { field: unknown; fieldName: string } | undefined {
-	if (specification === null || typeof specification !== 'object') return undefined;
+/** Every declared dataset schema field by alias: `storages.datasets`, else `storages.dataset` as the
+ * default one. */
+function datasetSchemaFields(specification: unknown): { alias: string; field: unknown; fieldName: string }[] {
+	if (specification === null || typeof specification !== 'object') return [];
 	const storages = (specification as Record<string, unknown>).storages;
-	if (storages === null || typeof storages !== 'object') return undefined;
+	if (storages === null || typeof storages !== 'object') return [];
 	const { dataset, datasets } = storages as Record<string, unknown>;
 	if (datasets !== null && typeof datasets === 'object' && !Array.isArray(datasets)) {
-		const aliases = datasets as Record<string, unknown>;
-		const alias = 'default' in aliases ? 'default' : Object.keys(aliases)[0];
-		if (alias !== undefined) return { field: aliases[alias], fieldName: `storages.datasets.${alias}` };
+		return Object.entries(datasets).map(([alias, field]) => ({
+			alias,
+			field,
+			fieldName: `storages.datasets.${alias}`,
+		}));
 	}
-	if (dataset !== undefined) return { field: dataset, fieldName: 'storages.dataset' };
-	return undefined;
+	if (dataset !== undefined) return [{ alias: DEFAULT_STORAGE_ALIAS, field: dataset, fieldName: 'storages.dataset' }];
+	return [];
 }
 
-function accept(schema: unknown, source: string): DatasetSchemaResolution {
+function accept(schema: unknown, source: string): SchemaResolution {
 	const defect = describeDatasetSchemaDefect(schema);
 	if (defect) return { outcome: 'failure', message: `Dataset schema from ${source} is not valid: ${defect}` };
 	const logLines = [`Using the dataset schema from ${source}.\n`];
@@ -68,19 +78,33 @@ function accept(schema: unknown, source: string): DatasetSchemaResolution {
 	return { outcome: 'resolved', schema: schema as DatasetSchema, logLines };
 }
 
-export function resolveDatasetSchema(sourceFiles: SourceFile[], actorPath = ''): DatasetSchemaResolution {
+export function resolveDatasetSchemas(sourceFiles: SourceFile[], actorPath = ''): DatasetSchemaResolution {
 	const actorJson = parseActorJson(sourceFiles, actorPath);
 	if (actorJson.outcome === 'unparseable') return { outcome: 'failure', message: actorJson.message };
-	if (actorJson.outcome === 'absent') return { outcome: 'resolved', schema: undefined, logLines: [] };
+	if (actorJson.outcome === 'absent') return { outcome: 'resolved', schemas: undefined, logLines: [] };
 
-	const located = defaultDatasetField(actorJson.specification);
-	if (!located) return { outcome: 'resolved', schema: undefined, logLines: [] };
-	const { field, fieldName } = located;
+	const indexed = indexSourceFiles(sourceFiles);
+	const schemas: DatasetSchemas = {};
+	const logLines: string[] = [];
+	for (const { alias, field, fieldName } of datasetSchemaFields(actorJson.specification)) {
+		const resolution = resolveSchemaField(indexed, field, fieldName, actorPath);
+		if (resolution.outcome === 'failure') return resolution;
+		schemas[alias] = resolution.schema;
+		logLines.push(...resolution.logLines);
+	}
+	return { outcome: 'resolved', schemas: Object.keys(schemas).length > 0 ? schemas : undefined, logLines };
+}
 
+function resolveSchemaField(
+	indexed: IndexedFile[],
+	field: unknown,
+	fieldName: string,
+	actorPath: string,
+): SchemaResolution {
 	if (typeof field !== 'string') return accept(field, `the "${fieldName}" field in .actor/actor.json`);
 
 	// Exact case and no fallback, as for the input schema.
-	const resolved = resolveActorJsonPathField(indexSourceFiles(sourceFiles), field, actorPath, true);
+	const resolved = resolveActorJsonPathField(indexed, field, actorPath, true);
 	if (resolved.outcome === 'escapes-actor-root') {
 		return { outcome: 'failure', message: escapesActorRootMessage(field, 'Dataset schema') };
 	}

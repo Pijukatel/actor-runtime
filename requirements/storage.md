@@ -14,8 +14,8 @@
 
 ## Dataset schema validation
 
-- Dataset schemas work as on the Apify platform: a run's default dataset rejects items its Actor's
-  dataset schema does not accept.
+- Dataset schemas work as on the Apify platform: each of a run's datasets, the default one and every
+  extra one the Actor declares, rejects items its schema does not accept.
 - **Difference**: a schema the platform would silently not enforce is reported as a warning in the
   build log.
 

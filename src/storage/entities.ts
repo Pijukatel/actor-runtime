@@ -189,6 +189,18 @@ export interface ActorStandbyRecord {
 	shouldPassActorInput: boolean;
 }
 
+/** The platform's `defaultRunOptions` Actor field (`services/default-run-options.ts`). */
+export interface ActorDefaultRunOptionsRecord {
+	build: string;
+	timeoutSecs: number;
+	memoryMbytes: number;
+	maxTotalChargeUsd?: number;
+	/** Stored and returned only: result caps, restarts and permission levels are not emulated. */
+	maxItems?: number;
+	restartOnError?: boolean;
+	forcePermissionLevel?: string;
+}
+
 export interface ActorRecord {
 	id: string;
 	userId: string;
@@ -202,6 +214,8 @@ export interface ActorRecord {
 	pricingInfos?: ActorPricingInfoRecord[];
 	/** Exposed on `/v2`; absent until the Actor is first given one. */
 	actorStandby?: ActorStandbyRecord;
+	/** Exposed on `/v2`; absent until the Actor is first given one, which reads as the defaults. */
+	defaultRunOptions?: ActorDefaultRunOptionsRecord;
 	/** tag -> latest successful build for that tag; `apify push` polls this after a build. */
 	taggedBuilds: Record<string, { buildId: string; buildNumber: string }>;
 	/** Host path bind-mounted over the image's working directory at run start (`actor-driver.md`). Set or
@@ -254,12 +268,16 @@ export interface BuildRecord {
 	 * schema of the build it resolved, never another tag's more recently pushed one. Absent when the
 	 * Actor declares none - such a run takes its input exactly as the caller sent it. */
 	inputSchema?: InputSchema;
-	/** The dataset schema this build's source declared, build-specific like `inputSchema`; a run's
-	 * default dataset is created with it. Absent when the Actor declares none. */
-	datasetSchema?: DatasetSchema;
+	/** The dataset schemas this build's source declared, by `storages.datasets` alias (`default` for
+	 * `storages.dataset`), build-specific like `inputSchema`; each run's dataset of that alias is created
+	 * with its schema. Absent when the Actor declares none. */
+	datasetSchemas?: Record<string, DatasetSchema>;
 	/** The memory fields this build's `.actor/actor.json` declared, build-specific like `inputSchema`.
 	 * Absent when it declares none. */
 	memorySettings?: ActorMemorySettings;
+	/** The `storages.datasets` aliases other than `default` this build's `.actor/actor.json` declared;
+	 * each run of the build gets one dataset per alias. Absent when it declares none. */
+	extraDatasetAliases?: string[];
 	exitCode?: number;
 	statusMessage?: string;
 }
@@ -283,6 +301,13 @@ export interface RunRecord {
 	defaultDatasetId: string;
 	defaultKeyValueStoreId: string;
 	defaultRequestQueueId: string;
+	/** The run's storages by alias, as the platform's `Run.storageIds`; the `default` entries repeat the
+	 * `default*Id` fields. Optional for runs created before it was recorded (`runStorageIds` backfills). */
+	storageIds?: {
+		datasets: Record<string, string>;
+		keyValueStores: Record<string, string>;
+		requestQueues: Record<string, string>;
+	};
 	options: {
 		memoryMbytes: number;
 		/** `0` means no timeout - only a standby run has none. */

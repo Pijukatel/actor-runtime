@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
 	findInvalidDatasetItems,
-	resolveDatasetSchema,
+	resolveDatasetSchemas,
 	type DatasetSchemaResolution,
 } from '../../src/services/dataset-schema.js';
 import type { SourceFile } from '../../src/storage/entities.js';
@@ -34,46 +34,56 @@ function expectFailure(resolution: DatasetSchemaResolution) {
 	return resolution;
 }
 
-describe('resolveDatasetSchema', () => {
+describe('resolveDatasetSchemas', () => {
 	it('declares no schema without .actor/actor.json or its "storages.dataset"', () => {
-		expect(expectResolved(resolveDatasetSchema([])).schema).toBeUndefined();
-		expect(expectResolved(resolveDatasetSchema([actorJson({})])).schema).toBeUndefined();
+		expect(expectResolved(resolveDatasetSchemas([])).schemas).toBeUndefined();
+		expect(expectResolved(resolveDatasetSchemas([actorJson({})])).schemas).toBeUndefined();
 	});
 
 	it('takes an inline schema object', () => {
-		const resolution = expectResolved(resolveDatasetSchema([actorJson({ dataset: SCHEMA })]));
-		expect(resolution.schema).toEqual(SCHEMA);
+		const resolution = expectResolved(resolveDatasetSchemas([actorJson({ dataset: SCHEMA })]));
+		expect(resolution.schemas).toEqual({ default: SCHEMA });
 		expect(resolution.logLines.join('')).toContain('"storages.dataset" field');
 	});
 
 	it('reads a schema file relative to .actor/', () => {
 		const resolution = expectResolved(
-			resolveDatasetSchema([
+			resolveDatasetSchemas([
 				actorJson({ dataset: './dataset_schema.json' }),
 				json('.actor/dataset_schema.json', SCHEMA),
 			]),
 		);
-		expect(resolution.schema).toEqual(SCHEMA);
+		expect(resolution.schemas).toEqual({ default: SCHEMA });
 		expect(resolution.logLines.join('')).toContain('.actor/dataset_schema.json');
 	});
 
-	it('takes the default alias of "storages.datasets"', () => {
+	it('takes every alias of "storages.datasets", inline or from a file', () => {
 		const resolution = expectResolved(
-			resolveDatasetSchema([actorJson({ datasets: { default: SCHEMA, other: { actorSpecification: 1 } } })]),
+			resolveDatasetSchemas([
+				actorJson({
+					datasets: { default: { actorSpecification: 1, fields: {} }, products: './products.json' },
+				}),
+				json('.actor/products.json', SCHEMA),
+			]),
 		);
-		expect(resolution.schema).toEqual(SCHEMA);
+		expect(resolution.schemas).toEqual({ default: { actorSpecification: 1, fields: {} }, products: SCHEMA });
+		expect(
+			expectFailure(
+				resolveDatasetSchemas([actorJson({ datasets: { default: SCHEMA, products: './missing.json' } })]),
+			).message,
+		).toContain('"storages.datasets.products"');
 	});
 
 	it('fails on a missing, escaping, unparseable or invalid schema file', () => {
-		expect(expectFailure(resolveDatasetSchema([actorJson({ dataset: './missing.json' })])).message).toBe(
+		expect(expectFailure(resolveDatasetSchemas([actorJson({ dataset: './missing.json' })])).message).toBe(
 			'Schema property "storages.dataset": File ".actor/missing.json" does not exist!',
 		);
-		expect(expectFailure(resolveDatasetSchema([actorJson({ dataset: '../../x.json' })])).message).toContain(
+		expect(expectFailure(resolveDatasetSchemas([actorJson({ dataset: '../../x.json' })])).message).toContain(
 			'outside the Actor root',
 		);
 		expect(
 			expectFailure(
-				resolveDatasetSchema([
+				resolveDatasetSchemas([
 					actorJson({ dataset: './d.json' }),
 					{ name: '.actor/d.json', format: 'TEXT', content: '{' },
 				]),
@@ -81,7 +91,7 @@ describe('resolveDatasetSchema', () => {
 		).toContain('Could not parse the dataset schema');
 		expect(
 			expectFailure(
-				resolveDatasetSchema([
+				resolveDatasetSchemas([
 					actorJson({ dataset: './d.json' }),
 					json('.actor/d.json', { actorSpecification: 2 }),
 				]),
@@ -91,7 +101,7 @@ describe('resolveDatasetSchema', () => {
 
 	it('warns when "fields" cannot be compiled', () => {
 		const resolution = expectResolved(
-			resolveDatasetSchema([
+			resolveDatasetSchemas([
 				actorJson({ dataset: './d.json' }),
 				json('.actor/d.json', { actorSpecification: 1, fields: { $ref: '#/nowhere' } }),
 			]),

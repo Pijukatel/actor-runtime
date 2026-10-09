@@ -118,6 +118,28 @@ describe('dataset schema validation (via real apify-client)', () => {
 			type: 'schema-validation-error',
 		});
 
+		// Each extra `storages.datasets` alias gets its own schema, independently of the default one.
+		const aliasesBuildId = 'aliasBuildId1234a';
+		await build(aliasesBuildId, [
+			{
+				name: '.actor/actor.json',
+				format: 'TEXT',
+				content: JSON.stringify({
+					actorSpecification: 1,
+					name: 'schema-actor',
+					version: '0.0',
+					storages: { datasets: { default: { actorSpecification: 1, fields: {} }, products: SCHEMA } },
+				}),
+			},
+		]);
+		expect((await builds.get(aliasesBuildId))?.status).toBe('SUCCEEDED');
+		const aliasesRun = await server.client.actor(actor.id).start();
+		const storageIds = (aliasesRun as unknown as { storageIds: { datasets: Record<string, string> } }).storageIds;
+		await server.client.dataset(storageIds.datasets.default!).pushItems({});
+		await expect(server.client.dataset(storageIds.datasets.products!).pushItems({})).rejects.toMatchObject({
+			type: 'schema-validation-error',
+		});
+
 		const brokenBuildId = 'brokenBuildId123b';
 		await build(brokenBuildId, [actorJson('./missing.json')]);
 		const broken = await server.client.build(brokenBuildId).get();

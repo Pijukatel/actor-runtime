@@ -114,9 +114,10 @@ valid: Field input.maxPages must be >= 1`); no run is created and no container s
 ## Run memory
 
 With no `-m`/`--memory`, a run gets `defaultMemoryMbytes` from `.actor/actor.json` - a number or a
-memory expression over the input, evaluated as the platform does - or 1024 MB. Any memory, explicit
-or not, is then clamped to the Actor's `minMemoryMbytes` / `maxMemoryMbytes`, and the run log says so.
-An expression that fails falls back to 1024 MB with a warning in the run log. The fields come from the
+memory expression over the input, evaluated as the platform does - or the Actor's default run memory.
+Any memory, explicit or not, is then clamped to the Actor's `minMemoryMbytes` / `maxMemoryMbytes`, and
+the run log says so. An expression that fails falls back to the default run memory with a warning in
+the run log. The fields come from the
 build, so changing them needs an `apify push`.
 
 ## Environment variables and secrets
