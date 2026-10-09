@@ -207,8 +207,8 @@
     - Only the `HTTP_REQUEST` action is supported (`400` `invalid-request` for the others).
     - Requests are sent from the runtime: `localhost` means the runtime itself, private addresses are
       allowed and redirects are not followed.
-    - A request to the runtime's own API without a `token` is authenticated as the webhook's owner.
-    - Deleting a webhook keeps its dispatches.
+    - The runtime's own API stands in for the Apify API: a request to it without a `token` is
+      authenticated as the webhook's owner.
 
 # Actor Standby
 
