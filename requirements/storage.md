@@ -14,17 +14,10 @@
 
 ## Dataset schema validation
 
-- **Dataset schemas work as on the Apify platform**: a dataset with a schema rejects any push holding
-  an item its `fields` JSON schema does not accept - `400` `schema-validation-error`, naming each
-  rejected item's position and errors, and storing none of the batch (`api.md`).
-- A run's default dataset gets the schema its build read from `.actor/actor.json` - `storages.dataset`, or
-  the `default` of `storages.datasets` - inline or as a file path relative to `.actor/`. A build whose
-  named schema file is missing, cannot be read or is not a valid dataset schema fails with the reason in
-  its log; a schema whose `fields` cannot be compiled is kept, with a warning in the build log, and its
-  items are not validated.
-- `POST /v2/datasets` takes a `schema` in its body. A dataset's schema is set when it is created and
-  never changes; it shows on the dataset object.
-- Without a schema, or without `fields`, every item is accepted.
+- Dataset schemas work as on the Apify platform: a run's default dataset rejects items its Actor's
+  dataset schema does not accept.
+- **Difference**: a schema the platform would silently not enforce is reported as a warning in the
+  build log.
 
 # Storage objects
 
@@ -40,7 +33,6 @@
     - `value` is the metadata of the storage
         - owner (`userId`)
         - statistics
-        - the dataset schema, for a dataset that has one
 - The system stores users in dedicated key-value store called `__USERS__`:
     - `key` is the `userId`
     - `value` is the metadata of the user

@@ -79,16 +79,8 @@ apify call
 
 ## Dataset schema validation
 
-If `.actor/actor.json` declares a dataset schema (`storages.dataset`, inline or a path such as
-`./dataset_schema.json`), each run's default dataset validates pushed items against its `fields`, as
-the platform does:
-
-- A push with any item the schema rejects fails with `400` `schema-validation-error`, listing each bad
-  item's `itemPosition` and `validationErrors`, and stores **none** of the batch - `Actor.pushData()`
-  throws.
-- The schema comes from the **build**: a locally edited schema needs an `apify push` to take effect. A
-  missing or invalid schema file fails the build, with the reason in its log.
-- `POST /v2/datasets` with `{"schema": {...}}` creates a dataset that validates the same way.
+A dataset schema in `.actor/actor.json` is enforced as on the platform. It comes from the **build**, so
+an edited schema takes effect only after `apify push`.
 
 ## Input schema: defaults and validation
 
