@@ -297,6 +297,20 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 - `APIFY_ACTOR_ID` / `ACTOR_ID` and `APIFY_ACTOR_RUN_ID` / `ACTOR_RUN_ID` —
   both the legacy `APIFY_`-prefixed and the modern unprefixed spellings, equal
   in value. A task run also gets `APIFY_ACTOR_TASK_ID` / `ACTOR_TASK_ID`.
+- Run metadata, as on the platform:
+    - `ACTOR_FULL_NAME` — `{owner username}/{Actor name}`.
+    - `APIFY_USER_ID` — the run owner's id (no `ACTOR_` counterpart exists).
+    - `ACTOR_BUILD_ID` / `APIFY_ACTOR_BUILD_ID` and `ACTOR_BUILD_NUMBER` / `APIFY_ACTOR_BUILD_NUMBER` — the
+      build the run resolved.
+    - `ACTOR_BUILD_TAGS` — the tags pointing at that build when the container starts, comma-separated
+      and sorted; a later retag does not change it. Absent when no tag points at the build.
+    - `ACTOR_INPUT_KEY` / `APIFY_INPUT_KEY` — `INPUT`, the default key-value store record the input is
+      stored under.
+    - `ACTOR_STARTED_AT` / `APIFY_STARTED_AT` — the run's `startedAt`, ISO 8601 UTC. A resurrection
+      keeps the original.
+    - `ACTOR_TIMEOUT_AT` / `APIFY_TIMEOUT_AT` — the instant the run's timeout budget ends, ISO 8601 UTC:
+      `startedAt` (or `resurrectedAt`, since a resurrection restarts the budget) plus `timeoutSecs`. A
+      migration restart keeps it. Absent for a run with no timeout.
 - `APIFY_PROXY_PASSWORD` — set when a value is known, from either of two sources in precedence order:
   (1) `APIFY_PROXY_PASSWORD` set in the runtime's own environment (README.md's "Apify Proxy" section) —
   always wins when set; otherwise (2) the proxy password obtained for the run owner's own account during

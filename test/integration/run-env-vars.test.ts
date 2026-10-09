@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { capturingDriver, startTestServer, type TestServerHandle } from './helpers/test-server.js';
 import { CONTAINER_EVENTS_WS_BASE_URL } from '../../src/config.js';
 import { REAL_APIFY_PROXY_WARNING, setApifyProxyEnabled } from '../../src/services/apify-proxy.js';
+import { getRegistries } from '../../src/storage/registries.js';
 
 describe('actor version envVars are applied to the run container env', () => {
 	let server: TestServerHandle;
@@ -244,5 +245,90 @@ describe('actor version envVars are applied to the run container env', () => {
 			expect(Object.hasOwn(env!, key)).toBe(true);
 		}
 		expect(env?.ACTOR_EVENTS_WEBSOCKET_URL).toContain(`/actor-runtime/events/${run.id}`);
+	});
+});
+
+describe('run metadata env vars (input key, build, user, timestamps), as on the platform', () => {
+	let server: TestServerHandle;
+	let getCapturedEnv: () => Record<string, string> | undefined;
+
+	beforeEach(async () => {
+		const capturing = capturingDriver();
+		getCapturedEnv = () => capturing.captured.runEnv;
+		server = await startTestServer(capturing.driver);
+	});
+
+	afterEach(async () => {
+		await server.close();
+	});
+
+	async function seedBuiltActor(name: string) {
+		const actor = await server.client.actors().create({ name });
+		await server.client
+			.actor(actor.id)
+			.versions()
+			.create({
+				versionNumber: '0.0',
+				buildTag: 'latest',
+				sourceType: 'SOURCE_FILES' as never,
+				sourceFiles: [],
+			} as never);
+		const build = await server.client.actor(actor.id).build('0.0', { waitForFinish: 5 });
+		expect(build.status).toBe('SUCCEEDED');
+		return actor;
+	}
+
+	it('tells the container its input key, build, owner and timestamps, in both spellings', async () => {
+		const actor = await seedBuiltActor('env-metadata-actor');
+		const me = await server.client.user('me').get();
+
+		const run = await server.client.actor(actor.id).start({}, { timeout: 120, waitForFinish: 5 });
+		expect(run.status).toBe('SUCCEEDED');
+
+		const env = getCapturedEnv()!;
+		expect(env.ACTOR_INPUT_KEY).toBe('INPUT');
+		expect(env.APIFY_INPUT_KEY).toBe('INPUT');
+		expect(env.ACTOR_BUILD_ID).toBe(run.buildId);
+		expect(env.APIFY_ACTOR_BUILD_ID).toBe(run.buildId);
+		expect(env.ACTOR_BUILD_NUMBER).toBe(run.buildNumber);
+		expect(env.APIFY_ACTOR_BUILD_NUMBER).toBe(run.buildNumber);
+		expect(env.ACTOR_BUILD_TAGS).toBe('latest');
+		expect(env.APIFY_USER_ID).toBe(run.userId);
+		expect(env.ACTOR_FULL_NAME).toBe(`${me.username}/env-metadata-actor`);
+		// ISO 8601 UTC, as the platform documents its date-valued variables.
+		expect(env.ACTOR_STARTED_AT).toBe(new Date(run.startedAt).toISOString());
+		expect(env.APIFY_STARTED_AT).toBe(env.ACTOR_STARTED_AT);
+		const expectedTimeoutAt = new Date(new Date(run.startedAt).getTime() + 120_000).toISOString();
+		expect(env.ACTOR_TIMEOUT_AT).toBe(expectedTimeoutAt);
+		expect(env.APIFY_TIMEOUT_AT).toBe(expectedTimeoutAt);
+	});
+
+	it('a run with no timeout gets no ACTOR_TIMEOUT_AT', async () => {
+		const actor = await seedBuiltActor('env-no-timeout-actor');
+		const run = await server.client.actor(actor.id).start({}, { timeout: 0, waitForFinish: 5 });
+		expect(run.status).toBe('SUCCEEDED');
+
+		const env = getCapturedEnv()!;
+		expect(Object.hasOwn(env, 'ACTOR_TIMEOUT_AT')).toBe(false);
+		expect(Object.hasOwn(env, 'APIFY_TIMEOUT_AT')).toBe(false);
+		expect(env.ACTOR_STARTED_AT).toBe(new Date(run.startedAt).toISOString());
+	});
+
+	it('a resurrection keeps ACTOR_STARTED_AT and restarts the ACTOR_TIMEOUT_AT budget', async () => {
+		const actor = await seedBuiltActor('env-resurrect-actor');
+		const run = await server.client.actor(actor.id).start({}, { timeout: 120, waitForFinish: 5 });
+		expect(run.status).toBe('SUCCEEDED');
+		const firstEnv = getCapturedEnv()!;
+
+		await server.client.run(run.id).resurrect();
+		const resurrected = await server.client.run(run.id).waitForFinish({ waitSecs: 5 });
+		expect(resurrected.status).toBe('SUCCEEDED');
+
+		const record = await getRegistries().runs.get(run.id);
+		expect(record?.resurrectedAt).toBeDefined();
+		const env = getCapturedEnv()!;
+		expect(env.ACTOR_STARTED_AT).toBe(firstEnv.ACTOR_STARTED_AT);
+		expect(env.ACTOR_TIMEOUT_AT).toBe(new Date(Date.parse(record!.resurrectedAt!) + 120_000).toISOString());
+		expect(env.APIFY_TIMEOUT_AT).toBe(env.ACTOR_TIMEOUT_AT);
 	});
 });

@@ -53,6 +53,9 @@ import {
 
 /** `@apify/consts`' `DEFAULT_CONTAINER_PORT`. */
 const DEFAULT_CONTAINER_SERVER_PORT = 4321;
+/** The default key-value store record holding the run's input, told to the container as
+ * `ACTOR_INPUT_KEY` (`@apify/consts`' `KEY_VALUE_STORE_KEYS.INPUT`). */
+const INPUT_KEY = 'INPUT';
 /** The public API docs don't state a separate disk default; this mirrors the 2x ratio the public
  * OpenAPI examples use for the pair (`memoryMbytes: 1024` paired with `diskMbytes: 2048`), also the
  * exact ratio in `apify-client`'s `RunOptions` pydantic model examples. */
@@ -216,8 +219,14 @@ function buildEnv(
 	version: ActorVersionRecord | undefined,
 	options: StartRunOptions,
 	debugPlan: DebugPlan | undefined,
+	ownerUsername: string | undefined,
 ): Record<string, string> {
 	const versionEnv = versionEnvOf(actor, version);
+
+	// Run metadata, as on the platform (`actor-driver.md`). The timeout deadline is the one the runtime
+	// itself enforces (`remainingTimeoutSecs`): a resurrection restarts the budget, a migration does not.
+	const buildTags = buildTagsOf(actor, run.buildId);
+	const timeoutAt = runTimeoutAt(run);
 
 	// Both names in each pair are byte-identical, deliberately: apify-sdk-js's `ENV_MAP` and pydantic's
 	// `AliasChoices` resolve `ACTOR_*`-vs-`APIFY_*` in OPPOSITE precedence order, so letting the two ever
@@ -253,6 +262,21 @@ function buildEnv(
 		APIFY_ACTOR_RUN_ID: run.id,
 		ACTOR_RUN_ID: run.id,
 		...(run.actorTaskId ? { APIFY_ACTOR_TASK_ID: run.actorTaskId, ACTOR_TASK_ID: run.actorTaskId } : {}),
+		...(ownerUsername ? { ACTOR_FULL_NAME: `${ownerUsername}/${actor.name}` } : {}),
+		// The user who started the run - in the runtime always the Actor's owner. No `ACTOR_` counterpart.
+		APIFY_USER_ID: run.userId,
+		ACTOR_BUILD_ID: run.buildId,
+		APIFY_ACTOR_BUILD_ID: run.buildId,
+		ACTOR_BUILD_NUMBER: run.buildNumber,
+		APIFY_ACTOR_BUILD_NUMBER: run.buildNumber,
+		// Fixed at container start, as on the platform: a later retag of the build does not change it.
+		...(buildTags.length > 0 ? { ACTOR_BUILD_TAGS: buildTags.join(',') } : {}),
+		// Where `startRun` stored the input in the default key-value store.
+		ACTOR_INPUT_KEY: INPUT_KEY,
+		APIFY_INPUT_KEY: INPUT_KEY,
+		ACTOR_STARTED_AT: run.startedAt,
+		APIFY_STARTED_AT: run.startedAt,
+		...(timeoutAt ? { ACTOR_TIMEOUT_AT: timeoutAt, APIFY_TIMEOUT_AT: timeoutAt } : {}),
 		// No token: the endpoint is unauthenticated and the run id in the path is all there is to scope on.
 		ACTOR_EVENTS_WEBSOCKET_URL: eventsWebSocketUrl,
 		APIFY_ACTOR_EVENTS_WS_URL: eventsWebSocketUrl,
@@ -299,7 +323,7 @@ export async function startRun(
 	const input = await sealInputSecrets(actor, build.inputSchema, options.input);
 	if (input) {
 		const store = await openKeyValueStore(keyValueStore.id);
-		await store.setValue('INPUT', input.body, { contentType: input.contentType });
+		await store.setValue(INPUT_KEY, input.body, { contentType: input.contentType });
 	}
 
 	const defaults = defaultRunOptionsOf(actor);
@@ -617,7 +641,7 @@ export async function runInBackground(
 	record: RunRecord,
 	options: StartRunOptions,
 ): Promise<void> {
-	const { runs, builds } = getRegistries();
+	const { runs, builds, users } = getRegistries();
 
 	const afterStart = await transitionJobStatus(runs, record.id, 'RUNNING');
 	if (!afterStart || afterStart.status !== 'RUNNING') {
@@ -667,7 +691,8 @@ export async function runInBackground(
 
 	const keyedActor = await ensureSecretKeys(actor);
 	const version = findVersion(keyedActor, build.versionNumber);
-	const env = buildEnv(record, keyedActor, version, options, debugPlan);
+	const owner = await users.get(record.userId);
+	const env = buildEnv(record, keyedActor, version, options, debugPlan, owner?.username);
 	// As on the platform: the run's token and its secret env vars, never its secret input fields.
 	const logRedactor = createLogRedactor([
 		options.token,
@@ -913,6 +938,22 @@ function remainingTimeoutSecs(record: RunRecord): number {
 	if (record.options.timeoutSecs <= 0) return 0;
 	const elapsedSecs = (Date.now() - Date.parse(record.resurrectedAt ?? record.startedAt)) / 1000;
 	return Math.max(1, Math.ceil(record.options.timeoutSecs - elapsedSecs));
+}
+
+/** The instant `remainingTimeoutSecs` counts down to, for the container's `ACTOR_TIMEOUT_AT`; `undefined`
+ * for a run with no timeout. */
+export function runTimeoutAt(record: RunRecord): string | undefined {
+	if (record.options.timeoutSecs <= 0) return undefined;
+	const budgetStart = Date.parse(record.resurrectedAt ?? record.startedAt);
+	return new Date(budgetStart + record.options.timeoutSecs * 1000).toISOString();
+}
+
+/** Every tag currently pointing at `buildId`, sorted - the container's `ACTOR_BUILD_TAGS`. */
+export function buildTagsOf(actor: ActorRecord, buildId: string): string[] {
+	return Object.entries(actor.taggedBuilds)
+		.filter(([, tagged]) => tagged.buildId === buildId)
+		.map(([tag]) => tag)
+		.sort();
 }
 
 /** Open graceful-abort windows, keyed by run id - same shape as `services/migrations.ts`'s
