@@ -202,22 +202,13 @@
 
 # Webhooks
 
-- Implemented as on the platform, for the caller's own Actors, tasks and runs: a webhook fires on the
-  run and build events it names (`ACTOR.RUN.*`, `ACTOR.BUILD.*`) of the Actor, task or run in its
-  `condition`, and every event it fires on is a dispatch - an HTTP POST of its rendered payload and
-  headers templates to `requestUrl`.
-    - Validation, defaults, template variables (`resource` with its `links` and `storages` included),
-      `shouldInterpolateStrings`, `idempotencyKey`, `isEnabled`, ad-hoc webhooks for a run, test
-      dispatches and the per-Actor and per-task lists match the platform.
-    - A dispatch is retried on a network error or a non-2xx answer on the platform's schedule (1 min,
-      doubling, at most 11 retries; 3 for a test dispatch) unless `doNotRetry` is set, and resumes after
-      a restart. Its `calls` record each attempt's status, error and the first 2 KB of the answer.
-    - Deleting an Actor or a task deletes its webhooks; dispatches stay.
-    - A `requestUrl` naming this runtime's API (`localhost:3333`, `apify-api:3333`, a standby address) is
-      sent to the runtime itself, authenticated as the webhook's owner unless it carries a `token`.
-- Differences: only the `HTTP_REQUEST` action is accepted (`400` `invalid-request` for the others);
-  requests are sent from the runtime, so other `localhost` URLs reach its own container, private
-  addresses are allowed and redirects are not followed.
+- Implemented as on the platform, for the caller's own Actors, tasks and runs.
+- Differences:
+    - Only the `HTTP_REQUEST` action is supported (`400` `invalid-request` for the others).
+    - Requests are sent from the runtime: `localhost` means the runtime itself, private addresses are
+      allowed and redirects are not followed.
+    - A request to the runtime's own API without a `token` is authenticated as the webhook's owner.
+    - Deleting a webhook keeps its dispatches.
 
 # Actor Standby
 
