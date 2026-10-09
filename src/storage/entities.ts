@@ -224,6 +224,9 @@ export interface TaskRunOptions {
 	restartOnError?: boolean;
 }
 
+/** A task's own Standby settings, merged over its Actor's (`services/standby-config.ts`). */
+export type TaskStandbyRecord = Omit<ActorStandbyRecord, 'isEnabled' | 'disableStandbyFieldsOverride'>;
+
 /** A saved Actor configuration (`api.md`'s "Tasks"). */
 export interface TaskRecord {
 	id: string;
@@ -236,6 +239,8 @@ export interface TaskRecord {
 	options?: TaskRunOptions;
 	/** Stored as given: secret fields are encrypted when a run starts, not when the task is saved. */
 	input?: Record<string, unknown>;
+	/** Absent when the task's standby runs use the Actor's settings alone. */
+	actorStandby?: TaskStandbyRecord;
 	createdAt: string;
 	modifiedAt: string;
 }

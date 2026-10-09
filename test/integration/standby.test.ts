@@ -485,6 +485,78 @@ describe('standby router', () => {
 		}
 	});
 
+	it("serves a task at its own standby URL, with the task's settings over the Actor's and its input", async () => {
+		driver = serverDriver();
+		server = await startTestServer(driver);
+		const { actor, url: actorUrl } = await standbyActor({ memoryMbytes: 2048 });
+		const task = (await server.client.tasks().create({
+			actId: actor.id,
+			name: 'my-task',
+			input: { q: 'saved' },
+			actorStandby: { memoryMbytes: 4096, shouldPassActorInput: true },
+		} as never)) as unknown as { id: string; standbyUrl: string; actorStandby: Record<string, unknown> };
+		expect(task.standbyUrl).toMatch(/^http:\/\/.+--my-task\.localhost:3333$/);
+		expect(task.actorStandby).toMatchObject({
+			memoryMbytes: 4096,
+			shouldPassActorInput: true,
+			idleTimeoutSecs: 300,
+		});
+		expect(task.actorStandby).not.toHaveProperty('isEnabled');
+		const label = new URL(task.standbyUrl).hostname.replace(/\.localhost$/, '');
+
+		const served = (await (
+			await fetch(`${server.baseUrl}/actor-runtime/standby/${label}/x?token=${server.token}`)
+		).json()) as { runId: string; url: string };
+		expect(served.url).toBe(`/x?token=${server.token}`);
+		const run = await server.client.run(served.runId).get();
+		expect(run).toMatchObject({ actId: actor.id, actorTaskId: task.id, meta: { origin: 'STANDBY' } });
+		expect(run!.options).toMatchObject({ memoryMbytes: 4096, timeoutSecs: 0 });
+		const input = await server.client.keyValueStore(run!.defaultKeyValueStoreId).getRecord('INPUT');
+		expect(input?.value).toEqual({ q: 'saved' });
+		const ctx = driver.containers[0]!.ctx;
+		expect(ctx.env.ACTOR_STANDBY_URL).toBe(task.standbyUrl);
+		expect(ctx.env.ACTOR_TASK_ID).toBe(task.id);
+
+		// The Actor's own address has a pool of its own, with the Actor's settings and no input.
+		const actorServed = (await (await fetch(`${actorUrl}?token=${server.token}`)).json()) as { runId: string };
+		expect(actorServed.runId).not.toBe(served.runId);
+		const actorRun = await server.client.run(actorServed.runId).get();
+		expect(actorRun!.actorTaskId).toBeUndefined();
+		expect(actorRun!.options.memoryMbytes).toBe(2048);
+
+		// The task id addresses it too, landing on the same run.
+		const byId = (await (
+			await fetch(`${server.baseUrl}/actor-runtime/standby/${task.id}?token=${server.token}`)
+		).json()) as { runId: string };
+		expect(byId.runId).toBe(served.runId);
+	});
+
+	it("serves a task only while its Actor's Standby is on, and rejects Actor-only settings", async () => {
+		driver = serverDriver();
+		server = await startTestServer(driver);
+		const created = await server.client.actors().create({ name: 'plain-actor' });
+		await seedBuild((await getRegistries().actors.get(created.id))!);
+		const task = (await server.client
+			.tasks()
+			.create({ actId: created.id, name: 'plain-task' } as never)) as unknown as {
+			standbyUrl: string | null;
+			username: string;
+		};
+		expect(task.standbyUrl).toBeNull();
+		const res = await fetch(
+			`${server.baseUrl}/actor-runtime/standby/${task.username}--plain-task?token=${server.token}`,
+		);
+		expect(res.status).toBe(400);
+		expect(((await res.json()) as { error: { type: string } }).error.type).toBe('standby-not-enabled');
+
+		const invalid = await fetch(`${server.baseUrl}/v2/actor-tasks`, {
+			method: 'POST',
+			headers: { authorization: `Bearer ${server.token}`, 'content-type': 'application/json' },
+			body: JSON.stringify({ actId: created.id, actorStandby: { isEnabled: true } }),
+		});
+		expect(invalid.status).toBe(400);
+	});
+
 	it('proxies websocket upgrades to the run', async () => {
 		driver = serverDriver();
 		server = await startTestServer(driver);

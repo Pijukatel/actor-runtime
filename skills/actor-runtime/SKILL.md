@@ -122,6 +122,7 @@ apify api GET v2/actor-tasks/~small-crawl/runs/last/dataset/items
   work against it, `run-sync` included. A task run's `actorTaskId`, and `ACTOR_TASK_ID` in its
   container, name the task.
 - The saved input is validated against the input schema of the build the task runs, as on the platform.
+- A task of a Standby Actor has its own `standbyUrl` (see "Run an Actor server").
 - Tasks cannot be published, scheduled or given webhooks here, and the console does not show them.
 
 ## Run memory
@@ -321,10 +322,13 @@ curl "http://localhost:3333/actor-runtime/standby/<username>--<actor-name>/some/
 - A request that cannot be served says why: `standby-not-enabled`, `standby-run-finished` (the run
   crashed before its server came up - read its log), `standby-run-not-ready` (nothing listened on the port
   within 180 s).
+- A task of the Actor is served the same way at its own `standbyUrl` (`<username>--<task-name>`), by its
+  own standby runs, with the task's `actorStandby` settings over the Actor's and, with
+  `shouldPassActorInput`, the task's input.
 - `apify call` still starts an ordinary `API` run of the same Actor. `samples/actor_standby_ts` and
   `samples/actor_standby_py` are complete Actor servers (JSON, request body, Server-Sent Events, websocket,
   graceful shutdown) to start from; `samples/actor_standby_web` serves a web page and, in an ordinary run,
-  calls a standby Actor from its container. Multi-tenant Standby and Standby for tasks are not emulated.
+  calls a standby Actor from its container. Multi-tenant Standby is not emulated.
 
 ## Test how an Actor handles a platform migration
 

@@ -266,7 +266,8 @@ start`, ...) is refused by name, naming both the `CMD` fix and how to clear debu
 
 # Actor Standby
 
-- Implemented as on the platform (settings, `usesStandbyMode`, scaling, readiness, idle shutdown, env vars).
+- Implemented as on the platform (settings, `usesStandbyMode`, scaling, readiness, idle shutdown, env vars),
+  for Actors and their tasks (`api.md`'s "Tasks").
 - Differences: single-tenant, owner-only; a new build of the standby tag replaces older standby runs; a
   runtime restart aborts standby runs.
 

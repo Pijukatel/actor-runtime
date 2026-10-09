@@ -180,9 +180,16 @@
       task, as do `ACTOR_TASK_ID` / `APIFY_ACTOR_TASK_ID` in its container.
     - `PUT .../input` merges the given fields into the saved input.
     - Deleting a task aborts its unfinished runs; the runs themselves stay.
+    - Standby for tasks works as on the platform: while the Actor's Standby is on, a task is served at its
+      own `standbyUrl` (`<username>--<task-name>`, as in "Actor Standby" below) by standby runs of its own,
+      with its `actorStandby` settings over the Actor's (unless the Actor sets
+      `disableStandbyFieldsOverride`), its input when `shouldPassActorInput` is set, and its other run
+      options. A task's `actorStandby` takes every Actor setting except `isEnabled` and
+      `disableStandbyFieldsOverride`. An Actor and a task of the same name share an address; the Actor
+      is served there.
 - Differences: a task's secret input fields are stored as given, and encrypted only in each run's input;
   `maxItems` and `restartOnError` are saved but not applied; a task cannot be published (`400`
-  `cannot-publish-actor-task`), and its `actorStandby` is ignored (`unsupported.md`).
+  `cannot-publish-actor-task`).
 
 # Actor Standby
 

@@ -12,7 +12,7 @@ real account, not in the runtime.
 
 ## Running Actors
 
-- Multi-tenant Actor Standby, Standby for tasks, and Standby's Console-auth and tokenless options
+- Multi-tenant Actor Standby, and Standby's Console-auth and tokenless options
 - Metamorph
 - Restart on error
 - Result cap (`maxItems`)

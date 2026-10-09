@@ -33,7 +33,12 @@ import { inputSchemaPrefill, isJsonContentType, resolveBuildInput } from '../../
 import { isTerminalJobStatus } from '../../services/job-status.js';
 import { parseResourceReference } from '../../services/resource-reference.js';
 import { abortRun, listOwnedRuns, waitForRunFinish } from '../../services/runs.js';
-import { standbyUrlAudienceOf } from '../../services/standby-config.js';
+import {
+	mergeTaskStandbyUpdate,
+	standbyUrl,
+	standbyUrlAudienceOf,
+	type StandbyUrlAudience,
+} from '../../services/standby-config.js';
 import {
 	createTask,
 	deleteTask,
@@ -42,7 +47,14 @@ import {
 	TaskNameTakenError,
 	updateTask,
 } from '../../services/tasks.js';
-import type { ActorRecord, BuildRecord, RunRecord, TaskRecord, TaskRunOptions } from '../../storage/entities.js';
+import type {
+	ActorRecord,
+	BuildRecord,
+	RunRecord,
+	TaskRecord,
+	TaskRunOptions,
+	TaskStandbyRecord,
+} from '../../storage/entities.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -59,7 +71,8 @@ async function taskStats(userId: string, task: TaskRecord) {
 	return { totalRuns: runs.length, ...(lastRunStartedAt ? { lastRunStartedAt } : {}) };
 }
 
-async function taskDto(task: TaskRecord, username: string) {
+async function taskDto(task: TaskRecord, username: string, audience: StandbyUrlAudience) {
+	const actor = await getOwnedActor(task.userId, task.actorId);
 	return {
 		id: task.id,
 		userId: task.userId,
@@ -74,7 +87,9 @@ async function taskDto(task: TaskRecord, username: string) {
 		stats: await taskStats(task.userId, task),
 		options: task.options ?? null,
 		input: task.input ?? null,
-		standbyUrl: null,
+		...(task.actorStandby ? { actorStandby: task.actorStandby } : {}),
+		// As on the platform, a task is served whenever its Actor's Standby is on.
+		standbyUrl: actor?.actorStandby?.isEnabled ? standbyUrl(task, username, audience) : null,
 	};
 }
 
@@ -161,6 +176,16 @@ function inputFromBody(body: JsonObject): JsonObject | null | undefined {
 	if (raw === null) return null;
 	if (!isPlainObject(raw)) throw actorTaskInputNotObject(raw);
 	return raw;
+}
+
+/** `null` for a body that clears the settings; `undefined` when it does not mention them. Merged over
+ * `current`, or over the defaults. */
+function actorStandbyFromBody(body: JsonObject, current?: TaskStandbyRecord): TaskStandbyRecord | null | undefined {
+	if (body.actorStandby === undefined) return undefined;
+	if (body.actorStandby === null) return null;
+	const result = mergeTaskStandbyUpdate(body.actorStandby, current);
+	if (result.kind === 'invalid') throw invalidRequest(result.message);
+	return result.actorStandby;
 }
 
 function rejectPublication(body: JsonObject): void {
@@ -269,6 +294,7 @@ export function mountTasks(router: Router, deps: ApiServerDeps): void {
 			const description = optionalString(body, 'description');
 			const options = optionsFromBody(body);
 			const providedInput = inputFromBody(body);
+			const actorStandby = actorStandbyFromBody(body);
 
 			const reference = parseResourceReference(actId);
 			const actor = reference.kind === 'empty-name' ? null : await resolveOwnedActor(user, reference);
@@ -288,11 +314,12 @@ export function mountTasks(router: Router, deps: ApiServerDeps): void {
 						...(description !== undefined ? { description } : {}),
 						...(options ? { options } : {}),
 						input,
+						...(actorStandby ? { actorStandby } : {}),
 					},
 					actor.name,
 				),
 			);
-			sendData(res, await taskDto(task, user.username), 201);
+			sendData(res, await taskDto(task, user.username, standbyUrlAudienceOf(req.headers.host)), 201);
 		}),
 	);
 
@@ -300,7 +327,7 @@ export function mountTasks(router: Router, deps: ApiServerDeps): void {
 		'/actor-tasks/:actorTaskId',
 		h(async (req, res) => {
 			const task = await resolveTaskOrThrow(req);
-			sendData(res, await taskDto(task, requireUser(req).username));
+			sendData(res, await taskDto(task, requireUser(req).username, standbyUrlAudienceOf(req.headers.host)));
 		}),
 	);
 
@@ -316,6 +343,7 @@ export function mountTasks(router: Router, deps: ApiServerDeps): void {
 			const description = optionalString(body, 'description');
 			const options = optionsFromBody(body);
 			const input = inputFromBody(body);
+			const actorStandby = actorStandbyFromBody(body, task.actorStandby);
 
 			if (input) {
 				const actor = await taskActorOrThrow(req, task);
@@ -330,14 +358,16 @@ export function mountTasks(router: Router, deps: ApiServerDeps): void {
 						...(description !== undefined ? { description } : {}),
 						...(options ? { options } : {}),
 						...(input ? { input } : {}),
+						...(actorStandby ? { actorStandby } : {}),
 					};
 					if (options === null) delete next.options;
 					if (input === null) delete next.input;
+					if (actorStandby === null) delete next.actorStandby;
 					return next;
 				}),
 			);
 			if (!updated) throw recordNotFound('Actor task was not found');
-			sendData(res, await taskDto(updated, requireUser(req).username));
+			sendData(res, await taskDto(updated, requireUser(req).username, standbyUrlAudienceOf(req.headers.host)));
 		}),
 	);
 

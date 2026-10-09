@@ -2,7 +2,13 @@
  * An Actor's `actorStandby` settings (`actor-driver.md`'s "Actor Standby"): the platform's field set,
  * defaults and validation rules (apify-core's `ActorStandbySchema`), single-tenant only.
  */
-import type { ActorRecord, ActorStandbyRecord, SourceFile } from '../storage/entities.js';
+import type {
+	ActorRecord,
+	ActorStandbyRecord,
+	SourceFile,
+	TaskRecord,
+	TaskStandbyRecord,
+} from '../storage/entities.js';
 import { API_PORT, CONTAINER_API_ALIAS, CONTAINER_API_BASE_URL } from '../config.js';
 import { parseActorJson } from './actor-source-files.js';
 import { DEFAULT_BUILD_TAG } from './actors.js';
@@ -89,6 +95,34 @@ export function mergeStandbyUpdate(raw: unknown, current: ActorStandbyRecord | u
 	return { kind: 'ok', actorStandby: merged };
 }
 
+/** What a task's `actorStandby` cannot set: whether Standby is on is the Actor's call alone. */
+const ACTOR_ONLY_FIELDS = ['isEnabled', 'disableStandbyFieldsOverride'] as const;
+
+export type TaskStandbyUpdateResult =
+	{ kind: 'ok'; actorStandby: TaskStandbyRecord } | { kind: 'invalid'; message: string };
+
+/** A task's `actorStandby` (apify-core's `ActorTaskStandbySchema`): the Actor's fields and defaults
+ * without the two above, merged over `current` like the Actor's own. */
+export function mergeTaskStandbyUpdate(raw: unknown, current: TaskStandbyRecord | undefined): TaskStandbyUpdateResult {
+	if (typeof raw === 'object' && raw !== null) {
+		const field = ACTOR_ONLY_FIELDS.find((key) => key in raw);
+		if (field) return { kind: 'invalid', message: `Unknown field actorStandby.${field}` };
+	}
+	const result = mergeStandbyUpdate(raw, current && { ...STANDBY_DEFAULTS, ...current });
+	if (result.kind === 'invalid') return result;
+	const actorStandby: Partial<ActorStandbyRecord> = { ...result.actorStandby };
+	for (const field of ACTOR_ONLY_FIELDS) delete actorStandby[field];
+	return { kind: 'ok', actorStandby: actorStandby as TaskStandbyRecord };
+}
+
+/** The platform's effective config of a task's standby runs: the task's fields over the Actor's, unless
+ * the Actor forbids that. `undefined` while the Actor's Standby is off. */
+export function taskStandbyConfig(actor: ActorRecord, task: TaskRecord): ActorStandbyRecord | undefined {
+	const config = actor.actorStandby;
+	if (!config?.isEnabled) return undefined;
+	return config.disableStandbyFieldsOverride ? config : { ...config, ...task.actorStandby };
+}
+
 /** `usesStandbyMode: true` in the pushed `.actor/actor.json`; an unparseable file says nothing. */
 export function declaresStandbyMode(sourceFiles: SourceFile[], actorPath = ''): boolean {
 	const parsed = parseActorJson(sourceFiles, actorPath);
@@ -116,9 +150,9 @@ function dnsFriendly(value: string): string {
 		.replace(/^-+|-+$/g, '');
 }
 
-/** The platform's `<username>--<actor-name>` hostname label. */
-export function standbyLabel(actor: ActorRecord, username: string): string {
-	return `${dnsFriendly(username)}--${actor.name.toLowerCase()}`;
+/** The platform's `<username>--<actor-or-task-name>` hostname label. */
+export function standbyLabel(actorOrTask: Pick<ActorRecord | TaskRecord, 'name'>, username: string): string {
+	return `${dnsFriendly(username)}--${actorOrTask.name.toLowerCase()}`;
 }
 
 /** Who a standby URL is for: a client on the host, or another Actor's container. */
@@ -129,8 +163,12 @@ export type StandbyUrlAudience = 'host' | 'container';
  * can use root-relative links. Containers cannot resolve `*.localhost` to the runtime, so they get the
  * path form on the API alias instead.
  */
-export function standbyUrl(actor: ActorRecord, username: string, audience: StandbyUrlAudience = 'host'): string {
-	const label = standbyLabel(actor, username);
+export function standbyUrl(
+	actorOrTask: ActorRecord | TaskRecord,
+	username: string,
+	audience: StandbyUrlAudience = 'host',
+): string {
+	const label = standbyLabel(actorOrTask, username);
 	if (audience === 'container') return `${CONTAINER_API_BASE_URL}${STANDBY_PATH_PREFIX}/${label}`;
 	return `http://${label}.localhost:${API_PORT}`;
 }

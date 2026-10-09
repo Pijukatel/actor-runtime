@@ -6,12 +6,14 @@ import {
 	declaresStandbyMode,
 	labelFromHost,
 	mergeStandbyUpdate,
+	mergeTaskStandbyUpdate,
 	standbyLabel,
 	standbyUrl,
 	standbyUrlAudienceOf,
+	taskStandbyConfig,
 } from '../../src/services/standby-config.js';
 import { standbyTargetOf } from '../../src/api/standby-proxy.js';
-import type { ActorRecord } from '../../src/storage/entities.js';
+import type { ActorRecord, TaskRecord } from '../../src/storage/entities.js';
 
 describe('mergeStandbyUpdate', () => {
 	it('fills the platform defaults under a partial body, and keeps stored values under a later one', () => {
@@ -104,5 +106,38 @@ describe('standby addressing', () => {
 			label: 'a--b',
 			forwardPath: '/v2/anything?q=1',
 		});
+	});
+});
+
+describe('task standby settings', () => {
+	const actor = {
+		name: 'my-actor',
+		actorStandby: { ...STANDBY_DEFAULTS, isEnabled: true, memoryMbytes: 2048, idleTimeoutSecs: 60 },
+	} as ActorRecord;
+	const task = { name: 'my-task', actorStandby: { memoryMbytes: 4096 } } as TaskRecord;
+
+	it('fills the defaults without the Actor-only fields, and rejects those', () => {
+		const result = mergeTaskStandbyUpdate({ memoryMbytes: 4096 }, undefined);
+		const { tenancy, idleTimeoutSecs, build } = STANDBY_DEFAULTS;
+		expect(result).toMatchObject({
+			kind: 'ok',
+			actorStandby: { tenancy, idleTimeoutSecs, build, memoryMbytes: 4096 },
+		});
+		expect(result.kind === 'ok' && Object.keys(result.actorStandby)).not.toContain('isEnabled');
+		expect(mergeTaskStandbyUpdate({ isEnabled: true }, undefined).kind).toBe('invalid');
+		expect(mergeTaskStandbyUpdate({ disableStandbyFieldsOverride: true }, undefined).kind).toBe('invalid');
+	});
+
+	it("merges the task's settings over the Actor's, unless the Actor forbids it or has Standby off", () => {
+		expect(taskStandbyConfig(actor, task)).toMatchObject({
+			isEnabled: true,
+			memoryMbytes: 4096,
+			idleTimeoutSecs: 60,
+		});
+		const locked = { ...actor, actorStandby: { ...actor.actorStandby!, disableStandbyFieldsOverride: true } };
+		expect(taskStandbyConfig(locked, task)?.memoryMbytes).toBe(2048);
+		const off = { ...actor, actorStandby: { ...actor.actorStandby!, isEnabled: false } };
+		expect(taskStandbyConfig(off, task)).toBeUndefined();
+		expect(standbyUrl(task, 'john')).toBe('http://john--my-task.localhost:3333');
 	});
 });
